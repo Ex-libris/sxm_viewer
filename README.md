@@ -7,10 +7,8 @@ This viewer is tuned for data acquired with an Anfatec SXM controller running an
 All images live in `screenshots/` so you can see the workflow before loading your own data.
 
 ![Main menu and grid navigation](screenshots/main_menu.png)
-![Thumbnail grid](screenshots/thumbnail_menu.gif)
-![Minimap with grid](screenshots/layout_minimap.gif)
-![Matrix and KPFM views](screenshots/KPFM_matrix.gif)
-![Spectroscopy and parabolas](screenshots/KPFM_parabolas.gif)
+![Matrix and KPFM views](screenshots/matrix_data.png)
+![Spectroscopy and parabolas](screenshots/spectroscopies.png)
 
 ## Why this exists
 
