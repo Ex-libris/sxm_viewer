@@ -27,23 +27,23 @@ All images live in `screenshots/` so you can see the workflow before loading you
 ## Install and run
 
 1) Clone or unzip the repo and work from the folder that contains `install.py`.
-2) Create the environment and install dependencies:
+2) Create the environment and install dependencies (Python 3.9–3.12 recommended):
    ```
-   python install.py
+   python install.py          # add --reset to rebuild .venv from scratch
    ```
-   - Prefer double-clicking? `install_sxm_viewer.bat` calls the same script.
-   - The installer creates `.venv` (or uses Conda if available).
+   - Prefer double-clicking? `install_sxm_viewer.bat` picks a working interpreter (`PYTHON` env, `.venv`, Conda, `py -3`, then PATH) and runs the same script.
+   - The installer builds a fresh `.venv` and now honours a `PYTHON` path if you need a specific interpreter.
 3) Launch the viewer:
    ```
    python -m sxm_viewer
    ```
-   - Shortcut for lab PCs: `run_sxm_viewer.bat` uses the local env automatically.
+   - Shortcut for lab PCs: `run_sxm_viewer.bat` auto-selects the local env and validates imports before launching.
    - Alternate entry points: `python -m sxm_viewer.cli` or `python sxm_grid_viewer.py`.
 
 ## Notes
 
-- Re-run `python install.py` any time dependencies change.
-- Set `PYTHON` before running the installer if you need a specific interpreter.
+- Re-run `python install.py` when dependencies change; add `--reset` if the existing `.venv` is broken.
+- Set `PYTHON` (or pass `--python`) before running the installer to force a specific interpreter.
 - Spectroscopy handling is under active improvement; workflows there may evolve.
 
 ## License

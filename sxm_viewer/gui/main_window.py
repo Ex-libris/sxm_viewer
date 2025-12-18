@@ -12,6 +12,53 @@ from ..processing.detection import *
 from .thumbnails import *
 from .minimap import FrameMiniMap
 from .detail_panels import *
+from pathlib import Path
+import os
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
+
+
+class MatrixDataset:
+    """Lightweight container describing a matrix dataset and its channel files."""
+    def __init__(self, base, rows, cols):
+        self.base = base
+        self.rows = rows
+        self.cols = cols
+        self.channels = []  # list of dicts: {'filename','channel_code','label','spectra_count','path'}
+
+    def add_channel(self, filename, channel_code=None, label=None, spectra_count=0, path=None):
+        self.channels.append({
+            'filename': filename,
+            'channel_code': channel_code,
+            'label': label,
+            'spectra_count': spectra_count,
+            'path': str(path) if path else filename,
+        })
+
+    def summary(self):
+        return f"{self.base}: {len(self.channels)} channel(s) — {self.rows}×{self.cols} each"
+
+
+def parse_matrix_filename(fname: str):
+    """
+    Heuristic parser for matrix filenames.
+    Returns (base, channel_code, channel_label).
+    Examples:
+      angii_au111_00df_Matrix.dat -> base=angii_au111, channel_code=00df
+      angii_au111_00It_to_PC_Matrix.dat -> base=angii_au111, channel_code=00It_to_PC
+    """
+    stem = Path(fname).stem
+    # strip extension and trailing "_Matrix" if present
+    stem = re.sub(r'(?i)_matrix$', '', stem)
+    channel_code = None
+    base = stem
+    # attempt to split on the last underscore chunk that contains digits/letters
+    m = re.match(r'^(?P<base>.+?)_(?P<code>[0-9A-Za-z]+[^_]*)$', stem)
+    if m:
+        base = m.group('base')
+        channel_code = m.group('code')
+    channel_label = channel_code
+    return base, channel_code, channel_label
 
 
 class SXMGridViewer(QtWidgets.QWidget):
@@ -39,8 +86,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
         self.hidden_frame_keys = set()
         self.frame_real_view = False
+        self.show_matrix_markers = bool(self.config.get("show_matrix_markers", True))
+        # default to showing single markers so spectroscopies are visible by default
+        self.show_single_markers = bool(self.config.get("show_single_markers", True))
+        self.compact_markers = bool(self.config.get("compact_markers", True))
+        self.use_density_markers = bool(self.config.get("use_density_markers", True))
+        self.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
+        self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
+        self._temp_reveal = set()
+        self.spectro_dock = None
+        self._spectro_browser_entries = []
 
         self.files = []
         self.headers = {}
@@ -66,6 +123,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.matrix_spectros = []
         self.spectros_by_image = defaultdict(list)
         self._spectro_cache = {}
+        self._spectro_deferred = set()
+        # spectro_eager_limit: 0 means no deferral; otherwise minimum of 5000 to avoid accidental truncation
+        limit_cfg = int(self.config.get("spectro_eager_limit", 0))
+        self.spectro_eager_limit = 0 if limit_cfg <= 0 else max(5000, limit_cfg)
         self.image_time_index = {}
         self._spectro_popups = []
         self._popup_refs = []
@@ -82,6 +143,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._last_base_array = None
         self._last_base_extent = None
         self._last_base_unit = None
+        self._spectro_hist_cache = {}
+        self.matrix_datasets = {}
         log_status("Loading header cache...")
         self.header_cache = load_header_cache()
         self._header_cache_dirty = False
@@ -312,6 +375,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         extra_h.addWidget(self.spec_selection_label)
         self.export_selected_btn = QtWidgets.QPushButton("Export selected (same view)")
         extra_h.addWidget(self.export_selected_btn)
+        self.show_matrix_markers_cb = QtWidgets.QCheckBox("Matrix markers")
+        self.show_matrix_markers_cb.setChecked(self.show_matrix_markers)
+        extra_h.addWidget(self.show_matrix_markers_cb)
+        self.show_single_markers_cb = QtWidgets.QCheckBox("Single markers")
+        self.show_single_markers_cb.setChecked(self.show_single_markers)
+        extra_h.addWidget(self.show_single_markers_cb)
+        self.compact_markers_cb = QtWidgets.QCheckBox("Compact markers")
+        self.compact_markers_cb.setChecked(self.compact_markers)
+        extra_h.addWidget(self.compact_markers_cb)
+        self.density_markers_cb = QtWidgets.QCheckBox("Density overlay")
+        self.density_markers_cb.setChecked(self.use_density_markers)
+        extra_h.addWidget(self.density_markers_cb)
         preview_panel_layout.addLayout(extra_h)
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
@@ -387,6 +462,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.export_selected_btn.clicked.connect(self.on_export_selected_same_view)
+        self.show_matrix_markers_cb.toggled.connect(self.on_show_matrix_markers_toggled)
+        self.show_single_markers_cb.toggled.connect(self.on_show_single_markers_toggled)
+        self.compact_markers_cb.toggled.connect(self.on_compact_markers_toggled)
+        self.density_markers_cb.toggled.connect(self.on_density_markers_toggled)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
@@ -467,6 +546,457 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.shortcuts_label.setTextFormat(QtCore.Qt.RichText)
         layout.addWidget(self.shortcuts_label)
         return frame
+
+    # ---------- Spectroscopy quick-inspect helpers & dialog ----------
+    def _header_extent(self, header):
+        """
+        Return extent [x0, x1, y1, y0] in same convention used elsewhere.
+        Fallback to unit square if header keys are missing.
+        """
+        try:
+            # Prefer explicit scan range/center keys; be permissive with key names.
+            xr = header.get('XScanRange', header.get('XRange', header.get('ScanRange', 0.0)))
+            yr = header.get('YScanRange', header.get('YRange', header.get('ScanRange', 0.0)))
+            x_range = float(xr or 0.0)
+            y_range = float(yr or 0.0)
+            cx_keys = ['xCenter', 'XCenter', 'XOffset', 'OffsetX', 'XPosition', 'XPos']
+            cy_keys = ['yCenter', 'YCenter', 'YOffset', 'OffsetY', 'YPosition', 'YPos']
+            x_center = 0.0
+            y_center = 0.0
+            for k in cx_keys:
+                if k in header and header.get(k) not in (None, ''):
+                    x_center = float(header.get(k))
+                    break
+            for k in cy_keys:
+                if k in header and header.get(k) not in (None, ''):
+                    y_center = float(header.get(k))
+                    break
+            if x_range == 0.0 or y_range == 0.0:
+                # fall back to simple unit square with correct orientation
+                return [0.0, 1.0, 0.0, 1.0]
+            if x_center == 0.0 and y_center == 0.0:
+                # assume centered scan if center missing
+                x_center = 0.5 * x_range
+                y_center = 0.5 * y_range
+            x0 = x_center - 0.5 * x_range
+            x1 = x_center + 0.5 * x_range
+            y0 = y_center - 0.5 * y_range
+            y1 = y_center + 0.5 * y_range
+            return [x0, x1, y1, y0]
+        except Exception:
+            return [0.0, 1.0, 0.0, 1.0]
+
+    def _spectros_near_thumb_pos(self, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
+        """
+        Map a click in thumbnail pixel coordinates to spectroscopy list ordered by distance.
+        Returns list of spectro dicts (nearest first).
+        """
+        entries = self.spectros_by_image.get(str(file_key), []) or []
+        if not entries:
+            return []
+        w, h = thumb_dims if thumb_dims else self._thumb_dimensions()
+        px, py = int(thumb_pos_px.x()), int(thumb_pos_px.y())
+        px = min(max(px, 0), max(w - 1, 0))
+        py = min(max(py, 0), max(h - 1, 0))
+        extent = self._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
+        x0, x1, y1, y0 = extent
+        xspan = x1 - x0 if x1 != x0 else 1.0
+        yspan = y0 - y1 if y0 != y1 else 1.0
+        sx = x0 + (px / float(max(1, w - 1))) * xspan
+        sy = y1 + ((py / float(max(1, h - 1))) * -yspan)
+        hits = []
+        for s in entries:
+            sx_e = s.get('x'); sy_e = s.get('y')
+            if sx_e is None or sy_e is None:
+                continue
+            dx = sx - sx_e; dy = sy - sy_e
+            d2 = dx*dx + dy*dy
+            hits.append((d2, s))
+        hits.sort(key=lambda t: t[0])
+        return [h[1] for h in hits]
+
+    class SpectroSummaryDialog(QtWidgets.QDialog):
+        """Compact modal that lists spectros for a given file and offers quick actions."""
+        def __init__(self, parent, file_key, header, fds, entries, nearest=None, show_mode="single"):
+            super().__init__(parent)
+            self.viewer = parent
+            self._file_key = str(file_key)
+            self._header = header or {}
+            self._fds = fds or []
+            self._entries = list(entries)
+            self._show_mode = show_mode  # "single" or "matrix"
+            self._single_entries = [s for s in self._entries if s.get('matrix_index') is None]
+            self._matrix_entries = [s for s in self._entries if s.get('matrix_index') is not None]
+            self._active_entries = self._single_entries if self._show_mode != "matrix" else self._matrix_entries
+            # ensure marker colors exist on viewer
+            if not hasattr(self.viewer, 'spectro_marker_color_single'):
+                self.viewer.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
+            if not hasattr(self.viewer, 'spectro_marker_color_matrix'):
+                self.viewer.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
+            self._dialog_cmap = getattr(self.viewer, 'preview_cmap', 'viridis')
+            self._spec_to_item = {}
+            self.setWindowTitle(f"Spectros: {Path(file_key).name}")
+            self.setMinimumWidth(520)
+            layout = QVBoxLayout(self)
+            n_total = len(self._entries)
+            n_matrix = len(self._matrix_entries)
+            n_single = len(self._single_entries)
+            label = QLabel(f"<b>{n_total}</b> spectroscopies — Single: {n_single} · Matrix: {n_matrix}")
+            layout.addWidget(label)
+
+            # Preview + channel selector + show-points toggle
+            top_row = QtWidgets.QHBoxLayout()
+            self.preview_lbl = QLabel("Preview")
+            self.preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
+            self.preview_lbl.setMinimumSize(220, 200)
+            self.preview_lbl.setStyleSheet("QLabel { border: 1px solid #555; background: #111; }")
+            top_row.addWidget(self.preview_lbl, 1)
+            side_v = QtWidgets.QVBoxLayout()
+            self.channel_combo = QtWidgets.QComboBox()
+            for idx, fd in enumerate(self._fds):
+                cap = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
+                self.channel_combo.addItem(f"{idx}: {cap}", userData=idx)
+            self.channel_combo.currentIndexChanged.connect(self._render_preview)
+            side_v.addWidget(self.channel_combo)
+            self.show_points_cb = QCheckBox("Show points on preview")
+            self.show_points_cb.setChecked(True)
+            self.show_points_cb.toggled.connect(self._render_preview)
+            side_v.addWidget(self.show_points_cb)
+            color_btn = QPushButton("Marker color")
+            color_btn.clicked.connect(self._pick_marker_color)
+            side_v.addWidget(color_btn)
+            # Matrix file filter (only in matrix mode)
+            self.matrix_filter_combo = None
+            self.matrix_cmap_combo = None
+            if self._show_mode == "matrix":
+                self._matrix_groups = {}
+                for s in self._matrix_entries:
+                    path_key = str(s.get('path') or "")
+                    self._matrix_groups.setdefault(path_key, []).append(s)
+                if self._matrix_groups:
+                    self.matrix_filter_combo = QtWidgets.QComboBox()
+                    self.matrix_filter_combo.addItem("All matrix files", userData=None)
+                    for path_key, specs in sorted(self._matrix_groups.items()):
+                        self.matrix_filter_combo.addItem(Path(path_key).name, userData=path_key)
+                    self.matrix_filter_combo.currentIndexChanged.connect(self._on_matrix_filter_changed)
+                    side_v.addWidget(self.matrix_filter_combo)
+                # Colormap selector for matrix preview
+                try:
+                    cmap_list = sorted(colormaps.keys())
+                except Exception:
+                    cmap_list = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+                self.matrix_cmap_combo = QtWidgets.QComboBox()
+                for name in cmap_list:
+                    self.matrix_cmap_combo.addItem(name)
+                self.matrix_cmap_combo.setCurrentText(self._dialog_cmap)
+                self.matrix_cmap_combo.currentTextChanged.connect(self._on_matrix_cmap_changed)
+                side_v.addWidget(self.matrix_cmap_combo)
+            side_v.addStretch(1)
+            top_row.addLayout(side_v)
+            layout.addLayout(top_row)
+
+            self.list_w = QListWidget()
+            self._rebuild_list()
+            layout.addWidget(self.list_w, 1)
+            btn_row = QtWidgets.QHBoxLayout()
+            open_btn = QPushButton("Open spectro browser")
+            open_btn.clicked.connect(self._on_open_browser)
+            btn_row.addWidget(open_btn)
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.accept)
+            btn_row.addWidget(close_btn)
+            layout.addLayout(btn_row)
+            self.list_w.itemDoubleClicked.connect(lambda it: self._open_single(it.data(QtCore.Qt.UserRole)))
+            self.list_w.currentItemChanged.connect(self._on_list_selection_changed)
+            self.list_w.itemClicked.connect(self._on_item_clicked)
+            self.preview_lbl.mousePressEvent = self._on_preview_click
+
+            self._render_preview()
+
+        def _render_preview(self):
+            try:
+                if not self._fds:
+                    self.preview_lbl.setText("No channels")
+                    return
+                idx = self.channel_combo.currentData() if self.channel_combo.count() else 0
+                fd = self._fds[int(idx)] if idx is not None and 0 <= int(idx) < len(self._fds) else self._fds[0]
+                unit_final, arr = self.viewer._get_filtered_channel_array(self._file_key, self._fds.index(fd), self._header, fd)
+                arr = self.viewer._downsample_for_thumbnail(arr, 240, 200)
+                qimg = array_to_qimage(arr, cmap_name=self._dialog_cmap)
+                pix = QtGui.QPixmap.fromImage(qimg.scaled(240, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                self._preview_markers = []
+                if self.show_points_cb.isChecked():
+                    try:
+                        xpix = int(self._header.get('xPixel', arr.shape[1] if arr.ndim == 2 else 0))
+                        ypix = int(self._header.get('yPixel', arr.shape[0] if arr.ndim == 2 else 0))
+                        # force point rendering, no density, smaller markers for dialog preview
+                        selected = None
+                        cur = self.list_w.currentItem()
+                        if cur:
+                            selected = cur.data(QtCore.Qt.UserRole)
+                        # render only the subset requested (single or matrix)
+                        entries = self._active_entries
+                        saved_single = self.viewer.show_single_markers
+                        saved_matrix = self.viewer.show_matrix_markers
+                        try:
+                            # force singles on so matrix entries drawn as points too
+                            self.viewer.show_single_markers = True
+                            self.viewer.show_matrix_markers = (self._show_mode == "matrix")
+                            self._preview_markers = self.viewer._render_spectroscopy_overlays(
+                                pix, self._header, self._file_key, xpix, ypix,
+                                reveal_points_override=True, selected_spec=selected, entries_override=entries,
+                                matrix_as_points=(self._show_mode == "matrix"))
+                        finally:
+                            self.viewer.show_single_markers = saved_single
+                            self.viewer.show_matrix_markers = saved_matrix
+                    except Exception:
+                        pass
+                self.preview_lbl.setPixmap(pix)
+            except Exception:
+                self.preview_lbl.setText("Preview unavailable")
+
+        def _on_matrix_filter_changed(self, _idx):
+            if self.matrix_filter_combo is None:
+                return
+            path_key = self.matrix_filter_combo.currentData()
+            if path_key:
+                self._active_entries = self._matrix_groups.get(path_key, [])
+            else:
+                self._active_entries = self._matrix_entries
+            self._rebuild_list()
+            self._render_preview()
+
+        def _on_matrix_cmap_changed(self, name):
+            self._dialog_cmap = name or self._dialog_cmap
+            self._render_preview()
+
+        def _pick_marker_color(self):
+            try:
+                current = self.viewer.spectro_marker_color_matrix if self._show_mode == "matrix" else self.viewer.spectro_marker_color_single
+                color = QtWidgets.QColorDialog.getColor(current, self, "Select marker color")
+                if color.isValid():
+                    if self._show_mode == "matrix":
+                        self.viewer.spectro_marker_color_matrix = color
+                    else:
+                        self.viewer.spectro_marker_color_single = color
+                    # refresh preview and thumbnails
+                    self._render_preview()
+                    try:
+                        self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        def _on_open_browser(self):
+            try:
+                self.viewer.on_open_spectro_browser(self._entries)
+            except Exception:
+                pass
+            self.accept()
+
+        def _open_single(self, spectro):
+            try:
+                self.viewer._open_single_spectro_popup(spectro)
+            except Exception:
+                pass
+            # keep dialog open for quick browsing
+
+        def _on_list_selection_changed(self, current, _prev):
+            try:
+                self._render_preview()
+            except Exception:
+                pass
+
+        def _on_item_clicked(self, item):
+            try:
+                spec = item.data(QtCore.Qt.UserRole)
+                mods = QtWidgets.QApplication.keyboardModifiers()
+                if mods & QtCore.Qt.ShiftModifier:
+                    self.viewer._toggle_multi_spec_selection(spec)
+                    return
+                if spec:
+                    self.viewer._open_single_spectro_popup(spec)
+            except Exception:
+                pass
+
+        def _on_preview_click(self, event):
+            if not hasattr(self, '_preview_markers'):
+                return
+            pos = event.pos()
+            pix = self.preview_lbl.pixmap()
+            if pix is None:
+                return
+            offset_x = (self.preview_lbl.width() - pix.width()) / 2.0
+            offset_y = (self.preview_lbl.height() - pix.height()) / 2.0
+            px = pos.x() - offset_x
+            py = pos.y() - offset_y
+            if px < 0 or py < 0 or px > pix.width() or py > pix.height():
+                return
+            for info in self._preview_markers:
+                rect = info.get('rect')
+                spec = info.get('spec')
+                if rect and spec and rect.contains(px, py):
+                    key = self.viewer._spec_identity_key(spec) or str(spec.get('path'))
+                    item = self._spec_to_item.get(key)
+                    if item:
+                        self.list_w.setCurrentItem(item)
+                    try:
+                        mods = event.modifiers()
+                        if mods & QtCore.Qt.ShiftModifier:
+                            self.viewer._toggle_multi_spec_selection(spec)
+                        else:
+                            self.viewer._open_single_spectro_popup(spec)
+                    except Exception:
+                        pass
+                    break
+
+        def _rebuild_list(self):
+            self.list_w.clear()
+            self._spec_to_item.clear()
+            list_source = self._active_entries
+            for idx, s in enumerate(list_source, 1):
+                sx = s.get('x'); sy = s.get('y'); mid = s.get('matrix_index')
+                if sx is not None and sy is not None:
+                    txt = f"{idx}. {sx:.1f}/{sy:.1f} nm"
+                else:
+                    txt = f"{idx}. <no-pos>"
+                if mid is not None:
+                    txt += f"  [matrix {mid}]"
+                it = QListWidgetItem(txt)
+                it.setData(QtCore.Qt.UserRole, s)
+                self.list_w.addItem(it)
+                self._spec_to_item[self.viewer._spec_identity_key(s) or str(idx)] = it
+
+    # ---------- Viewer stubs / hooks for integration ----------
+    def on_open_spectro_browser(self, entries):
+        """Hook: replace with a full spectro browser. Minimal fallback shows the summary again."""
+        self.open_spectro_browser(entries)
+
+    def reveal_points_for_file(self, file_key):
+        """Temporarily reveal point markers for a given file and repaint thumbnails."""
+        if not hasattr(self, '_temp_reveal'):
+            self._temp_reveal = set()
+        key = str(file_key)
+        self._temp_reveal.add(key)
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        # auto-revert after 8 seconds
+        try:
+            QtCore.QTimer.singleShot(8000, lambda: (self._temp_reveal.discard(key), self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())))
+        except Exception:
+            pass
+
+    def _open_single_spectro_popup(self, spectro):
+        """Hook to open an existing single-spectroscopy popup. Minimal fallback: log."""
+        try:
+            # Prefer the main spectroscopy popup handler (matrix or single).
+            if hasattr(self, '_open_spectroscopy_popup'):
+                self._open_spectroscopy_popup(spectro)
+            elif hasattr(self, '_show_spectro_popup'):
+                self._show_spectro_popup(spectro)
+            else:
+                QtWidgets.QMessageBox.information(self, "Spectro", f"Spectroscopy at {spectro.get('x')}/{spectro.get('y')}")
+        except Exception:
+            pass
+
+    def _open_spectro_summary_for_file(self, file_key, show_mode="single"):
+        entries = self.spectros_by_image.get(str(file_key), []) or []
+        if show_mode == "single":
+            entries = [s for s in entries if s.get('matrix_index') is None]
+        elif show_mode == "matrix":
+            entries = [s for s in entries if s.get('matrix_index') is not None]
+        if not entries:
+            QtWidgets.QMessageBox.information(self, "Spectroscopy", "No spectroscopies found for this file.")
+            return
+        header, fds = self.headers.get(str(file_key), (None, None))
+        dlg = self.SpectroSummaryDialog(self, str(file_key), header or {}, fds or [], entries, show_mode=show_mode)
+        try:
+            dlg.setWindowModality(QtCore.Qt.NonModal)
+            dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        except Exception:
+            pass
+        dlg.show()
+
+    # ---------- Spectro browser dock ----------
+    def _ensure_spectro_dock(self):
+        if self.spectro_dock:
+            return
+        dock = QtWidgets.QDockWidget("Spectro Browser", self)
+        dock.setFloating(True)
+        container = QtWidgets.QWidget(dock)
+        v = QtWidgets.QVBoxLayout(container); v.setContentsMargins(6,6,6,6); v.setSpacing(6)
+        self.spectro_search = QtWidgets.QLineEdit()
+        self.spectro_search.setPlaceholderText("Search spectros (file/pos)")
+        v.addWidget(self.spectro_search)
+        self.spectro_list = QListWidget()
+        v.addWidget(self.spectro_list, 1)
+        self.spectro_preview_lbl = QLabel("Select a spectroscopy")
+        self.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        self.spectro_preview_lbl.setMinimumHeight(120)
+        self.spectro_preview_lbl.setStyleSheet("QLabel { color: #999; }")
+        v.addWidget(self.spectro_preview_lbl)
+        container.setLayout(v)
+        dock.setWidget(container)
+        self.spectro_dock = dock
+        self.spectro_search.textChanged.connect(self._filter_spectro_browser)
+        self.spectro_list.currentItemChanged.connect(self._on_spectro_browser_selection)
+
+    def open_spectro_browser(self, entries=None):
+        self._ensure_spectro_dock()
+        if entries is None:
+            entries = list(self.spectros or [])
+        self._spectro_browser_entries = list(entries)
+        self._filter_spectro_browser()
+        self.spectro_dock.show()
+        self.spectro_dock.raise_()
+
+    def _filter_spectro_browser(self):
+        if not hasattr(self, 'spectro_list'):
+            return
+        txt = self.spectro_search.text().strip().lower() if hasattr(self, 'spectro_search') else ''
+        self.spectro_list.clear()
+        for idx, s in enumerate(self._spectro_browser_entries):
+            name = Path(s.get('path','')).name.lower()
+            pos = ""
+            try:
+                if s.get('x') is not None and s.get('y') is not None:
+                    pos = f"{float(s.get('x')):.1f}/{float(s.get('y')):.1f}"
+            except Exception:
+                pos = ""
+            label = f"{idx+1}. {name} {pos}"
+            if txt and txt not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, s)
+            self.spectro_list.addItem(item)
+
+    def _on_spectro_browser_selection(self, current, _prev):
+        if not current:
+            return
+        spec = current.data(QtCore.Qt.UserRole)
+        if spec is None:
+            return
+        try:
+            x = spec.get('x'); y = spec.get('y')
+            self.spectro_preview_lbl.setText(f"{Path(spec.get('path','')).name}\n({x},{y})")
+        except Exception:
+            self.spectro_preview_lbl.setText(Path(spec.get('path','')).name)
+        try:
+            image_key = spec.get('image_key')
+            if image_key and image_key in self._thumb_labels:
+                self.selected_file_for_thumbs = image_key
+                self._refresh_thumb_selection_styles()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_show_spectro_popup'):
+                self._show_spectro_popup(spec)
+        except Exception:
+            pass
+
 
     def _shortcuts_html(self):
         color = "#f0f4ff" if getattr(self, 'dark_mode', False) else "#203050"
@@ -550,6 +1080,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         toolbar.addSeparator()
         self.toolbar_adjust_act = toolbar.addAction(_icon("transform-crop"), "Adjust image")
         self.toolbar_adjust_act.triggered.connect(self.on_adjust_image)
+        self.toolbar_spectro_browser_act = toolbar.addAction(_icon("view-list"), "Spectro browser")
+        self.toolbar_spectro_browser_act.triggered.connect(lambda: self.open_spectro_browser())
         self.toolbar_shortcuts_act = toolbar.addAction(_icon("help-about"), "Shortcuts")
         self.toolbar_shortcuts_act.triggered.connect(self._on_show_shortcuts_requested)
 
@@ -583,6 +1115,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         folder = Path(folder)
         log_status(f"Loading folder: {folder}")
         self._update_toolbar_actions(False)
+        prev_last_dir = getattr(self, 'last_dir', None)
         self.last_dir = folder
         self.path_le.setText(str(folder))
         # persist last dir early
@@ -659,6 +1192,25 @@ class SXMGridViewer(QtWidgets.QWidget):
         # auto-detect tags for files not already tagged
         log_status("Auto-detecting tags...")
         self._auto_detect_tags_for_folder()
+
+        # keep spectroscopy folder aligned with the SXM folder unless the user picked a custom path
+        try:
+            spec_path = Path(getattr(self, 'spec_folder_path', folder))
+        except Exception:
+            spec_path = folder
+        auto_follow = False
+        if not spec_path.exists():
+            auto_follow = True
+        elif prev_last_dir and spec_path.resolve() == Path(prev_last_dir).resolve():
+            auto_follow = True
+        if auto_follow:
+            self.spec_folder_path = folder
+            self.config['spectra_folder'] = str(folder)
+            save_config(self.config)
+            try:
+                self.spec_folder_le.setText(str(folder))
+            except Exception:
+                pass
 
         # load spectroscopy markers referencing this folder
         log_status("Loading spectroscopy references...")
@@ -884,7 +1436,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             try:
                 xpix = int(header.get('xPixel', 128))
                 ypix = int(header.get('yPixel', xpix))
-                marker_defs = self._draw_spectro_markers_on_pixmap(pix, header, str(file_key), xpix, ypix)
+                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix, matrix_as_points=False)
             except Exception:
                 marker_defs = []
         return marker_defs
@@ -1543,6 +2095,15 @@ class SXMGridViewer(QtWidgets.QWidget):
                 return
             self._clear_thumb_multi_selection(update_styles=False)
             self.on_thumbnail_clicked(fp, ch_idx)
+            try:
+                if self.show_spectra and self.spectros_by_image.get(str(fp)):
+                    entries = self.spectros_by_image.get(str(fp), [])
+                    has_matrix = any(s.get('matrix_index') is not None for s in entries)
+                    has_single = any(s.get('matrix_index') is None for s in entries)
+                    mode = "matrix" if has_matrix and not has_single else "single"
+                    self._open_spectro_summary_for_file(fp, show_mode=mode)
+            except Exception:
+                pass
         return handler
 
     def _make_thumb_move_handler(self, label_widget):
@@ -1641,21 +2202,6 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.meta_box.setHtml(html)
         except Exception:
             self.meta_box.setPlainText(f"File: {header_path.name}")
-
-    def _header_extent(self, header):
-        if not header:
-            return None
-        try:
-            x_range = float(header.get('XScanRange', header.get('ScanRange', 0.0)) or 0.0)
-        except Exception:
-            x_range = 0.0
-        try:
-            y_range = float(header.get('YScanRange', header.get('ScanRange', 0.0)) or 0.0)
-        except Exception:
-            y_range = 0.0
-        if x_range > 0 and y_range > 0:
-            return [0.0, x_range, y_range, 0.0]
-        return None
 
     def get_current_detail_config(self):
         """Return JSON-friendly configuration describing current detail view state."""
@@ -2381,10 +2927,32 @@ class SXMGridViewer(QtWidgets.QWidget):
         if not self.show_spectra:
             self.spectros = []
             self.spectros_by_image = defaultdict(list)
+            self._spectro_deferred = set()
             self._clear_multi_spec_selection()
             return
-        self.spectros = self._scan_spectros(folder)
-        log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
+        self._spectro_deferred = set()
+        self.spectros, spec_stats = self._scan_spectros(folder)
+        if spec_stats:
+            total_entries = spec_stats.get('total_specs', len(self.spectros))
+            single_files = spec_stats.get('single_dat_files', 0)
+            single_entries = spec_stats.get('single_entries', single_files)
+            matrix_files = spec_stats.get('matrix_dat_files', 0)
+            matrix_entries = spec_stats.get('matrix_specs', 0)
+            log_status(
+                f"Spectroscopy summary: {total_entries} spectra entries total. "
+                f"Single-spectra files: {single_files} ({single_entries} entries). "
+                f"Matrix files: {matrix_files} ({matrix_entries} spectra, counted as {matrix_files} entries)."
+            )
+            log_status(
+                f"Files scanned: {spec_stats.get('dat_files')} .dat "
+                f"(matrix: {spec_stats.get('matrix_dat_files')}, single: {spec_stats.get('single_dat_files')}, "
+                f"empty/error: {spec_stats.get('empty_files')}, deferred: {spec_stats.get('deferred_files')})."
+            )
+            matrix_notes = spec_stats.get('matrix_samples') or []
+            for note in matrix_notes:
+                log_status(note)
+        else:
+            log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
         self._assign_spectros_to_images()
         self.matrix_spectros = [spec for spec in self.spectros if spec.get('matrix_index') is not None]
         self._clear_multi_spec_selection()
@@ -2395,14 +2963,38 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def _scan_spectros(self, folder:Path):
         specs = []
+        stats = {
+            'display_count': 0,
+            'matrix_files': 0,
+            'matrix_specs': 0,
+            'total_specs': 0,
+            'matrix_samples': [],
+            'dat_files': 0,
+            'txt_files': 0,
+            'matrix_dat_files': 0,
+            'single_dat_files': 0,
+            'empty_files': 0,
+            'single_entries': 0,
+            'deferred_files': 0,
+        }
+        self.matrix_datasets = {}
         if not folder or not Path(folder).exists():
-            return specs
-        patterns = ("*.dat","*.DAT","*.txt","*.TXT")
+            return specs, stats
+        patterns = ("*.dat","*.DAT")
         cache = self._spectro_cache
         seen_keys = set()
-        files = []
+        file_map = {}
         for pat in patterns:
-            files.extend(sorted(folder.glob(pat)))
+            for f in folder.glob(pat):
+                # normalize path for dedup (case-insensitive on Windows)
+                try:
+                    key = str(f.resolve())
+                except Exception:
+                    key = str(f)
+                norm_key = key.lower() if os.name == "nt" else key
+                if norm_key not in file_map:
+                    file_map[norm_key] = f
+        files = sorted(file_map.values(), key=lambda p: str(p).lower())
         total = len(files)
         if total:
             log_status(f"Scanning {total} spectroscopy file(s)...")
@@ -2411,24 +3003,121 @@ class SXMGridViewer(QtWidgets.QWidget):
             p = Path(f)
             if p.is_dir():
                 continue
-            key = str(p)
-            if key in seen_keys:
+            try:
+                key = str(p.resolve())
+            except Exception:
+                key = str(p)
+            norm_key = key.lower() if os.name == "nt" else key
+            ext = p.suffix.lower()
+            if ext == ".dat":
+                stats['dat_files'] += 1
+            elif ext == ".txt":
+                stats['txt_files'] += 1
+            if norm_key in seen_keys:
                 continue
-            seen_keys.add(key)
+            seen_keys.add(norm_key)
             try:
                 mtime = p.stat().st_mtime
             except Exception:
                 mtime = 0.0
-            cached = cache.get(key)
-            if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6:
+            cached = cache.get(norm_key)
+            # eager parse limit (0 means no deferral)
+            if self.spectro_eager_limit and idx > self.spectro_eager_limit:
+                stats['deferred_files'] += 1
+                cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
+                self._spectro_deferred.add(norm_key)
+                continue
+
+            if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
                 spec_list = cached.get('data') or []
             else:
                 try:
                     spec_list = parse_spectroscopy_file(p)
                 except Exception:
+                    stats['empty_files'] += 1
                     continue
-                cache[key] = {'mtime': mtime, 'data': spec_list}
+                # ensure basic metadata is present for assignment
+                for s in spec_list or []:
+                    if 'path' not in s or not s.get('path'):
+                        s['path'] = str(p)
+                    # normalize/ensure time for ordering; fallback to file mtime
+                    t = s.get('time')
+                    if t is None or isinstance(t, (int, float, str)):
+                        try:
+                            # accept float timestamp or string timestamp
+                            if isinstance(t, (int, float)):
+                                s['time'] = datetime.fromtimestamp(float(t))
+                            elif isinstance(t, str) and t.strip():
+                                # last resort: try parse ISO-ish string
+                                try:
+                                    s['time'] = datetime.fromisoformat(t)
+                                except Exception:
+                                    s['time'] = datetime.fromtimestamp(mtime)
+                            else:
+                                s['time'] = datetime.fromtimestamp(mtime)
+                        except Exception:
+                            try:
+                                s['time'] = datetime.fromtimestamp(mtime)
+                            except Exception:
+                                pass
+                cache[norm_key] = {'mtime': mtime, 'data': spec_list}
             specs.extend(spec_list or [])
+            # counting logic: treat matrix files as a single entry for display purposes
+            is_matrix = any(s.get('matrix_index') is not None for s in (spec_list or []))
+            if is_matrix:
+                stats['matrix_files'] += 1
+                stats['matrix_specs'] += len(spec_list)
+                stats['display_count'] += 1
+                if ext == ".dat":
+                    stats['matrix_dat_files'] += 1
+                # build/augment MatrixDataset
+                base, channel_code, ch_label = parse_matrix_filename(p.name)
+                # infer grid
+                grid_cols = None
+                grid_rows = None
+                for s in spec_list:
+                    grid_cols = grid_cols or s.get('grid_cols')
+                    grid_rows = grid_rows or s.get('grid_rows')
+                    if grid_cols and grid_rows:
+                        break
+                if not grid_cols or not grid_rows:
+                    n = max(1, len(spec_list))
+                    side = int(round(n ** 0.5))
+                    grid_cols = grid_cols or side
+                    grid_rows = grid_rows or side
+                ds_key = base or Path(p).stem
+                ds = self.matrix_datasets.get(ds_key)
+                if ds is None:
+                    ds = MatrixDataset(ds_key, grid_rows, grid_cols)
+                    self.matrix_datasets[ds_key] = ds
+                ds.add_channel(p.name, channel_code=channel_code, label=ch_label, spectra_count=len(spec_list), path=p)
+                # describe grid if available
+                grid_cols = None
+                grid_rows = None
+                for s in spec_list:
+                    grid_cols = grid_cols or s.get('grid_cols')
+                    grid_rows = grid_rows or s.get('grid_rows')
+                    if grid_cols and grid_rows:
+                        break
+                if grid_cols and grid_rows:
+                    grid_desc = f"{grid_cols}x{grid_rows}"
+                else:
+                    # fallback: infer from count if square
+                    n = len(spec_list)
+                    side = int(round(n ** 0.5))
+                    grid_desc = f"~{side}x{side}" if side * side == n else f"{n} spectra"
+                if len(stats['matrix_samples']) < 3:
+                    stats['matrix_samples'].append(
+                        f"Matrix file {p.name}: {grid_desc} -> {len(spec_list)} spectra (counted as 1)."
+                    )
+            else:
+                if ext == ".dat":
+                    if spec_list:
+                        stats['single_dat_files'] += 1
+                        stats['single_entries'] += len(spec_list)
+                    else:
+                        stats['empty_files'] += 1
+                stats['display_count'] += len(spec_list)
             if total and (idx % progress_step == 0 or idx == total):
                 pct = idx / total * 100.0
                 log_status(f"  - spectroscopy load {idx}/{total} ({pct:4.0f}%)")
@@ -2436,15 +3125,57 @@ class SXMGridViewer(QtWidgets.QWidget):
         for k in stale:
             cache.pop(k, None)
         specs.sort(key=lambda s: s.get('time') or datetime.min)
-        return specs
+        stats['total_specs'] = len(specs)
+        # logging summary
+        single_files = stats.get('single_dat_files', 0)
+        matrix_count = len(self.matrix_datasets)
+        matrix_specs = stats.get('matrix_specs', 0)
+        log_status(
+            f"SXMSpectro scan: folder={folder} files_scanned={total} spectra_total={stats['total_specs']} | "
+            f"single_files={single_files} -> {stats.get('single_entries', single_files)} | "
+            f"matrix_datasets={matrix_count} -> {matrix_specs} spectra"
+        )
+        try:
+            import json
+            verbose = os.environ.get("SXM_VERBOSE")
+            json_line = {
+                "folder": str(folder),
+                "files_scanned": total,
+                "spectra_total": stats['total_specs'],
+                "single_files": single_files,
+                "single_entries": stats.get('single_entries', single_files),
+                "matrix_datasets": matrix_count,
+                "matrix_spectra": matrix_specs,
+            }
+            log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
+            if verbose:
+                log_status("Matrix datasets:")
+                for key, ds in self.matrix_datasets.items():
+                    log_status(f"  - {ds.base}: {len(ds.channels)} channel(s) — {ds.rows}x{ds.cols} -> "
+                               f"{sum(c.get('spectra_count',0) for c in ds.channels)} spectra")
+                    for ch in ds.channels:
+                        log_status(f"      * {Path(ch['path']).name} ({ch.get('channel_code')}) {ch.get('label','')} "
+                                   f"-> {ch.get('spectra_count')} spectra")
+        except Exception:
+            pass
+        return specs, stats
 
     def _assign_spectros_to_images(self):
-        """Assign spectroscopy entries to images, using a single pass over time-sorted lists when possible."""
+        """Assign spectroscopy entries to images using time and spatial sanity (prefer in-extent matches)."""
         self.spectros_by_image = defaultdict(list)
         images = list(getattr(self, 'image_meta', []) or [])
         specs = list(self.spectros or [])
         if not images or not specs:
             return
+        # precompute extents for images
+        image_extents = {}
+        for img in images:
+            try:
+                header, _fds = self.headers.get(str(img['path']), (None, None))
+                extent = self._header_extent(header or {}) if header is not None else None
+            except Exception:
+                extent = None
+            image_extents[str(img['path'])] = extent
         try:
             images.sort(key=lambda img: img.get('time') or datetime.min)
         except Exception:
@@ -2453,18 +3184,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             specs.sort(key=lambda s: s.get('time') or datetime.min)
         except Exception:
             pass
-        img_idx = 0
-        n_img = len(images)
+
         for spec in specs:
-            st = spec.get('time')
-            if st is None:
-                match = self._match_spec_to_image_by_hint(spec, images)
-            else:
-                while img_idx + 1 < n_img and (images[img_idx + 1].get('time') or datetime.max) <= st:
-                    img_idx += 1
-                match = images[img_idx] if 0 <= img_idx < n_img else None
-                if match is None:
-                    match = self._match_spec_to_image_by_hint(spec, images)
+            match = self._choose_image_for_spec(spec, images, image_extents)
             if not match:
                 continue
             image_key = str(match['path'])
@@ -2472,6 +3194,76 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.spectros_by_image[image_key].append(spec)
         for k in list(self.spectros_by_image.keys()):
             self.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
+
+    def _choose_image_for_spec(self, spec, images, image_extents):
+        """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
+        st = spec.get('time')
+        sx = spec.get('x'); sy = spec.get('y')
+        candidates = []
+        # First pass: images whose extents contain the point (with a small margin)
+        if sx is not None and sy is not None:
+            for img in images:
+                ext = image_extents.get(str(img['path']))
+                if ext and self._spec_within_extent(sx, sy, ext, margin_frac=0.02):
+                    candidates.append(img)
+            if candidates:
+                if st:
+                    candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - st))
+                return candidates[0]
+        # Second pass: closest by space (even if slightly outside), then by time
+        if sx is not None and sy is not None:
+            scored = []
+            for img in images:
+                ext = image_extents.get(str(img['path']))
+                if not ext:
+                    continue
+                cx, cy = self._extent_center(ext)
+                try:
+                    d2 = (float(sx) - cx) ** 2 + (float(sy) - cy) ** 2
+                except Exception:
+                    continue
+                scored.append((d2, img))
+            if scored:
+                scored.sort(key=lambda t: (t[0], abs(((t[1].get('time') or datetime.min) - st)) if st else datetime.max))
+                best = scored[0][1]
+                # ensure distance is not absurdly large compared to image span
+                ext = image_extents.get(str(best['path']))
+                if ext and self._spec_within_extent(sx, sy, ext, margin_frac=1.0):
+                    return best
+        # Fallback: time-ordered + name hints
+        if st:
+            try:
+                idx = 0
+                n_img = len(images)
+                while idx + 1 < n_img and (images[idx + 1].get('time') or datetime.max) <= st:
+                    idx += 1
+                match = images[idx] if 0 <= idx < n_img else None
+            except Exception:
+                match = None
+            if match:
+                return match
+        return self._match_spec_to_image_by_hint(spec, images)
+
+    def _extent_center(self, extent):
+        try:
+            x0, x1, y1, y0 = extent
+            cx = 0.5 * (x0 + x1)
+            cy = 0.5 * (y0 + y1)
+            return float(cx), float(cy)
+        except Exception:
+            return 0.0, 0.0
+
+    def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05):
+        try:
+            x0, x1, y1, y0 = extent
+            xmin, xmax = sorted((x0, x1))
+            ymin, ymax = sorted((y0, y1))
+            mx = (xmax - xmin) * margin_frac
+            my = (ymax - ymin) * margin_frac
+            xmin -= mx; xmax += mx; ymin -= my; ymax += my
+            return xmin <= float(sx) <= xmax and ymin <= float(sy) <= ymax
+        except Exception:
+            return False
 
     def _match_spec_to_image_by_hint(self, spec, images):
         def normalize(stem):
@@ -2508,7 +3300,7 @@ class SXMGridViewer(QtWidgets.QWidget):
                 best = img
         return best
 
-    def _map_spec_to_pixels(self, spec, header, xpix, ypix):
+    def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
         try:
             x = float(spec.get('x'))
             y = float(spec.get('y'))
@@ -2517,28 +3309,68 @@ class SXMGridViewer(QtWidgets.QWidget):
         if x is None or y is None:
             return None
         try:
-            x_center = float(header.get('xCenter', 0.0))
-            y_center = float(header.get('yCenter', 0.0))
-            x_range = float(header.get('XScanRange', header.get('ScanRange', 0.0)) or 0.0)
-            y_range = float(header.get('YScanRange', header.get('ScanRange', 0.0)) or 0.0)
+            extent = self._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
         except Exception:
-            return None
-        if x_range <= 0 or y_range <= 0:
-            return None
-        xmin = x_center - x_range/2.0
-        ymin = y_center - y_range/2.0
-        xmax = x_center + x_range/2.0
-        ymax = y_center + y_range/2.0
-        if xmax == xmin or ymax == ymin:
-            return None
-        frac_x = (x - xmin) / (xmax - xmin)
-        frac_y = (ymax - y) / (ymax - ymin)
-        if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
+            extent = [0.0, 1.0, 1.0, 0.0]
+        x0, x1, y1, y0 = extent
+        xspan = x1 - x0
+        yspan = y1 - y0
+        if xspan <= 0 or yspan <= 0:
+            # try to map using spectroscopy cloud extents if available
+            fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
+            if fallback is not None:
+                return fallback
             return self._map_spec_by_grid(spec, xpix, ypix)
+        frac_x = (x - x0) / xspan
+        frac_y = (y1 - y) / yspan  # invert so larger y appears lower on the pixmap
+        if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
+            # try spectroscopy cloud extent before clamping/grid
+            fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
+            if fallback is not None:
+                return fallback
+            grid_pt = self._map_spec_by_grid(spec, xpix, ypix)
+            if grid_pt is not None:
+                return grid_pt
+            frac_x = min(max(frac_x, 0.0), 1.0)
+            frac_y = min(max(frac_y, 0.0), 1.0)
         cols = max(1, int(xpix) - 1)
         rows = max(1, int(ypix) - 1)
         col = frac_x * cols
         row = frac_y * rows
+        return col, row
+
+    def _map_spec_by_spec_extent(self, file_key, spec, xpix, ypix):
+        """Fallback mapping using the min/max of all specs for this image to keep real-space layout."""
+        if not file_key:
+            file_key = spec.get('image_key')
+        if not file_key:
+            return None
+        entries = self.spectros_by_image.get(str(file_key), [])
+        xs = [s.get('x') for s in entries if s.get('x') is not None]
+        ys = [s.get('y') for s in entries if s.get('y') is not None]
+        if not xs or not ys:
+            return None
+        try:
+            xmin, xmax = float(min(xs)), float(max(xs))
+            ymin, ymax = float(min(ys)), float(max(ys))
+        except Exception:
+            return None
+        # pad spans to avoid zero division
+        span_x = xmax - xmin
+        span_y = ymax - ymin
+        if span_x == 0 or span_y == 0:
+            span_x = span_x or 1.0
+            span_y = span_y or 1.0
+        try:
+            x = float(spec.get('x')); y = float(spec.get('y'))
+        except Exception:
+            return None
+        frac_x = (x - xmin) / span_x
+        frac_y = (ymax - y) / span_y
+        frac_x = min(max(frac_x, 0.0), 1.0)
+        frac_y = min(max(frac_y, 0.0), 1.0)
+        col = frac_x * max(1, xpix - 1)
+        row = frac_y * max(1, ypix - 1)
         return col, row
 
     def _map_spec_by_grid(self, spec, xpix, ypix):
@@ -2561,10 +3393,23 @@ class SXMGridViewer(QtWidgets.QWidget):
         row = row_frac * max(1, ypix - 1)
         return col, row
 
-    def _draw_spectro_markers_on_pixmap(self, pixmap, header, file_key, xpix, ypix):
+    def _fallback_spec_coords(self, idx, xpix, ypix):
+        """Fallback placement for specs lacking coordinates: spread markers on a 3x3 grid."""
+        slots = [
+            (0.15, 0.15), (0.50, 0.15), (0.85, 0.15),
+            (0.15, 0.50), (0.50, 0.50), (0.85, 0.50),
+            (0.15, 0.85), (0.50, 0.85), (0.85, 0.85),
+        ]
+        frac_x, frac_y = slots[(idx - 1) % len(slots)]
+        col = frac_x * max(1, xpix - 1)
+        row = frac_y * max(1, ypix - 1)
+        return col, row
+
+    def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
+        """Render spectroscopy overlays with density + matrix footprints."""
         if not self.show_spectra:
             return []
-        specs = self.spectros_by_image.get(file_key, [])
+        specs = entries_override if entries_override is not None else self.spectros_by_image.get(file_key, [])
         if not specs:
             return []
         markers = []
@@ -2572,26 +3417,219 @@ class SXMGridViewer(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         w_scale = pixmap.width() / max(1, xpix - 1)
         h_scale = pixmap.height() / max(1, ypix - 1)
-        for idx, spec in enumerate(specs, 1):
-            coords = self._map_spec_to_pixels(spec, header, xpix, ypix)
-            if coords is None:
+        if reveal_points_override is None:
+            reveal_points = hasattr(self, '_temp_reveal') and file_key in getattr(self, '_temp_reveal', set())
+        else:
+            reveal_points = bool(reveal_points_override)
+
+        singles = [s for s in specs if s.get('matrix_index') is None]
+        matrices = {}
+        for s in specs:
+            if s.get('matrix_index') is None:
                 continue
-            col, row = coords
-            x = col * w_scale
-            y = row * h_scale
-            radius = 9
-            center = QtCore.QPointF(x, y)
-            painter.setBrush(QtGui.QColor(70, 150, 220, 220))
-            pen = QtGui.QPen(QtGui.QColor(20, 20, 20))
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawEllipse(center, radius, radius)
-            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
+            key = str(s.get('path'))
+            matrices.setdefault(key, []).append(s)
+
+        # When requested (e.g., matrix preview dialog), render matrix entries as points too.
+        if matrix_as_points and matrices:
+            flat_matrix_entries = []
+            for ms in matrices.values():
+                flat_matrix_entries.extend(ms)
+            singles = singles + flat_matrix_entries
+
+        # Matrix footprints (skip when explicitly rendering matrix entries as individual points)
+        if self.show_matrix_markers and matrices and not matrix_as_points:
+            for m_specs in matrices.values():
+                rect = self._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
+                if rect is None:
+                    continue
+                fill = QtGui.QColor(0, 205, 255, 90)
+                pen = QtGui.QPen(QtGui.QColor(0, 180, 230))
+                pen.setWidth(3)
+                painter.setBrush(fill)
+                painter.setPen(pen)
+                painter.drawRect(rect)
+                try:
+                    grid_cols = m_specs[0].get('grid_cols')
+                    grid_rows = m_specs[0].get('grid_rows')
+                    label = f"{grid_cols}x{grid_rows}" if grid_cols and grid_rows else f"{len(m_specs)}"
+                except Exception:
+                    label = "M"
+                painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
+                painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
+                painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+                markers.append({'rect': rect, 'spec': m_specs[0], 'label': label, 'kind': 'matrix'})
+
+        color_single = getattr(self, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
+        color_matrix = getattr(self, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
+
+        # Single spectroscopies (density or points)
+        if (self.show_single_markers or reveal_points or matrix_as_points) and singles:
+            coords = []
+            for idx, spec in enumerate(singles, 1):
+                c = self._map_spec_to_pixels(spec, header, xpix, ypix, file_key)
+                if c is None:
+                    c = self._fallback_spec_coords(idx, xpix, ypix)
+                col, row = c
+                coords.append((col * w_scale, row * h_scale, spec))
+
+            coords_xy = np.array([(c[0], c[1]) for c in coords], dtype=float)
+            count = coords_xy.shape[0]
+            use_density = (not reveal_points) and self.use_density_markers and self._use_density_for(count, pixmap.width(), pixmap.height())
+            if matrix_as_points:
+                use_density = False
+
+            if use_density:
+                self._draw_density_overlay(painter, coords_xy, pixmap.width(), pixmap.height())
+                # add count badge for interaction
+                pad = 6
+                size = 18
+                rect = QtCore.QRectF(pixmap.width() - size - pad, pad, size, size)
+                painter.setBrush(QtGui.QColor(255, 160, 0, 230))
+                pen = QtGui.QPen(QtGui.QColor(40, 30, 20))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.drawEllipse(rect)
+                painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
+                painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
+                painter.drawText(rect, QtCore.Qt.AlignCenter, f"{count}")
+                markers.append({'rect': rect, 'spec': singles[0], 'label': f"{count}"})
+            else:
+                # choose a compact, low-occlusion marker style when crowd is large
+                crowded = count > 200 or self.compact_markers
+                for x, y, spec in coords:
+                    highlight = False
+                    try:
+                        if selected_spec and self._spec_identity_key(spec) == self._spec_identity_key(selected_spec):
+                            highlight = True
+                    except Exception:
+                        highlight = False
+                    base_color = color_matrix if spec.get('matrix_index') is not None else color_single
+                    if reveal_points or crowded:
+                        # small cross, minimal occlusion
+                        arm = 2 if crowded and not reveal_points else 4
+                        color = QtGui.QColor(base_color)
+                        color.setAlpha(180 if crowded else base_color.alpha())
+                        pen = QtGui.QPen(color)
+                        pen.setWidth(1)
+                        painter.setPen(pen)
+                        painter.drawLine(QtCore.QPointF(x-arm, y), QtCore.QPointF(x+arm, y))
+                        painter.drawLine(QtCore.QPointF(x, y-arm), QtCore.QPointF(x, y+arm))
+                        if highlight:
+                            painter.setPen(QtGui.QPen(QtGui.QColor(0, 230, 255), 2))
+                            painter.drawEllipse(QtCore.QPointF(x, y), arm+3, arm+3)
+                        rect = QtCore.QRectF(x-arm-3, y-arm-3, (arm+3)*2, (arm+3)*2)
+                    else:
+                        radius = 3
+                        color = QtGui.QColor(base_color)
+                        color.setAlpha(160)
+                        pen = QtGui.QPen(color)
+                        pen.setWidth(1)
+                        painter.setPen(pen)
+                        bc = QtGui.QColor(base_color)
+                        bc.setAlpha(180)
+                        painter.setBrush(bc)
+                        painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
+                        if highlight:
+                            painter.setPen(QtGui.QPen(QtGui.QColor(0, 230, 255), 2))
+                            painter.drawEllipse(QtCore.QPointF(x, y), radius+2, radius+2)
+                        rect = QtCore.QRectF(x-radius-2, y-radius-2, (radius+2)*2, (radius+2)*2)
+                    markers.append({'rect': rect, 'spec': spec, 'label': ''})
+        # summary badge (S/M counts and matrix grid if available)
+        try:
+            total_s = len(singles)
+            total_m = sum(len(v) for v in matrices.values()) if matrices else 0
+            badge_w = 64
+            badge_h = 18
+            bx = pixmap.width() - badge_w - 6
+            by = 6
+            painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+            painter.setBrush(QtGui.QColor(35, 35, 40, 200))
+            painter.drawRoundedRect(bx, by, badge_w, badge_h, 7, 7)
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
-            painter.drawText(QtCore.QRectF(x-radius, y-radius, radius*2, radius*2), QtCore.Qt.AlignCenter, str(idx))
-            markers.append({'rect': QtCore.QRectF(x-radius, y-radius, radius*2, radius*2), 'spec': spec, 'label': idx})
+            painter.setPen(QtGui.QColor(240, 240, 240))
+            # include matrix grid hint if available
+            dims_hint = ""
+            if matrices:
+                try:
+                    any_list = next(iter(matrices.values()))
+                    gc = any_list[0].get('grid_cols'); gr = any_list[0].get('grid_rows')
+                    if gc and gr:
+                        dims_hint = f" ({gc}x{gr})"
+                except Exception:
+                    dims_hint = ""
+            painter.drawText(bx + 6, by + 12, f"S:{total_s} M:{len(matrices)}{dims_hint}")
+            # optional matrix dims hint
+            if matrices:
+                dims = None
+                try:
+                    m_any = next(iter(matrices.values()))
+                    gc = m_any[0].get('grid_cols'); gr = m_any[0].get('grid_rows')
+                    if gc and gr:
+                        dims = f"{gc}x{gr}"
+                except Exception:
+                    dims = None
+                if dims:
+                    painter.setFont(QtGui.QFont("Segoe UI", 7))
+                    painter.drawText(bx + badge_w - 32, by + 12, dims)
+            markers.append({'rect': QtCore.QRectF(bx, by, badge_w, badge_h), 'spec': None, 'label': 'badge'})
+        except Exception:
+            pass
+
         painter.end()
         return markers
+
+    def _use_density_for(self, count, pix_w, pix_h):
+        """Decide if density overlay should be used based on count and thumb size."""
+        if count <= 0:
+            return False
+        size_factor = max(1, min(pix_w, pix_h))
+        threshold = 50 if size_factor > 180 else 30
+        threshold = max(30, min(120, threshold))
+        return count > threshold
+
+    def _draw_density_overlay(self, painter, coords_xy, pix_w, pix_h):
+        if coords_xy.size == 0:
+            return
+        bins = max(16, min(64, min(pix_w, pix_h) // 4 or 16))
+        x = np.clip(coords_xy[:,0], 0, pix_w-1)
+        y = np.clip(coords_xy[:,1], 0, pix_h-1)
+        hist, xedges, yedges = np.histogram2d(x, y, bins=(bins, bins), range=[[0, pix_w], [0, pix_h]])
+        if hist.max() <= 0:
+            return
+        hist = hist.T  # align y first index
+        norm = hist / hist.max()
+        for iy in range(hist.shape[0]):
+            for ix in range(hist.shape[1]):
+                val = norm[iy, ix]
+                if val <= 0:
+                    continue
+                alpha = int(60 + 140 * val)
+                color = QtGui.QColor(255, 200, 40, alpha)
+                painter.setBrush(color)
+                painter.setPen(QtCore.Qt.NoPen)
+                rect = QtCore.QRectF(xedges[ix], yedges[iy], xedges[ix+1]-xedges[ix], yedges[iy+1]-yedges[iy])
+                painter.drawRect(rect)
+
+    def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None):
+        xs = []
+        ys = []
+        for idx, spec in enumerate(m_specs, 1):
+            c = self._map_spec_to_pixels(spec, header, xpix, ypix, file_key)
+            if c is None:
+                c = self._fallback_spec_coords(idx, xpix, ypix)
+            col, row = c
+            xs.append(col * w_scale)
+            ys.append(row * h_scale)
+        if not xs or not ys:
+            return None
+        xmin = min(xs); xmax = max(xs)
+        ymin = min(ys); ymax = max(ys)
+        if xmax == xmin or ymax == ymin:
+            size = 18
+            return QtCore.QRectF(xmin - size/2, ymin - size/2, size, size)
+        pad = 6
+        return QtCore.QRectF(xmin - pad, ymin - pad, (xmax - xmin) + 2*pad, (ymax - ymin) + 2*pad)
 
     def _label_pos_to_pix_coords(self, label_widget, pos):
         pix = label_widget.pixmap()
@@ -2617,15 +3655,22 @@ class SXMGridViewer(QtWidgets.QWidget):
         if coords is None:
             return False
         x, y = coords
+        file_key = str(label_widget.property("file_path"))
         for info in markers:
             rect = info.get('rect')
             if rect and rect.contains(x, y):
+                if info.get('label') == 'badge':
+                    self._open_spectro_summary_for_file(file_key)
+                    return True
                 mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
                 if mods & QtCore.Qt.ShiftModifier:
                     self._toggle_multi_spec_selection(info.get('spec'))
                 else:
                     self._clear_multi_spec_selection()
-                    self._open_spectroscopy_popup(info.get('spec'))
+                    if info.get('kind') == 'matrix' and info.get('spec'):
+                        self._open_spectro_summary_for_file(file_key, show_mode="matrix")
+                    else:
+                        self._open_spectroscopy_popup(info.get('spec'))
                 return True
         return False
 
@@ -2645,6 +3690,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         for info in markers:
             rect = info.get('rect')
             if rect and rect.contains(x, y):
+                if info.get('label') == 'badge':
+                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), "Spectroscopy summary")
+                    return True
                 spec = info.get('spec') or {}
                 tooltip = Path(spec.get('path', '')).name
                 idx = spec.get('matrix_index')
@@ -2663,6 +3711,12 @@ class SXMGridViewer(QtWidgets.QWidget):
             return
         try:
             dlg = SpectroscopyPopup(spec, parent=self)
+            try:
+                dlg.setWindowModality(QtCore.Qt.NonModal)
+                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+                dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowCloseButtonHint | QtCore.Qt.WindowMinimizeButtonHint)
+            except Exception:
+                pass
             dlg.show()
             self._spectro_popups.append(dlg)
             dlg.finished.connect(lambda _: self._spectro_popups.remove(dlg) if dlg in self._spectro_popups else None)
@@ -2955,6 +4009,34 @@ class SXMGridViewer(QtWidgets.QWidget):
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
+    def on_show_matrix_markers_toggled(self, checked: bool):
+        self.show_matrix_markers = bool(checked)
+        self.config['show_matrix_markers'] = self.show_matrix_markers; save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_show_single_markers_toggled(self, checked: bool):
+        self.show_single_markers = bool(checked)
+        self.config['show_single_markers'] = self.show_single_markers; save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_compact_markers_toggled(self, checked: bool):
+        self.compact_markers = bool(checked)
+        self.config['compact_markers'] = self.compact_markers; save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_density_markers_toggled(self, checked: bool):
+        self.use_density_markers = bool(checked)
+        self.config['use_density_markers'] = self.use_density_markers; save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
     def on_export_selected_same_view(self):
         targets = list(getattr(self, 'thumb_multi_select', set()))
         if not targets:
@@ -3035,4 +4117,3 @@ class SXMGridViewer(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, 'Purge config', 'Configuration and tags purged. Please reopen your folder.')
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, 'Purge failed', str(e))
-

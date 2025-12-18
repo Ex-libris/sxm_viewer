@@ -458,7 +458,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.channel_combo = QtWidgets.QComboBox()
         selector_layout.addWidget(self.channel_combo, 1)
         self.fit_btn = QtWidgets.QPushButton("Fit parabola")
+        self.copy_btn = QtWidgets.QPushButton("Copy channel")
         selector_layout.addWidget(self.fit_btn)
+        selector_layout.addWidget(self.copy_btn)
         layout.addLayout(selector_layout)
 
         self.fig = Figure(figsize=(6,4))
@@ -478,6 +480,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.channel_combo.addItem(name)
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         self.fit_btn.clicked.connect(self._on_fit_clicked)
+        self.copy_btn.clicked.connect(self._copy_channel_to_clipboard)
         self._last_fit_result = None
         if self.channel_combo.count():
             self.channel_combo.setCurrentIndex(0)
@@ -1634,13 +1637,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_selected_btn = QtWidgets.QPushButton("Fit selected (F)")
         self.fit_all_btn = QtWidgets.QPushButton("Fit all")
         self.export_btn = QtWidgets.QPushButton("Export CSV")
+        self.copy_btn = QtWidgets.QPushButton("Copy selected")
         btn_row.addWidget(self.fit_selected_btn)
         btn_row.addWidget(self.fit_all_btn)
         btn_row.addWidget(self.export_btn)
+        btn_row.addWidget(self.copy_btn)
         right_layout.addLayout(btn_row)
         self.fit_selected_btn.clicked.connect(self._fit_selected)
         self.fit_all_btn.clicked.connect(self._fit_all)
         self.export_btn.clicked.connect(self._export_csv)
+        self.copy_btn.clicked.connect(self._copy_selected_to_clipboard)
 
         QtWidgets.QShortcut(QtGui.QKeySequence("F"), self, activated=self._fit_selected)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+E"), self, activated=self._export_csv)
@@ -1829,8 +1835,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         menu = QtWidgets.QMenu(self)
         act = menu.addAction("Open popup")
-        if menu.exec_(self.spec_list.mapToGlobal(pos)) == act:
+        copy_act = menu.addAction("Copy selected to clipboard")
+        chosen = menu.exec_(self.spec_list.mapToGlobal(pos))
+        if chosen == act:
             self._show_popup_for_spec(item.data(QtCore.Qt.UserRole))
+        elif chosen == copy_act:
+            self._copy_selected_to_clipboard()
 
     def _on_table_context_menu(self, pos):
         row = self.results_table.indexAt(pos).row()
@@ -1839,10 +1849,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         spec_id = self.results_table.item(row,0).data(QtCore.Qt.UserRole)
         menu = QtWidgets.QMenu(self)
         act = menu.addAction("Open popup")
-        if menu.exec_(self.results_table.mapToGlobal(pos)) == act:
+        copy_act = menu.addAction("Copy selected to clipboard")
+        chosen = menu.exec_(self.results_table.mapToGlobal(pos))
+        if chosen == act:
             spec = self._spec_by_id(spec_id)
             if spec:
                 self._show_popup_for_spec(spec)
+        elif chosen == copy_act:
+            self._copy_selected_to_clipboard()
 
     def _on_table_double_clicked(self, item):
         spec_id = self.results_table.item(item.row(),0).data(QtCore.Qt.UserRole)
@@ -1859,6 +1873,34 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if item:
             self.spec_list.setCurrentItem(item, QtCore.QItemSelectionModel.SelectCurrent)
             self._update_plot()
+
+    def _copy_selected_to_clipboard(self):
+        channel = self.channel_combo.currentText()
+        if not channel:
+            return
+        items = self._selected_items() or self._checked_items()
+        if not items:
+            return
+        lines = []
+        for it in items:
+            spec = it.data(QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            V = np.asarray(spec.get('V', []), dtype=float)
+            ch = np.asarray((spec.get('channels') or {}).get(channel, []), dtype=float)
+            if V.size == 0 or ch.size == 0:
+                continue
+            lines.append(f"# {Path(spec.get('path','')).name}  ({spec.get('x','?')}/{spec.get('y','?')} nm)")
+            lines.append(f"Bias (mV)\t{channel}")
+            for v, val in zip(V * 1000.0, ch):
+                try:
+                    lines.append(f"{float(v):.9g}\t{float(val):.9g}")
+                except Exception:
+                    lines.append(f"{v}\t{val}")
+            lines.append("")
+        if lines:
+            QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied spectra", self)
 
     def _spec_by_id(self, spec_id):
         for spec in self.specs:
