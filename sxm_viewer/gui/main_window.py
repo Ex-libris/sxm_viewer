@@ -131,6 +131,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_popups = []
         self._popup_refs = []
         self._multi_spectro_popups = []
+        self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
         self.thumb_multi_select = set()
@@ -873,6 +874,20 @@ class SXMGridViewer(QtWidgets.QWidget):
         """Hook: replace with a full spectro browser. Minimal fallback shows the summary again."""
         self.open_spectro_browser(entries)
 
+    def _next_popup_pos(self, offset=40):
+        """Return a cascading popup position within the available screen."""
+        screen = QtWidgets.QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1600, 900)
+        base = self.frameGeometry().topLeft() if self.isVisible() else QtGui.QCursor.pos()
+        # incrementing counter avoids stacking even if dialogs close quickly
+        self._popup_counter = (self._popup_counter + 1) % 12
+        idx = self._popup_counter
+        pos = base + QtCore.QPoint(offset * (idx % 6), offset * (idx % 6))
+        # clamp to screen
+        x = max(avail.left(), min(pos.x(), avail.right() - 200))
+        y = max(avail.top(), min(pos.y(), avail.bottom() - 150))
+        return QtCore.QPoint(x, y)
+
     def reveal_points_for_file(self, file_key):
         """Temporarily reveal point markers for a given file and repaint thumbnails."""
         if not hasattr(self, '_temp_reveal'):
@@ -916,6 +931,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         try:
             dlg.setWindowModality(QtCore.Qt.NonModal)
             dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            dlg.move(self._next_popup_pos())
         except Exception:
             pass
         dlg.show()
@@ -2835,8 +2851,22 @@ class SXMGridViewer(QtWidgets.QWidget):
     def _on_profile_updated(self, x_px, vals, length_nm, unit):
         # create or update a persistent profile dialog
         try:
+            y_label = None
+            try:
+                if self.last_preview:
+                    file_key, channel_idx = self.last_preview
+                    header, fds = self.headers.get(str(file_key), (None, None))
+                    if fds and 0 <= int(channel_idx) < len(fds):
+                        fd = fds[int(channel_idx)]
+                        y_label = fd.get('Caption', fd.get('FileName', f"chan{channel_idx}"))
+            except Exception:
+                y_label = None
             if not hasattr(self, '_profile_dialog') or self._profile_dialog is None:
-                self._profile_dialog = ProfileDialog(x_px, vals, length_nm=length_nm, parent=self, unit=unit)
+                self._profile_dialog = ProfileDialog(x_px, vals, length_nm=length_nm, parent=self, unit=unit, y_label=y_label)
+                try:
+                    self._profile_dialog.move(self._next_popup_pos(offset=30))
+                except Exception:
+                    pass
                 self._profile_dialog.show()
             else:
                 self._profile_dialog.update_data(x_px, vals, length_nm=length_nm)
@@ -3715,6 +3745,7 @@ class SXMGridViewer(QtWidgets.QWidget):
                 dlg.setWindowModality(QtCore.Qt.NonModal)
                 dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
                 dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowCloseButtonHint | QtCore.Qt.WindowMinimizeButtonHint)
+                dlg.move(self._next_popup_pos())
             except Exception:
                 pass
             dlg.show()
@@ -3896,6 +3927,10 @@ class SXMGridViewer(QtWidgets.QWidget):
                 pass
         self._multi_spectro_popups = []
         dlg = SpectroscopyCompareDialog(specs, parent=self)
+        try:
+            dlg.move(self._next_popup_pos())
+        except Exception:
+            pass
         dlg.show()
         self._multi_spectro_popups.append(dlg)
         dlg.finished.connect(lambda _: self._multi_spectro_popups.remove(dlg) if dlg in self._multi_spectro_popups else None)

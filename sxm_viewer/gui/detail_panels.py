@@ -388,11 +388,12 @@ class MultiPreviewCanvas(FigureCanvas):
 
 class ProfileDialog(QtWidgets.QDialog):
     """Dialog showing the sampled profile and basic stats."""
-    def __init__(self, x, vals, length_nm=None, parent=None, unit=None):
+    def __init__(self, x, vals, length_nm=None, parent=None, unit=None, y_label=None):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
         self.resize(600, 320)
         self._unit = unit
+        self._y_label = y_label
         v = QtWidgets.QVBoxLayout()
         # matplotlib canvas for plot
         fig = Figure(figsize=(6,3))
@@ -400,7 +401,12 @@ class ProfileDialog(QtWidgets.QDialog):
         self.ax = fig.add_subplot(111)
         (self._line,) = self.ax.plot(x, vals)
         self.ax.set_xlabel('Distance (px)')
-        self.ax.set_ylabel(f"Value ({unit})" if unit else 'Value')
+        if y_label and unit:
+            self.ax.set_ylabel(f"{y_label} ({unit})")
+        elif y_label:
+            self.ax.set_ylabel(y_label)
+        else:
+            self.ax.set_ylabel(f"Value ({unit})" if unit else 'Value')
         self.ax_top = self.ax.twiny()
         self.ax_top.set_xlabel('Distance (nm)')
         self._set_top_axis(length_nm, len(x))
@@ -1582,6 +1588,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._populate_channels()
         self._update_plot()
 
+    def _spec_id(self, spec):
+        base = str(Path(spec.get('path', '')))
+        idx = spec.get('matrix_index')
+        return f"{base}#m{idx}" if idx is not None else base
+
+    def _display_name(self, spec):
+        name = Path(spec.get('path', '')).name
+        idx = spec.get('matrix_index')
+        return f"{name} [m{idx}]" if idx is not None else name
+
     def _build_ui(self):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         main_layout = QtWidgets.QVBoxLayout()
@@ -1638,15 +1654,24 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_all_btn = QtWidgets.QPushButton("Fit all")
         self.export_btn = QtWidgets.QPushButton("Export CSV")
         self.copy_btn = QtWidgets.QPushButton("Copy selected")
+        self.copy_table_btn = QtWidgets.QPushButton("Copy table")
+        self.clear_sel_btn = QtWidgets.QPushButton("Clear selected")
+        self.clear_all_btn = QtWidgets.QPushButton("Clear all")
         btn_row.addWidget(self.fit_selected_btn)
         btn_row.addWidget(self.fit_all_btn)
         btn_row.addWidget(self.export_btn)
         btn_row.addWidget(self.copy_btn)
+        btn_row.addWidget(self.copy_table_btn)
+        btn_row.addWidget(self.clear_sel_btn)
+        btn_row.addWidget(self.clear_all_btn)
         right_layout.addLayout(btn_row)
         self.fit_selected_btn.clicked.connect(self._fit_selected)
         self.fit_all_btn.clicked.connect(self._fit_all)
         self.export_btn.clicked.connect(self._export_csv)
         self.copy_btn.clicked.connect(self._copy_selected_to_clipboard)
+        self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
+        self.clear_sel_btn.clicked.connect(self._clear_selected)
+        self.clear_all_btn.clicked.connect(self._clear_all)
 
         QtWidgets.QShortcut(QtGui.QKeySequence("F"), self, activated=self._fit_selected)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+E"), self, activated=self._export_csv)
@@ -1698,12 +1723,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.spec_list.clear()
         self._item_map = {}
         for spec in self.specs:
-            item = QtWidgets.QListWidgetItem(Path(spec['path']).name)
+            item = QtWidgets.QListWidgetItem(self._display_name(spec))
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable)
             item.setCheckState(QtCore.Qt.Checked)
             item.setData(QtCore.Qt.UserRole, spec)
+            item.setData(QtCore.Qt.UserRole + 1, self._spec_id(spec))
             self.spec_list.addItem(item)
-            self._item_map[str(Path(spec['path']))] = item
+            self._item_map[self._spec_id(spec)] = item
         self.spec_list.blockSignals(False)
 
     def _populate_channels(self):
@@ -1747,12 +1773,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.grid(True, alpha=0.2)
         self._line_map.clear()
         self._legend_map.clear()
-        selected_ids = {str(Path(item.data(QtCore.Qt.UserRole)['path'])) for item in self._selected_items()}
+        selected_ids = {item.data(QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         colors = itertools.cycle(matplotlib.cm.get_cmap('tab10').colors)
         plotted = 0
         for item in self._checked_items():
             spec = item.data(QtCore.Qt.UserRole)
-            spec_id = str(Path(spec['path']))
+            spec_id = item.data(QtCore.Qt.UserRole + 1)
             channels = spec.get('channels') or {}
             data = channels.get(channel)
             V = np.asarray(spec.get('V', []), dtype=float)
@@ -1760,8 +1786,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 continue
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
+            label_txt = self._display_name(spec)
             line, = self.ax.plot(V, data, color=color, lw=2.4 if highlight else 1.2,
-                                 alpha=1.0 if highlight else 0.4, label=Path(spec['path']).name)
+                                 alpha=1.0 if highlight else 0.4, label=label_txt)
             self._line_map[spec_id] = line
             plotted += 1
             if spec_id in self._fit_results:
@@ -1774,11 +1801,27 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 legend.set_draggable(True)
                 for leg_line, text in zip(legend.get_lines(), legend.get_texts()):
                     leg_line.set_picker(True)
-                    spec_id = self._spec_id_by_name(text.get_text())
-                    if spec_id:
-                        self._legend_map[leg_line] = spec_id
+                    name = text.get_text()
+                    for spec in self.specs:
+                        if self._display_name(spec) == name:
+                            self._legend_map[leg_line] = self._spec_id(spec)
+                            break
         self.ax.set_xlabel("Bias (mV)")
-        self.ax.set_ylabel(channel)
+        # include unit if available
+        unit = None
+        # look up unit from any spec carrying this channel
+        for item in self._checked_items():
+            spec = item.data(QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            unit_map = spec.get('unit_map') or {}
+            if channel in unit_map and unit_map[channel]:
+                unit = unit_map[channel]
+                break
+        if unit:
+            self.ax.set_ylabel(f"{channel} ({unit})")
+        else:
+            self.ax.set_ylabel(channel)
         self.canvas.draw_idle()
         self._update_status(plotted)
 
@@ -1797,8 +1840,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _spec_id_by_name(self, name):
         for spec in self.specs:
-            if Path(spec['path']).name == name:
-                return str(Path(spec['path']))
+            if self._display_name(spec) == name:
+                return self._spec_id(spec)
         return None
 
     def _on_legend_pick(self, event):
@@ -1850,6 +1893,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         act = menu.addAction("Open popup")
         copy_act = menu.addAction("Copy selected to clipboard")
+        copy_table_act = menu.addAction("Copy table")
+        clear_sel_act = menu.addAction("Clear selected")
+        clear_all_act = menu.addAction("Clear all")
         chosen = menu.exec_(self.results_table.mapToGlobal(pos))
         if chosen == act:
             spec = self._spec_by_id(spec_id)
@@ -1857,6 +1903,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self._show_popup_for_spec(spec)
         elif chosen == copy_act:
             self._copy_selected_to_clipboard()
+        elif chosen == copy_table_act:
+            self._copy_table_to_clipboard()
+        elif chosen == clear_sel_act:
+            self._clear_selected()
+        elif chosen == clear_all_act:
+            self._clear_all()
 
     def _on_table_double_clicked(self, item):
         spec_id = self.results_table.item(item.row(),0).data(QtCore.Qt.UserRole)
@@ -1881,7 +1933,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         items = self._selected_items() or self._checked_items()
         if not items:
             return
-        lines = []
+        blocks = []
         for it in items:
             spec = it.data(QtCore.Qt.UserRole)
             if not spec:
@@ -1890,23 +1942,73 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             ch = np.asarray((spec.get('channels') or {}).get(channel, []), dtype=float)
             if V.size == 0 or ch.size == 0:
                 continue
-            lines.append(f"# {Path(spec.get('path','')).name}  ({spec.get('x','?')}/{spec.get('y','?')} nm)")
-            lines.append(f"Bias (mV)\t{channel}")
+            unit_map = spec.get('unit_map') or {}
+            unit = unit_map.get(channel, "")
+            header_unit = f" ({unit})" if unit else ""
+            block = []
+            block.append(f"# {Path(spec.get('path','')).name}  ({spec.get('x','?')}/{spec.get('y','?')} nm)")
+            block.append(f"Bias (mV)\t{channel}{header_unit}")
             for v, val in zip(V * 1000.0, ch):
                 try:
-                    lines.append(f"{float(v):.9g}\t{float(val):.9g}")
+                    block.append(f"{float(v):.9g}\t{float(val):.9g}")
                 except Exception:
-                    lines.append(f"{v}\t{val}")
-            lines.append("")
-        if lines:
-            QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+                    block.append(f"{v}\t{val}")
+            blocks.append("\n".join(block))
+        if blocks:
+            QtWidgets.QApplication.clipboard().setText("\n\n".join(blocks))
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied spectra", self)
 
     def _spec_by_id(self, spec_id):
         for spec in self.specs:
-            if str(Path(spec['path'])) == spec_id:
+            if self._spec_id(spec) == spec_id:
                 return spec
         return None
+
+    def _copy_table_to_clipboard(self):
+        rows = []
+        headers = ["File","X (nm)","Y (nm)","a","da","b (mV)","db","c (Hz)","dc","RMSE"]
+        rows.append("\t".join(headers))
+        for r in range(self.results_table.rowCount()):
+            vals = []
+            for c in range(self.results_table.columnCount()):
+                item = self.results_table.item(r, c)
+                vals.append(item.text() if item else "")
+            rows.append("\t".join(vals))
+        if len(rows) > 1:
+            QtWidgets.QApplication.clipboard().setText("\n".join(rows))
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied table", self)
+
+    def _clear_selected(self):
+        removed = False
+        for item in list(self._selected_items()):
+            spec_id = item.data(QtCore.Qt.UserRole + 1)
+            if spec_id in self._fit_results:
+                self._fit_results.pop(spec_id, None)
+            row = self.spec_list.row(item)
+            self.spec_list.takeItem(row)
+            removed = True
+        if removed:
+            self._update_plot()
+            self._populate_results_table()
+            self._update_status()
+
+    def _clear_all(self):
+        self.spec_list.clear()
+        self._item_map = {}
+        self._line_map.clear()
+        self._legend_map.clear()
+        self._fit_results = {}
+        self.ax.clear()
+        self.canvas.draw_idle()
+        self.results_table.setRowCount(0)
+        self._update_status(0)
+        # also clear selection in parent so reopening starts fresh
+        try:
+            parent = self.parent()
+            if parent and hasattr(parent, '_clear_multi_spec_selection'):
+                parent._clear_multi_spec_selection()
+        except Exception:
+            pass
 
     def _fit_selected(self):
         items = self._selected_items() or self._checked_items()
@@ -1943,7 +2045,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         for res in results:
             spec = res.get('spec')
             if spec:
-                self._fit_results[str(Path(spec['path']))] = res
+                self._fit_results[self._spec_id(spec)] = res
         self._populate_results_table()
         self._update_plot()
 
@@ -1955,7 +2057,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 continue
             xs = spec.get('x')
             ys = spec.get('y')
-            rows.append((spec_id, Path(spec['path']).name,
+            rows.append((spec_id, self._display_name(spec),
                          "n/a" if xs is None else f"{xs:.1f}",
                          "n/a" if ys is None else f"{ys:.1f}",
                          f"{res['a']:.4g}", f"{res['a_err']:.2g}",
