@@ -65,6 +65,9 @@ class SXMGridViewer(QtWidgets.QWidget):
     FRAME_ZOOM_SLIDER_MIN = 0
     FRAME_ZOOM_SLIDER_MAX = 600
     FRAME_ZOOM_SLIDER_DEFAULT = 200
+    MODE_BROWSE = 0
+    MODE_MEASURE = 1
+    MODE_SPECTRO = 2
 
     def __init__(self):
         super().__init__()
@@ -91,6 +94,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_single_markers = bool(self.config.get("show_single_markers", True))
         self.compact_markers = bool(self.config.get("compact_markers", True))
         self.use_density_markers = bool(self.config.get("use_density_markers", True))
+        self._display_defaults = {
+            'show_matrix_markers': True,
+            'show_single_markers': True,
+            'compact_markers': True,
+            'use_density_markers': True,
+        }
         self.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
         self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
         self.frame_entry_pixmaps = {}
@@ -354,41 +363,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel_layout.addWidget(self.preview_canvas, 1)
         self.preview_value_label = QtWidgets.QLabel("Value: --")
         preview_panel_layout.addWidget(self.preview_value_label)
-        extra_h = QtWidgets.QHBoxLayout()
-        self.add_view_btn = QtWidgets.QPushButton("Add channel view"); self.clear_views_btn = QtWidgets.QPushButton("Clear extra views")
-        self.export_pngs_btn = QtWidgets.QPushButton("Export PNGs")
-        self.export_xyz_btn = QtWidgets.QPushButton("Export XYZ")
-        self.adjust_image_btn = QtWidgets.QPushButton("Adjust image")
-        self.adjust_image_btn.setEnabled(False)
-        extra_h.addWidget(self.add_view_btn); extra_h.addWidget(self.clear_views_btn); extra_h.addWidget(self.export_pngs_btn); extra_h.addWidget(self.export_xyz_btn); extra_h.addWidget(self.adjust_image_btn)
-        self.measure_profile_btn = QtWidgets.QPushButton('Measure profile')
-        extra_h.addWidget(self.measure_profile_btn)
-        self.show_spectra_cb = QtWidgets.QCheckBox("Show spectroscopies")
-        self.show_spectra_cb.setChecked(self.show_spectra)
-        extra_h.addWidget(self.show_spectra_cb)
-        self.show_matrix_spectra_btn = QtWidgets.QPushButton("Show Matrix spectros")
-        extra_h.addWidget(self.show_matrix_spectra_btn)
-        self.clear_spec_selection_btn = QtWidgets.QPushButton("Clear spec selection")
-        extra_h.addWidget(self.clear_spec_selection_btn)
-        self.spec_selection_label = QtWidgets.QLabel("Spectra selected: 0")
-        font_small = QtGui.QFont("Segoe UI", 9)
-        self.spec_selection_label.setFont(font_small)
-        extra_h.addWidget(self.spec_selection_label)
-        self.export_selected_btn = QtWidgets.QPushButton("Export selected (same view)")
-        extra_h.addWidget(self.export_selected_btn)
-        self.show_matrix_markers_cb = QtWidgets.QCheckBox("Matrix markers")
-        self.show_matrix_markers_cb.setChecked(self.show_matrix_markers)
-        extra_h.addWidget(self.show_matrix_markers_cb)
-        self.show_single_markers_cb = QtWidgets.QCheckBox("Single markers")
-        self.show_single_markers_cb.setChecked(self.show_single_markers)
-        extra_h.addWidget(self.show_single_markers_cb)
-        self.compact_markers_cb = QtWidgets.QCheckBox("Compact markers")
-        self.compact_markers_cb.setChecked(self.compact_markers)
-        extra_h.addWidget(self.compact_markers_cb)
-        self.density_markers_cb = QtWidgets.QCheckBox("Density overlay")
-        self.density_markers_cb.setChecked(self.use_density_markers)
-        extra_h.addWidget(self.density_markers_cb)
-        preview_panel_layout.addLayout(extra_h)
+        self.lower_control_frame = self._create_lower_controls()
+        preview_panel_layout.addWidget(self.lower_control_frame)
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
 
@@ -459,14 +435,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.adjust_image_btn.clicked.connect(self.on_adjust_image)
         self.export_xyz_btn.clicked.connect(self.on_export_xyz_files)
         self.measure_profile_btn.clicked.connect(self._on_start_profile)
+        self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
+        self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_spectra_cb.toggled.connect(self.on_show_spectra_toggled)
         self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.export_selected_btn.clicked.connect(self.on_export_selected_same_view)
-        self.show_matrix_markers_cb.toggled.connect(self.on_show_matrix_markers_toggled)
-        self.show_single_markers_cb.toggled.connect(self.on_show_single_markers_toggled)
-        self.compact_markers_cb.toggled.connect(self.on_compact_markers_toggled)
-        self.density_markers_cb.toggled.connect(self.on_density_markers_toggled)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
@@ -485,6 +459,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self._update_toolbar_actions(False)
+        self._init_mode_shortcuts()
 
     def _apply_dark_mode(self, enabled: bool):
         app = QtWidgets.QApplication.instance()
@@ -510,6 +485,315 @@ class SXMGridViewer(QtWidgets.QWidget):
             app.setPalette(app.style().standardPalette())
         if hasattr(self, 'shortcuts_label'):
             self.shortcuts_label.setText(self._shortcuts_html())
+        try:
+            self._apply_lower_control_theme()
+        except Exception:
+            pass
+
+    def _create_lower_controls(self):
+        frame = QtWidgets.QFrame()
+        frame.setObjectName("lowerControlFrame")
+        frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        layout = QtWidgets.QHBoxLayout(frame)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(12)
+
+        mode_widget = QtWidgets.QWidget(frame)
+        mode_widget.setObjectName("modeSelector")
+        self.mode_selector_widget = mode_widget
+        mode_widget.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
+        mode_layout = QtWidgets.QHBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(0)
+        self.mode_button_group = QtWidgets.QButtonGroup(mode_widget)
+        self.mode_button_group.setExclusive(True)
+        self.mode_buttons = {}
+        mode_definitions = [
+            (self.MODE_BROWSE, "Browse", "Ctrl+B"),
+            (self.MODE_MEASURE, "Measure", "Ctrl+M"),
+            (self.MODE_SPECTRO, "Spectroscopy", "Ctrl+S"),
+        ]
+        for mode, label, shortcut in mode_definitions:
+            btn = QtWidgets.QToolButton(mode_widget)
+            btn.setText(label)
+            btn.setCheckable(True)
+            btn.setAutoRaise(True)
+            btn.setFocusPolicy(QtCore.Qt.StrongFocus)
+            btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            btn.setToolTip(f"{label} mode ({shortcut})")
+            btn.clicked.connect(lambda checked, m=mode: self._on_mode_button_clicked(m))
+            self.mode_button_group.addButton(btn, mode)
+            self.mode_buttons[mode] = btn
+            mode_layout.addWidget(btn)
+        layout.addWidget(mode_widget)
+
+        self.mode_stack = QtWidgets.QStackedWidget(frame)
+        self.mode_stack.addWidget(self._build_browse_context_page())
+        self.mode_stack.addWidget(self._build_measure_context_page())
+        self.mode_stack.addWidget(self._build_spectro_context_page())
+        layout.addWidget(self.mode_stack, 1)
+
+        display_widget = self._build_display_widget(frame)
+        layout.addWidget(display_widget)
+
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
+        layout.setStretch(2, 0)
+
+        settings = QtCore.QSettings()
+        saved_mode = str(settings.value("lowerPane/lastMode", "Browse"))
+        self._apply_mode(self._mode_from_name(saved_mode), remember=False)
+        self._apply_lower_control_theme()
+        return frame
+
+    def _build_browse_context_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.add_view_btn = QtWidgets.QPushButton("Add channel view")
+        self.add_view_btn.setToolTip("Add the current channel as an extra preview")
+        self.clear_views_btn = QtWidgets.QPushButton("Clear extra views")
+        self.clear_views_btn.setToolTip("Remove extra previews and keep only the main view")
+        self.export_pngs_btn = QtWidgets.QPushButton("Export PNGs")
+        self.export_pngs_btn.setToolTip("Export the current channel layout to PNG")
+        self.export_xyz_btn = QtWidgets.QPushButton("Export XYZ")
+        self.export_xyz_btn.setToolTip("Export the current selection to XYZ")
+        self.adjust_image_btn = QtWidgets.QPushButton("Adjust image")
+        self.adjust_image_btn.setEnabled(False)
+        self.adjust_image_btn.setToolTip("Adjust image scaling and filtering")
+        for btn in (
+            self.add_view_btn,
+            self.clear_views_btn,
+            self.export_pngs_btn,
+            self.export_xyz_btn,
+            self.adjust_image_btn,
+        ):
+            layout.addWidget(btn)
+        layout.addStretch(1)
+        return page
+
+    def _build_measure_context_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.measure_profile_btn = QtWidgets.QPushButton('Measure profile')
+        self.measure_profile_btn.setToolTip("Start or stop interactive profile measurement")
+        self.exit_profile_btn = QtWidgets.QPushButton("Exit profile")
+        self.exit_profile_btn.setToolTip("Exit the profile measurement mode")
+        self.clear_profile_btn = QtWidgets.QPushButton("Clear profile")
+        self.clear_profile_btn.setToolTip("Clear the current profile line and start fresh")
+        layout.addWidget(self.measure_profile_btn)
+        layout.addWidget(self.exit_profile_btn)
+        layout.addWidget(self.clear_profile_btn)
+        layout.addStretch(1)
+        return page
+
+    def _build_spectro_context_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.show_spectra_cb = QtWidgets.QCheckBox("Show spectroscopies")
+        self.show_spectra_cb.setChecked(self.show_spectra)
+        self.show_spectra_cb.setToolTip("Toggle spectroscopy overlays in thumbnails")
+        self.show_matrix_spectra_btn = QtWidgets.QPushButton("Show Matrix spectros")
+        self.show_matrix_spectra_btn.setToolTip("Open a matrix spectroscopy viewer for the folder")
+        self.clear_spec_selection_btn = QtWidgets.QPushButton("Clear spec selection")
+        self.clear_spec_selection_btn.setToolTip("Clear the multi-selection of spectroscopy points")
+        self.export_selected_btn = QtWidgets.QPushButton("Export selected (same view)")
+        self.export_selected_btn.setToolTip("Export selected thumbnails using the same view layout")
+        self.spec_selection_label = QtWidgets.QLabel("Spectra selected: 0")
+        font_small = QtGui.QFont("Segoe UI", 9)
+        self.spec_selection_label.setFont(font_small)
+        layout.addWidget(self.show_spectra_cb)
+        layout.addWidget(self.show_matrix_spectra_btn)
+        layout.addWidget(self.clear_spec_selection_btn)
+        layout.addWidget(self.export_selected_btn)
+        layout.addWidget(self.spec_selection_label)
+        layout.addStretch(1)
+        return page
+
+    def _build_display_widget(self, parent):
+        container = QtWidgets.QWidget(parent)
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.display_menu_btn = QtWidgets.QToolButton(container)
+        self.display_menu_btn.setText("Display ▾")
+        self.display_menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.display_menu_btn.setToolTip("Display options and marker overlays")
+        self.display_menu = QtWidgets.QMenu(self)
+        self.matrix_markers_act = self.display_menu.addAction("Matrix markers")
+        self.matrix_markers_act.setCheckable(True)
+        self.matrix_markers_act.setChecked(self.show_matrix_markers)
+        self.matrix_markers_act.setToolTip("Toggle matrix spectroscopy markers")
+        self.matrix_markers_act.toggled.connect(self.on_show_matrix_markers_toggled)
+        self.single_markers_act = self.display_menu.addAction("Single markers")
+        self.single_markers_act.setCheckable(True)
+        self.single_markers_act.setChecked(self.show_single_markers)
+        self.single_markers_act.setToolTip("Toggle single spectroscopy markers")
+        self.single_markers_act.toggled.connect(self.on_show_single_markers_toggled)
+        self.compact_markers_act = self.display_menu.addAction("Compact markers")
+        self.compact_markers_act.setCheckable(True)
+        self.compact_markers_act.setChecked(self.compact_markers)
+        self.compact_markers_act.setToolTip("Use compact marker rendering")
+        self.compact_markers_act.toggled.connect(self.on_compact_markers_toggled)
+        self.density_markers_act = self.display_menu.addAction("Density overlay")
+        self.density_markers_act.setCheckable(True)
+        self.density_markers_act.setChecked(self.use_density_markers)
+        self.density_markers_act.setToolTip("Show density overlay for spectroscopy clusters")
+        self.density_markers_act.toggled.connect(self.on_density_markers_toggled)
+        self.display_menu.addSeparator()
+        reset_act = self.display_menu.addAction("Reset view")
+        reset_act.setToolTip("Reset all display toggles to defaults")
+        reset_act.triggered.connect(self._reset_display_options)
+        self.display_menu_btn.setMenu(self.display_menu)
+        layout.addWidget(self.display_menu_btn)
+
+        self.spectro_browser_btn = QtWidgets.QPushButton("Spectro Browser", container)
+        self.spectro_browser_btn.setToolTip("Open the spectroscopy browser")
+        self.spectro_browser_btn.clicked.connect(lambda: self.open_spectro_browser())
+        layout.addWidget(self.spectro_browser_btn)
+
+        layout.addStretch(1)
+        self.spectro_stats_label = QtWidgets.QLabel("Spectros: -- (Single: --, Matrix datasets: --)", container)
+        stats_font = QtGui.QFont("Segoe UI", 9)
+        self.spectro_stats_label.setFont(stats_font)
+        self.spectro_stats_label.setToolTip("Summary of spectroscopy content for the loaded folder")
+        layout.addWidget(self.spectro_stats_label, 0, QtCore.Qt.AlignRight)
+        return container
+
+    def _apply_lower_control_theme(self):
+        frame = getattr(self, 'lower_control_frame', None)
+        mode_widget = getattr(self, 'mode_selector_widget', None)
+        if frame is None:
+            return
+        dark = bool(getattr(self, 'dark_mode', False))
+        if dark:
+            border = "#4c4c4c"
+            bg = "#2d2d2d"
+            mode_border = "#5a5a5a"
+            mode_text = "#f0f0f0"
+            mode_checked = "#2b6cb0"
+        else:
+            border = "#c8c8c8"
+            bg = "#f5f5f5"
+            mode_border = "#b7b7b7"
+            mode_text = "#202020"
+            mode_checked = "#3d7dd8"
+        frame.setStyleSheet(
+            f"QFrame#lowerControlFrame {{ border-top: 1px solid {border}; background-color: {bg}; }}"
+        )
+        if mode_widget is not None:
+            mode_widget.setStyleSheet(f"""
+            QWidget#modeSelector QToolButton {{
+                border: 1px solid {mode_border};
+                padding: 6px 12px;
+                background: transparent;
+                color: {mode_text};
+            }}
+            QWidget#modeSelector QToolButton:checked {{
+                background: {mode_checked};
+                color: #ffffff;
+            }}
+            QWidget#modeSelector QToolButton + QToolButton {{
+                border-left: none;
+            }}
+            """)
+
+    def _on_mode_button_clicked(self, mode):
+        self._apply_mode(mode)
+
+    def _mode_name(self, mode):
+        mapping = {
+            self.MODE_BROWSE: "Browse",
+            self.MODE_MEASURE: "Measure",
+            self.MODE_SPECTRO: "Spectroscopy",
+        }
+        return mapping.get(mode, "Browse")
+
+    def _mode_from_name(self, name):
+        mapping = {
+            "Browse": self.MODE_BROWSE,
+            "Measure": self.MODE_MEASURE,
+            "Spectroscopy": self.MODE_SPECTRO,
+        }
+        return mapping.get(str(name), self.MODE_BROWSE)
+
+    def _apply_mode(self, mode, remember=True):
+        if not hasattr(self, 'mode_stack'):
+            return
+        if mode not in (self.MODE_BROWSE, self.MODE_MEASURE, self.MODE_SPECTRO):
+            mode = self.MODE_BROWSE
+        self.mode_stack.setCurrentIndex(mode)
+        self.current_mode = mode
+        btn = getattr(self, 'mode_buttons', {}).get(mode)
+        if btn and not btn.isChecked():
+            btn.blockSignals(True)
+            btn.setChecked(True)
+            btn.blockSignals(False)
+        if remember:
+            settings = QtCore.QSettings()
+            settings.setValue("lowerPane/lastMode", self._mode_name(mode))
+
+    def _init_mode_shortcuts(self):
+        self._mode_shortcuts = []
+        shortcuts = [
+            (QtGui.QKeySequence("Ctrl+B"), self.MODE_BROWSE),
+            (QtGui.QKeySequence("Ctrl+M"), self.MODE_MEASURE),
+            (QtGui.QKeySequence("Ctrl+S"), self.MODE_SPECTRO),
+        ]
+        for seq, mode in shortcuts:
+            shortcut = QtWidgets.QShortcut(seq, self)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda m=mode: self._on_mode_shortcut(m))
+            self._mode_shortcuts.append(shortcut)
+
+    def _on_mode_shortcut(self, mode):
+        self._apply_mode(mode)
+        btn = getattr(self, 'mode_buttons', {}).get(mode)
+        if btn:
+            try:
+                btn.setFocus(QtCore.Qt.ShortcutFocusReason)
+            except Exception:
+                pass
+
+    def _reset_display_options(self):
+        defaults = getattr(self, '_display_defaults', {})
+        action_pairs = [
+            (getattr(self, 'matrix_markers_act', None), defaults.get('show_matrix_markers', True)),
+            (getattr(self, 'single_markers_act', None), defaults.get('show_single_markers', True)),
+            (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
+            (getattr(self, 'density_markers_act', None), defaults.get('use_density_markers', True)),
+        ]
+        for action, state in action_pairs:
+            if action is not None:
+                action.setChecked(state)
+
+    def _update_spectro_stats_label(self, stats=None):
+        if not hasattr(self, 'spectro_stats_label'):
+            return
+        if not self.show_spectra:
+            self.spectro_stats_label.setText("Spectros: hidden")
+            return
+        total = len(getattr(self, 'spectros', []) or [])
+        single_count = sum(1 for s in getattr(self, 'spectros', []) if s.get('matrix_index') is None)
+        if stats:
+            total = stats.get('total_specs', total)
+            single_count = stats.get('single_entries', single_count)
+        matrix_datasets = getattr(self, 'matrix_datasets', {}) or {}
+        matrix_count = len(matrix_datasets)
+        sample_ds = next(iter(matrix_datasets.values()), None)
+        matrix_desc = ""
+        if sample_ds:
+            matrix_desc = f" ({sample_ds.cols}x{sample_ds.rows})"
+        elif matrix_count == 0:
+            matrix_desc = ""
+        self.spectro_stats_label.setText(
+            f"Spectros: {total} (Single: {single_count}, Matrix datasets: {matrix_count}{matrix_desc})"
+        )
 
     def _create_shortcuts_panel(self):
         frame = QtWidgets.QFrame()
@@ -2838,13 +3122,55 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.meta_box.setPlainText("Profile mode: drag the yellow endpoints on the main image. Close to exit.")
             self._profile_dialog = None
         else:
-            # exit profile mode
-            self.preview_canvas.enable_profile(False)
-            try: self.measure_profile_btn.setText('Measure profile')
-            except Exception: pass
+            self._disable_profile_mode()
+
+    def _disable_profile_mode(self):
+        canvas = getattr(self, 'preview_canvas', None)
+        if canvas is None:
+            return
+        try:
+            canvas.enable_profile(False)
+        except Exception:
+            pass
+        try:
+            self.measure_profile_btn.setText('Measure profile')
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
+                self._profile_dialog.close()
+                self._profile_dialog = None
+        except Exception:
+            pass
+
+    def _on_exit_profile_mode(self):
+        self._disable_profile_mode()
+
+    def _on_clear_profile_measurement(self):
+        canvas = getattr(self, 'preview_canvas', None)
+        if canvas is None:
+            return
+        was_enabled = getattr(canvas, 'profile_enabled', False)
+        try:
+            canvas.profile_pts = None
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
+                self._profile_dialog.close()
+                self._profile_dialog = None
+        except Exception:
+            pass
+        if was_enabled:
             try:
-                if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
-                    self._profile_dialog.close()
+                canvas.enable_profile(False)
+                canvas.enable_profile(True)
+                self.measure_profile_btn.setText('Exit profile')
+            except Exception:
+                pass
+        else:
+            try:
+                self.measure_profile_btn.setText('Measure profile')
             except Exception:
                 pass
 
@@ -2959,6 +3285,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.spectros_by_image = defaultdict(list)
             self._spectro_deferred = set()
             self._clear_multi_spec_selection()
+            self._update_spectro_stats_label()
             return
         self._spectro_deferred = set()
         self.spectros, spec_stats = self._scan_spectros(folder)
@@ -2986,6 +3313,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._assign_spectros_to_images()
         self.matrix_spectros = [spec for spec in self.spectros if spec.get('matrix_index') is not None]
         self._clear_multi_spec_selection()
+        self._update_spectro_stats_label(spec_stats)
         if refresh:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
@@ -4043,6 +4371,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._update_spectro_stats_label()
 
     def on_show_matrix_markers_toggled(self, checked: bool):
         self.show_matrix_markers = bool(checked)
@@ -4050,6 +4379,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        act = getattr(self, 'matrix_markers_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.show_matrix_markers)
+            act.blockSignals(False)
 
     def on_show_single_markers_toggled(self, checked: bool):
         self.show_single_markers = bool(checked)
@@ -4057,6 +4391,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        act = getattr(self, 'single_markers_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.show_single_markers)
+            act.blockSignals(False)
 
     def on_compact_markers_toggled(self, checked: bool):
         self.compact_markers = bool(checked)
@@ -4064,6 +4403,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        act = getattr(self, 'compact_markers_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.compact_markers)
+            act.blockSignals(False)
 
     def on_density_markers_toggled(self, checked: bool):
         self.use_density_markers = bool(checked)
@@ -4071,6 +4415,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        act = getattr(self, 'density_markers_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.use_density_markers)
+            act.blockSignals(False)
 
     def on_export_selected_same_view(self):
         targets = list(getattr(self, 'thumb_multi_select', set()))
