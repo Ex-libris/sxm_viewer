@@ -24,6 +24,17 @@ All images live in `screenshots/` so you can see the workflow before loading you
 - Spectroscopy panel for single traces, matrix scans, parabola fits, and XYZ export (still being refined, so expect updates).
 - Legacy `sxm_grid_viewer.py` remains as a shim; it now imports the package entry point.
 
+## Usage & display options
+
+After loading a folder (`Open folder`) the viewer parses every `.txt` header and builds thumbnails. Once the grid is ready, a set of checkboxes above the preview panel control how values are displayed:
+
+- **Show SI units** – Forces strict SI base units (meters, amperes, volts). Leave unchecked to auto-scale to human-friendly units such as nm, pm, or pA depending on the signal magnitude.
+- **Relative zero** – Subtracts the minimum value of the active channel so the color bar starts at 0. Toggle off to return to absolute readings from the file header.
+- **Relative axes** – Uses the metadata `X/Y center` and `Range X/Y` to relabel the axes from `(0,0)` at the bottom-left corner to `(range_x, range_y)` without rotating or flipping the image.
+- **Show spectroscopies / Matrix markers / Single markers** – Control whether spectroscopy markers appear on thumbnails and previews. Once a folder’s spectra are scanned they remain cached, so these toggles only hide/show overlays.
+
+Each preview also shows the acquisition date/time next to the file name and the channel name in the colorbar label, making it easy to understand what the palette represents. Combine these switches with the Sort/Filter drop-downs to focus on specific frames or tagging workflows.
+
 ## INSTALLATION : Choose **one** option below.
 
 ### Option A — Local self-contained Python (recommended)

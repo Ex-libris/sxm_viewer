@@ -168,8 +168,27 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.config = load_config()
         self.last_dir = Path(self.config.get("last_dir", str(Path.cwd())))
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
-        self.thumb_cmap = self.config.get("thumbnail_cmap", "viridis")
-        self.preview_cmap = self.config.get("preview_cmap", "viridis")
+        default_cmap = "Blues_r"
+        thumb_cfg = self.config.get("thumbnail_cmap")
+        preview_cfg = self.config.get("preview_cmap")
+        config_changed = False
+        if not thumb_cfg and not preview_cfg:
+            thumb_cfg = preview_cfg = default_cmap
+            self.config['thumbnail_cmap'] = thumb_cfg
+            self.config['preview_cmap'] = preview_cfg
+            config_changed = True
+        elif not thumb_cfg:
+            thumb_cfg = preview_cfg or default_cmap
+            self.config['thumbnail_cmap'] = thumb_cfg
+            config_changed = True
+        elif not preview_cfg:
+            preview_cfg = thumb_cfg or default_cmap
+            self.config['preview_cmap'] = preview_cfg
+            config_changed = True
+        self.thumb_cmap = thumb_cfg or default_cmap
+        self.preview_cmap = preview_cfg or self.thumb_cmap
+        if config_changed:
+            save_config(self.config)
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
