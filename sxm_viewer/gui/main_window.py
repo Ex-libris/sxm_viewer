@@ -13,6 +13,32 @@ from .thumbnails import *
 from .minimap import FrameMiniMap
 from .detail_panels import *
 
+_NUMERIC_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _safe_float(value, default=None):
+    """Best-effort conversion that tolerates unit suffixes like '80 nm'."""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        text = str(value).strip()
+    except Exception:
+        return default
+    if not text:
+        return default
+    match = _NUMERIC_RE.search(text.replace(",", "."))
+    if match:
+        try:
+            return float(match.group(0))
+        except Exception:
+            return default
+    try:
+        return float(text)
+    except Exception:
+        return default
+
 
 class SXMGridViewer(QtWidgets.QWidget):
     FRAME_ZOOM_SLIDER_MIN = 0
@@ -1331,8 +1357,8 @@ class SXMGridViewer(QtWidgets.QWidget):
           </table>
           <div style='height:6px'></div>
           {ch_lines}
-          {('<div style=\'height:6px\'></div><div style=\'font-weight:600; color:#333; margin-bottom:2px\'>Control params</div>' if params_rows else '')}
-          {('<table style=\'width:100%; border-collapse:collapse\' cellspacing=\'0\' cellpadding=\'2\'>' + params_rows + '</table>') if params_rows else ''}
+          {("<div style='height:6px'></div><div style='font-weight:600; color:#333; margin-bottom:2px'>Control params</div>" if params_rows else '')}
+          {("<table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>" + params_rows + "</table>") if params_rows else ''}
           {scan_section}
         </div>
         """
@@ -3035,4 +3061,3 @@ class SXMGridViewer(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, 'Purge config', 'Configuration and tags purged. Please reopen your folder.')
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, 'Purge failed', str(e))
-

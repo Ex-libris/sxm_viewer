@@ -26,8 +26,10 @@ data/
 offline_bundle/
 test_xyz_exports/
 backup_2/
+# Keep source helpers tracked even though they live under `sxm_viewer/data`
+!sxm_viewer/data/
+!sxm_viewer/data/**
 
 # Logs & temporary files
 *.log
 *.tmp
-
