@@ -24,21 +24,105 @@ All images live in `screenshots/` so you can see the workflow before loading you
 - Spectroscopy panel for single traces, matrix scans, parabola fits, and XYZ export (still being refined, so expect updates).
 - Legacy `sxm_grid_viewer.py` remains as a shim; it now imports the package entry point.
 
-## Install and run
+## INSTALLATION : Choose **one** option below.
 
-1) Clone or unzip the repo and work from the folder that contains `install.py`.
-2) Create the environment and install dependencies (Python 3.9–3.12 recommended):
+### Option A — Local self-contained Python (recommended)
+
+This option creates a local Python environment inside the repo.
+Nothing global is changed.
+
+### What you start with
+- You already have **some Python** on your system
+- That Python is only used to start the installer
+
+### What happens
+1. You run:
+   ```bash
+   python install.py
    ```
-   python install.py          # add --reset to rebuild .venv from scratch
+2. That Python runs `install.py`
+3. `install.py` uses `venv` to create:
+   ```text
+   .venv/
+     bin/ (or Scripts/)
+       python
    ```
-   - Prefer double-clicking? `install_sxm_viewer.bat` picks a working interpreter (`PYTHON` env, `.venv`, Conda, `py -3`, then PATH) and runs the same script.
-   - The installer builds a fresh `.venv` and now honours a `PYTHON` path if you need a specific interpreter.
-3) Launch the viewer:
-   ```
-   python -m sxm_viewer
-   ```
-   - Shortcut for lab PCs: `run_sxm_viewer.bat` auto-selects the local env and validates imports before launching.
-   - Alternate entry points: `python -m sxm_viewer.cli` or `python sxm_grid_viewer.py`.
+4. The Python inside `.venv/` is:
+   - the **same version** as the one you started with
+   - placed in a new directory
+5. All required packages are installed **only** into `.venv/`
+
+### Run
+No activation needed.
+
+```bash
+python -m sxm_viewer
+```
+
+Equivalent and explicit:
+
+```bash
+.venv/bin/python -m sxm_viewer      # macOS / Linux
+.venv\Scripts\python -m sxm_viewer  # Windows
+```
+
+### What this option is NOT
+- does not touch system Python
+- does not create global executables
+- does not use Conda
+
+---
+
+### Option B — Use your own existing environment
+
+Use this if you already manage your Python env
+(Conda, venv, system Python).
+
+### Steps
+```bash
+git clone https://github.com/Ex-libris/sxm_viewer
+cd sxm_viewer
+python -m pip install -r requirements.txt
+python -m sxm_viewer
+```
+
+Everything installs into **your active Python**.
+
+---
+
+### Option C — Conda environment
+
+Explicit create → activate → install → run.
+
+```bash
+conda create -n sxm_viewer python=3.11
+conda activate sxm_viewer
+git clone https://github.com/Ex-libris/sxm_viewer
+cd sxm_viewer
+python -m pip install -r requirements.txt
+python -m sxm_viewer
+```
+
+Leave later with:
+```bash
+conda deactivate
+```
+
+Do not use `install.py` if you choose this option.
+
+---
+
+### Option D — Windows double-click
+
+No terminal required.
+
+- `install_sxm_viewer.bat`  
+  Builds `.venv/` and installs packages
+
+- `run_sxm_viewer.bat`  
+  Finds the local Python and starts the app
+
+---
 
 ## Notes
 
