@@ -223,6 +223,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectros = []
         self.matrix_spectros = []
         self.spectros_by_image = defaultdict(list)
+        self._spectros_loaded = False
         self._spectro_cache = {}
         self._spectro_deferred = set()
         # spectro_eager_limit: 0 means no deferral; otherwise minimum of 5000 to avoid accidental truncation
@@ -3520,6 +3521,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._reload_spectros(refresh=True)
 
     def _reload_spectros(self, refresh=True):
+        # unless we complete a successful reload, consider spectra cache stale
+        self._spectros_loaded = False
         try:
             folder = getattr(self, 'spec_folder_path', None) or self.last_dir
             folder = Path(folder)
@@ -3560,6 +3563,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.matrix_spectros = [spec for spec in self.spectros if spec.get('matrix_index') is not None]
         self._clear_multi_spec_selection()
         self._update_spectro_stats_label(spec_stats)
+        self._spectros_loaded = True
         if refresh:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
@@ -4609,15 +4613,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_spectra = bool(checked)
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         if self.show_spectra:
-            self._reload_spectros(refresh=False)
+            if not self._spectros_loaded:
+                self._reload_spectros(refresh=False)
+            else:
+                # already loaded for this session; just update counts
+                self._update_spectro_stats_label()
         else:
-            self.spectros = []
-            self.spectros_by_image = defaultdict(list)
             self._clear_multi_spec_selection()
+            self._update_spectro_stats_label()
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._update_spectro_stats_label()
 
     def on_show_matrix_markers_toggled(self, checked: bool):
         self.show_matrix_markers = bool(checked)
