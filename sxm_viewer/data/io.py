@@ -156,9 +156,7 @@ def read_channel_file(
     path = Path(path)
     arr = _load_ascii_grid(path, target_count)
     if arr is None:
-        arr = _load_binary_grid(path, target_count, dtype="<f4")
-    if arr is None:
-        arr = _load_binary_grid(path, target_count, dtype="<f8")
+        arr = _load_binary_with_inference(path, target_count)
     if arr is None:
         arr = _load_tokenized_grid(path, target_count)
     if arr is None:
@@ -301,7 +299,7 @@ def _load_ascii_grid(path: Path, count: int) -> Optional[np.ndarray]:
     return data.reshape(-1)
 
 
-def _load_binary_grid(path: Path, count: int, dtype: str) -> Optional[np.ndarray]:
+def _load_binary_grid(path: Path, count: int, dtype) -> Optional[np.ndarray]:
     try:
         data = np.fromfile(path, dtype=dtype, count=count)
     except Exception:
@@ -327,6 +325,77 @@ def _load_tokenized_grid(path: Path, count: int) -> Optional[np.ndarray]:
     if not tokens:
         return None
     return np.asarray(tokens, dtype=float)
+
+
+def _load_binary_with_inference(path: Path, count: int) -> Optional[np.ndarray]:
+    """
+    Attempt to read ``path`` as a binary grid by inferring a suitable dtype.
+    Priority:
+      1. Use filesize hints (bytes per sample) to choose candidates.
+      2. Prefer integer dtypes for ``.int`` style files so controller counts are decoded correctly.
+      3. Fall back to float32/float64.
+    """
+    candidates = _binary_dtype_candidates(path, count)
+    for code in candidates:
+        dtype = np.dtype(code).newbyteorder("<")
+        arr = _load_binary_grid(path, count, dtype=dtype)
+        if arr is None or arr.size == 0:
+            continue
+        return arr
+    # as a last resort try generic floats
+    for code in ("<f4", "<f8"):
+        dtype = np.dtype(code).newbyteorder("<")
+        arr = _load_binary_grid(path, count, dtype=dtype)
+        if arr is not None and arr.size:
+            return arr
+    return None
+
+
+def _binary_dtype_candidates(path: Path, target_count: int) -> List[str]:
+    suffix = path.suffix.lower()
+    prefer_int = suffix in {".int", ".ita", ".it", ".itm"}
+    try:
+        size = path.stat().st_size
+    except Exception:
+        size = 0
+    approx = 0
+    if size and target_count:
+        approx = int(round(size / max(1, target_count)))
+    order: List[str] = []
+    seen = set()
+
+    def _extend(items):
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                order.append(item)
+
+    size_hints = {
+        1: ("<u1", "<i1"),
+        2: ("<i2", "<u2"),
+        4: ("<i4", "<u4", "<f4"),
+        8: ("<i8", "<u8", "<f8"),
+    }
+    if approx in size_hints:
+        _extend(size_hints[approx])
+    if prefer_int:
+        _extend(("<i4", "<u4", "<i2", "<u2", "<i8", "<u8"))
+        _extend(("<f4", "<f8"))
+    else:
+        _extend(("<f4", "<f8"))
+        _extend(("<i4", "<u4", "<i2", "<u2", "<i8", "<u8"))
+    if not order:
+        _extend(("<f4", "<f8", "<i4", "<u4"))
+    valid: List[str] = []
+    for code in order:
+        dtype = np.dtype(code)
+        itemsize = dtype.itemsize or 1
+        if size and (size % itemsize) not in (0, itemsize - 1):
+            # tolerate padding but skip obvious mismatches
+            if (size // itemsize) < target_count:
+                continue
+        valid.append(code)
+    return valid or ["<f4", "<f8"]
 
 
 _UNIT_NORMALIZATION: Dict[str, Tuple[str, float]] = {

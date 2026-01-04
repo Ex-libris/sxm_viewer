@@ -63,16 +63,22 @@ class MultiPreviewCanvas(FigureCanvas):
             if i == 0:
                 self.main_ax = ax
             arr = np.asarray(v['arr'])
+            flip = bool(v.get('relative_axes'))
+            if flip:
+                arr_plot = np.flipud(arr)
+            else:
+                arr_plot = arr
             extent = v.get('extent', None)
             cmap = v.get('cmap', 'viridis')
+            origin = 'lower' if flip else 'upper'
             if extent is None:
-                im = ax.imshow(arr, origin='upper', interpolation='nearest', cmap=cmap)
+                im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
-                im = ax.imshow(arr, extent=extent, origin='upper', interpolation='nearest', aspect='equal', cmap=cmap)
-            unit = v.get('unit', '')
-            if unit:
+                im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            cbar_label = v.get('colorbar_label') or v.get('unit', '')
+            if cbar_label:
                 cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
-                cbar.set_label(unit)
+                cbar.set_label(cbar_label)
             title = v.get('title', '')
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
