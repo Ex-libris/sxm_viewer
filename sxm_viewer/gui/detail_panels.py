@@ -1,6 +1,8 @@
 """Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import itertools
+
 from .._shared import *
 from ..config import *
 from ..data.io import *
@@ -14,6 +16,7 @@ class MultiPreviewCanvas(FigureCanvas):
         super().__init__(self.fig)
         if parent is not None:
             self.setParent(parent)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.views = []
         self._ax_view_map = {}
         self._copy_feedback_handler = None
@@ -26,14 +29,33 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line = None
         self._profile_p0 = None
         self._profile_p1 = None
+        self._profile_ticks = []
+        self._profile_info_text = None
+        self._saved_profiles = []
+        self._profile_color_cycle = itertools.cycle([
+            '#03a9f4', '#8bc34a', '#e91e63', '#ff7043',
+            '#673ab7', '#009688', '#cddc39', '#f06292',
+            '#00acc1', '#9ccc65', '#5c6bc0', '#ec407a'
+        ])
+        self._line_drag_origin = None
+        self._active_profile_color = '#fbc02d'
+        self._highlighted_overlay = None
         self._cids = []
         self._base_click_cid = self.mpl_connect('button_press_event', self._on_base_click)
         self._dragging = None  # 'p0' or 'p1'
         self.main_ax = None
-        self.profile_callback = None  # callable(x_px, vals, length_nm)
+        self.profile_callback = None  # callable(active_dataset, saved_datasets)
+        self._profile_highlight_cb = None
+        self._profile_label_scale = 1.0
+        self._view_font_scale = 1.0
+        self._detail_dark = False
+        self._detail_grid = False
+        self._colorbars = []
 
     def set_views(self, views):
         self.views = views[:]
+        # whenever a new view set arrives, clear saved overlays so we don't mix files
+        self._clear_saved_profile_artists(notify=False)
         self._redraw()
 
     def clear_views(self):
@@ -52,6 +74,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _redraw(self):
         self.fig.clf()
         self._ax_view_map = {}
+        self._colorbars = []
         n = len(self.views)
         if n == 0:
             self.draw(); return
@@ -75,15 +98,19 @@ class MultiPreviewCanvas(FigureCanvas):
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
                 im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            ax.set_autoscale_on(False)
             cbar_label = v.get('colorbar_label') or v.get('unit', '')
             if cbar_label:
                 cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
                 cbar.set_label(cbar_label)
+                self._colorbars.append(cbar)
             title = v.get('title', '')
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
         try: self.fig.tight_layout()
         except Exception: pass
+        self._apply_view_theme()
+        self._apply_view_font_scale()
         # if profile mode is enabled, (re)create artists on main ax
         if self.profile_enabled:
             self._ensure_profile_artists()
@@ -93,11 +120,121 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_profile_callback(self, cb):
         self.profile_callback = cb
 
+    def set_profile_highlight_callback(self, cb):
+        self._profile_highlight_cb = cb
+
+    def set_profile_label_scale(self, scale):
+        try:
+            scale = float(scale)
+        except Exception:
+            return
+        scale = max(0.6, min(2.5, scale))
+        if abs(scale - self._profile_label_scale) <= 1e-3:
+            return
+        self._profile_label_scale = scale
+        self._update_profile_markers()
+        for entry in self._saved_profiles:
+            text = entry.get('label_artist')
+            base = entry.get('label_base_size', 8.0)
+            if text is not None:
+                try:
+                    text.set_fontsize(base * self._profile_label_scale)
+                except Exception:
+                    pass
+        self.draw_idle()
+
+    def set_detail_theme(self, *, dark=None, grid=None):
+        changed = False
+        if dark is not None and bool(dark) != self._detail_dark:
+            self._detail_dark = bool(dark)
+            changed = True
+        if grid is not None and bool(grid) != self._detail_grid:
+            self._detail_grid = bool(grid)
+            changed = True
+        if changed:
+            self._apply_view_theme()
+
+    def _apply_view_theme(self):
+        dark = bool(self._detail_dark)
+        fig_face = '#111217' if dark else '#ffffff'
+        ax_face = '#14161c' if dark else '#ffffff'
+        text_color = '#f5f5f5' if dark else '#111111'
+        grid_color = '#4f5a64' if dark else '#9a9a9a'
+        try:
+            self.fig.set_facecolor(fig_face)
+        except Exception:
+            pass
+        for ax in self.fig.axes:
+            try:
+                is_colorbar = ax in [cbar.ax for cbar in self._colorbars]
+            except Exception:
+                is_colorbar = False
+            try:
+                ax.set_facecolor(ax_face if not is_colorbar else fig_face)
+                ax.tick_params(colors=text_color, labelcolor=text_color)
+                ax.xaxis.label.set_color(text_color)
+                ax.yaxis.label.set_color(text_color)
+                for spine in ax.spines.values():
+                    spine.set_color(text_color)
+                if not is_colorbar:
+                    if self._detail_grid:
+                        ax.grid(True, color=grid_color, alpha=0.3, linewidth=0.6)
+                    else:
+                        ax.grid(False)
+            except Exception:
+                pass
+        for cbar in getattr(self, '_colorbars', []):
+            try:
+                cbar.ax.tick_params(colors=text_color, labelcolor=text_color)
+                cbar.ax.yaxis.label.set_color(text_color)
+                cbar.ax.xaxis.label.set_color(text_color)
+                cbar.outline.set_edgecolor(text_color)
+            except Exception:
+                pass
+        self.draw_idle()
+
+    def _apply_view_font_scale(self):
+        scale = max(0.6, min(1.8, getattr(self, '_view_font_scale', 1.0)))
+        tick_size = 8 * scale
+        label_size = 10 * scale
+        title_size = 9 * scale
+        for ax in self.fig.axes:
+            try:
+                ax.tick_params(labelsize=tick_size)
+                ax.xaxis.label.set_fontsize(label_size)
+                ax.yaxis.label.set_fontsize(label_size)
+                ax.title.set_fontsize(title_size)
+            except Exception:
+                pass
+        for cbar in getattr(self, '_colorbars', []):
+            try:
+                cbar.ax.tick_params(labelsize=tick_size)
+                cbar.ax.yaxis.label.set_fontsize(label_size)
+                cbar.ax.xaxis.label.set_fontsize(label_size)
+            except Exception:
+                pass
+        self.draw_idle()
+
     def set_copy_feedback_handler(self, handler):
         self._copy_feedback_handler = handler
 
     def set_value_callback(self, cb):
         self._value_callback = cb
+
+    def wheelEvent(self, event):
+        try:
+            mods = event.modifiers()
+        except Exception:
+            mods = QtCore.Qt.NoModifier
+        if mods & QtCore.Qt.ControlModifier:
+            delta = event.angleDelta().y() if hasattr(event, 'angleDelta') else 0
+            if delta:
+                step = 0.05 * (1 if delta > 0 else -1)
+                self._view_font_scale = min(1.8, max(0.6, self._view_font_scale + step))
+                self._apply_view_font_scale()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def enable_profile(self, enable:bool):
         if enable == self.profile_enabled:
@@ -110,7 +247,18 @@ class MultiPreviewCanvas(FigureCanvas):
             self._disconnect_profile_events()
             self._clear_profile_artists()
             self.profile_pts = None
+            self._clear_saved_profile_artists(notify=False)
         self.draw_idle()
+
+    def keyPressEvent(self, event):
+        if self.profile_enabled and event is not None:
+            try:
+                if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
+                    self._undo_last_profile_snapshot()
+                    return
+            except Exception:
+                pass
+        super().keyPressEvent(event)
 
     def _connect_profile_events(self):
         if self._cids:
@@ -146,11 +294,15 @@ class MultiPreviewCanvas(FigureCanvas):
                         y0 = ymax + 0.5*(ymin - ymax); y1 = y0
                 except Exception:
                     x0 = 0.25; x1 = 0.75; y0 = y1 = 0.5
-                self.profile_pts = (x0, y0, x1, y1)
+                self._set_profile_pts((x0, y0, x1, y1))
+            x0, y0, x1, y1 = self.profile_pts or (x0, y0, x1, y1)
+            self._set_profile_pts((x0, y0, x1, y1))
             x0, y0, x1, y1 = self.profile_pts
-            self._profile_line, = self.main_ax.plot([x0,x1],[y0,y1], color='yellow', lw=2, alpha=0.9, zorder=9)
-            self._profile_p0, = self.main_ax.plot([x0],[y0], marker='o', color='yellow', ms=7, mec='black', mew=1.0, zorder=10)
-            self._profile_p1, = self.main_ax.plot([x1],[y1], marker='o', color='yellow', ms=7, mec='black', mew=1.0, zorder=10)
+            color = self._active_profile_color
+            self._profile_line, = self.main_ax.plot([x0,x1],[y0,y1], color=color, lw=2, alpha=0.95, zorder=9)
+            self._profile_p0, = self.main_ax.plot([x0],[y0], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
+            self._profile_p1, = self.main_ax.plot([x1],[y1], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
+            self._update_profile_markers()
 
     def _clear_profile_artists(self):
         for art in (self._profile_line, self._profile_p0, self._profile_p1):
@@ -160,6 +312,7 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         self._profile_line = self._profile_p0 = self._profile_p1 = None
+        self._remove_profile_markers()
         self.draw_idle()
 
     def _update_profile_artists(self):
@@ -169,98 +322,137 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line.set_data([x0,x1],[y0,y1])
         self._profile_p0.set_data([x0],[y0])
         self._profile_p1.set_data([x1],[y1])
+        self._update_profile_markers()
         self.draw_idle()
         self._emit_profile()
 
-    def _pt_distance_pixels(self, x, y, xp, yp):
+    def activate_saved_profile(self, index):
+        """Promote a saved overlay back to the active profile line."""
+        if index is None or not self._saved_profiles:
+            return False
         try:
-            p_scr = self.main_ax.transData.transform((x, y))
-            q_scr = self.main_ax.transData.transform((xp, yp))
-            dx = p_scr[0] - q_scr[0]; dy = p_scr[1] - q_scr[1]
-            return (dx*dx + dy*dy) ** 0.5
+            idx = int(index)
         except Exception:
-            return float('inf')
-
-    def _on_press(self, event):
-        if not self.profile_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
-            return
-        if event.button != 1:
-            return
-        x, y = event.xdata, event.ydata
-        if x is None or y is None:
-            return
-        if self.profile_pts is None:
-            self.profile_pts = (x, y, x, y)
-            self._ensure_profile_artists()
-            self._dragging = 'p1'
-            self._update_profile_artists()
-            return
-        x0, y0, x1, y1 = self.profile_pts
-        d0 = self._pt_distance_pixels(x, y, x0, y0)
-        d1 = self._pt_distance_pixels(x, y, x1, y1)
-        thresh = 10.0  # pixels
-        if d0 <= thresh or d0 <= d1:
-            if d0 <= thresh:
-                self._dragging = 'p0'
-                return
-        if d1 <= thresh:
-            self._dragging = 'p1'
-            return
-        # else: start a new line from here
-        self.profile_pts = (x, y, x, y)
-        self._dragging = 'p1'
+            return False
+        if idx < 0 or idx >= len(self._saved_profiles):
+            return False
+        entry = self._saved_profiles.pop(idx)
+        # remove overlay artists from canvas
+        for art in entry.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        # promote saved path to active profile
+        pts = entry.get('pts')
+        if pts is None:
+            return False
+        self._set_profile_pts(tuple(pts))
+        self._ensure_profile_artists()
         self._update_profile_artists()
+        self.draw_idle()
+        self._emit_profile()
+        return True
 
-    def _on_motion(self, event):
-        if not self.profile_enabled or self._dragging is None or event.inaxes is None or event.inaxes is not self.main_ax:
-            return
-        x, y = event.xdata, event.ydata
-        if x is None or y is None:
-            return
-        x0, y0, x1, y1 = self.profile_pts
-        if self._dragging == 'p0':
-            self.profile_pts = (x, y, x1, y1)
-        elif self._dragging == 'p1':
-            self.profile_pts = (x0, y0, x, y)
-        self._update_profile_artists()
+    def _remove_profile_markers(self):
+        for tick in getattr(self, '_profile_ticks', []):
+            try:
+                if tick is not None:
+                    tick.remove()
+            except Exception:
+                pass
+        self._profile_ticks = []
+        if self._profile_info_text is not None:
+            try:
+                self._profile_info_text.remove()
+            except Exception:
+                pass
+        self._profile_info_text = None
 
-    def _on_release(self, event):
-        if not self.profile_enabled:
-            return
-        self._dragging = None
+    def _profile_axis_unit(self):
+        if not self.views:
+            return 'px'
+        v0 = self.views[0]
+        axis_unit = v0.get('axis_unit')
+        if axis_unit:
+            return axis_unit
+        return 'px' if v0.get('extent') is None else 'axis units'
 
-    def _emit_profile(self):
-        if not callable(self.profile_callback):
+    def _format_profile_label(self, pts):
+        x0, y0, x1, y1 = pts
+        dx = abs(float(x1) - float(x0))
+        dy = abs(float(y1) - float(y0))
+        length = float(math.hypot(dx, dy))
+        unit = self._profile_axis_unit()
+        return f"L={length:.3g} {unit} | dx={dx:.3g} {unit} | dy={dy:.3g} {unit}"
+
+    def _create_ticks_and_label(self, pts, color, alpha=0.85, base_size=9):
+        ticks = []
+        size = base_size * getattr(self, '_profile_label_scale', 1.0)
+        try:
+            fractions = (0.25, 0.5, 0.75)
+            for frac in fractions:
+                x = pts[0] + (pts[2] - pts[0]) * frac
+                y = pts[1] + (pts[3] - pts[1]) * frac
+                tick, = self.main_ax.plot(
+                    [x], [y], marker='s', color=color,
+                    ms=max(3.0, 4.0 * self._profile_label_scale),
+                    alpha=alpha, zorder=9)
+                ticks.append(tick)
+            label_text = self._format_profile_label(pts)
+            xm = pts[0] + (pts[2] - pts[0]) * 0.5
+            ym = pts[1] + (pts[3] - pts[1]) * 0.5
+            text = self.main_ax.text(
+                xm, ym, label_text, color=color, fontsize=size,
+                ha='center', va='center',
+                bbox={'facecolor': 'black', 'alpha': 0.35, 'edgecolor': 'none', 'pad': 2},
+                zorder=11)
+        except Exception:
+            for tick in ticks:
+                try:
+                    tick.remove()
+                except Exception:
+                    pass
+            return [], None
+        return ticks, text
+
+    def _update_profile_markers(self):
+        if self.profile_pts is None or self.main_ax is None:
+            self._remove_profile_markers()
             return
+        self._remove_profile_markers()
+        ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+        self._profile_ticks = ticks
+        self._profile_info_text = text
+
+    def _build_profile_data(self, pts, color=None):
+        if pts is None or not self.views:
+            return None
         try:
             v0 = self.views[0]
             arr = np.asarray(v0['arr'], dtype=float)
             h, w = arr.shape
             extent = v0.get('extent', None)
-            x0, y0, x1, y1 = self.profile_pts
-            # map data coords to pixel indices
+            axis_unit = self._profile_axis_unit()
+            x0, y0, x1, y1 = pts
             if extent is None:
                 c0 = x0; r0 = y0; c1 = x1; r1 = y1
                 length_nm = None
             else:
                 xmin, xmax = extent[0], extent[1]
                 ymin, ymax = extent[2], extent[3]
-                # our extent is [0, XRange, YRange, 0] so use ranges directly
                 xr = (xmax - xmin) if (xmax is not None and xmin is not None) else 1.0
-                yr = (ymin - ymax) if (ymin is not None and ymax is not None) else 1.0  # note inverted
+                yr = (ymin - ymax) if (ymin is not None and ymax is not None) else 1.0
                 c0 = (x0 - xmin) / (xr + 1e-12) * (w - 1)
                 c1 = (x1 - xmin) / (xr + 1e-12) * (w - 1)
-                # y increases downward in array index
-                # since extent top=ymax (0) and bottom=ymin (YRange), map linearly
                 r0 = (y0 - ymax) / (ymin - ymax + 1e-12) * (h - 1)
                 r1 = (y1 - ymax) / (ymin - ymax + 1e-12) * (h - 1)
-                # physical length in nm using data coords directly
                 try:
                     dx_nm = (x1 - x0); dy_nm = (y1 - y0)
-                    length_nm = float((dx_nm*dx_nm + dy_nm*dy_nm) ** 0.5)
+                    length_nm = float(math.hypot(dx_nm, dy_nm))
                 except Exception:
                     length_nm = None
-            # sample along the line using bilinear interpolation
             n = int(max(2, round(((c1 - c0)**2 + (r1 - r0)**2) ** 0.5) + 1))
             t = np.linspace(0.0, 1.0, n)
             cc = c0 + (c1 - c0) * t
@@ -281,7 +473,333 @@ class MultiPreviewCanvas(FigureCanvas):
             )
             x_px = np.linspace(0.0, float(n - 1), n)
             unit = v0.get('unit', None)
-            self.profile_callback(x_px, vals, length_nm, unit)
+            x_phys = None
+            distance_unit = 'px'
+            if length_nm is not None and n > 1:
+                try:
+                    scale = float(length_nm) / float(n - 1)
+                    x_phys = x_px * scale
+                    if axis_unit:
+                        distance_unit = axis_unit
+                except Exception:
+                    x_phys = None
+            return {
+                'x_px': x_px,
+                'x_nm': x_phys,
+                'vals': vals,
+                'length_nm': length_nm,
+                'unit': unit,
+                'axis_unit': axis_unit,
+                'distance_unit': distance_unit if x_phys is not None else 'px',
+                'color': color,
+                'label': self._format_profile_label(pts),
+                'relative_axes': bool(self.views[0].get('relative_axes')),
+            }
+        except Exception:
+            return None
+
+    def _pt_distance_pixels(self, x, y, xp, yp):
+        try:
+            p_scr = self.main_ax.transData.transform((x, y))
+            q_scr = self.main_ax.transData.transform((xp, yp))
+            dx = p_scr[0] - q_scr[0]; dy = p_scr[1] - q_scr[1]
+            return (dx*dx + dy*dy) ** 0.5
+        except Exception:
+            return float('inf')
+
+    def _profile_bounds(self):
+        try:
+            v0 = self.views[0]
+            extent = v0.get('extent')
+            arr = np.asarray(v0['arr'])
+            h, w = arr.shape
+            if extent is None:
+                return (0.0, float(w - 1), 0.0, float(h - 1))
+            x0, x1, y1, y0 = extent
+            return (min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1))
+        except Exception:
+            return (-1e6, 1e6, -1e6, 1e6)
+
+    def _clamp_profile_pts(self, x0, y0, x1, y1):
+        xmin, xmax, ymin, ymax = self._profile_bounds()
+        return (
+            max(xmin, min(xmax, x0)),
+            max(ymin, min(ymax, y0)),
+            max(xmin, min(xmax, x1)),
+            max(ymin, min(ymax, y1)),
+        )
+
+    def _set_profile_pts(self, pts):
+        if pts is None:
+            self.profile_pts = None
+            return
+        x0, y0, x1, y1 = pts
+        self.profile_pts = self._clamp_profile_pts(x0, y0, x1, y1)
+
+    def _shift_pressed(self, event):
+        key = getattr(event, 'key', None)
+        if key and 'shift' in str(key).lower():
+            return True
+        gui = getattr(event, 'guiEvent', None)
+        try:
+            if gui is not None and gui.modifiers() & QtCore.Qt.ShiftModifier:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _snapshot_active_profile(self):
+        if self.profile_pts is None or self.main_ax is None:
+            return
+        pts = tuple(self.profile_pts)
+        color = next(self._profile_color_cycle)
+        line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], color=color, lw=1.5, alpha=0.7, zorder=6, linestyle='--')
+        p0, = self.main_ax.plot([pts[0]], [pts[1]], marker='o', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+        p1, = self.main_ax.plot([pts[2]], [pts[3]], marker='o', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+        base_size = 8
+        ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
+        artists = [line, p0, p1] + ticks + ([text] if text is not None else [])
+        data = self._build_profile_data(pts, color=color)
+        entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data}
+        if text is not None:
+            entry['label_artist'] = text
+            entry['label_base_size'] = base_size
+        self._saved_profiles.append(entry)
+        self.draw_idle()
+        self._emit_profile()
+
+    def _distance_to_segment_pixels(self, x, y, pts):
+        try:
+            px, py = self.main_ax.transData.transform((x, y))
+            x0, y0 = self.main_ax.transData.transform((pts[0], pts[1]))
+            x1, y1 = self.main_ax.transData.transform((pts[2], pts[3]))
+            vx, vy = x1 - x0, y1 - y0
+            if vx == 0 and vy == 0:
+                return ((px - x0)**2 + (py - y0)**2) ** 0.5
+            t = ((px - x0) * vx + (py - y0) * vy) / (vx * vx + vy * vy)
+            t = max(0.0, min(1.0, t))
+            proj_x = x0 + t * vx
+            proj_y = y0 + t * vy
+            return ((px - proj_x)**2 + (py - proj_y)**2) ** 0.5
+        except Exception:
+            return float('inf')
+
+    def _delete_snapshot_near(self, x, y):
+        if x is None or y is None or not self._saved_profiles:
+            return
+        target = None
+        for entry in reversed(self._saved_profiles):
+            pts = entry.get('pts')
+            if pts is None:
+                continue
+            dist = self._distance_to_segment_pixels(x, y, pts)
+            if dist <= 12.0:
+                target = entry
+                break
+        if target is None:
+            return
+        for art in target.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        self._saved_profiles.remove(target)
+        self.draw_idle()
+        self._emit_profile()
+
+    def _remove_saved_profile(self, idx):
+        if idx < 0 or idx >= len(self._saved_profiles):
+            return
+        entry = self._saved_profiles.pop(idx)
+        for art in entry.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        self.highlight_saved_profile(None)
+        if self._profile_highlight_cb:
+            try:
+                self._profile_highlight_cb(None)
+            except Exception:
+                pass
+        self.draw_idle()
+        self._emit_profile()
+
+    def _overlay_index_near(self, x, y, thresh=10.0):
+        if x is None or y is None or not self._saved_profiles:
+            return None
+        screen_pt = self.main_ax.transData.transform((x, y))
+        for idx in reversed(range(len(self._saved_profiles))):
+            entry = self._saved_profiles[idx]
+            pts = entry.get('pts')
+            if pts is None:
+                continue
+            try:
+                x0, y0, x1, y1 = pts
+                p0 = self.main_ax.transData.transform((x0, y0))
+                p1 = self.main_ax.transData.transform((x1, y1))
+                vx, vy = p1[0]-p0[0], p1[1]-p0[1]
+                if vx == 0 and vy == 0:
+                    dist = ((screen_pt[0]-p0[0])**2 + (screen_pt[1]-p0[1])**2) ** 0.5
+                else:
+                    t = ((screen_pt[0]-p0[0])*vx + (screen_pt[1]-p0[1])*vy)/(vx*vx+vy*vy)
+                    t = max(0.0, min(1.0, t))
+                    proj = (p0[0]+t*vx, p0[1]+t*vy)
+                    dist = ((screen_pt[0]-proj[0])**2 + (screen_pt[1]-proj[1])**2) ** 0.5
+                if dist <= thresh:
+                    return idx
+            except Exception:
+                continue
+        return None
+
+    def _undo_last_profile_snapshot(self):
+        if not self._saved_profiles:
+            return
+        entry = self._saved_profiles.pop()
+        for art in entry.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        self.draw_idle()
+        self._emit_profile()
+
+    def _clear_saved_profile_artists(self, notify=False):
+        for entry in self._saved_profiles:
+            for art in entry.get('artists', []):
+                try:
+                    if art is not None:
+                        art.remove()
+                except Exception:
+                    pass
+        self._saved_profiles = []
+        self._highlighted_overlay = None
+        self.draw_idle()
+        if notify:
+            self._emit_profile()
+
+    def clear_saved_profiles(self, notify=True):
+        self._clear_saved_profile_artists(notify=notify)
+
+    def highlight_saved_profile(self, index):
+        """Update overlay styling to emphasize a selected entry."""
+        self._highlighted_overlay = index if index is not None else None
+        for idx, entry in enumerate(self._saved_profiles):
+            artists = entry.get('artists', [])
+            if not artists:
+                continue
+            line = artists[0]
+            try:
+                if idx == self._highlighted_overlay:
+                    line.set_linewidth(2.5)
+                    line.set_alpha(1.0)
+                else:
+                    line.set_linewidth(1.5)
+                    line.set_alpha(0.75)
+            except Exception:
+                pass
+        self.draw_idle()
+
+    def _on_press(self, event):
+        if not self.profile_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
+            return
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return
+        shift_pressed = self._shift_pressed(event)
+        if event.button == 3:
+            overlay_idx = self._overlay_index_near(x, y)
+            if overlay_idx is not None:
+                self._remove_saved_profile(overlay_idx)
+                return
+            return
+        if event.button != 1:
+            return
+        if self.profile_pts is None:
+            self._set_profile_pts((x, y, x, y))
+            self._ensure_profile_artists()
+            self._dragging = 'p1'
+            self._update_profile_artists()
+            return
+        x0, y0, x1, y1 = self.profile_pts
+        d0 = self._pt_distance_pixels(x, y, x0, y0)
+        d1 = self._pt_distance_pixels(x, y, x1, y1)
+        thresh = 18.0  # pixels
+        if d0 <= thresh or d0 <= d1:
+            if d0 <= thresh:
+                self._dragging = 'p0'
+                self._line_drag_origin = None
+                return
+        if d1 <= thresh:
+            self._dragging = 'p1'
+            self._line_drag_origin = None
+            return
+        if self.profile_pts is not None:
+            dist_line = self._distance_to_segment_pixels(x, y, self.profile_pts)
+            if dist_line <= thresh:
+                self._dragging = 'line'
+                self._line_drag_origin = (x, y, self.profile_pts)
+                return
+        overlay_idx = self._overlay_index_near(x, y)
+        if overlay_idx is not None:
+            self.highlight_saved_profile(overlay_idx)
+            if callable(self._profile_highlight_cb):
+                try:
+                    self._profile_highlight_cb(overlay_idx)
+                except Exception:
+                    pass
+            self._dragging = None
+            self._line_drag_origin = None
+            return
+        # else: start a new line from here
+        if shift_pressed:
+            self._snapshot_active_profile()
+        self._set_profile_pts((x, y, x, y))
+        self._dragging = 'p1'
+        self._line_drag_origin = None
+        self._update_profile_artists()
+
+    def _on_motion(self, event):
+        if not self.profile_enabled or self._dragging is None or event.inaxes is None or event.inaxes is not self.main_ax:
+            return
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return
+        x0, y0, x1, y1 = self.profile_pts
+        if self._dragging == 'p0':
+            self._set_profile_pts((x, y, x1, y1))
+        elif self._dragging == 'p1':
+            self._set_profile_pts((x0, y0, x, y))
+        elif self._dragging == 'line' and self._line_drag_origin is not None and self.profile_pts is not None:
+            sx, sy, pts = self._line_drag_origin
+            dx = x - sx
+            dy = y - sy
+            self._set_profile_pts((pts[0] + dx, pts[1] + dy, pts[2] + dx, pts[3] + dy))
+        self._update_profile_artists()
+
+    def _on_release(self, event):
+        if not self.profile_enabled:
+            return
+        self._dragging = None
+        self._line_drag_origin = None
+
+    def _emit_profile(self):
+        if not callable(self.profile_callback):
+            return
+        active = self._build_profile_data(self.profile_pts, color=self._active_profile_color)
+        saved_data = []
+        for entry in self._saved_profiles:
+            data = entry.get('data')
+            if data is None:
+                data = self._build_profile_data(entry.get('pts'), color=entry.get('color'))
+                entry['data'] = data
+            if data:
+                saved_data.append(data)
+        try:
+            self.profile_callback(active, saved_data)
         except Exception:
             pass
 
@@ -290,6 +808,11 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
+        if self.profile_enabled and ax is self.main_ax:
+            # avoid starting thumbnail drag/other actions while measuring profiles
+            if event.button == 3:
+                self._show_context_menu(event, view)
+            return
         if event.button == 3:
             self._show_context_menu(event, view)
             return
@@ -394,63 +917,768 @@ class MultiPreviewCanvas(FigureCanvas):
 
 class ProfileDialog(QtWidgets.QDialog):
     """Dialog showing the sampled profile and basic stats."""
-    def __init__(self, x, vals, length_nm=None, parent=None, unit=None, y_label=None):
+    def __init__(self, active_profile, saved_profiles=None, parent=None, unit=None, y_label=None,
+                 activate_overlay_callback=None, highlight_overlay_callback=None,
+                 label_scale_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
-        self.resize(600, 320)
+        self.resize(640, 360)
         self._unit = unit
         self._y_label = y_label
+        self._dark_background = bool(dark_mode)
+        self._active = None
+        self._saved = []
+        self._marker_lines = []
+        self._marker_positions = []
+        self._marker_drag_idx = None
+        self._marker_domain = (0.0, 1.0)
+        self._marker_axis_scale = None
+        self._marker_axis_unit = 'px'
+        self._marker_display_unit = 'px'
+        self._marker_reference_state = (None, None, None)
+        self._marker_saved_positions = None
+        self._markers_enabled = True
+        self._marker_arrow = None
+        self._marker_label = None
+        self._marker_arrow_y = None
+        self._marker_arrow_drag = None
+        self._marker_cids = []
+        self._label_scale_cb = label_scale_callback
+        self._activate_overlay_cb = activate_overlay_callback
+        self._highlight_overlay_cb = highlight_overlay_callback
         v = QtWidgets.QVBoxLayout()
-        # matplotlib canvas for plot
         fig = Figure(figsize=(6,3))
         self.canvas = FigureCanvas(fig)
         self.ax = fig.add_subplot(111)
-        (self._line,) = self.ax.plot(x, vals)
-        self.ax.set_xlabel('Distance (px)')
-        if y_label and unit:
-            self.ax.set_ylabel(f"{y_label} ({unit})")
-        elif y_label:
-            self.ax.set_ylabel(y_label)
+        self.ax_top = self.ax.twiny()
+        self.ax_top.set_visible(False)
+        self._relative_axes = True
+        self._font_scale = 1.0
+        self.ax.set_xlabel(self._axis_label('px'))
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        splitter.addWidget(self.canvas)
+        info_widget = QtWidgets.QWidget()
+        info_layout = QtWidgets.QVBoxLayout(info_widget)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        self.stats = QtWidgets.QLabel("")
+        self.stats.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.stats.setWordWrap(True)
+        info_layout.addWidget(self.stats)
+        self.marker_info = QtWidgets.QLabel("")
+        self.marker_info.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        info_layout.addWidget(self.marker_info)
+        toggle_layout = QtWidgets.QHBoxLayout()
+        toggle_layout.setContentsMargins(0, 0, 0, 0)
+        self.marker_toggle = QtWidgets.QCheckBox("Show measurement markers")
+        self.marker_toggle.setChecked(True)
+        self.marker_toggle.toggled.connect(self._on_marker_toggle)
+        toggle_layout.addWidget(self.marker_toggle)
+        toggle_layout.addStretch(1)
+        info_layout.addLayout(toggle_layout)
+        theme_layout = QtWidgets.QHBoxLayout()
+        theme_layout.setContentsMargins(0, 0, 0, 0)
+        self.dark_bg_cb = QtWidgets.QCheckBox("Dark background")
+        self.dark_bg_cb.setChecked(self._dark_background)
+        self.dark_bg_cb.toggled.connect(self._on_theme_toggled)
+        theme_layout.addWidget(self.dark_bg_cb)
+        self.grid_cb = QtWidgets.QCheckBox("Show grid")
+        self.grid_cb.setChecked(False)
+        self.grid_cb.toggled.connect(self._on_theme_toggled)
+        theme_layout.addWidget(self.grid_cb)
+        theme_layout.addStretch(1)
+        info_layout.addLayout(theme_layout)
+        self.profile_list = QtWidgets.QListWidget()
+        self.profile_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.profile_list.itemDoubleClicked.connect(self._on_profile_item_activated)
+        self.profile_list.currentItemChanged.connect(self._on_profile_item_selected)
+        info_layout.addWidget(QtWidgets.QLabel("Profiles"))
+        info_layout.addWidget(self.profile_list, 1)
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.copy_btn = QtWidgets.QPushButton('Copy XY')
+        self.copy_btn.clicked.connect(self._copy_current_profile)
+        btn_layout.addWidget(self.copy_btn)
+        btn_layout.addStretch(1)
+        self.close_btn = QtWidgets.QPushButton('Close')
+        self.close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.close_btn)
+        info_layout.addLayout(btn_layout)
+        splitter.addWidget(info_widget)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        v.addWidget(splitter)
+        self.setLayout(v)
+        self._marker_cids = [
+            self.canvas.mpl_connect('button_press_event', self._on_marker_press),
+            self.canvas.mpl_connect('button_release_event', self._on_marker_release),
+            self.canvas.mpl_connect('motion_notify_event', self._on_marker_move),
+        ]
+        self._line_handles = []
+        self._marker_reference = None
+        self._apply_plot_theme()
+        self.update_profiles(active_profile, saved_profiles or [], activate_overlay_callback=activate_overlay_callback)
+        self._apply_font_scale()
+        if callable(self._label_scale_cb):
+            self._label_scale_cb(self._font_scale)
+
+    def wheelEvent(self, event):
+        try:
+            modifiers = event.modifiers()
+        except Exception:
+            modifiers = QtCore.Qt.NoModifier
+        if modifiers & QtCore.Qt.ControlModifier:
+            angle = event.angleDelta().y() if hasattr(event, 'angleDelta') else 0
+            if angle:
+                step = 0.05 * (1 if angle > 0 else -1)
+                self._font_scale = min(1.8, max(0.6, self._font_scale + step))
+                self._apply_font_scale()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def _apply_font_scale(self):
+        scale = max(0.6, min(1.8, getattr(self, '_font_scale', 1.0)))
+        label_size = 10 * scale
+        tick_size = 9 * scale
+        try:
+            self.ax.tick_params(axis='both', labelsize=tick_size)
+            self.ax_top.tick_params(axis='both', labelsize=tick_size)
+            self.ax.xaxis.label.set_fontsize(label_size)
+            self.ax.yaxis.label.set_fontsize(label_size)
+            self.ax_top.xaxis.label.set_fontsize(label_size)
+        except Exception:
+            pass
+        for widget in (self.stats, self.marker_info):
+            if widget is not None:
+                font = widget.font()
+                font.setPointSizeF(max(7.0, 9.0 * scale))
+                widget.setFont(font)
+        if self.profile_list is not None:
+            font = self.profile_list.font()
+            font.setPointSizeF(max(7.0, 9.0 * scale))
+            self.profile_list.setFont(font)
+        self.canvas.draw_idle()
+        if self._marker_positions and len(self._marker_positions) >= 2:
+            delta = abs(self._marker_positions[1] - self._marker_positions[0])
+            self._update_marker_annotation(delta)
+        if callable(self._label_scale_cb):
+            self._label_scale_cb(self._font_scale)
+
+    def _apply_ylabel(self, dataset):
+        if dataset:
+            unit_candidate = dataset.get('unit')
+            if unit_candidate:
+                self._unit = unit_candidate
+        unit = self._unit
+        if self._y_label and unit:
+            self.ax.set_ylabel(f"{self._y_label} ({unit})")
+        elif self._y_label:
+            self.ax.set_ylabel(self._y_label)
         else:
             self.ax.set_ylabel(f"Value ({unit})" if unit else 'Value')
-        self.ax_top = self.ax.twiny()
-        self.ax_top.set_xlabel('Distance (nm)')
-        self._set_top_axis(length_nm, len(x))
-        v.addWidget(self.canvas)
-        # stats area
-        self.stats = QtWidgets.QLabel(self._fmt_length(length_nm))
-        v.addWidget(self.stats)
-        btn = QtWidgets.QPushButton('Close')
-        btn.clicked.connect(self.accept)
-        v.addWidget(btn, alignment=QtCore.Qt.AlignRight)
-        self.setLayout(v)
 
-    def _fmt_length(self, length_nm):
-        return f"Length: {length_nm:.3f} nm" if length_nm is not None else "Length: N/A"
+    def _fmt_length(self, title, length_nm):
+        if length_nm is None:
+            return f"{title}: N/A"
+        return f"{title}: {length_nm:.3f} nm"
 
-    def _set_top_axis(self, length_nm, n_pts):
-        try:
-            self.ax_top.set_xlim(self.ax.get_xlim())
-            if length_nm is None or n_pts <= 1:
-                self.ax_top.set_xticks([])
-                self.ax_top.set_xticklabels([])
-            else:
-                ticks = self.ax.get_xticks()
-                scale = float(length_nm) / float(n_pts - 1)
-                self.ax_top.set_xticks(ticks)
-                self.ax_top.set_xticklabels([f"{t*scale:.1f}" for t in ticks])
-        except Exception:
-            pass
+    def _format_stats_text(self, active, saved):
+        lines = []
+        if active:
+            lines.append(self._fmt_length("Active", active.get('length_nm')))
+        for idx, data in enumerate(saved, 1):
+            lines.append(self._fmt_length(f"Overlay {idx}", data.get('length_nm')))
+        return "\n".join(lines) if lines else "No profile data"
 
-    def update_data(self, x, vals, length_nm=None):
-        try:
-            self._line.set_data(x, vals)
-            self.ax.relim(); self.ax.autoscale_view()
-            self._set_top_axis(length_nm, len(x))
-            self.stats.setText(self._fmt_length(length_nm))
+    def _clear_marker_lines(self, reset_saved=True):
+        for line in self._marker_lines:
+            try:
+                if line:
+                    line.remove()
+            except Exception:
+                pass
+        self._marker_lines = []
+        self._marker_positions = []
+        self._marker_axis_scale = None
+        self._marker_axis_unit = 'px'
+        self._marker_display_unit = 'px'
+        self._marker_reference = None
+        if reset_saved:
+            self._marker_saved_positions = None
+        if self._marker_arrow is not None:
+            try: self._marker_arrow.remove()
+            except Exception: pass
+            self._marker_arrow = None
+        if self._marker_label is not None:
+            try: self._marker_label.remove()
+            except Exception: pass
+            self._marker_label = None
+        if reset_saved:
+            self._marker_arrow_y = None
+        self._marker_arrow_drag = None
+        if self._markers_enabled:
+            self.marker_info.setText("Markers: N/A")
+        else:
+            self.marker_info.setText("Markers hidden")
+        self.canvas.draw_idle()
+
+    def _reset_markers(self, ref_points, ref_length, reference_dataset=None, store_state=True):
+        if store_state:
+            self._marker_reference_state = (ref_points, ref_length, reference_dataset)
+        self._clear_marker_lines(reset_saved=store_state)
+        if not self._markers_enabled:
+            return
+        if ref_points is None or len(ref_points) == 0:
             self.canvas.draw_idle()
+            return
+        xmin = float(np.nanmin(ref_points))
+        xmax = float(np.nanmax(ref_points))
+        if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax == xmin:
+            self.canvas.draw_idle()
+            return
+        self._marker_domain = (xmin, xmax)
+        span = xmax - xmin
+        if self._marker_saved_positions and len(self._marker_saved_positions) == 2:
+            raw_positions = self._marker_saved_positions
+        else:
+            raw_positions = [xmin + 0.3 * span, xmin + 0.7 * span]
+        self._marker_positions = [self._clamp_marker(pos) for pos in raw_positions]
+        line_color = '#f5f5f5' if self._dark_background else '#202020'
+        colors = [line_color, line_color]
+        for idx, pos in enumerate(self._marker_positions):
+            line = self.ax.axvline(
+                pos,
+                color=colors[idx % len(colors)],
+                linestyle='-',
+                lw=2.2,
+                alpha=0.95,
+                zorder=8,
+            )
+            self._marker_lines.append(line)
+        ref_vals = None
+        if reference_dataset and reference_dataset.get('vals') is not None:
+            ref_vals = np.asarray(reference_dataset['vals'], dtype=float)
+        self._marker_reference = {
+            'x': np.asarray(ref_points, dtype=float) if ref_points is not None else None,
+            'y': ref_vals,
+        }
+        axis_unit = (reference_dataset or {}).get('axis_unit') or (reference_dataset or {}).get('distance_unit') or ''
+        has_phys_axis = bool(reference_dataset and reference_dataset.get('x_nm') is not None)
+        self._marker_axis_unit = 'phys' if has_phys_axis else 'px'
+        if has_phys_axis:
+            self._marker_axis_scale = None
+            self._marker_display_unit = axis_unit or 'nm'
+        else:
+            px_count = len(reference_dataset.get('x_px')) if reference_dataset and reference_dataset.get('x_px') is not None else len(ref_points or [])
+            if axis_unit and ref_length is not None and px_count > 1:
+                self._marker_axis_scale = float(ref_length) / float(px_count - 1)
+                self._marker_display_unit = axis_unit
+            else:
+                self._marker_axis_scale = None
+                self._marker_display_unit = 'px'
+        self._marker_saved_positions = list(self._marker_positions)
+        self._update_marker_info()
+        self.canvas.draw_idle()
+
+    def _on_marker_toggle(self, checked):
+        self._markers_enabled = bool(checked)
+        if not self._markers_enabled:
+            self._clear_marker_lines(reset_saved=False)
+            return
+        ref_points, ref_length, ref_dataset = getattr(self, '_marker_reference_state', (None, None, None))
+        if ref_points is None:
+            self._clear_marker_lines(reset_saved=False)
+        else:
+            self._reset_markers(ref_points, ref_length, ref_dataset, store_state=False)
+        self.canvas.draw_idle()
+    def _update_marker_info(self):
+        if not self._markers_enabled:
+            self.marker_info.setText("Markers hidden")
+            return
+        if len(self._marker_positions) < 2:
+            self.marker_info.setText("Markers: N/A")
+            if self._marker_arrow:
+                try: self._marker_arrow.remove()
+                except Exception: pass
+                self._marker_arrow = None
+            if self._marker_label:
+                try: self._marker_label.remove()
+                except Exception: pass
+                self._marker_label = None
+            return
+        axis_delta = abs(self._marker_positions[1] - self._marker_positions[0])
+        disp_value, disp_unit = self._format_marker_delta(axis_delta)
+        info = f"Markers Δ: {disp_value:.3f} {disp_unit}"
+        if self._marker_axis_scale is not None:
+            info += f" ({axis_delta:.1f} px)"
+        if self._marker_reference and self._marker_reference.get('y') is not None:
+            v0 = self._marker_value_at(self._marker_positions[0])
+            v1 = self._marker_value_at(self._marker_positions[1])
+            if v0 is not None and v1 is not None:
+                info += f" | values: {v0:.3g} → {v1:.3g} (Δ={abs(v1-v0):.3g})"
+        self.marker_info.setText(info)
+        self._remember_marker_positions()
+        self._update_marker_annotation(axis_delta)
+
+    def _remember_marker_positions(self):
+        if self._marker_positions:
+            self._marker_saved_positions = list(self._marker_positions)
+
+    def _format_marker_delta(self, axis_delta):
+        unit = self._marker_display_unit or 'px'
+        if self._marker_axis_scale is not None:
+            return axis_delta * self._marker_axis_scale, unit or 'nm'
+        return axis_delta, unit or 'px'
+
+    def _update_marker_annotation(self, axis_delta, arrow_y=None):
+        if not self._markers_enabled or len(self._marker_positions) < 2:
+            if self._marker_arrow:
+                try: self._marker_arrow.remove()
+                except Exception: pass
+                self._marker_arrow = None
+            if self._marker_label:
+                try: self._marker_label.remove()
+                except Exception: pass
+                self._marker_label = None
+            return
+        x0, x1 = self._marker_positions
+        xmin, xmax = min(x0, x1), max(x0, x1)
+        y_min, y_max = self.ax.get_ylim()
+        if arrow_y is None:
+            y_level = self._marker_arrow_y
+        else:
+            y_level = arrow_y
+        if y_level is None:
+            y_level = y_min + 0.05 * (y_max - y_min)
+        y_level = max(y_min + 0.01*(y_max-y_min), min(y_max - 0.01*(y_max-y_min), y_level))
+        self._marker_arrow_y = y_level
+        if self._marker_arrow is not None:
+            try: self._marker_arrow.remove()
+            except Exception: pass
+        if self._marker_label is not None:
+            try: self._marker_label.remove()
+            except Exception: pass
+        arrow_color = "#f5f5f5" if self._dark_background else "#111111"
+        arrow = self.ax.annotate(
+            "",
+            xy=(xmax, y_level),
+            xytext=(xmin, y_level),
+            arrowprops=dict(arrowstyle="<->", color=arrow_color, lw=1.8),
+            annotation_clip=False,
+        )
+        display_value, display_unit = self._format_marker_delta(axis_delta)
+        text = f"{display_value:.3f} {display_unit}"
+        label_size = 9.0 * getattr(self, '_font_scale', 1.0)
+        bbox_face = "#050506" if self._dark_background else "white"
+        label = self.ax.text(
+            (xmin + xmax) / 2.0,
+            y_level + 0.02 * (y_max - y_min),
+            text,
+            color=arrow_color,
+            ha="center",
+            va="bottom",
+            fontsize=label_size,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=bbox_face,
+                      alpha=0.7 if not self._dark_background else 0.6, edgecolor="none"),
+        )
+        self._marker_arrow = arrow
+        self._marker_label = label
+        self.canvas.draw_idle()
+
+    def _marker_value_at(self, pos):
+        if not self._marker_reference:
+            return None
+        x = self._marker_reference.get('x')
+        y = self._marker_reference.get('y')
+        if x is None or y is None or len(x) == 0:
+            return None
+        if pos <= x[0]:
+            return float(y[0])
+        if pos >= x[-1]:
+            return float(y[-1])
+        idx = np.searchsorted(x, pos) - 1
+        idx = np.clip(idx, 0, len(x) - 2)
+        x0, x1 = x[idx], x[idx + 1]
+        y0, y1 = y[idx], y[idx + 1]
+        if x1 == x0:
+            return float(y0)
+        t = (pos - x0) / (x1 - x0)
+        return float(y0 + t * (y1 - y0))
+
+    def _clamp_marker(self, val):
+        lo, hi = self._marker_domain
+        return min(max(val, lo), hi)
+
+    def _select_marker_index(self, xdata):
+        if not self._marker_positions:
+            return None
+        distances = []
+        for pos in self._marker_positions:
+            distances.append(abs(pos - xdata))
+        idx = int(np.argmin(distances))
+        domain = self._marker_domain[1] - self._marker_domain[0]
+        tol = max(1e-6, 0.03 * domain)
+        if distances[idx] <= tol:
+            return idx
+        return None
+
+    def _event_xdata_main(self, event):
+        if event is None:
+            return None
+        x = event.xdata
+        if x is None:
+            return None
+        if event.inaxes is self.ax or event.inaxes is None:
+            return x
+        if event.inaxes is self.ax_top:
+            try:
+                px = event.inaxes.transData.transform((x, 0))
+                x_main, _ = self.ax.transData.inverted().transform(px)
+                return x_main
+            except Exception:
+                return x
+        return None
+
+    def _on_marker_press(self, event):
+        if not self._markers_enabled:
+            return
+        if event.button != 1:
+            return
+        if event.inaxes not in (self.ax, self.ax_top):
+            return
+        if self._arrow_hit_test(event):
+            self._start_arrow_drag(event)
+            return
+        x = self._event_xdata_main(event)
+        if x is None:
+            return
+        idx = self._select_marker_index(x)
+        if idx is None:
+            if not self._marker_positions:
+                return
+            idx = int(np.argmin([abs(pos - x) for pos in self._marker_positions]))
+        self._marker_drag_idx = idx
+        new_pos = self._clamp_marker(x)
+        self._marker_positions[idx] = new_pos
+        line = self._marker_lines[idx]
+        line.set_xdata([new_pos, new_pos])
+        self._update_marker_info()
+        self.canvas.draw_idle()
+
+    def _on_marker_move(self, event):
+        if not self._markers_enabled:
+            return
+        if self._marker_drag_idx is None and self._marker_arrow_drag is None:
+            return
+        if event.inaxes not in (self.ax, self.ax_top):
+            return
+        if self._marker_arrow_drag is not None:
+            if event.inaxes is not self.ax:
+                return
+            if event.ydata is None:
+                return
+            y_min, y_max = self.ax.get_ylim()
+            target = event.ydata + self._marker_arrow_drag
+            y_level = max(y_min + 0.01*(y_max-y_min), min(y_max - 0.01*(y_max-y_min), target))
+            self._marker_arrow_y = y_level
+            axis_delta = abs(self._marker_positions[1] - self._marker_positions[0]) if len(self._marker_positions) >= 2 else 0.0
+            self._update_marker_annotation(axis_delta, arrow_y=y_level)
+            return
+        x = self._event_xdata_main(event)
+        if x is None:
+            return
+        if self._marker_drag_idx is not None:
+            new_pos = self._clamp_marker(x)
+            self._marker_positions[self._marker_drag_idx] = new_pos
+            line = self._marker_lines[self._marker_drag_idx]
+            line.set_xdata([new_pos, new_pos])
+            self._update_marker_info()
+            self.canvas.draw_idle()
+
+    def _on_marker_release(self, event):
+        if not self._markers_enabled:
+            return
+        self._marker_drag_idx = None
+        self._marker_arrow_drag = None
+        self._remember_marker_positions()
+
+    def _arrow_hit_test(self, event):
+        if self._marker_arrow is None or len(self._marker_positions) < 2:
+            return False
+        if event.inaxes is not self.ax:
+            return False
+        if event.xdata is None or event.ydata is None:
+            return False
+        x0, x1 = sorted(self._marker_positions)
+        span = max(1e-12, x1 - x0)
+        if not (x0 - 0.02 * span <= event.xdata <= x1 + 0.02 * span):
+            return False
+        y_min, y_max = self.ax.get_ylim()
+        y_level = self._marker_arrow_y
+        if y_level is None:
+            y_level = y_min + 0.05 * (y_max - y_min)
+        tol = 0.12 * (y_max - y_min)
+        return abs(event.ydata - y_level) <= tol
+
+    def _start_arrow_drag(self, event):
+        if event.ydata is None:
+            return
+        y_min, y_max = self.ax.get_ylim()
+        y_level = self._marker_arrow_y
+        if y_level is None:
+            y_level = y_min + 0.05 * (y_max - y_min)
+        self._marker_arrow_drag = y_level - event.ydata
+
+    def _axis_label(self, unit):
+        unit = unit or 'px'
+        return f"l ({unit})"
+
+    def update_profiles(self, active_profile, saved_profiles=None, activate_overlay_callback=None,
+                         highlight_overlay_callback=None):
+        saved_profiles = saved_profiles or []
+        self._active = active_profile
+        self._saved = saved_profiles
+        if activate_overlay_callback is not None:
+            self._activate_overlay_cb = activate_overlay_callback
+        if highlight_overlay_callback is not None:
+            self._highlight_overlay_cb = highlight_overlay_callback
+        reference = active_profile or (saved_profiles[0] if saved_profiles else None)
+        self._relative_axes = bool((reference or {}).get('relative_axes', True))
+        self._line_handles = []
+        datasets = []
+        if active_profile:
+            datasets.append(('Active', active_profile, True))
+        for idx, data in enumerate(saved_profiles, 1):
+            datasets.append((f"Overlay {idx}", data, False))
+        if not datasets:
+            self.stats.setText("No profile data")
+            self._clear_marker_lines()
+            self.canvas.draw_idle()
+            return
+        axis_label_unit = 'px'
+        if reference and reference.get('x_nm') is not None:
+            axis_label_unit = reference.get('axis_unit') or reference.get('distance_unit') or 'nm'
+        elif datasets:
+            candidate = datasets[0][1]
+            if candidate.get('x_nm') is not None:
+                axis_label_unit = candidate.get('axis_unit') or 'nm'
+        self.ax.clear()
+        self.ax_top.clear()
+        self.ax_top.set_visible(False)
+        self.ax.set_xlabel(self._axis_label(axis_label_unit))
+        self._apply_ylabel(reference)
+        ref_points = None
+        ref_length = None
+        marker_dataset = active_profile if active_profile else (saved_profiles[0] if saved_profiles else None)
+        for label, data, is_active in datasets:
+            x = data.get('x_nm')
+            if x is None:
+                x = data.get('x_px')
+            y = data.get('vals')
+            if x is None or y is None:
+                continue
+            color = data.get('color') or ('#ffd54f' if is_active else '#80cbc4')
+            lw = 2.0 if is_active else 1.2
+            alpha = 0.95 if is_active else 0.75
+            line, = self.ax.plot(x, y, color=color, lw=lw, alpha=alpha, label=label)
+            self._line_handles.append(line)
+            if is_active:
+                ref_points = x
+                ref_length = data.get('length_nm')
+        if marker_dataset is not None:
+            ref_points = marker_dataset.get('x_nm') if marker_dataset.get('x_nm') is not None else marker_dataset.get('x_px')
+            ref_length = marker_dataset.get('length_nm')
+        elif ref_points is None and datasets:
+            data0 = datasets[0][1]
+            ref_points = data0.get('x_nm') if data0.get('x_nm') is not None else data0.get('x_px')
+            ref_length = datasets[0][1].get('length_nm')
+        self.ax.relim(); self.ax.autoscale_view()
+        if len(datasets) > 1:
+            try:
+                self.ax.legend(fontsize=8, loc='upper right')
+            except Exception:
+                pass
+        self._apply_plot_theme()
+        self.stats.setText(self._format_stats_text(active_profile, saved_profiles))
+        self._populate_profile_list(active_profile, saved_profiles)
+        self._reset_markers(ref_points, ref_length, reference_dataset=marker_dataset)
+        self._apply_font_scale()
+        self.canvas.draw_idle()
+
+    def _populate_profile_list(self, active_profile, saved_profiles):
+        self.profile_list.blockSignals(True)
+        self.profile_list.clear()
+        target_item = None
+        if active_profile:
+            item = QtWidgets.QListWidgetItem(self._fmt_length("Active", active_profile.get('length_nm')))
+            item.setData(QtCore.Qt.UserRole, None)
+            self.profile_list.addItem(item)
+            target_item = item
+        for idx, data in enumerate(saved_profiles, 1):
+            text = self._fmt_length(f"Overlay {idx}", data.get('length_nm'))
+            item = QtWidgets.QListWidgetItem(text)
+            item.setData(QtCore.Qt.UserRole, idx - 1)
+            self.profile_list.addItem(item)
+            if target_item is None:
+                target_item = item
+        if target_item:
+            self.profile_list.setCurrentItem(target_item)
+        self.profile_list.blockSignals(False)
+        if target_item:
+            self._on_profile_item_selected(target_item)
+
+    def set_label_scale_callback(self, cb):
+        self._label_scale_cb = cb
+        if callable(self._label_scale_cb):
+            self._label_scale_cb(self._font_scale)
+
+    def _on_theme_toggled(self, _checked=False):
+        self._dark_background = bool(self.dark_bg_cb.isChecked())
+        self._apply_plot_theme()
+
+    def _apply_plot_theme(self):
+        dark = bool(self._dark_background)
+        fig_face = '#111217' if dark else '#ffffff'
+        ax_face = '#14161c' if dark else '#ffffff'
+        text = '#f5f5f5' if dark else '#111111'
+        grid_on = bool(self.grid_cb.isChecked()) if hasattr(self, 'grid_cb') else False
+        grid_color = '#4f5a64' if dark else '#b0b0b0'
+        try:
+            self.canvas.figure.set_facecolor(fig_face)
+            self.canvas.figure.set_edgecolor(fig_face)
         except Exception:
             pass
+        for axis in (self.ax, self.ax_top):
+            try:
+                axis.set_facecolor(ax_face)
+                axis.tick_params(colors=text, labelcolor=text)
+                axis.xaxis.label.set_color(text)
+                axis.yaxis.label.set_color(text)
+                for spine in axis.spines.values():
+                    spine.set_color(text)
+            except Exception:
+                pass
+        try:
+            self.ax.grid(grid_on, color=grid_color, alpha=0.35 if grid_on else 0.0)
+        except Exception:
+            pass
+        legend = self.ax.get_legend()
+        if legend is not None:
+            try:
+                legend.get_frame().set_facecolor(ax_face)
+                legend.get_frame().set_edgecolor(text)
+                for txt in legend.get_texts():
+                    txt.set_color(text)
+            except Exception:
+                pass
+        if self._marker_positions and len(self._marker_positions) >= 2:
+            self._update_marker_annotation(abs(self._marker_positions[1] - self._marker_positions[0]))
+        self.canvas.draw_idle()
+
+    def select_overlay(self, idx):
+        self.profile_list.blockSignals(True)
+        target = None
+        for i in range(self.profile_list.count()):
+            item = self.profile_list.item(i)
+            if item.data(QtCore.Qt.UserRole) == idx:
+                target = item
+                break
+        if target is None and idx is None and self.profile_list.count():
+            target = self.profile_list.item(0)
+        if target:
+            self.profile_list.setCurrentItem(target)
+            self._on_profile_item_selected(target)
+        self.profile_list.blockSignals(False)
+
+    def _on_profile_item_selected(self, current, _previous=None):
+        if current is None:
+            return
+        idx = current.data(QtCore.Qt.UserRole)
+        # adjust highlight on plotted lines
+        for line in self._line_handles:
+            try:
+                line.set_linewidth(1.2)
+            except Exception:
+                pass
+        if idx is None:
+            if self._line_handles:
+                try:
+                    self._line_handles[0].set_linewidth(2.4)
+                except Exception:
+                    pass
+        else:
+            line = self._line_handle_for_overlay(idx)
+            if line is not None:
+                try:
+                    line.set_linewidth(2.4)
+                except Exception:
+                    pass
+        self.canvas.draw_idle()
+        if self._highlight_overlay_cb:
+            try:
+                self._highlight_overlay_cb(idx)
+            except Exception:
+                pass
+
+    def _line_handle_for_overlay(self, idx):
+        if idx is None:
+            return None
+        offset = 1 if self._active else 0
+        target = idx + offset
+        if target < 0 or target >= len(self._line_handles):
+            return None
+        return self._line_handles[target]
+
+    def _on_profile_item_activated(self, item):
+        if item is None:
+            return
+        idx = item.data(QtCore.Qt.UserRole)
+        if idx is None:
+            return
+        if callable(self._activate_overlay_cb):
+            self._activate_overlay_cb(idx)
+
+    def closeEvent(self, event):
+        try:
+            for cid in self._marker_cids:
+                self.canvas.mpl_disconnect(cid)
+        except Exception:
+            pass
+        if self._highlight_overlay_cb:
+            try:
+                self._highlight_overlay_cb(None)
+            except Exception:
+                pass
+        super().closeEvent(event)
+
+    def _copy_current_profile(self):
+        dataset = None
+        current = self.profile_list.currentItem()
+        idx = current.data(QtCore.Qt.UserRole) if current is not None else None
+        if idx is None:
+            dataset = self._active
+        else:
+            if idx >= 0 and idx < len(self._saved):
+                dataset = self._saved[idx]
+        if not dataset:
+            QtWidgets.QMessageBox.information(self, "Copy profile", "No profile data available.")
+            return
+        x = dataset.get('x_nm')
+        unit = dataset.get('axis_unit') or dataset.get('distance_unit') or 'nm'
+        if x is None:
+            x = dataset.get('x_px')
+            unit = 'px'
+        vals = dataset.get('vals')
+        if x is None or vals is None:
+            QtWidgets.QMessageBox.information(self, "Copy profile", "Profile data is incomplete.")
+            return
+        rows = [f"l ({unit})\tValue"]
+        for dist, val in zip(x, vals):
+            try:
+                rows.append(f"{float(dist):.9g}\t{float(val):.9g}")
+            except Exception:
+                rows.append(f"{dist}\t{val}")
+        QtWidgets.QApplication.clipboard().setText("\n".join(rows))
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Profile copied", self)
 
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
