@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import itertools
+import math
+
+from matplotlib import patches
 
 from .._shared import *
 from ..config import *
@@ -56,6 +59,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._angle_lines = []
         self._angle_markers = []
         self._angle_label = None
+        self._angle_len_labels = []
+        self._angle_patch = None
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_drag_origin = None
@@ -269,7 +274,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         if getattr(self, '_angle_label', None) is not None:
             try:
-                self._angle_label.set_fontsize(9 * getattr(self, '_profile_label_scale', 1.0))
+                self._angle_label.set_fontsize(9 * scale)
+            except Exception:
+                pass
+        for lbl in getattr(self, '_angle_len_labels', []):
+            try:
+                lbl.set_fontsize(8 * scale)
             except Exception:
                 pass
 
@@ -415,6 +425,18 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         self._angle_label = None
+        for lbl in self._angle_len_labels:
+            try:
+                lbl.remove()
+            except Exception:
+                pass
+        self._angle_len_labels = []
+        if self._angle_patch is not None:
+            try:
+                self._angle_patch.remove()
+            except Exception:
+                pass
+        self._angle_patch = None
 
     def _update_angle_artists(self):
         if not self.angle_pts or not self._angle_lines:
@@ -436,22 +458,81 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
             self._angle_label = None
+        for lbl in self._angle_len_labels:
+            try:
+                lbl.remove()
+            except Exception:
+                pass
+        self._angle_len_labels = []
+        if self._angle_patch is not None:
+            try:
+                self._angle_patch.remove()
+            except Exception:
+                pass
+            self._angle_patch = None
         if not angle_info:
+            self.draw_idle()
             return
         vx, vy = self.angle_pts[0], self.angle_pts[1]
         text = f"{angle_info['angle_deg']:.1f}°"
         unit = angle_info.get('unit')
-        if unit:
-            text += f" | L1={angle_info['len_a']:.2f} {unit} L2={angle_info['len_b']:.2f} {unit}"
         color = '#f5f5f5' if self._detail_dark else '#111111'
         bbox_face = '#060606' if self._detail_dark else 'white'
+        font_scale = getattr(self, '_view_font_scale', 1.0)
         self._angle_label = self.main_ax.text(
             vx, vy, text,
             color=color,
-            fontsize=9 * getattr(self, '_profile_label_scale', 1.0),
-            ha='left', va='bottom',
+            fontsize=9 * font_scale,
+            ha='center', va='center',
             bbox={'facecolor': bbox_face, 'alpha': 0.65 if self._detail_dark else 0.7, 'edgecolor': 'none', 'pad': 2},
             zorder=12)
+        # position label along bisector
+        vec_a = np.array([self.angle_pts[2] - vx, self.angle_pts[3] - vy], dtype=float)
+        vec_b = np.array([self.angle_pts[4] - vx, self.angle_pts[5] - vy], dtype=float)
+        len_a = angle_info['len_a'] or 1.0
+        len_b = angle_info['len_b'] or 1.0
+        bis = vec_a / max(len_a, 1e-9) + vec_b / max(len_b, 1e-9)
+        if np.allclose(bis, 0):
+            bis = np.array([-(vec_a[1]), vec_a[0]])
+        bis = bis / (np.linalg.norm(bis) + 1e-9)
+        offset = min(len_a, len_b) * 0.2
+        bx = vx + bis[0] * offset
+        by = vy + bis[1] * offset
+        self._angle_label.set_position((bx, by))
+        # draw wedge patch
+        theta_a = math.degrees(math.atan2(vec_a[1], vec_a[0]))
+        theta_b = math.degrees(math.atan2(vec_b[1], vec_b[0]))
+        theta1, theta2 = theta_a, theta_b
+        diff = (theta2 - theta1) % 360.0
+        if diff > 180:
+            theta1, theta2 = theta2, theta1
+        radius = min(len_a, len_b) * 0.25
+        radius = max(radius, 1e-3)
+        wedge = patches.Wedge((vx, vy), radius, theta1, theta2,
+                              facecolor=color, alpha=0.15, edgecolor='none', zorder=8)
+        self._angle_patch = wedge
+        self.main_ax.add_patch(wedge)
+        # length labels along arms
+        if unit:
+            mid_a = (vx + (vec_a[0] * 0.6), vy + (vec_a[1] * 0.6))
+            mid_b = (vx + (vec_b[0] * 0.6), vy + (vec_b[1] * 0.6))
+            lbl_a = self.main_ax.text(mid_a[0], mid_a[1],
+                                      f"{len_a:.2f} {unit}",
+                                      color=color,
+                                      fontsize=8 * font_scale,
+                                      ha='center', va='bottom',
+                                      bbox={'facecolor': bbox_face, 'alpha': 0.5 if self._detail_dark else 0.6,
+                                            'edgecolor': 'none', 'pad': 1},
+                                      zorder=12)
+            lbl_b = self.main_ax.text(mid_b[0], mid_b[1],
+                                      f"{len_b:.2f} {unit}",
+                                      color=color,
+                                      fontsize=8 * font_scale,
+                                      ha='center', va='bottom',
+                                      bbox={'facecolor': bbox_face, 'alpha': 0.5 if self._detail_dark else 0.6,
+                                            'edgecolor': 'none', 'pad': 1},
+                                      zorder=12)
+            self._angle_len_labels = [lbl_a, lbl_b]
 
     def _compute_angle_info(self):
         if not self.angle_pts:
