@@ -205,11 +205,16 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_single_markers = bool(self.config.get("show_single_markers", True))
         self.compact_markers = bool(self.config.get("compact_markers", True))
         self.use_density_markers = bool(self.config.get("use_density_markers", True))
+        self.dark_mode = bool(self.config.get('dark_mode', False))
+        self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
+        self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
             'compact_markers': True,
             'use_density_markers': True,
+            'detail_dark_view': bool(self.dark_mode),
+            'detail_grid_view': False,
         }
         self.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
         self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
@@ -236,6 +241,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._thumb_threadpool.setMaxThreadCount(max(2, min(6, QtCore.QThreadPool.globalInstance().maxThreadCount())))
         except Exception:
             pass
+        self._pending_profile_enable = False
+        self._pending_angle_enable = False
+        self._last_profile_payload = None
 
         self.per_file_channel_cmap = {}
         self.last_preview = None
@@ -336,7 +344,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         controls_h.addWidget(QtWidgets.QLabel("Thumb cmap:")); controls_h.addWidget(self.thumb_cmap_combo)
         controls_h.addWidget(QtWidgets.QLabel("Preview cmap:")); controls_h.addWidget(self.preview_cmap_combo)
         # Dark mode toggle
-        self.dark_mode = bool(self.config.get('dark_mode', False))
         self.dark_mode_cb = QtWidgets.QCheckBox('Dark mode')
         self.dark_mode_cb.setChecked(self.dark_mode)
         controls_h.addWidget(self.dark_mode_cb)
@@ -485,10 +492,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel_layout.addWidget(self.preview_canvas, 1)
         self.preview_value_label = QtWidgets.QLabel("Value: --")
         preview_panel_layout.addWidget(self.preview_value_label)
+        self.angle_value_label = QtWidgets.QLabel("Angle: --")
+        preview_panel_layout.addWidget(self.angle_value_label)
         self.lower_control_frame = self._create_lower_controls()
         preview_panel_layout.addWidget(self.lower_control_frame)
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
+        self._apply_detail_view_theme()
 
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         right_splitter.addWidget(thumbs_panel)
@@ -560,8 +570,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.adjust_image_btn.clicked.connect(self.on_adjust_image)
         self.export_xyz_btn.clicked.connect(self.on_export_xyz_files)
         self.measure_profile_btn.clicked.connect(self._on_start_profile)
+        self.measure_angle_btn.clicked.connect(self._on_start_angle)
         self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
+        self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
         self.show_spectra_cb.toggled.connect(self.on_show_spectra_toggled)
         self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
@@ -614,6 +626,12 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._apply_lower_control_theme()
         except Exception:
             pass
+        self._apply_detail_view_theme()
+
+    def _apply_detail_view_theme(self):
+        canvas = getattr(self, 'preview_canvas', None)
+        if canvas is not None and hasattr(canvas, 'set_detail_theme'):
+            canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
 
     def _create_lower_controls(self):
         frame = QtWidgets.QFrame()
@@ -705,13 +723,19 @@ class SXMGridViewer(QtWidgets.QWidget):
         layout.setSpacing(6)
         self.measure_profile_btn = QtWidgets.QPushButton('Measure profile')
         self.measure_profile_btn.setToolTip("Start or stop interactive profile measurement")
+        self.measure_angle_btn = QtWidgets.QPushButton('Measure angle')
+        self.measure_angle_btn.setToolTip("Start or stop angle measurement tool")
         self.exit_profile_btn = QtWidgets.QPushButton("Exit profile")
         self.exit_profile_btn.setToolTip("Exit the profile measurement mode")
         self.clear_profile_btn = QtWidgets.QPushButton("Clear profile")
         self.clear_profile_btn.setToolTip("Clear the current profile line and start fresh")
+        self.show_profile_window_btn = QtWidgets.QPushButton("Show profile window")
+        self.show_profile_window_btn.setToolTip("Reopen the profile dialog with current measurements")
         layout.addWidget(self.measure_profile_btn)
+        layout.addWidget(self.measure_angle_btn)
         layout.addWidget(self.exit_profile_btn)
         layout.addWidget(self.clear_profile_btn)
+        layout.addWidget(self.show_profile_window_btn)
         layout.addStretch(1)
         return page
 
@@ -770,6 +794,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.density_markers_act.setChecked(self.use_density_markers)
         self.density_markers_act.setToolTip("Show density overlay for spectroscopy clusters")
         self.density_markers_act.toggled.connect(self.on_density_markers_toggled)
+        self.display_menu.addSeparator()
+        self.detail_dark_act = self.display_menu.addAction("Detail dark background")
+        self.detail_dark_act.setCheckable(True)
+        self.detail_dark_act.setChecked(self.detail_dark_view)
+        self.detail_dark_act.setToolTip("Toggle dark background for the detailed preview view")
+        self.detail_dark_act.toggled.connect(self.on_detail_dark_toggled)
+        self.detail_grid_act = self.display_menu.addAction("Detail grid")
+        self.detail_grid_act.setCheckable(True)
+        self.detail_grid_act.setChecked(self.detail_grid_view)
+        self.detail_grid_act.setToolTip("Toggle grid overlay on the detailed preview")
+        self.detail_grid_act.toggled.connect(self.on_detail_grid_toggled)
         self.display_menu.addSeparator()
         reset_act = self.display_menu.addAction("Reset view")
         reset_act.setToolTip("Reset all display toggles to defaults")
@@ -862,6 +897,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         if remember:
             settings = QtCore.QSettings()
             settings.setValue("lowerPane/lastMode", self._mode_name(mode))
+        try:
+            if mode == self.MODE_MEASURE:
+                self._on_start_profile(force_enable=True)
+            else:
+                self._disable_profile_mode()
+        except Exception:
+            pass
 
     def _init_mode_shortcuts(self):
         self._mode_shortcuts = []
@@ -892,6 +934,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             (getattr(self, 'single_markers_act', None), defaults.get('show_single_markers', True)),
             (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
             (getattr(self, 'density_markers_act', None), defaults.get('use_density_markers', True)),
+            (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
+            (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
         ]
         for action, state in action_pairs:
             if action is not None:
@@ -2636,6 +2680,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         header, fds = self.headers.get(file_key, (None,None))
         if header is None or channel_idx < 0 or channel_idx >= len(fds): return
         fd = fds[channel_idx]; fname = fd.get("FileName")
+        axis_unit = 'px'
         try:
             xpix = int(header.get('xPixel', 128)); ypix = int(header.get('yPixel', xpix))
             base_extent = self._header_extent(header)
@@ -2646,6 +2691,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             arr_adj, adjusted_extent = self._apply_adjustments_for_channel(file_key, channel_idx, self._last_base_array, base_extent)
             display_extent = self._display_extent(adjusted_extent, header)
             display_unit, display_arr, zero_offset = self._scale_unit_for_display(unit_normalized, arr_adj)
+            axis_unit = header.get('XPhysUnit') or header.get('ScanUnit') or header.get('PhysUnit') or ''
+            if not axis_unit:
+                axis_unit = 'px' if display_extent is None else 'nm'
         except Exception as e:
             self.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
 
@@ -2668,7 +2716,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         if display_unit:
             colorbar_label = f"{caption} [{display_unit}]"
         main = {'arr': display_arr, 'extent': display_extent, 'cmap': cmap_to_use, 'unit': display_unit,
-                'title': title_text, 'colorbar_label': colorbar_label,
+                'title': title_text, 'colorbar_label': colorbar_label, 'axis_unit': axis_unit,
                 'relative_axes': bool(self.relative_axes)}
         views.append(main)
 
@@ -2694,13 +2742,20 @@ class SXMGridViewer(QtWidgets.QWidget):
                 if unit2_display:
                     cbar_label2 = f"{caption2} [{unit2_display}]"
                 views.append({'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
-                              'title': title2, 'colorbar_label': cbar_label2,
+                              'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                               'relative_axes': bool(self.relative_axes)})
             except Exception:
                 # Skip extra view if anything fails for this file
                 continue
 
         self.preview_canvas.set_views(views)
+        if getattr(self, 'current_mode', self.MODE_BROWSE) == self.MODE_MEASURE:
+            try:
+                self._on_start_profile(force_enable=True)
+            except Exception:
+                pass
+        elif getattr(self, '_pending_profile_enable', False):
+            self._pending_profile_enable = False
 
         # Styled HTML metadata
         try:
@@ -3372,30 +3427,87 @@ class SXMGridViewer(QtWidgets.QWidget):
         return [str(out_path)]
 
     # ---------- Profile measurement (interactive line) ----------
-    def _on_start_profile(self):
+    def _on_start_profile(self, force_enable=False):
         # toggle interactive line profile mode
         views = getattr(self.preview_canvas, 'views', [])
         if not views:
-            QtWidgets.QMessageBox.information(self, "Measure profile", "No image to measure. Load a channel first.")
+            if force_enable:
+                self._pending_profile_enable = True
+            elif not getattr(self, '_pending_profile_enable', False):
+                QtWidgets.QMessageBox.information(self, "Measure profile", "No image to measure. Load a channel first.")
             return
+        self._pending_profile_enable = False
         active = getattr(self.preview_canvas, 'profile_enabled', False)
+        if force_enable and active:
+            return
         if not active:
             # enter profile mode
+            self._disable_angle_mode()
             self.preview_canvas.set_profile_callback(self._on_profile_updated)
+            if hasattr(self.preview_canvas, 'set_profile_highlight_callback'):
+                self.preview_canvas.set_profile_highlight_callback(self._on_canvas_overlay_highlight)
             self.preview_canvas.enable_profile(True)
+            try:
+                self.preview_canvas.setFocus(QtCore.Qt.OtherFocusReason)
+            except Exception:
+                pass
             try: self.measure_profile_btn.setText('Exit profile')
             except Exception: pass
             self.meta_box.setPlainText("Profile mode: drag the yellow endpoints on the main image. Close to exit.")
             self._profile_dialog = None
-        else:
+        elif not force_enable:
             self._disable_profile_mode()
+
+    def _on_start_angle(self, force_enable=False):
+        canvas = getattr(self, 'preview_canvas', None)
+        if canvas is None:
+            return
+        views = getattr(canvas, 'views', [])
+        if not views:
+            if force_enable:
+                self._pending_angle_enable = True
+            elif not getattr(self, '_pending_angle_enable', False):
+                QtWidgets.QMessageBox.information(self, "Measure angle", "No image to measure. Load a channel first.")
+            return
+        self._pending_angle_enable = False
+        active = bool(getattr(canvas, 'angle_enabled', False))
+        if force_enable and active:
+            return
+        if not active:
+            self._disable_profile_mode()
+            if hasattr(canvas, 'set_angle_callback'):
+                canvas.set_angle_callback(self._on_angle_updated)
+            canvas.enable_angle(True)
+            try:
+                canvas.setFocus(QtCore.Qt.OtherFocusReason)
+            except Exception:
+                pass
+            try:
+                self.measure_angle_btn.setText('Exit angle')
+            except Exception:
+                pass
+            if hasattr(self, 'angle_value_label'):
+                self.angle_value_label.setText("Angle: --")
+        else:
+            self._disable_angle_mode()
 
     def _disable_profile_mode(self):
         canvas = getattr(self, 'preview_canvas', None)
         if canvas is None:
             return
+        self._pending_profile_enable = False
         try:
             canvas.enable_profile(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(canvas, 'set_profile_highlight_callback'):
+                canvas.set_profile_highlight_callback(None)
+        except Exception:
+            pass
+        try:
+            if hasattr(canvas, 'clear_saved_profiles'):
+                canvas.clear_saved_profiles()
         except Exception:
             pass
         try:
@@ -3408,6 +3520,22 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self._profile_dialog = None
         except Exception:
             pass
+        self._disable_angle_mode()
+
+    def _disable_angle_mode(self, reset_button=True):
+        canvas = getattr(self, 'preview_canvas', None)
+        if canvas is not None and hasattr(canvas, 'enable_angle'):
+            try:
+                canvas.enable_angle(False)
+            except Exception:
+                pass
+        if reset_button:
+            try:
+                self.measure_angle_btn.setText('Measure angle')
+            except Exception:
+                pass
+        if hasattr(self, 'angle_value_label'):
+            self.angle_value_label.setText("Angle: --")
 
     def _on_exit_profile_mode(self):
         self._disable_profile_mode()
@@ -3419,6 +3547,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         was_enabled = getattr(canvas, 'profile_enabled', False)
         try:
             canvas.profile_pts = None
+        except Exception:
+            pass
+        try:
+            if hasattr(canvas, 'clear_saved_profiles'):
+                canvas.clear_saved_profiles()
         except Exception:
             pass
         try:
@@ -3439,10 +3572,25 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.measure_profile_btn.setText('Measure profile')
             except Exception:
                 pass
+        if hasattr(canvas, 'clear_angle_measurement'):
+            try:
+                canvas.clear_angle_measurement()
+            except Exception:
+                pass
 
-    def _on_profile_updated(self, x_px, vals, length_nm, unit):
+    def _on_profile_updated(self, active_profile, saved_profiles):
         # create or update a persistent profile dialog
         try:
+            if not active_profile and not saved_profiles:
+                self._last_profile_payload = None
+                if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
+                    try:
+                        self._profile_dialog.close()
+                    except Exception:
+                        pass
+                    self._profile_dialog = None
+                return
+            self._last_profile_payload = (active_profile, list(saved_profiles or []))
             y_label = None
             try:
                 if self.last_preview:
@@ -3453,17 +3601,90 @@ class SXMGridViewer(QtWidgets.QWidget):
                         y_label = fd.get('Caption', fd.get('FileName', f"chan{channel_idx}"))
             except Exception:
                 y_label = None
+            ref_unit = None
+            if active_profile:
+                ref_unit = active_profile.get('unit')
+            elif saved_profiles:
+                ref_unit = saved_profiles[0].get('unit')
+            activate_cb = None
+            canvas = getattr(self, 'preview_canvas', None)
+            if canvas is not None and hasattr(canvas, 'activate_saved_profile'):
+                def _activate(idx):
+                    try:
+                        if canvas.activate_saved_profile(idx):
+                            return True
+                    except Exception:
+                        pass
+                    return False
+                activate_cb = _activate
+            highlight_cb = None
+            if canvas is not None and hasattr(canvas, 'highlight_saved_profile'):
+                def _highlight(idx):
+                    try:
+                        canvas.highlight_saved_profile(idx)
+                        return True
+                    except Exception:
+                        return False
+                highlight_cb = _highlight
+            label_scale_cb = None
+            if canvas is not None and hasattr(canvas, 'set_profile_label_scale'):
+                label_scale_cb = canvas.set_profile_label_scale
             if not hasattr(self, '_profile_dialog') or self._profile_dialog is None:
-                self._profile_dialog = ProfileDialog(x_px, vals, length_nm=length_nm, parent=self, unit=unit, y_label=y_label)
+                dark_pref = bool(getattr(self, 'dark_mode', False))
+                self._profile_dialog = ProfileDialog(active_profile, saved_profiles, parent=self, unit=ref_unit, y_label=y_label,
+                                                      activate_overlay_callback=activate_cb,
+                                                      highlight_overlay_callback=highlight_cb,
+                                                      label_scale_callback=label_scale_cb,
+                                                      dark_mode=dark_pref)
                 try:
                     self._profile_dialog.move(self._next_popup_pos(offset=30))
                 except Exception:
                     pass
                 self._profile_dialog.show()
             else:
-                self._profile_dialog.update_data(x_px, vals, length_nm=length_nm)
+                if hasattr(self._profile_dialog, 'set_label_scale_callback'):
+                    self._profile_dialog.set_label_scale_callback(label_scale_cb)
+                self._profile_dialog.update_profiles(active_profile, saved_profiles,
+                                                      activate_overlay_callback=activate_cb,
+                                                      highlight_overlay_callback=highlight_cb)
         except Exception:
             pass
+
+    def _on_angle_updated(self, info):
+        if not hasattr(self, 'angle_value_label'):
+            return
+        if not info:
+            self.angle_value_label.setText("Angle: --")
+            return
+        angle_text = f"Angle: {info.get('angle_deg', 0.0):.2f}°"
+        unit = info.get('unit')
+        if unit:
+            angle_text += f" | L1={info.get('len_a', 0.0):.3f} {unit} L2={info.get('len_b', 0.0):.3f} {unit}"
+        self.angle_value_label.setText(angle_text)
+
+    def _on_show_profile_window(self):
+        dlg = getattr(self, '_profile_dialog', None)
+        if dlg is not None:
+            dlg.show()
+            try:
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                pass
+            return
+        payload = getattr(self, '_last_profile_payload', None)
+        if payload and (payload[0] or payload[1]):
+            self._on_profile_updated(payload[0], payload[1])
+        else:
+            QtWidgets.QMessageBox.information(self, "Profile measurement", "No profile data available. Start measuring first.")
+
+    def _on_canvas_overlay_highlight(self, idx):
+        dlg = getattr(self, '_profile_dialog', None)
+        if dlg is not None:
+            try:
+                dlg.select_overlay(idx)
+            except Exception:
+                pass
 
     def _on_view_copied(self, view):
         title = view.get('title') or 'View'
@@ -4691,6 +4912,16 @@ class SXMGridViewer(QtWidgets.QWidget):
             act.blockSignals(True)
             act.setChecked(self.use_density_markers)
             act.blockSignals(False)
+
+    def on_detail_dark_toggled(self, checked: bool):
+        self.detail_dark_view = bool(checked)
+        self.config['detail_dark_view'] = self.detail_dark_view; save_config(self.config)
+        self._apply_detail_view_theme()
+
+    def on_detail_grid_toggled(self, checked: bool):
+        self.detail_grid_view = bool(checked)
+        self.config['detail_grid_view'] = self.detail_grid_view; save_config(self.config)
+        self._apply_detail_view_theme()
 
     def on_export_selected_same_view(self):
         targets = list(getattr(self, 'thumb_multi_select', set()))

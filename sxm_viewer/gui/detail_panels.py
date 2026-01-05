@@ -51,6 +51,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
+        self.angle_enabled = False
+        self.angle_pts = None  # (vx, vy, ax, ay, bx, by)
+        self._angle_lines = []
+        self._angle_markers = []
+        self._angle_label = None
+        self._angle_dragging = None
+        self._angle_cids = []
+        self._angle_drag_origin = None
+        self.angle_callback = None
 
     def set_views(self, views):
         self.views = views[:]
@@ -154,6 +163,48 @@ class MultiPreviewCanvas(FigureCanvas):
         if changed:
             self._apply_view_theme()
 
+    def set_angle_callback(self, cb):
+        self.angle_callback = cb
+
+    def enable_angle(self, enable: bool):
+        if enable == self.angle_enabled:
+            return
+        self.angle_enabled = enable
+        if enable:
+            self._connect_angle_events()
+            self._ensure_angle_artists()
+            self._emit_angle()
+        else:
+            self._disconnect_angle_events()
+            self._clear_angle_artists()
+            self.angle_pts = None
+            self._emit_angle()
+        self.draw_idle()
+
+    def clear_angle_measurement(self):
+        self.angle_pts = None
+        self._clear_angle_artists()
+        if self.angle_enabled:
+            self._ensure_angle_artists()
+            self._emit_angle()
+
+    def _connect_angle_events(self):
+        if self._angle_cids:
+            return
+        self._angle_cids = [
+            self.mpl_connect('button_press_event', self._on_angle_press),
+            self.mpl_connect('button_release_event', self._on_angle_release),
+            self.mpl_connect('motion_notify_event', self._on_angle_motion),
+        ]
+
+    def _disconnect_angle_events(self):
+        for cid in self._angle_cids:
+            try:
+                self.mpl_disconnect(cid)
+            except Exception:
+                pass
+        self._angle_cids = []
+
     def _apply_view_theme(self):
         dark = bool(self._detail_dark)
         fig_face = '#111217' if dark else '#ffffff'
@@ -191,6 +242,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.outline.set_edgecolor(text_color)
             except Exception:
                 pass
+        if self.angle_pts:
+            self._update_angle_artists()
         self.draw_idle()
 
     def _apply_view_font_scale(self):
@@ -214,6 +267,20 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         self.draw_idle()
+        if getattr(self, '_angle_label', None) is not None:
+            try:
+                self._angle_label.set_fontsize(9 * getattr(self, '_profile_label_scale', 1.0))
+            except Exception:
+                pass
+
+    def _emit_angle(self):
+        if not callable(self.angle_callback):
+            return
+        info = self._compute_angle_info()
+        try:
+            self.angle_callback(info)
+        except Exception:
+            pass
 
     def set_copy_feedback_handler(self, handler):
         self._copy_feedback_handler = handler
@@ -303,6 +370,104 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_p0, = self.main_ax.plot([x0],[y0], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
             self._profile_p1, = self.main_ax.plot([x1],[y1], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
             self._update_profile_markers()
+
+    def _ensure_angle_artists(self):
+        if self.main_ax is None:
+            return
+        if self.angle_pts is None:
+            try:
+                xmin, xmax, ymin, ymax = self._angle_bounds()
+            except Exception:
+                xmin = ymin = 0.0
+                xmax = ymax = 1.0
+            vx = (xmin + xmax) * 0.5
+            vy = (ymin + ymax) * 0.5
+            ax = vx + 0.2 * (xmax - xmin)
+            ay = vy
+            bx = vx
+            by = vy + 0.2 * (ymax - ymin)
+            self.angle_pts = (vx, vy, ax, ay, bx, by)
+        vx, vy, ax, ay, bx, by = self.angle_pts
+        if not self._angle_lines:
+            color1 = '#ffb300'
+            color2 = '#00acc1'
+            line1, = self.main_ax.plot([vx, ax], [vy, ay], color=color1, lw=2.4, alpha=0.95, zorder=9)
+            line2, = self.main_ax.plot([vx, bx], [vy, by], color=color2, lw=2.4, alpha=0.95, zorder=9)
+            vertex, = self.main_ax.plot([vx], [vy], marker='o', color='#ffffff', mec='#000000', ms=7, zorder=10)
+            end_a, = self.main_ax.plot([ax], [ay], marker='o', color=color1, mec='#000000', ms=6, zorder=10)
+            end_b, = self.main_ax.plot([bx], [by], marker='o', color=color2, mec='#000000', ms=6, zorder=10)
+            self._angle_lines = [line1, line2]
+            self._angle_markers = [vertex, end_a, end_b]
+        self._update_angle_artists()
+
+    def _clear_angle_artists(self):
+        for art in self._angle_lines + self._angle_markers:
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        self._angle_lines = []
+        self._angle_markers = []
+        if self._angle_label is not None:
+            try:
+                self._angle_label.remove()
+            except Exception:
+                pass
+        self._angle_label = None
+
+    def _update_angle_artists(self):
+        if not self.angle_pts or not self._angle_lines:
+            return
+        vx, vy, ax, ay, bx, by = self.angle_pts
+        self._angle_lines[0].set_data([vx, ax], [vy, ay])
+        self._angle_lines[1].set_data([vx, bx], [vy, by])
+        self._angle_markers[0].set_data([vx], [vy])
+        self._angle_markers[1].set_data([ax], [ay])
+        self._angle_markers[2].set_data([bx], [by])
+        self._update_angle_label()
+        self.draw_idle()
+
+    def _update_angle_label(self):
+        angle_info = self._compute_angle_info()
+        if self._angle_label is not None:
+            try:
+                self._angle_label.remove()
+            except Exception:
+                pass
+            self._angle_label = None
+        if not angle_info:
+            return
+        vx, vy = self.angle_pts[0], self.angle_pts[1]
+        text = f"{angle_info['angle_deg']:.1f}°"
+        unit = angle_info.get('unit')
+        if unit:
+            text += f" | L1={angle_info['len_a']:.2f} {unit} L2={angle_info['len_b']:.2f} {unit}"
+        color = '#f5f5f5' if self._detail_dark else '#111111'
+        bbox_face = '#060606' if self._detail_dark else 'white'
+        self._angle_label = self.main_ax.text(
+            vx, vy, text,
+            color=color,
+            fontsize=9 * getattr(self, '_profile_label_scale', 1.0),
+            ha='left', va='bottom',
+            bbox={'facecolor': bbox_face, 'alpha': 0.65 if self._detail_dark else 0.7, 'edgecolor': 'none', 'pad': 2},
+            zorder=12)
+
+    def _compute_angle_info(self):
+        if not self.angle_pts:
+            return None
+        vx, vy, ax, ay, bx, by = self.angle_pts
+        vec_a = np.array([ax - vx, ay - vy], dtype=float)
+        vec_b = np.array([bx - vx, by - vy], dtype=float)
+        len_a = float(np.hypot(vec_a[0], vec_a[1]))
+        len_b = float(np.hypot(vec_b[0], vec_b[1]))
+        if len_a < 1e-9 or len_b < 1e-9:
+            angle_deg = 0.0
+        else:
+            cosang = float(np.clip(np.dot(vec_a, vec_b) / (len_a * len_b), -1.0, 1.0))
+            angle_deg = float(np.degrees(np.arccos(cosang)))
+        unit = self._profile_axis_unit()
+        return {'angle_deg': angle_deg, 'len_a': len_a, 'len_b': len_b, 'unit': unit, 'vertex': (vx, vy)}
 
     def _clear_profile_artists(self):
         for art in (self._profile_line, self._profile_p0, self._profile_p1):
@@ -536,6 +701,18 @@ class MultiPreviewCanvas(FigureCanvas):
         x0, y0, x1, y1 = pts
         self.profile_pts = self._clamp_profile_pts(x0, y0, x1, y1)
 
+    def _angle_bounds(self):
+        return self._profile_bounds()
+
+    def _set_angle_pts(self, vx, vy, ax, ay, bx, by):
+        xmin, xmax, ymin, ymax = self._angle_bounds()
+        def clamp(val, lo, hi):
+            return max(lo, min(hi, val))
+        vx = clamp(vx, xmin, xmax); vy = clamp(vy, ymin, ymax)
+        ax = clamp(ax, xmin, xmax); ay = clamp(ay, ymin, ymax)
+        bx = clamp(bx, xmin, xmax); by = clamp(by, ymin, ymax)
+        self.angle_pts = (vx, vy, ax, ay, bx, by)
+
     def _shift_pressed(self, event):
         key = getattr(event, 'key', None)
         if key and 'shift' in str(key).lower():
@@ -745,15 +922,24 @@ class MultiPreviewCanvas(FigureCanvas):
                 return
         overlay_idx = self._overlay_index_near(x, y)
         if overlay_idx is not None:
-            self.highlight_saved_profile(overlay_idx)
-            if callable(self._profile_highlight_cb):
-                try:
-                    self._profile_highlight_cb(overlay_idx)
-                except Exception:
-                    pass
-            self._dragging = None
-            self._line_drag_origin = None
-            return
+            activated = self.activate_saved_profile(overlay_idx)
+            if activated:
+                if callable(self._profile_highlight_cb):
+                    try:
+                        self._profile_highlight_cb(None)
+                    except Exception:
+                        pass
+                x0, y0, x1, y1 = self.profile_pts
+            else:
+                self.highlight_saved_profile(overlay_idx)
+                if callable(self._profile_highlight_cb):
+                    try:
+                        self._profile_highlight_cb(overlay_idx)
+                    except Exception:
+                        pass
+                self._dragging = None
+                self._line_drag_origin = None
+                return
         # else: start a new line from here
         if shift_pressed:
             self._snapshot_active_profile()
@@ -786,6 +972,65 @@ class MultiPreviewCanvas(FigureCanvas):
         self._dragging = None
         self._line_drag_origin = None
 
+    def _on_angle_press(self, event):
+        if not self.angle_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
+            return
+        if event.button != 1:
+            return
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return
+        handle = self._angle_handle_at(x, y)
+        if handle is None:
+            return
+        self._angle_dragging = handle
+        self._angle_drag_origin = (x, y, self.angle_pts)
+
+    def _on_angle_motion(self, event):
+        if not self.angle_enabled or self._angle_dragging is None:
+            return
+        if event.inaxes is not self.main_ax:
+            return
+        x, y = event.xdata, event.ydata
+        if x is None or y is None or self.angle_pts is None:
+            return
+        vx, vy, ax, ay, bx, by = self.angle_pts
+        if self._angle_dragging == 'vertex':
+            dx = x - vx
+            dy = y - vy
+            self._set_angle_pts(x, y, ax + dx, ay + dy, bx + dx, by + dy)
+        elif self._angle_dragging == 'a':
+            self._set_angle_pts(vx, vy, x, y, bx, by)
+        elif self._angle_dragging == 'b':
+            self._set_angle_pts(vx, vy, ax, ay, x, y)
+        self._update_angle_artists()
+        self._emit_angle()
+
+    def _on_angle_release(self, event):
+        if not self.angle_enabled:
+            return
+        self._angle_dragging = None
+        self._angle_drag_origin = None
+
+    def _angle_handle_at(self, x, y):
+        if not self.angle_pts:
+            return None
+        vx, vy, ax, ay, bx, by = self.angle_pts
+        handles = {
+            'vertex': (vx, vy),
+            'a': (ax, ay),
+            'b': (bx, by),
+        }
+        min_handle = None
+        min_dist = float('inf')
+        for name, (hx, hy) in handles.items():
+            dist = self._pt_distance_pixels(x, y, hx, hy)
+            if dist < min_dist:
+                min_dist = dist
+                min_handle = name
+        if min_dist <= 12.0:
+            return min_handle
+        return None
     def _emit_profile(self):
         if not callable(self.profile_callback):
             return
@@ -810,6 +1055,10 @@ class MultiPreviewCanvas(FigureCanvas):
         view = self._ax_view_map.get(ax)
         if self.profile_enabled and ax is self.main_ax:
             # avoid starting thumbnail drag/other actions while measuring profiles
+            if event.button == 3:
+                self._show_context_menu(event, view)
+            return
+        if self.angle_enabled and ax is self.main_ax:
             if event.button == 3:
                 self._show_context_menu(event, view)
             return
