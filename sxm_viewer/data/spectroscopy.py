@@ -343,13 +343,20 @@ def _parse_section_metadata(line: str) -> Dict[str, object]:
 
 
 def _split_key_value(line: str):
-    for sep in ("=", ":", "\t"):
+    for sep in ("=", ":"):
         if sep in line:
             left, right = line.split(sep, 1)
             key = left.strip()
             value = right.strip()
             if key:
                 return key, value
+    # Tab-delimited metadata uses a single tab; skip data/header rows with multiple tabs.
+    if "\t" in line and line.count("\t") == 1:
+        left, right = line.split("\t", 1)
+        key = left.strip()
+        value = right.strip()
+        if key:
+            return key, value
     return None, None
 
 

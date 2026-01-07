@@ -1,156 +1,85 @@
-"""Main Qt widget implementing the SXM grid viewer."""
+﻿"""Main Qt widget implementing the SXM grid viewer."""
 from __future__ import annotations
 
-import re
 import math
-
-from .._shared import *
-from ..config import *
-from ..data.io import *
-from ..data.spectroscopy import *
-from ..processing.filters import *
-from ..processing.detection import *
-from .thumbnails import *
-from .minimap import FrameMiniMap
-from .detail_panels import *
+import re
+import threading
+from collections import OrderedDict, defaultdict
+from datetime import datetime
 from pathlib import Path
-import os
+
+import numpy as np
+from matplotlib import colormaps
+from matplotlib.figure import Figure
 from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
 
-
-class MatrixDataset:
-    """Lightweight container describing a matrix dataset and its channel files."""
-    def __init__(self, base, rows, cols):
-        self.base = base
-        self.rows = rows
-        self.cols = cols
-        self.channels = []  # list of dicts: {'filename','channel_code','label','spectra_count','path'}
-
-    def add_channel(self, filename, channel_code=None, label=None, spectra_count=0, path=None):
-        self.channels.append({
-            'filename': filename,
-            'channel_code': channel_code,
-            'label': label,
-            'spectra_count': spectra_count,
-            'path': str(path) if path else filename,
-        })
-
-    def summary(self):
-        return f"{self.base}: {len(self.channels)} channel(s) — {self.rows}×{self.cols} each"
-
-
-def parse_matrix_filename(fname: str):
-    """
-    Heuristic parser for matrix filenames.
-    Returns (base, channel_code, channel_label).
-    Examples:
-      angii_au111_00df_Matrix.dat -> base=angii_au111, channel_code=00df
-      angii_au111_00It_to_PC_Matrix.dat -> base=angii_au111, channel_code=00It_to_PC
-    """
-    stem = Path(fname).stem
-    # strip extension and trailing "_Matrix" if present
-    stem = re.sub(r'(?i)_matrix$', '', stem)
-    channel_code = None
-    base = stem
-    # attempt to split on the last underscore chunk that contains digits/letters
-    m = re.match(r'^(?P<base>.+?)_(?P<code>[0-9A-Za-z]+[^_]*)$', stem)
-    if m:
-        base = m.group('base')
-        channel_code = m.group('code')
-    channel_label = channel_code
-    return base, channel_code, channel_label
-
-_NUMERIC_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
-
-_UNIT_DISPLAY_CHOICES = {
-    # order favours the most common STM ranges first (centered on the native unit)
-    "nm": [("nm", 1.0), ("pm", 1e3), ("um", 1e-3), ("mm", 1e-6), ("m", 1e-9)],
-    "A": [("nA", 1e9), ("pA", 1e12), ("uA", 1e6), ("mA", 1e3), ("A", 1.0), ("kA", 1e-3)],
-    "V": [("mV", 1e3), ("uV", 1e6), ("V", 1.0), ("kV", 1e-3)],
-    "Hz": [("kHz", 1e-3), ("Hz", 1.0), ("MHz", 1e-6), ("GHz", 1e-9)],
-}
-
-_SI_BASE_UNITS = {
-    "nm": ("m", 1e-9),
-    "pm": ("m", 1e-12),
-    "um": ("m", 1e-6),
-    "mm": ("m", 1e-3),
-    "m": ("m", 1.0),
-    "A": ("A", 1.0),
-    "V": ("V", 1.0),
-    "Hz": ("Hz", 1.0),
-}
-
-
-def _auto_display_unit(unit: str, data: np.ndarray) -> Tuple[str, float]:
-    """
-    Return (label, factor) describing how to scale ``data`` for comfortable display.
-    """
-    unit_key = (unit or "").strip()
-    default = (unit_key, 1.0)
-    options = _UNIT_DISPLAY_CHOICES.get(unit_key)
-    if not options:
-        return default
-    arr = np.asarray(data, dtype=float)
-    finite = arr[np.isfinite(arr)]
-    if finite.size == 0:
-        return default
-    mag = float(np.nanmax(np.abs(finite)))
-    if not np.isfinite(mag) or mag <= 0:
-        return default
-    def _pick(range_min, range_max):
-        for label, factor in options:
-            scaled = mag * factor
-            if range_min <= scaled < range_max:
-                return label, factor
-        return None
-
-    found = _pick(1.0, 1000.0)
-    if found:
-        return found
-
-    best = None
-    best_diff = float("inf")
-    for label, factor in options:
-        scaled = mag * factor
-        if scaled <= 0:
-            continue
-        diff = abs(math.log10(scaled))
-        if diff < best_diff:
-            best = (label, factor)
-            best_diff = diff
-
-    if best:
-        return best
-    return options[0]
-
-
-def _safe_float(value, default=None):
-    """Best-effort conversion that tolerates unit suffixes like '80 nm'."""
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        text = str(value).strip()
-    except Exception:
-        return default
-    if not text:
-        return default
-    match = _NUMERIC_RE.search(text.replace(",", "."))
-    if match:
-        try:
-            return float(match.group(0))
-        except Exception:
-            return default
-    try:
-        return float(text)
-    except Exception:
-        return default
-
+from .._shared import log_status
+from ..config import (
+    CONFIG_PATH,
+    CH_EQUALITY_TOL_NM,
+    CH_SAMPLE_POINTS,
+    CHANNEL_DATA_CACHE_LIMIT,
+    FILTERED_CACHE_LIMIT,
+    load_config,
+    save_config,
+    load_header_cache,
+    save_header_cache,
+)
+from ..data.matrix import MatrixDataset, parse_matrix_filename
+from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
+from ..processing.filters import (
+    flatten_remove_median,
+    subtract_best_fit_plane,
+    subtract_2nd_order_plane,
+    gaussian_filter_image,
+    highpass_filter,
+    FILTER_DEFINITIONS,
+    _gaussian_available,
+    _filter_signature,
+)
+from ..processing.detection import _find_topography_channel, _sample_channel_values_for_tagging
+from ..utils.units import (
+    _NUMERIC_RE,
+    _UNIT_DISPLAY_CHOICES,
+    _SI_BASE_UNITS,
+    _auto_display_unit,
+    _safe_float,
+)
+from .thumbnails import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
+from .minimap import FrameMiniMap
+from .detail_panels import (
+    BatchExportSignals,
+    BatchExportWorker,
+    CustomFilterDialog,
+    ImageAdjustDialog,
+    ImageAdjustPreviewPanel,
+    MatrixFitDialog,
+    MatrixFitWorker,
+    MatrixSpectroViewer,
+    MultiPreviewCanvas,
+    ProfileDialog,
+    SafeFigureCanvas,
+    SpectroscopyCompareDialog,
+    SpectroscopyPopup,
+    _SpectroFitWorker,
+)
+from .spectroscopy.summary_dialog import SpectroSummaryDialog
+from .viewer import measurement as viewer_measurement
+from .viewer import thumbnails as viewer_thumbnails
+from .viewer import loader as viewer_loader
+from .viewer import preview as viewer_preview
+from .viewer.state import ViewerState
+from .spectroscopy import controller as spectro_controller
+from .spectroscopy import browser as spectro_browser
+from .spectroscopy import overlays as spectro_overlays
+from .spectroscopy import popups as spectro_popups
+from .viewer import thumb_ui as viewer_thumb_ui
+from .viewer import export as viewer_export
 
 class SXMGridViewer(QtWidgets.QWidget):
+    SpectroSummaryDialog = SpectroSummaryDialog
     FRAME_ZOOM_SLIDER_MIN = 0
     FRAME_ZOOM_SLIDER_MAX = 600
     FRAME_ZOOM_SLIDER_DEFAULT = 200
@@ -195,6 +124,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.display_units_si = bool(self.config.get("display_units_si", False))
         self.display_units_relative = bool(self.config.get("display_units_relative", False))
         self.relative_axes = bool(self.config.get("relative_axes", False))
+        self.preserve_profiles_on_channel_change = bool(
+            self.config.get("preserve_profiles_on_channel_change", True)
+        )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
         self.frame_map_entries = []
         self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
@@ -278,6 +210,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         log_status("Loading header cache...")
         self.header_cache = load_header_cache()
         self._header_cache_dirty = False
+        self.state = ViewerState.from_viewer(self)
         # Deprecated: previously stored concrete arrays for extra views
         # self.added_views kept for backward compatibility but not used for rendering
         self.added_views = []
@@ -942,27 +875,7 @@ class SXMGridViewer(QtWidgets.QWidget):
                 action.setChecked(state)
 
     def _update_spectro_stats_label(self, stats=None):
-        if not hasattr(self, 'spectro_stats_label'):
-            return
-        if not self.show_spectra:
-            self.spectro_stats_label.setText("Spectros: hidden")
-            return
-        total = len(getattr(self, 'spectros', []) or [])
-        single_count = sum(1 for s in getattr(self, 'spectros', []) if s.get('matrix_index') is None)
-        if stats:
-            total = stats.get('total_specs', total)
-            single_count = stats.get('single_entries', single_count)
-        matrix_datasets = getattr(self, 'matrix_datasets', {}) or {}
-        matrix_count = len(matrix_datasets)
-        sample_ds = next(iter(matrix_datasets.values()), None)
-        matrix_desc = ""
-        if sample_ds:
-            matrix_desc = f" ({sample_ds.cols}x{sample_ds.rows})"
-        elif matrix_count == 0:
-            matrix_desc = ""
-        self.spectro_stats_label.setText(
-            f"Spectros: {total} (Single: {single_count}, Matrix datasets: {matrix_count}{matrix_desc})"
-        )
+        return spectro_browser._update_spectro_stats_label(self, stats=stats)
 
     def _create_shortcuts_panel(self):
         frame = QtWidgets.QFrame()
@@ -1065,289 +978,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             return extent
 
     def _spectros_near_thumb_pos(self, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
-        """
-        Map a click in thumbnail pixel coordinates to spectroscopy list ordered by distance.
-        Returns list of spectro dicts (nearest first).
-        """
-        entries = self.spectros_by_image.get(str(file_key), []) or []
-        if not entries:
-            return []
-        w, h = thumb_dims if thumb_dims else self._thumb_dimensions()
-        px, py = int(thumb_pos_px.x()), int(thumb_pos_px.y())
-        px = min(max(px, 0), max(w - 1, 0))
-        py = min(max(py, 0), max(h - 1, 0))
-        extent = self._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
-        x0, x1, y1, y0 = extent
-        xspan = x1 - x0 if x1 != x0 else 1.0
-        yspan = y0 - y1 if y0 != y1 else 1.0
-        sx = x0 + (px / float(max(1, w - 1))) * xspan
-        sy = y1 + ((py / float(max(1, h - 1))) * -yspan)
-        hits = []
-        for s in entries:
-            sx_e = s.get('x'); sy_e = s.get('y')
-            if sx_e is None or sy_e is None:
-                continue
-            dx = sx - sx_e; dy = sy - sy_e
-            d2 = dx*dx + dy*dy
-            hits.append((d2, s))
-        hits.sort(key=lambda t: t[0])
-        return [h[1] for h in hits]
+        return spectro_overlays._spectros_near_thumb_pos(self, file_key, header, thumb_pos_px, thumb_dims)
 
-    class SpectroSummaryDialog(QtWidgets.QDialog):
-        """Compact modal that lists spectros for a given file and offers quick actions."""
-        def __init__(self, parent, file_key, header, fds, entries, nearest=None, show_mode="single"):
-            super().__init__(parent)
-            self.viewer = parent
-            self._file_key = str(file_key)
-            self._header = header or {}
-            self._fds = fds or []
-            self._entries = list(entries)
-            self._show_mode = show_mode  # "single" or "matrix"
-            self._single_entries = [s for s in self._entries if s.get('matrix_index') is None]
-            self._matrix_entries = [s for s in self._entries if s.get('matrix_index') is not None]
-            self._active_entries = self._single_entries if self._show_mode != "matrix" else self._matrix_entries
-            # ensure marker colors exist on viewer
-            if not hasattr(self.viewer, 'spectro_marker_color_single'):
-                self.viewer.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
-            if not hasattr(self.viewer, 'spectro_marker_color_matrix'):
-                self.viewer.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
-            self._dialog_cmap = getattr(self.viewer, 'preview_cmap', 'viridis')
-            self._spec_to_item = {}
-            self.setWindowTitle(f"Spectros: {Path(file_key).name}")
-            self.setMinimumWidth(520)
-            layout = QVBoxLayout(self)
-            n_total = len(self._entries)
-            n_matrix = len(self._matrix_entries)
-            n_single = len(self._single_entries)
-            label = QLabel(f"<b>{n_total}</b> spectroscopies — Single: {n_single} · Matrix: {n_matrix}")
-            layout.addWidget(label)
-
-            # Preview + channel selector + show-points toggle
-            top_row = QtWidgets.QHBoxLayout()
-            self.preview_lbl = QLabel("Preview")
-            self.preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
-            self.preview_lbl.setMinimumSize(220, 200)
-            self.preview_lbl.setStyleSheet("QLabel { border: 1px solid #555; background: #111; }")
-            top_row.addWidget(self.preview_lbl, 1)
-            side_v = QtWidgets.QVBoxLayout()
-            self.channel_combo = QtWidgets.QComboBox()
-            for idx, fd in enumerate(self._fds):
-                cap = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
-                self.channel_combo.addItem(f"{idx}: {cap}", userData=idx)
-            self.channel_combo.currentIndexChanged.connect(self._render_preview)
-            side_v.addWidget(self.channel_combo)
-            self.show_points_cb = QCheckBox("Show points on preview")
-            self.show_points_cb.setChecked(True)
-            self.show_points_cb.toggled.connect(self._render_preview)
-            side_v.addWidget(self.show_points_cb)
-            color_btn = QPushButton("Marker color")
-            color_btn.clicked.connect(self._pick_marker_color)
-            side_v.addWidget(color_btn)
-            # Matrix file filter (only in matrix mode)
-            self.matrix_filter_combo = None
-            self.matrix_cmap_combo = None
-            if self._show_mode == "matrix":
-                self._matrix_groups = {}
-                for s in self._matrix_entries:
-                    path_key = str(s.get('path') or "")
-                    self._matrix_groups.setdefault(path_key, []).append(s)
-                if self._matrix_groups:
-                    self.matrix_filter_combo = QtWidgets.QComboBox()
-                    self.matrix_filter_combo.addItem("All matrix files", userData=None)
-                    for path_key, specs in sorted(self._matrix_groups.items()):
-                        self.matrix_filter_combo.addItem(Path(path_key).name, userData=path_key)
-                    self.matrix_filter_combo.currentIndexChanged.connect(self._on_matrix_filter_changed)
-                    side_v.addWidget(self.matrix_filter_combo)
-                # Colormap selector for matrix preview
-                try:
-                    cmap_list = sorted(colormaps.keys())
-                except Exception:
-                    cmap_list = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
-                self.matrix_cmap_combo = QtWidgets.QComboBox()
-                for name in cmap_list:
-                    self.matrix_cmap_combo.addItem(name)
-                self.matrix_cmap_combo.setCurrentText(self._dialog_cmap)
-                self.matrix_cmap_combo.currentTextChanged.connect(self._on_matrix_cmap_changed)
-                side_v.addWidget(self.matrix_cmap_combo)
-            side_v.addStretch(1)
-            top_row.addLayout(side_v)
-            layout.addLayout(top_row)
-
-            self.list_w = QListWidget()
-            self._rebuild_list()
-            layout.addWidget(self.list_w, 1)
-            btn_row = QtWidgets.QHBoxLayout()
-            open_btn = QPushButton("Open spectro browser")
-            open_btn.clicked.connect(self._on_open_browser)
-            btn_row.addWidget(open_btn)
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(self.accept)
-            btn_row.addWidget(close_btn)
-            layout.addLayout(btn_row)
-            self.list_w.itemDoubleClicked.connect(lambda it: self._open_single(it.data(QtCore.Qt.UserRole)))
-            self.list_w.currentItemChanged.connect(self._on_list_selection_changed)
-            self.list_w.itemClicked.connect(self._on_item_clicked)
-            self.preview_lbl.mousePressEvent = self._on_preview_click
-
-            self._render_preview()
-
-        def _render_preview(self):
-            try:
-                if not self._fds:
-                    self.preview_lbl.setText("No channels")
-                    return
-                idx = self.channel_combo.currentData() if self.channel_combo.count() else 0
-                fd = self._fds[int(idx)] if idx is not None and 0 <= int(idx) < len(self._fds) else self._fds[0]
-                unit_final, arr = self.viewer._get_filtered_channel_array(self._file_key, self._fds.index(fd), self._header, fd)
-                unit_disp, arr_disp, _ = self.viewer._scale_unit_for_display(unit_final, arr)
-                arr_disp = self.viewer._downsample_for_thumbnail(arr_disp, 240, 200)
-                qimg = array_to_qimage(arr_disp, cmap_name=self._dialog_cmap)
-                pix = QtGui.QPixmap.fromImage(qimg.scaled(240, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-                self._preview_markers = []
-                if self.show_points_cb.isChecked():
-                    try:
-                        xpix = int(self._header.get('xPixel', arr.shape[1] if arr.ndim == 2 else 0))
-                        ypix = int(self._header.get('yPixel', arr.shape[0] if arr.ndim == 2 else 0))
-                        # force point rendering, no density, smaller markers for dialog preview
-                        selected = None
-                        cur = self.list_w.currentItem()
-                        if cur:
-                            selected = cur.data(QtCore.Qt.UserRole)
-                        # render only the subset requested (single or matrix)
-                        entries = self._active_entries
-                        saved_single = self.viewer.show_single_markers
-                        saved_matrix = self.viewer.show_matrix_markers
-                        try:
-                            # force singles on so matrix entries drawn as points too
-                            self.viewer.show_single_markers = True
-                            self.viewer.show_matrix_markers = (self._show_mode == "matrix")
-                            self._preview_markers = self.viewer._render_spectroscopy_overlays(
-                                pix, self._header, self._file_key, xpix, ypix,
-                                reveal_points_override=True, selected_spec=selected, entries_override=entries,
-                                matrix_as_points=(self._show_mode == "matrix"))
-                        finally:
-                            self.viewer.show_single_markers = saved_single
-                            self.viewer.show_matrix_markers = saved_matrix
-                    except Exception:
-                        pass
-                self.preview_lbl.setPixmap(pix)
-            except Exception:
-                self.preview_lbl.setText("Preview unavailable")
-
-        def _on_matrix_filter_changed(self, _idx):
-            if self.matrix_filter_combo is None:
-                return
-            path_key = self.matrix_filter_combo.currentData()
-            if path_key:
-                self._active_entries = self._matrix_groups.get(path_key, [])
-            else:
-                self._active_entries = self._matrix_entries
-            self._rebuild_list()
-            self._render_preview()
-
-        def _on_matrix_cmap_changed(self, name):
-            self._dialog_cmap = name or self._dialog_cmap
-            self._render_preview()
-
-        def _pick_marker_color(self):
-            try:
-                current = self.viewer.spectro_marker_color_matrix if self._show_mode == "matrix" else self.viewer.spectro_marker_color_single
-                color = QtWidgets.QColorDialog.getColor(current, self, "Select marker color")
-                if color.isValid():
-                    if self._show_mode == "matrix":
-                        self.viewer.spectro_marker_color_matrix = color
-                    else:
-                        self.viewer.spectro_marker_color_single = color
-                    # refresh preview and thumbnails
-                    self._render_preview()
-                    try:
-                        self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        def _on_open_browser(self):
-            try:
-                self.viewer.on_open_spectro_browser(self._entries)
-            except Exception:
-                pass
-            self.accept()
-
-        def _open_single(self, spectro):
-            try:
-                self.viewer._open_single_spectro_popup(spectro)
-            except Exception:
-                pass
-            # keep dialog open for quick browsing
-
-        def _on_list_selection_changed(self, current, _prev):
-            try:
-                self._render_preview()
-            except Exception:
-                pass
-
-        def _on_item_clicked(self, item):
-            try:
-                spec = item.data(QtCore.Qt.UserRole)
-                mods = QtWidgets.QApplication.keyboardModifiers()
-                if mods & QtCore.Qt.ShiftModifier:
-                    self.viewer._toggle_multi_spec_selection(spec)
-                    return
-                if spec:
-                    self.viewer._open_single_spectro_popup(spec)
-            except Exception:
-                pass
-
-        def _on_preview_click(self, event):
-            if not hasattr(self, '_preview_markers'):
-                return
-            pos = event.pos()
-            pix = self.preview_lbl.pixmap()
-            if pix is None:
-                return
-            offset_x = (self.preview_lbl.width() - pix.width()) / 2.0
-            offset_y = (self.preview_lbl.height() - pix.height()) / 2.0
-            px = pos.x() - offset_x
-            py = pos.y() - offset_y
-            if px < 0 or py < 0 or px > pix.width() or py > pix.height():
-                return
-            for info in self._preview_markers:
-                rect = info.get('rect')
-                spec = info.get('spec')
-                if rect and spec and rect.contains(px, py):
-                    key = self.viewer._spec_identity_key(spec) or str(spec.get('path'))
-                    item = self._spec_to_item.get(key)
-                    if item:
-                        self.list_w.setCurrentItem(item)
-                    try:
-                        mods = event.modifiers()
-                        if mods & QtCore.Qt.ShiftModifier:
-                            self.viewer._toggle_multi_spec_selection(spec)
-                        else:
-                            self.viewer._open_single_spectro_popup(spec)
-                    except Exception:
-                        pass
-                    break
-
-        def _rebuild_list(self):
-            self.list_w.clear()
-            self._spec_to_item.clear()
-            list_source = self._active_entries
-            for idx, s in enumerate(list_source, 1):
-                sx = s.get('x'); sy = s.get('y'); mid = s.get('matrix_index')
-                if sx is not None and sy is not None:
-                    txt = f"{idx}. {sx:.1f}/{sy:.1f} nm"
-                else:
-                    txt = f"{idx}. <no-pos>"
-                if mid is not None:
-                    txt += f"  [matrix {mid}]"
-                it = QListWidgetItem(txt)
-                it.setData(QtCore.Qt.UserRole, s)
-                self.list_w.addItem(it)
-                self._spec_to_item[self.viewer._spec_identity_key(s) or str(idx)] = it
-
-    # ---------- Viewer stubs / hooks for integration ----------
     def on_open_spectro_browser(self, entries):
         """Hook: replace with a full spectro browser. Minimal fallback shows the summary again."""
         self.open_spectro_browser(entries)
@@ -1416,81 +1048,16 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
-        if self.spectro_dock:
-            return
-        dock = QtWidgets.QDockWidget("Spectro Browser", self)
-        dock.setFloating(True)
-        container = QtWidgets.QWidget(dock)
-        v = QtWidgets.QVBoxLayout(container); v.setContentsMargins(6,6,6,6); v.setSpacing(6)
-        self.spectro_search = QtWidgets.QLineEdit()
-        self.spectro_search.setPlaceholderText("Search spectros (file/pos)")
-        v.addWidget(self.spectro_search)
-        self.spectro_list = QListWidget()
-        v.addWidget(self.spectro_list, 1)
-        self.spectro_preview_lbl = QLabel("Select a spectroscopy")
-        self.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
-        self.spectro_preview_lbl.setMinimumHeight(120)
-        self.spectro_preview_lbl.setStyleSheet("QLabel { color: #999; }")
-        v.addWidget(self.spectro_preview_lbl)
-        container.setLayout(v)
-        dock.setWidget(container)
-        self.spectro_dock = dock
-        self.spectro_search.textChanged.connect(self._filter_spectro_browser)
-        self.spectro_list.currentItemChanged.connect(self._on_spectro_browser_selection)
+        return spectro_browser._ensure_spectro_dock(self)
 
     def open_spectro_browser(self, entries=None):
-        self._ensure_spectro_dock()
-        if entries is None:
-            entries = list(self.spectros or [])
-        self._spectro_browser_entries = list(entries)
-        self._filter_spectro_browser()
-        self.spectro_dock.show()
-        self.spectro_dock.raise_()
+        return spectro_browser.open_spectro_browser(self, entries=entries)
 
     def _filter_spectro_browser(self):
-        if not hasattr(self, 'spectro_list'):
-            return
-        txt = self.spectro_search.text().strip().lower() if hasattr(self, 'spectro_search') else ''
-        self.spectro_list.clear()
-        for idx, s in enumerate(self._spectro_browser_entries):
-            name = Path(s.get('path','')).name.lower()
-            pos = ""
-            try:
-                if s.get('x') is not None and s.get('y') is not None:
-                    pos = f"{float(s.get('x')):.1f}/{float(s.get('y')):.1f}"
-            except Exception:
-                pos = ""
-            label = f"{idx+1}. {name} {pos}"
-            if txt and txt not in label.lower():
-                continue
-            item = QListWidgetItem(label)
-            item.setData(QtCore.Qt.UserRole, s)
-            self.spectro_list.addItem(item)
+        return spectro_browser._filter_spectro_browser(self)
 
     def _on_spectro_browser_selection(self, current, _prev):
-        if not current:
-            return
-        spec = current.data(QtCore.Qt.UserRole)
-        if spec is None:
-            return
-        try:
-            x = spec.get('x'); y = spec.get('y')
-            self.spectro_preview_lbl.setText(f"{Path(spec.get('path','')).name}\n({x},{y})")
-        except Exception:
-            self.spectro_preview_lbl.setText(Path(spec.get('path','')).name)
-        try:
-            image_key = spec.get('image_key')
-            if image_key and image_key in self._thumb_labels:
-                self.selected_file_for_thumbs = image_key
-                self._refresh_thumb_selection_styles()
-        except Exception:
-            pass
-        try:
-            if hasattr(self, '_show_spectro_popup'):
-                self._show_spectro_popup(spec)
-        except Exception:
-            pass
-
+        return spectro_browser._on_spectro_browser_selection(self, current, _prev)
 
     def _shortcuts_html(self):
         color = "#f0f4ff" if getattr(self, 'dark_mode', False) else "#203050"
@@ -1536,19 +1103,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
     def _thumb_dimensions(self):
-        """Return (width, height) for thumbnails preserving 4:3 aspect ratio."""
-        w = int(max(64, min(360, getattr(self, 'thumb_size_px', 160))))
-        h = int(max(48, round(w * 0.75)))
-        return w, h
+        return viewer_thumb_ui._thumb_dimensions(self)
 
     def _resize_thumbnail_scale(self, delta_px):
-        new_w = int(max(64, min(360, self.thumb_size_px + delta_px)))
-        if new_w == self.thumb_size_px:
-            return
-        self.thumb_size_px = new_w
-        self.config['thumb_size_px'] = new_w
-        save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return viewer_thumb_ui._resize_thumbnail_scale(self, delta_px)
 
     def _create_toolbar(self):
         try:
@@ -1606,112 +1164,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.load_folder(p)
 
     def load_folder(self, folder:Path):
-        folder = Path(folder)
-        log_status(f"Loading folder: {folder}")
-        self._update_toolbar_actions(False)
-        prev_last_dir = getattr(self, 'last_dir', None)
-        self.last_dir = folder
-        self.path_le.setText(str(folder))
-        # persist last dir early
-        self.config['last_dir'] = str(folder)
-        save_config(self.config)
-
-        txts = sorted(folder.glob("*.txt"))
-        log_status(f"Found {len(txts)} .txt files")
-        self.files = txts
-        self.headers.clear()
-        self._invalidate_thumbnail_cache()
-        self._invalidate_channel_cache()
-        self.thumb_multi_select = set()
-        cache_hits = 0
-        cache_miss = 0
-        for t in txts:
-            cached = self._get_cached_header(t)
-            if cached:
-                hdr, fds = cached
-                cache_hits += 1
-            else:
-                try:
-                    hdr, fds = parse_header(t)
-                    cache_miss += 1
-                    self._store_header_cache(t, hdr, fds)
-                except Exception:
-                    continue
-            self.headers[str(t)] = (hdr, fds)
-        if cache_miss:
-            self._save_header_cache()
-        log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
-        if not self.headers:
-            self.meta_box.setPlainText("No valid .txt headers found")
-            self.clear_thumbs(); return
-        self._build_image_timestamp_index()
-        self._rebuild_frame_map_entries()
-
-        # build channel dropdown from first header
-        first_key = next(iter(self.headers))
-        _, first_fds = self.headers[first_key]
-        labels = []
-        for idx, fd in enumerate(first_fds):
-            cap = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
-            labels.append(f"{idx}: {cap}")
-        max_channels = max(len(v[1]) for v in self.headers.values())
-        if max_channels > len(labels):
-            for idx in range(len(labels), max_channels):
-                labels.append(f"{idx}: chan{idx}")
-
-        self.channel_dropdown.blockSignals(True)
-        self.channel_dropdown.clear()
-        for lab in labels:
-            self.channel_dropdown.addItem(lab)
-            self.channel_dropdown.setItemData(self.channel_dropdown.count()-1, lab, QtCore.Qt.ToolTipRole)
-        self.channel_dropdown.setMinimumWidth(380)
-        if 0 <= self.last_channel_index < self.channel_dropdown.count():
-            self.channel_dropdown.setCurrentIndex(self.last_channel_index)
-        else:
-            self.last_channel_index = 0; self.channel_dropdown.setCurrentIndex(0)
-        self.channel_dropdown.blockSignals(False)
-
-        # set cmaps
-        try: self.thumb_cmap_combo.setCurrentText(self.thumb_cmap)
-        except: pass
-        try: self.preview_cmap_combo.setCurrentText(self.preview_cmap)
-        except: pass
-        # set icon sizes for cmap combos
-        try:
-            self.thumb_cmap_combo.setIconSize(QtCore.QSize(96, 14))
-            self.preview_cmap_combo.setIconSize(QtCore.QSize(96, 14))
-        except Exception:
-            pass
-
-        # auto-detect tags for files not already tagged
-        log_status("Auto-detecting tags...")
-        self._auto_detect_tags_for_folder()
-
-        # keep spectroscopy folder aligned with the SXM folder unless the user picked a custom path
-        try:
-            spec_path = Path(getattr(self, 'spec_folder_path', folder))
-        except Exception:
-            spec_path = folder
-        auto_follow = False
-        if not spec_path.exists():
-            auto_follow = True
-        elif prev_last_dir and spec_path.resolve() == Path(prev_last_dir).resolve():
-            auto_follow = True
-        if auto_follow:
-            self.spec_folder_path = folder
-            self.config['spectra_folder'] = str(folder)
-            save_config(self.config)
-            try:
-                self.spec_folder_le.setText(str(folder))
-            except Exception:
-                pass
-
-        # load spectroscopy markers referencing this folder
-        log_status("Loading spectroscopy references...")
-        self._reload_spectros(refresh=False)
-
-        QtCore.QTimer.singleShot(0, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
-        log_status("Folder load complete.")
+        return viewer_loader.load_folder(self, folder)
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
@@ -1768,130 +1221,16 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     # ---------- thumbnails population with badge overlay ----------
     def clear_thumbs(self):
-        while self.thumb_layout.count():
-            item = self.thumb_layout.takeAt(0); w = item.widget()
-            if w: w.setParent(None)
-        self.thumb_widgets = {}
-        self._thumb_labels = {}
+        return viewer_thumb_ui.clear_thumbs(self)
 
     def populate_thumbnails_for_channel(self, channel_idx:int):
-        self.clear_thumbs()
-        max_cols = 4; row = 0; col = 0
-        thumb_w, thumb_h = self._thumb_dimensions()
-        cmap_name = self.thumb_cmap_combo.currentText() or self.thumb_cmap
-        self._thumb_generation += 1
-        generation = self._thumb_generation
-        self.meta_box.setPlainText(f"Building thumbnails for channel {channel_idx} ...")
-        files_iter = list(self.files)
+        return viewer_thumb_ui.populate_thumbnails_for_channel(self, channel_idx)
 
-        filt = (self.thumb_filter_combo.currentText() if hasattr(self, 'thumb_filter_combo') else 'All')
-        if filt != 'All':
-            def include(path_str):
-                tag = (self.tags.get(path_str, {}) or {}).get('tag', None)
-                if filt == 'CH only':
-                    return tag == 'constant-height'
-                if filt == 'CC only':
-                    return tag == 'constant-current'
-                if filt == 'Untagged':
-                    return tag is None
-                return True
-            files_iter = [t for t in files_iter if include(str(t))]
-
-        sort_mode = (self.thumb_sort_combo.currentText() if hasattr(self, 'thumb_sort_combo') else 'Name (A?Z)')
-        if sort_mode.startswith('Name'):
-            files_iter.sort(key=lambda p: Path(p).name.lower())
-        elif 'Date (new' in sort_mode or 'Date (old' in sort_mode:
-            rev = ('new' in sort_mode)
-            def sort_key_date(p):
-                hdr = self.headers.get(str(p), (None, None))[0]
-                return self._parse_header_datetime(hdr)
-            files_iter.sort(key=sort_key_date, reverse=rev)
-        elif sort_mode.startswith('Tag'):
-            order = {'constant-height': 0, 'constant-current': 1, None: 2}
-            files_iter.sort(key=lambda p: (order.get((self.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
-
-        for i, t in enumerate(files_iter):
-            key = str(t)
-            if key not in self.headers:
-                continue
-            header, fds = self.headers[key]
-            lbl = QtWidgets.QLabel()
-            lbl.setAlignment(QtCore.Qt.AlignCenter)
-            lbl.setProperty("file_path", key)
-            lbl.setProperty("channel_index", int(channel_idx))
-            lbl.setProperty("spec_markers", [])
-            lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
-            placeholder = QtGui.QPixmap(thumb_w, thumb_h)
-            placeholder.fill(QtGui.QColor('#0b0b12'))
-            lbl.setPixmap(placeholder)
-            lbl.setMouseTracking(True)
-            lbl.mousePressEvent = self._make_thumb_click_handler(lbl)
-            lbl.mouseMoveEvent = self._make_thumb_move_handler(lbl)
-            lbl.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-            lbl.customContextMenuRequested.connect(lambda pos, lb=lbl: self._on_thumb_context_menu(lb, pos))
-            vbox = QtWidgets.QVBoxLayout(); vbox.setContentsMargins(0,0,0,0); vbox.setSpacing(2)
-            card = QtWidgets.QFrame(); card.setFrameShape(QtWidgets.QFrame.StyledPanel); card.setLineWidth(0)
-            card_layout = QtWidgets.QVBoxLayout(card); card_layout.setContentsMargins(4,4,4,4); card_layout.setSpacing(4)
-            vbox.addWidget(lbl)
-            cap = QtWidgets.QLabel(Path(t).name); cap.setAlignment(QtCore.Qt.AlignCenter); cap.setMaximumHeight(18)
-            cap.setFont(QtGui.QFont("Segoe UI", 9)); vbox.addWidget(cap)
-            card_layout.addLayout(vbox)
-            self.thumb_layout.addWidget(card, row, col)
-            self.thumb_widgets[key] = card
-            self._thumb_labels[key] = lbl
-            try:
-                if key in getattr(self, 'thumb_multi_select', set()):
-                    card.setStyleSheet("QFrame { border: 2px solid #a36bff; border-radius: 10px; background-color: rgba(163,107,255,40); }")
-                elif key == str(getattr(self, 'selected_file_for_thumbs', None)):
-                    card.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,40); }")
-                else:
-                    card.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
-            except Exception:
-                pass
-
-            if fds and 0 <= channel_idx < len(fds):
-                fd = fds[channel_idx]
-                base_pix = None
-                data_key = None
-                try:
-                    data_key = self._thumbnail_data_key(key, channel_idx, fd, thumb_w, thumb_h)
-                except Exception:
-                    data_key = None
-                if data_key:
-                    base_pix = self.thumb_cache.get((data_key, cmap_name))
-                if base_pix is not None:
-                    pix = base_pix.copy()
-                    markers = self._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds)
-                    lbl.setPixmap(pix)
-                    lbl.setProperty("spec_markers", markers)
-                else:
-                    lbl.setProperty("spec_markers", [])
-                    self._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
-            else:
-                blank = QtGui.QPixmap(thumb_w, thumb_h)
-                blank.fill(QtGui.QColor('black'))
-                lbl.setPixmap(blank)
-                lbl.setProperty("spec_markers", [])
-
-            col += 1
-            if col >= max_cols:
-                col = 0; row += 1
-        self.meta_box.setPlainText(f"Thumbnails built for channel {channel_idx}  (thumb cmap: {cmap_name})")
-        self._refresh_frame_map_pixmaps()
     def _thumbnail_filter_signature(self, file_key):
-        spec = self.thumbnail_filters.get(str(file_key))
-        return _filter_signature(spec)
+        return viewer_thumbnails._thumbnail_filter_signature(self, file_key)
 
     def _downsample_for_thumbnail(self, arr, thumb_w, thumb_h):
-        arr = np.asarray(arr, dtype=float)
-        if arr.size == 0:
-            return arr
-        h, w = arr.shape
-        if h > thumb_h or w > thumb_w:
-            ys = np.linspace(0, h - 1, thumb_h).astype(int)
-            xs = np.linspace(0, w - 1, thumb_w).astype(int)
-            return arr[np.ix_(ys, xs)]
-        return arr
+        return viewer_thumbnails._downsample_for_thumbnail(self, arr, thumb_w, thumb_h)
 
     def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds):
         """Draw tag borders, filter badges, and spectroscopy markers."""
@@ -1982,54 +1321,13 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
 
     def _get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h):
-        filter_sig = self._thumbnail_filter_signature(file_key)
-        fname = fd.get("FileName")
-        if not fname:
-            raise ValueError("Missing FileName for channel")
-        bin_path = Path(file_key).parent / fname
-        try:
-            bin_mtime = bin_path.stat().st_mtime
-        except Exception:
-            bin_mtime = 0.0
-        data_key = (file_key, channel_idx, bin_mtime, filter_sig, thumb_w, thumb_h)
-        with self._thumb_data_lock:
-            cached = self._thumb_data_cache.get(data_key)
-        if cached is not None:
-            return data_key, cached
-        _, arr_conv = self._get_filtered_channel_array(file_key, channel_idx, header, fd)
-        thumb_arr = self._downsample_for_thumbnail(arr_conv, thumb_w, thumb_h)
-        with self._thumb_data_lock:
-            self._thumb_data_cache[data_key] = thumb_arr
-        return data_key, thumb_arr
+        return viewer_thumbnails._get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h)
 
     def _thumbnail_data_key(self, file_key, channel_idx, fd, thumb_w, thumb_h):
-        filter_sig = self._thumbnail_filter_signature(file_key)
-        fname = fd.get("FileName")
-        if not fname:
-            raise ValueError("Missing FileName for channel")
-        bin_path = Path(file_key).parent / fname
-        try:
-            bin_mtime = bin_path.stat().st_mtime
-        except Exception:
-            bin_mtime = 0.0
-        return (file_key, channel_idx, bin_mtime, filter_sig, thumb_w, thumb_h)
+        return viewer_thumbnails._thumbnail_data_key(self, file_key, channel_idx, fd, thumb_w, thumb_h)
 
     def _invalidate_thumbnail_cache(self, paths=None):
-        if not paths:
-            with self._thumb_data_lock:
-                self._thumb_data_cache.clear()
-            self.thumb_cache.clear()
-            self._frame_real_pixmap_cache.clear()
-            return
-        path_set = {str(Path(p)) for p in paths}
-        with self._thumb_data_lock:
-            data_keys = [k for k in self._thumb_data_cache.keys() if k[0] in path_set]
-            for k in data_keys:
-                self._thumb_data_cache.pop(k, None)
-        pix_keys = [k for k in self.thumb_cache.keys() if k[0][0] in path_set]
-        for k in pix_keys:
-            self.thumb_cache.pop(k, None)
-        self._frame_real_pixmap_cache.clear()
+        return viewer_thumbnails._invalidate_thumbnail_cache(self, paths=paths)
 
     def _channel_cache_key(self, file_key, channel_idx, fd):
         fname = fd.get('FileName')
@@ -2112,18 +1410,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._frame_real_pixmap_cache.clear()
 
     def on_thumb_sort_changed(self, idx):
-        try:
-            self.config['thumb_sort'] = self.thumb_sort_combo.currentText(); save_config(self.config)
-        except Exception:
-            pass
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return viewer_thumb_ui.on_thumb_sort_changed(self, idx)
 
     def on_thumb_filter_changed(self, idx):
-        try:
-            self.config['thumb_filter'] = self.thumb_filter_combo.currentText(); save_config(self.config)
-        except Exception:
-            pass
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return viewer_thumb_ui.on_thumb_filter_changed(self, idx)
 
     def on_unit_display_toggled(self, checked: bool):
         self.display_units_si = bool(checked)
@@ -2149,32 +1439,7 @@ class SXMGridViewer(QtWidgets.QWidget):
     # removed size change handler
 
     def _parse_header_datetime(self, header):
-        """Return a sortable key (float timestamp) parsed from header Date/Time if possible; otherwise 0.0.
-        Accepts common formats, falls back to 0.0 on failure."""
-        try:
-            date = str(header.get('Date', '') or '').strip()
-            time = str(header.get('Time', '') or '').strip()
-            if not date and not time:
-                return 0.0
-            candidates = []
-            if date and time:
-                candidates.append(f"{date} {time}")
-            if date:
-                candidates.append(date)
-            fmts = [
-                '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%d/%m/%Y %H:%M:%S',
-                '%d-%m-%Y %H:%M:%S', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'
-            ]
-            for s in candidates:
-                for fmt in fmts:
-                    try:
-                        dt = datetime.strptime(s, fmt)
-                        return dt.timestamp()
-                    except Exception:
-                        continue
-            return 0.0
-        except Exception:
-            return 0.0
+        return viewer_loader._parse_header_datetime(self, header)
 
     def _header_datetime_dt(self, header, path):
         try:
@@ -2196,221 +1461,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.image_time_index[str(p)] = dt
             self.image_meta.append({'path': Path(p), 'time': dt})
 
-    def _build_metadata_html(self, header_path:Path, header:dict, fd:dict, channel_idx:int,
-                             unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
-        """Return HTML for the metadata pane with clearer styling and sections."""
-        def esc(s):
-            try:
-                return str(s).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-            except Exception:
-                return ''
-        dark = bool(getattr(self, 'dark_mode', False))
-        text_color = '#e0e0e0' if dark else '#222'
-        label_color = '#a0a0a0' if dark else '#555'
-        accent_border = '#6fa8ff' if dark else '#4a7edb'
-        accent_bg = 'rgba(111,168,255,0.16)' if dark else 'rgba(74,126,219,0.10)'
-        filename = header_path.name
-        date = header.get('Date', '')
-        time = header.get('Time', '')
-        bias = header.get('Bias', None); bias_unit = header.get('BiasPhysUnit', '')
-        setp = header.get('SetPoint', None); setp_unit = header.get('SetPointPhysUnit', '')
-        user = header.get('UserName', '')
-        cap = fd.get('Caption','')
-        phys_orig = fd.get('PhysUnit','')
-        scale = fd.get('Scale','')
-        offset = fd.get('Offset','')
-        def fmt_number(val, precision=3):
-            try:
-                num = float(val)
-                return f"{num:.{precision}f}".rstrip('0').rstrip('.')
-            except Exception:
-                if val is None:
-                    return ''
-                return esc(val)
-
-        # stats
-        try:
-            flat = np.asarray(arr_display).ravel()
-            vmin = np.nanmin(flat); vmax = np.nanmax(flat); vmed = np.nanmedian(flat)
-            stats = f"min={vmin:.6g} | max={vmax:.6g} | median={vmed:.6g}"
-        except Exception:
-            stats = "min/max/median: N/A"
-        # tags
-        taginfo = self.tags.get(str(header_path), {})
-        tag_label = taginfo.get('tag', None)
-        tag_chip = ''
-        if tag_label == 'constant-height':
-            chip_color = '#2e7d32'; chip_text = 'CH'
-        elif tag_label == 'constant-current':
-            chip_color = '#1565c0'; chip_text = 'CC'
-        else:
-            chip_color = None; chip_text = ''
-        if chip_color:
-            tag_chip = f"<span style='background:{chip_color};color:#fff;border-radius:10px;padding:2px 8px;font-weight:600'>" \
-                       f"{chip_text}</span> <span style='color:#555'>({esc(tag_label)})</span>"
-        # abs z + dzs
-        ch_lines = ''
-        abs_nm = None
-        if tag_label == 'constant-height':
-            abs_pm = taginfo.get('abs_z_pm', None)
-            if abs_pm is not None:
-                abs_nm = abs_pm/1000.0
-                ch_lines += f"<div>Const-height (abs z): <b>{abs_nm:.3f} nm</b></div>"
-            dz_prev_nonch, prevname = self._dz_vs_last_before_ch(header_path)
-            if dz_prev_nonch is not None:
-                ch_lines += f"<div>dz vs prev non-CH (<i>{esc(prevname)}</i>): <b>{dz_prev_nonch:+.0f} pm</b> ({dz_prev_nonch/1000.0:+.3f} nm)</div>"
-            dz_prev_ch, prevch_name = self._dz_vs_previous_ch(header_path)
-            if dz_prev_ch is not None:
-                ch_lines += f"<div>dz vs prev CH (<i>{esc(prevch_name)}</i>): <b>{dz_prev_ch:+.0f} pm</b> ({dz_prev_ch/1000.0:+.3f} nm)</div>"
-
-        # control params
-        params = {}
-        def collect_params(d):
-            for k,v in (d or {}).items():
-                kl = str(k).lower()
-                if any(tok in kl for tok in ('ki','kp','pll','ampl','amplitude','amp','setpoint','natural','natfreq','freq','f0','kpl','kipl','lockin')):
-                    try:
-                        params[k] = float(v)
-                    except Exception:
-                        params[k] = v
-        collect_params(header); collect_params(fd)
-        params_rows = ''.join([f"<tr><td>{esc(k)}</td><td style='text-align:right'>{esc(v)}</td></tr>" for k,v in params.items()])
-
-        spec_section = ''
-        spec_entries = self.spectros_by_image.get(str(header_path), [])
-        if self.show_spectra and spec_entries:
-            rows = []
-            for idx, spec in enumerate(spec_entries[:6], 1):
-                name = Path(spec['path']).name
-                matrix_idx = spec.get('matrix_index')
-                if matrix_idx is not None:
-                    name = f"{name} [{matrix_idx}]"
-                xs = spec.get('x')
-                ys = spec.get('y')
-                pos_txt = f"{xs:.1f}/{ys:.1f} nm" if xs is not None and ys is not None else "n/a"
-                rows.append(f"<tr><td>S{idx}</td><td>{esc(name)}</td><td style='text-align:right'>{esc(pos_txt)}</td></tr>")
-            if len(spec_entries) > 6:
-                rows.append(f"<tr><td colspan='3' style='text-align:center;color:{label_color}'>+ {len(spec_entries)-6} more�</td></tr>")
-            spec_section = f"""
-            <div style='height:6px'></div>
-            <div style='font-weight:600; color:{label_color}; margin-bottom:2px'>Spectroscopies ({len(spec_entries)})</div>
-            <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
-              {''.join(rows)}
-            </table>
-            """
-
-        scan_entries = [
-            ('XScanRange', 'X scan', header.get('XScanRange'), header.get('XPhysUnit', header.get('PhysUnit',''))),
-            ('YScanRange', 'Y scan', header.get('YScanRange'), header.get('YPhysUnit', header.get('PhysUnit',''))),
-            ('Speed', 'Speed', header.get('Speed'), ''),
-            ('LineRate', 'Line rate', header.get('LineRate'), ''),
-            ('Angle', 'Angle', header.get('Angle'), 'deg'),
-            ('xPixel', 'x pixels', header.get('xPixel'), ''),
-            ('yPixel', 'y pixels', header.get('yPixel'), ''),
-            ('xCenter', 'x center', header.get('xCenter'), header.get('XPhysUnit', '')),
-            ('yCenter', 'y center', header.get('yCenter'), header.get('YPhysUnit', '')),
-            ('dzdx', 'dz/dx', header.get('dzdx') or header.get('dz/dx'), ''),
-            ('dzdy', 'dz/dy', header.get('dzdy') or header.get('dz/dy'), ''),
-            ('overscan[%]', 'Overscan (%)', header.get('overscan[%]'), '%'),
-        ]
-        scan_rows = []
-        for key, label, val, extra_unit in scan_entries:
-            if val is None or val == '':
-                continue
-            if isinstance(val, float):
-                val_txt = f"{val:.3f}"
-            else:
-                val_txt = esc(val)
-            unit_txt = extra_unit or ''
-            scan_rows.append(f"<tr><td>{esc(label)}</td><td style='text-align:right'>{val_txt} {esc(unit_txt)}</td></tr>")
-        scan_section = ""
-        if scan_rows:
-            scan_section = f"""
-            <div style='height:6px'></div>
-            <div style='font-weight:600; color:{label_color}; margin-bottom:2px'>Scan metadata</div>
-            <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
-              {''.join(scan_rows)}
-            </table>
-            """
-
-        # key metadata highlight
-        x_range = header.get('XScanRange'); y_range = header.get('YScanRange')
-        x_unit = header.get('XPhysUnit', header.get('PhysUnit','nm'))
-        y_unit = header.get('YPhysUnit', header.get('PhysUnit','nm'))
-        xpix = header.get('xPixel') or header.get('XPixel')
-        ypix = header.get('yPixel') or header.get('YPixel')
-        x_center = header.get('xCenter'); y_center = header.get('yCenter')
-        piezo_txt = f"{abs_nm:.3f} nm" if abs_nm is not None else "—"
-        date_display = " ".join(t for t in (date, time) if t).strip() or "—"
-        size_txt = "—"
-        if x_range is not None and y_range is not None:
-            size_txt = f"{fmt_number(x_range)} {esc(x_unit)} × {fmt_number(y_range)} {esc(y_unit)}"
-        pixel_txt = "—"
-        if xpix is not None and ypix is not None:
-            pixel_txt = f"{fmt_number(xpix,0)} × {fmt_number(ypix,0)}"
-        center_txt = "—"
-        if x_center is not None and y_center is not None:
-            center_txt = f"{fmt_number(x_center)} / {fmt_number(y_center)} {esc(x_unit)}"
-        bias_txt = f"{fmt_number(bias)} {esc(bias_unit)}" if bias is not None else "—"
-        setp_txt = f"{fmt_number(setp)} {esc(setp_unit)}" if setp is not None else "—"
-        key_rows = [
-            ("Acquired", date_display),
-            ("Bias", bias_txt),
-            ("Setpoint", setp_txt),
-            ("Image size", size_txt),
-            ("Pixels", pixel_txt),
-            ("X/Y center", center_txt),
-            ("Piezo Z", piezo_txt),
-        ]
-        key_section_rows = "".join(
-            f"<tr><td style='padding:2px 6px;color:{label_color};font-weight:600'>{esc(lbl)}</td>"
-            f"<td style='padding:2px 6px;text-align:right;font-size:14px'><span style='color:{text_color};font-weight:600'>{val or '—'}</span></td></tr>"
-            for lbl, val in key_rows if val
-        )
-        key_section = f"""
-        <div style='border:1px solid {accent_border}; border-radius:12px; background:{accent_bg}; padding:8px; margin-bottom:8px;'>
-          <table style='width:100%; border-collapse:collapse'>{key_section_rows}</table>
-        </div>
-        """
-
-        relative_row = ""
-        if zero_offset is not None:
-            relative_row = f"<tr><td style='color:{label_color}'>Relative zero</td><td style='text-align:right'>{zero_offset:.6g} {esc(unit_display)}</td></tr>"
-
-        html = f"""
-        <div style='font-family:Segoe UI, Arial; font-size:14px; color:{text_color}'>
-          <div style='font-weight:600; font-size:16px; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
-          {key_section}
-          <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
-            <tr><td style='color:{label_color}'>Date</td><td style='text-align:right'>{esc(date) or '&nbsp;'}</td></tr>
-            <tr><td style='color:{label_color}'>Time</td><td style='text-align:right'>{esc(time) or '&nbsp;'}</td></tr>
-            <tr><td style='color:{label_color}'>Bias</td><td style='text-align:right'>{'' if bias is None else esc(bias)} {esc(bias_unit)}</td></tr>
-            <tr><td style='color:{label_color}'>SetPoint</td><td style='text-align:right'>{'' if setp is None else esc(setp)} {esc(setp_unit)}</td></tr>
-            <tr><td style='color:{label_color}'>User</td><td style='text-align:right'>{esc(user)}</td></tr>
-          </table>
-          <div style='height:6px'></div>
-          {spec_section}
-          <div style='height:6px'></div>
-          <div style='font-weight:600; color:%s; margin-bottom:2px'>Channel</div>
-          <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
-            <tr><td style='color:{label_color}'>Index</td><td style='text-align:right'>{channel_idx}</td></tr>
-            <tr><td style='color:{label_color}'>Caption</td><td style='text-align:right'>{esc(cap)}</td></tr>
-            <tr><td style='color:{label_color}'>Unit (orig)</td><td style='text-align:right'>{esc(phys_orig)}</td></tr>
-            <tr><td style='color:{label_color}'>Normalized (SI)</td><td style='text-align:right'><b>{esc(unit_normalized)}</b></td></tr>
-            <tr><td style='color:{label_color}'>Shown unit</td><td style='text-align:right'><b>{esc(unit_display)}</b></td></tr>
-            {relative_row}
-            <tr><td style='color:{label_color}'>Scale</td><td style='text-align:right'>{esc(scale)}</td></tr>
-            <tr><td style='color:{label_color}'>Offset</td><td style='text-align:right'>{esc(offset)}</td></tr>
-            <tr><td style='color:{label_color}'>Stats</td><td style='text-align:right'>{esc(stats)}</td></tr>
-          </table>
-          <div style='height:6px'></div>
-          {ch_lines}
-          {("<div style='height:6px'></div><div style='font-weight:600; color:#333; margin-bottom:2px'>Control params</div>" if params_rows else '')}
-          {("<table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>" + params_rows + "</table>") if params_rows else ''}
-          {scan_section}
-        </div>
-        """
-        return html
+    def _build_metadata_html(self, header_path:Path, header:dict, fd:dict, channel_idx:int, unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
+        return viewer_preview._build_metadata_html(self, header_path, header, fd, channel_idx, unit_normalized, unit_display, arr_display, zero_offset)
 
     def _frame_entry_from_header(self, path, header):
         if header is None:
@@ -2514,30 +1566,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         return stored
 
     def _thumbnail_pixmap_for_file(self, file_key, channel_idx, width, height, cmap_name):
-        if not file_key:
-            return None
-        header, fds = self.headers.get(str(file_key), (None, None))
-        if not header or not fds:
-            return None
-        if channel_idx < 0 or channel_idx >= len(fds):
-            if not fds:
-                return None
-            channel_idx = min(max(channel_idx, 0), len(fds) - 1)
-        fd = fds[channel_idx]
-        try:
-            data_key, arr = self._get_thumbnail_array(str(file_key), channel_idx, header, fd, width, height)
-        except Exception:
-            return None
-        cache_key = ('frame', data_key, cmap_name)
-        pix = self._frame_real_pixmap_cache.get(cache_key)
-        if pix is None:
-            try:
-                qimg = array_to_qimage(arr, cmap_name=cmap_name)
-                pix = QtGui.QPixmap.fromImage(qimg)
-                self._frame_real_pixmap_cache[cache_key] = pix
-            except Exception:
-                pix = None
-        return pix
+        return viewer_thumb_ui._thumbnail_pixmap_for_file(self, file_key, channel_idx, width, height, cmap_name)
 
     def _update_frame_map_active(self, key):
         if hasattr(self, 'frame_map_widget'):
@@ -2587,54 +1616,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._apply_frame_zoom_slider()
 
     def _refresh_thumb_selection_styles(self):
-        sel = str(getattr(self, 'selected_file_for_thumbs', '') or '')
-        multi = getattr(self, 'thumb_multi_select', set())
-        for fp, w in list(getattr(self, 'thumb_widgets', {}).items()):
-            try:
-                if str(fp) in multi:
-                    w.setStyleSheet("QFrame { border: 2px solid #a36bff; border-radius: 10px; background-color: rgba(163,107,255,40); }")
-                elif str(fp) == sel and sel:
-                    w.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,40); }")
-                else:
-                    w.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
-            except Exception:
-                continue
+        return viewer_thumb_ui._refresh_thumb_selection_styles(self)
 
     def _make_thumb_click_handler(self, label_widget):
-        def handler(event):
-            if event.button() != QtCore.Qt.LeftButton:
-                return
-            if self._handle_spec_marker_click(label_widget, event):
-                return
-            fp = label_widget.property("file_path")
-            ch_idx = int(label_widget.property("channel_index"))
-            mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
-            if mods & QtCore.Qt.ShiftModifier:
-                self._toggle_thumb_multi_selection(fp)
-                return
-            if mods & QtCore.Qt.ControlModifier:
-                self._toggle_thumb_multi_selection(fp)
-                return
-            self._clear_thumb_multi_selection(update_styles=False)
-            self.on_thumbnail_clicked(fp, ch_idx)
-            try:
-                if self.show_spectra and self.spectros_by_image.get(str(fp)):
-                    entries = self.spectros_by_image.get(str(fp), [])
-                    has_matrix = any(s.get('matrix_index') is not None for s in entries)
-                    has_single = any(s.get('matrix_index') is None for s in entries)
-                    mode = "matrix" if has_matrix and not has_single else "single"
-                    self._open_spectro_summary_for_file(fp, show_mode=mode)
-            except Exception:
-                pass
-        return handler
+        return viewer_thumb_ui._make_thumb_click_handler(self, label_widget)
 
     def _make_thumb_move_handler(self, label_widget):
-        def handler(event):
-            if not self._handle_spec_hover(label_widget, event):
-                QtWidgets.QLabel.mouseMoveEvent(label_widget, event)
-        return handler
+        return viewer_thumb_ui._make_thumb_move_handler(self, label_widget)
 
-    # ---------- thumbnail clicked -> preview + inspector populate ----------
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
         """
         Thumbnail clicked -> preview.
@@ -2664,111 +1653,7 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     # ---------- preview + metadata ---------- 
     def show_file_channel(self, header_path_str, channel_idx:int, use_local_cmap=False):
-        self.last_preview = (str(header_path_str), int(channel_idx))
-        if hasattr(self, 'adjust_image_btn'):
-            self.adjust_image_btn.setEnabled(True)
-        self._update_toolbar_actions(True)
-        header_path = Path(header_path_str)
-        # track selected file for thumbnail highlighting
-        try:
-            self.selected_file_for_thumbs = str(header_path)
-            self._refresh_thumb_selection_styles()
-        except Exception:
-            pass
-        self._update_frame_map_active(str(header_path))
-        file_key = str(header_path)
-        header, fds = self.headers.get(file_key, (None,None))
-        if header is None or channel_idx < 0 or channel_idx >= len(fds): return
-        fd = fds[channel_idx]; fname = fd.get("FileName")
-        axis_unit = 'px'
-        try:
-            xpix = int(header.get('xPixel', 128)); ypix = int(header.get('yPixel', xpix))
-            base_extent = self._header_extent(header)
-            unit_normalized, arr_base = self._get_filtered_channel_array(file_key, channel_idx, header, fd)
-            self._last_base_array = np.asarray(arr_base)
-            self._last_base_extent = base_extent
-            self._last_base_unit = unit_normalized
-            arr_adj, adjusted_extent = self._apply_adjustments_for_channel(file_key, channel_idx, self._last_base_array, base_extent)
-            display_extent = self._display_extent(adjusted_extent, header)
-            display_unit, display_arr, zero_offset = self._scale_unit_for_display(unit_normalized, arr_adj)
-            self._last_display_array = np.asarray(display_arr)
-            self._last_display_unit = display_unit
-            self._last_display_extent = display_extent
-            self._last_colorbar_label = None
-            axis_unit = header.get('XPhysUnit') or header.get('ScanUnit') or header.get('PhysUnit') or ''
-            if not axis_unit:
-                axis_unit = 'px' if display_extent is None else 'nm'
-            self._last_axis_unit = axis_unit
-        except Exception as e:
-            self.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
-
-        cmap_to_use = self.preview_cmap_combo.currentText() or self.preview_cmap
-        if use_local_cmap:
-            cmap_to_use = self.per_file_channel_cmap.get((file_key, channel_idx), cmap_to_use)
-
-        # build views (main + dynamic extras based on current file)
-        views = []
-        caption = fd.get('Caption', fd.get('FileName', ''))
-        date = str(header.get('Date', '') or '').strip()
-        time_txt = str(header.get('Time', '') or '').strip()
-        datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
-        base_title = Path(header_path).name
-        if datetime_txt:
-            title_text = f"{base_title} — {caption} — {datetime_txt}"
-        else:
-            title_text = f"{base_title} — {caption}"
-        colorbar_label = caption
-        if display_unit:
-            colorbar_label = f"{caption} [{display_unit}]"
-        self._last_colorbar_label = colorbar_label
-        main = {'arr': display_arr, 'extent': display_extent, 'cmap': cmap_to_use, 'unit': display_unit,
-                'title': title_text, 'colorbar_label': colorbar_label, 'axis_unit': axis_unit,
-                'relative_axes': bool(self.relative_axes)}
-        views.append(main)
-
-        # Rebuild extra views for the currently selected file using stored specifications
-        for spec in getattr(self, 'extra_view_specs', []):
-            try:
-                # Find matching channel in this file (by caption first, then by index)
-                idx2 = self._find_channel_index_for_spec(fds, spec)
-                if idx2 is None:
-                    continue
-                fd2 = fds[idx2]
-                unit2_final, arr2_conv = self._get_filtered_channel_array(file_key, idx2, header, fd2)
-                cmap2 = self._resolve_extra_spec_cmap(spec, file_key)
-                arr2_adj, adj2_extent = self._apply_adjustments_for_channel(file_key, idx2, arr2_conv, base_extent)
-                extent2 = self._display_extent(adj2_extent, header)
-                unit2_display, arr2_display, _ = self._scale_unit_for_display(unit2_final, arr2_adj)
-                caption2 = fd2.get('Caption', fd2.get('FileName', ''))
-                if datetime_txt:
-                    title2 = f"{Path(header_path).name} — {caption2} — {datetime_txt}"
-                else:
-                    title2 = f"{Path(header_path).name} — {caption2}"
-                cbar_label2 = caption2
-                if unit2_display:
-                    cbar_label2 = f"{caption2} [{unit2_display}]"
-                views.append({'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
-                              'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
-                              'relative_axes': bool(self.relative_axes)})
-            except Exception:
-                # Skip extra view if anything fails for this file
-                continue
-
-        self.preview_canvas.set_views(views)
-        if getattr(self, 'current_mode', self.MODE_BROWSE) == self.MODE_MEASURE:
-            try:
-                self._on_start_profile(force_enable=True)
-            except Exception:
-                pass
-        elif getattr(self, '_pending_profile_enable', False):
-            self._pending_profile_enable = False
-
-        # Styled HTML metadata
-        try:
-            html = self._build_metadata_html(header_path, header, fd, channel_idx, unit_normalized, display_unit, display_arr, zero_offset)
-            self.meta_box.setHtml(html)
-        except Exception:
-            self.meta_box.setPlainText(f"File: {header_path.name}")
+        return viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
 
     def get_current_detail_config(self):
         """Return JSON-friendly configuration describing current detail view state."""
@@ -3099,64 +1984,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         return unit_label or unit, arr_scaled, zero_offset
 
     def _collect_channel_exports(self, header_path_str, main_channel_idx=None):
-        header_path = Path(header_path_str)
-        file_key = str(header_path)
-        header, fds = self.headers.get(file_key, (None, None))
-        if header is None or not fds:
-            return header, []
-        base_extent = self._header_extent(header)
-        exports = []
-        channel_idx = main_channel_idx
-        if channel_idx is None:
-            channel_idx = 0
-        if channel_idx < 0 or channel_idx >= len(fds):
-            channel_idx = 0
-        def _append(idx, cmap=None):
-            if idx is None or idx < 0 or idx >= len(fds):
-                return
-            fd = fds[idx]
-            try:
-                unit_final, arr_conv = self._get_filtered_channel_array(file_key, idx, header, fd)
-            except Exception:
-                return
-            cap = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
-            adj_arr, adj_extent = self._apply_adjustments_for_channel(file_key, idx, arr_conv, base_extent)
-            disp_extent = self._display_extent(adj_extent, header)
-            disp_unit, disp_arr, _ = self._scale_unit_for_display(unit_final, adj_arr)
-            cbar_label = cap
-            if disp_unit:
-                cbar_label = f"{cap} [{disp_unit}]"
-            date = str(header.get('Date', '') or '').strip()
-            time_txt = str(header.get('Time', '') or '').strip()
-            datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
-            if datetime_txt:
-                title_txt = f"{header_path.name} — {cap} — {datetime_txt}"
-            else:
-                title_txt = f"{header_path.name} — {cap}"
-            exports.append({
-                'arr': disp_arr,
-                'extent': disp_extent,
-                'unit': disp_unit,
-                'caption': cap,
-                'idx': idx,
-                'cmap': cmap,
-                'fd': fd,
-                'relative_axes': bool(self.relative_axes),
-                'colorbar_label': cbar_label,
-                'title': title_txt,
-            })
-        cmap_main = self.per_file_channel_cmap.get((file_key, channel_idx), self.preview_cmap_combo.currentText() or self.preview_cmap)
-        _append(channel_idx, cmap_main)
-        for spec in getattr(self, 'extra_view_specs', []):
-            try:
-                idx2 = self._find_channel_index_for_spec(fds, spec)
-            except Exception:
-                idx2 = None
-            if idx2 is None:
-                continue
-            cmap2 = self._resolve_extra_spec_cmap(spec, file_key)
-            _append(idx2, cmap2)
-        return header, exports
+        return viewer_export._collect_channel_exports(self, header_path_str, main_channel_idx)
 
     def _axes_from_extent(self, header, arr_shape, extent):
         h, w = arr_shape
@@ -3186,131 +2014,10 @@ class SXMGridViewer(QtWidgets.QWidget):
                     f.write(f"{x:.9g}\t{y:.9g}\t{z_vals[iy, ix]:.9g}\n")
 
     def on_export_pngs(self):
-        # Export high-quality PNGs for the currently selected file's visible channels (main + extras)
-        if not self.last_preview:
-            QtWidgets.QMessageBox.information(self, "No selection", "Select a file/channel first.")
-            return
-        header_path_str, channel_idx = self.last_preview
-        header_path = Path(header_path_str)
-        header, exports = self._collect_channel_exports(header_path_str, channel_idx)
-        if header is None or not exports:
-            QtWidgets.QMessageBox.information(self, "Export", "No channels to export.")
-            return
-
-        default_dir = str(getattr(self, 'last_dir', header_path.parent))
-        out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select export folder", default_dir)
-        if not out_dir:
-            return
-
-        # Metadata for naming
-        date = self._sanitize_filename_component(header.get('Date', ''))
-        time = self._sanitize_filename_component(header.get('Time', ''))
-        file_base = self._sanitize_filename_component(Path(header_path_str).stem)
-
-        # Save each channel as a separate high-DPI PNG
-        from matplotlib.figure import Figure
-        for item in exports:
-            try:
-                fig = Figure(figsize=(6, 5), dpi=300)
-                ax = fig.add_subplot(1,1,1)
-                arr = np.asarray(item['arr'])
-                flip = bool(item.get('relative_axes'))
-                if flip:
-                    arr_plot = np.flipud(arr)
-                else:
-                    arr_plot = arr
-                origin = 'lower' if flip else 'upper'
-                cmapname = item.get('cmap', 'viridis')
-                extent = item.get('extent')
-                if extent is None:
-                    im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmapname)
-                else:
-                    im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmapname)
-                if item.get('relative_axes') and extent is not None:
-                    pass
-                cbar_label = item.get('colorbar_label') or item.get('unit') or ''
-                if cbar_label:
-                    cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
-                    cbar.set_label(cbar_label)
-                ax.set_title(item.get('title') or item.get('caption') or '')
-                try:
-                    fig.tight_layout()
-                except Exception:
-                    pass
-
-                chan_name = self._sanitize_filename_component(item.get('caption') or f"chan{item.get('idx',0)}")
-                parts = [p for p in (chan_name, file_base, date, time) if p]
-                fname = "__".join(parts) + ".png"
-                out_path = str(Path(out_dir) / fname)
-                fig.savefig(out_path, dpi=300, bbox_inches='tight')
-            except Exception as e:
-                # keep going for other channels
-                print('Export failed for a channel:', e)
-
-        QtWidgets.QMessageBox.information(self, "Export", f"Exported {len(exports)} PNG(s) to\n{out_dir}")
+        return viewer_export.on_export_pngs(self)
 
     def on_export_xyz_files(self):
-        targets = list(getattr(self, 'thumb_multi_select', set()))
-        if not targets:
-            if getattr(self, 'selected_file_for_thumbs', None):
-                targets = [self.selected_file_for_thumbs]
-            elif self.last_preview:
-                targets = [self.last_preview[0]]
-        if not targets:
-            QtWidgets.QMessageBox.information(self, "Export", "No thumbnails selected.")
-            return
-        out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder for XYZ export", str(self.last_dir))
-        if not out_dir:
-            return
-        out_dir = Path(out_dir)
-        try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Export", f"Cannot create folder: {exc}")
-            return
-        exported = []
-        channel_idx = self.channel_dropdown.currentIndex()
-        for file_key in targets:
-            header, exports = self._collect_channel_exports(file_key, channel_idx)
-            if header is None or not exports:
-                log_status(f"[XYZ Export] No channels for {file_key}")
-                continue
-            header_path = Path(file_key)
-            for item in exports:
-                arr_si, z_unit = convert_to_si(item['arr'], item.get('unit'))
-                if not z_unit:
-                    z_unit = item.get('unit') or 'arb.'
-                extent = item.get('extent')
-                x_vals, y_vals, x_unit, y_unit = self._axes_from_extent(header, arr_si.shape, extent)
-                date_token = self._sanitize_filename_component(header.get('Date', ''))
-                time_token = self._sanitize_filename_component(header.get('Time', ''))
-                base_name = self._sanitize_filename_component(header_path.stem)
-                chan_token = self._sanitize_filename_component(item.get('caption') or f"chan{item.get('idx')}")
-                parts = [p for p in (chan_token, base_name, date_token, time_token) if p]
-                fname = "__".join(parts) + ".xyz"
-                full_path = out_dir / fname
-                meta_lines = [
-                    f"Source file: {header_path.name}",
-                    f"Channel: {item.get('caption') or ''} (index {item.get('idx')})",
-                    f"Date: {header.get('Date', '')} Time: {header.get('Time', '')}",
-                    f"Bias: {header.get('Bias', '')} {header.get('BiasPhysUnit', '')}",
-                    f"Dimensions: {header.get('xPixel','?')} x {header.get('yPixel','?')} pixels",
-                    f"X range: {header.get('XScanRange', header.get('ScanRange','?'))} {header.get('XPhysUnit','')}",
-                    f"Y range: {header.get('YScanRange', header.get('ScanRange','?'))} {header.get('YPhysUnit','')}",
-                ]
-                try:
-                    self._write_xyz_file(full_path, x_vals, y_vals, arr_si, x_unit, y_unit, z_unit, meta_lines)
-                    exported.append(str(full_path))
-                except Exception as exc:
-                    QtWidgets.QMessageBox.warning(self, "Export", f"Failed to export {fname}: {exc}")
-                    log_status(f"[XYZ Export] Failed {full_path}: {exc}")
-        if not exported:
-            QtWidgets.QMessageBox.information(self, "Export", "No XYZ files were created.")
-        else:
-            preview = "\n".join(exported[:5])
-            if len(exported) > 5:
-                preview += "\n..."
-            QtWidgets.QMessageBox.information(self, "Export", f"Exported {len(exported)} XYZ file(s) to {out_dir}:\n{preview}")
+        return viewer_export.on_export_xyz_files(self)
 
     def on_adjust_image(self):
         if not self.last_preview or not hasattr(self, '_last_base_array'):
@@ -3442,263 +2149,34 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     # ---------- Profile measurement (interactive line) ----------
     def _on_start_profile(self, force_enable=False):
-        # toggle interactive line profile mode
-        views = getattr(self.preview_canvas, 'views', [])
-        if not views:
-            if force_enable:
-                self._pending_profile_enable = True
-            elif not getattr(self, '_pending_profile_enable', False):
-                QtWidgets.QMessageBox.information(self, "Measure profile", "No image to measure. Load a channel first.")
-            return
-        self._pending_profile_enable = False
-        active = getattr(self.preview_canvas, 'profile_enabled', False)
-        if force_enable and active:
-            return
-        if not active:
-            # enter profile mode
-            self._disable_angle_mode()
-            self.preview_canvas.set_profile_callback(self._on_profile_updated)
-            if hasattr(self.preview_canvas, 'set_profile_highlight_callback'):
-                self.preview_canvas.set_profile_highlight_callback(self._on_canvas_overlay_highlight)
-            self.preview_canvas.enable_profile(True)
-            try:
-                self.preview_canvas.setFocus(QtCore.Qt.OtherFocusReason)
-            except Exception:
-                pass
-            try: self.measure_profile_btn.setText('Exit profile')
-            except Exception: pass
-            self.meta_box.setPlainText("Profile mode: drag the yellow endpoints on the main image. Close to exit.")
-            self._profile_dialog = None
-        elif not force_enable:
-            self._disable_profile_mode()
+        return viewer_measurement._on_start_profile(self, force_enable=force_enable)
 
     def _on_start_angle(self, force_enable=False):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is None:
-            return
-        views = getattr(canvas, 'views', [])
-        if not views:
-            if force_enable:
-                self._pending_angle_enable = True
-            elif not getattr(self, '_pending_angle_enable', False):
-                QtWidgets.QMessageBox.information(self, "Measure angle", "No image to measure. Load a channel first.")
-            return
-        self._pending_angle_enable = False
-        active = bool(getattr(canvas, 'angle_enabled', False))
-        if force_enable and active:
-            return
-        if not active:
-            self._disable_profile_mode()
-            if hasattr(canvas, 'set_angle_callback'):
-                canvas.set_angle_callback(self._on_angle_updated)
-            canvas.enable_angle(True)
-            try:
-                canvas.setFocus(QtCore.Qt.OtherFocusReason)
-            except Exception:
-                pass
-            try:
-                self.measure_angle_btn.setText('Exit angle')
-            except Exception:
-                pass
-            if hasattr(self, 'angle_value_label'):
-                self.angle_value_label.setText("Angle: --")
-        else:
-            self._disable_angle_mode()
+        return viewer_measurement._on_start_angle(self, force_enable=force_enable)
 
     def _disable_profile_mode(self):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is None:
-            return
-        self._pending_profile_enable = False
-        try:
-            canvas.enable_profile(False)
-        except Exception:
-            pass
-        try:
-            if hasattr(canvas, 'set_profile_highlight_callback'):
-                canvas.set_profile_highlight_callback(None)
-        except Exception:
-            pass
-        try:
-            if hasattr(canvas, 'clear_saved_profiles'):
-                canvas.clear_saved_profiles()
-        except Exception:
-            pass
-        try:
-            self.measure_profile_btn.setText('Measure profile')
-        except Exception:
-            pass
-        try:
-            if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
-                self._profile_dialog.close()
-                self._profile_dialog = None
-        except Exception:
-            pass
-        self._disable_angle_mode()
+        return viewer_measurement._disable_profile_mode(self)
 
     def _disable_angle_mode(self, reset_button=True):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is not None and hasattr(canvas, 'enable_angle'):
-            try:
-                canvas.enable_angle(False)
-            except Exception:
-                pass
-        if reset_button:
-            try:
-                self.measure_angle_btn.setText('Measure angle')
-            except Exception:
-                pass
-        if hasattr(self, 'angle_value_label'):
-            self.angle_value_label.setText("Angle: --")
+        return viewer_measurement._disable_angle_mode(self, reset_button=reset_button)
 
     def _on_exit_profile_mode(self):
-        self._disable_profile_mode()
+        return viewer_measurement._on_exit_profile_mode(self)
 
     def _on_clear_profile_measurement(self):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is None:
-            return
-        was_enabled = getattr(canvas, 'profile_enabled', False)
-        try:
-            canvas.profile_pts = None
-        except Exception:
-            pass
-        try:
-            if hasattr(canvas, 'clear_saved_profiles'):
-                canvas.clear_saved_profiles()
-        except Exception:
-            pass
-        try:
-            if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
-                self._profile_dialog.close()
-                self._profile_dialog = None
-        except Exception:
-            pass
-        if was_enabled:
-            try:
-                canvas.enable_profile(False)
-                canvas.enable_profile(True)
-                self.measure_profile_btn.setText('Exit profile')
-            except Exception:
-                pass
-        else:
-            try:
-                self.measure_profile_btn.setText('Measure profile')
-            except Exception:
-                pass
-        if hasattr(canvas, 'clear_angle_measurement'):
-            try:
-                canvas.clear_angle_measurement()
-            except Exception:
-                pass
+        return viewer_measurement._on_clear_profile_measurement(self)
 
     def _on_profile_updated(self, active_profile, saved_profiles):
-        # create or update a persistent profile dialog
-        try:
-            if not active_profile and not saved_profiles:
-                self._last_profile_payload = None
-                if hasattr(self, '_profile_dialog') and self._profile_dialog is not None:
-                    try:
-                        self._profile_dialog.close()
-                    except Exception:
-                        pass
-                    self._profile_dialog = None
-                return
-            self._last_profile_payload = (active_profile, list(saved_profiles or []))
-            y_label = None
-            try:
-                if self.last_preview:
-                    file_key, channel_idx = self.last_preview
-                    header, fds = self.headers.get(str(file_key), (None, None))
-                    if fds and 0 <= int(channel_idx) < len(fds):
-                        fd = fds[int(channel_idx)]
-                        y_label = fd.get('Caption', fd.get('FileName', f"chan{channel_idx}"))
-            except Exception:
-                y_label = None
-            ref_unit = None
-            if active_profile:
-                ref_unit = active_profile.get('unit')
-            elif saved_profiles:
-                ref_unit = saved_profiles[0].get('unit')
-            activate_cb = None
-            canvas = getattr(self, 'preview_canvas', None)
-            if canvas is not None and hasattr(canvas, 'activate_saved_profile'):
-                def _activate(idx):
-                    try:
-                        if canvas.activate_saved_profile(idx):
-                            return True
-                    except Exception:
-                        pass
-                    return False
-                activate_cb = _activate
-            highlight_cb = None
-            if canvas is not None and hasattr(canvas, 'highlight_saved_profile'):
-                def _highlight(idx):
-                    try:
-                        canvas.highlight_saved_profile(idx)
-                        return True
-                    except Exception:
-                        return False
-                highlight_cb = _highlight
-            label_scale_cb = None
-            if canvas is not None and hasattr(canvas, 'set_profile_label_scale'):
-                label_scale_cb = canvas.set_profile_label_scale
-            if not hasattr(self, '_profile_dialog') or self._profile_dialog is None:
-                dark_pref = bool(getattr(self, 'dark_mode', False))
-                self._profile_dialog = ProfileDialog(active_profile, saved_profiles, parent=self, unit=ref_unit, y_label=y_label,
-                                                      activate_overlay_callback=activate_cb,
-                                                      highlight_overlay_callback=highlight_cb,
-                                                      label_scale_callback=label_scale_cb,
-                                                      dark_mode=dark_pref)
-                try:
-                    self._profile_dialog.move(self._next_popup_pos(offset=30))
-                except Exception:
-                    pass
-                self._profile_dialog.show()
-            else:
-                if hasattr(self._profile_dialog, 'set_label_scale_callback'):
-                    self._profile_dialog.set_label_scale_callback(label_scale_cb)
-                self._profile_dialog.update_profiles(active_profile, saved_profiles,
-                                                      activate_overlay_callback=activate_cb,
-                                                      highlight_overlay_callback=highlight_cb)
-        except Exception:
-            pass
+        return viewer_measurement._on_profile_updated(self, active_profile, saved_profiles)
 
     def _on_angle_updated(self, info):
-        if not hasattr(self, 'angle_value_label'):
-            return
-        if not info:
-            self.angle_value_label.setText("Angle: --")
-            return
-        angle_text = f"Angle: {info.get('angle_deg', 0.0):.2f}°"
-        unit = info.get('unit')
-        if unit:
-            angle_text += f" | L1={info.get('len_a', 0.0):.3f} {unit} L2={info.get('len_b', 0.0):.3f} {unit}"
-        self.angle_value_label.setText(angle_text)
+        return viewer_measurement._on_angle_updated(self, info)
 
     def _on_show_profile_window(self):
-        dlg = getattr(self, '_profile_dialog', None)
-        if dlg is not None:
-            dlg.show()
-            try:
-                dlg.raise_()
-                dlg.activateWindow()
-            except Exception:
-                pass
-            return
-        payload = getattr(self, '_last_profile_payload', None)
-        if payload and (payload[0] or payload[1]):
-            self._on_profile_updated(payload[0], payload[1])
-        else:
-            QtWidgets.QMessageBox.information(self, "Profile measurement", "No profile data available. Start measuring first.")
+        return viewer_measurement._on_show_profile_window(self)
 
     def _on_canvas_overlay_highlight(self, idx):
-        dlg = getattr(self, '_profile_dialog', None)
-        if dlg is not None:
-            try:
-                dlg.select_overlay(idx)
-            except Exception:
-                pass
+        return viewer_measurement._on_canvas_overlay_highlight(self, idx)
 
     def _on_view_copied(self, view):
         title = view.get('title') or 'View'
@@ -3709,17 +2187,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
 
     def _on_preview_value(self, value, x, y, view):
-        if value is None or view is None:
-            self.preview_value_label.setText("Value: --")
-            return
-        unit = view.get('unit') or ''
-        title = view.get('title') or ''
-        text = f"{title}: {value:.4g}"
-        if unit:
-            text += f" {unit}"
-        self.preview_value_label.setText(text)
+        return viewer_preview._on_preview_value(self, value, x, y, view)
 
-    # ---------- manual tagging (still available) ----------
     def on_manual_tag(self, tag):
         if self.last_preview is None:
             QtWidgets.QMessageBox.information(self, "No file selected", "Please select a thumbnail first."); return
@@ -3824,343 +2293,22 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def _scan_spectros(self, folder:Path):
-        specs = []
-        stats = {
-            'display_count': 0,
-            'matrix_files': 0,
-            'matrix_specs': 0,
-            'total_specs': 0,
-            'matrix_samples': [],
-            'dat_files': 0,
-            'txt_files': 0,
-            'matrix_dat_files': 0,
-            'single_dat_files': 0,
-            'empty_files': 0,
-            'single_entries': 0,
-            'deferred_files': 0,
-        }
-        self.matrix_datasets = {}
-        if not folder or not Path(folder).exists():
-            return specs, stats
-        patterns = ("*.dat","*.DAT")
-        cache = self._spectro_cache
-        seen_keys = set()
-        file_map = {}
-        for pat in patterns:
-            for f in folder.glob(pat):
-                # normalize path for dedup (case-insensitive on Windows)
-                try:
-                    key = str(f.resolve())
-                except Exception:
-                    key = str(f)
-                norm_key = key.lower() if os.name == "nt" else key
-                if norm_key not in file_map:
-                    file_map[norm_key] = f
-        files = sorted(file_map.values(), key=lambda p: str(p).lower())
-        total = len(files)
-        if total:
-            log_status(f"Scanning {total} spectroscopy file(s)...")
-        progress_step = max(1, total // 20) if total else 1
-        for idx, f in enumerate(files, 1):
-            p = Path(f)
-            if p.is_dir():
-                continue
-            try:
-                key = str(p.resolve())
-            except Exception:
-                key = str(p)
-            norm_key = key.lower() if os.name == "nt" else key
-            ext = p.suffix.lower()
-            if ext == ".dat":
-                stats['dat_files'] += 1
-            elif ext == ".txt":
-                stats['txt_files'] += 1
-            if norm_key in seen_keys:
-                continue
-            seen_keys.add(norm_key)
-            try:
-                mtime = p.stat().st_mtime
-            except Exception:
-                mtime = 0.0
-            cached = cache.get(norm_key)
-            # eager parse limit (0 means no deferral)
-            if self.spectro_eager_limit and idx > self.spectro_eager_limit:
-                stats['deferred_files'] += 1
-                cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
-                self._spectro_deferred.add(norm_key)
-                continue
-
-            if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
-                spec_list = cached.get('data') or []
-            else:
-                try:
-                    spec_list = parse_spectroscopy_file(p)
-                except Exception:
-                    stats['empty_files'] += 1
-                    continue
-                # ensure basic metadata is present for assignment
-                for s in spec_list or []:
-                    if 'path' not in s or not s.get('path'):
-                        s['path'] = str(p)
-                    # normalize/ensure time for ordering; fallback to file mtime
-                    t = s.get('time')
-                    if t is None or isinstance(t, (int, float, str)):
-                        try:
-                            # accept float timestamp or string timestamp
-                            if isinstance(t, (int, float)):
-                                s['time'] = datetime.fromtimestamp(float(t))
-                            elif isinstance(t, str) and t.strip():
-                                # last resort: try parse ISO-ish string
-                                try:
-                                    s['time'] = datetime.fromisoformat(t)
-                                except Exception:
-                                    s['time'] = datetime.fromtimestamp(mtime)
-                            else:
-                                s['time'] = datetime.fromtimestamp(mtime)
-                        except Exception:
-                            try:
-                                s['time'] = datetime.fromtimestamp(mtime)
-                            except Exception:
-                                pass
-                cache[norm_key] = {'mtime': mtime, 'data': spec_list}
-            specs.extend(spec_list or [])
-            # counting logic: treat matrix files as a single entry for display purposes
-            is_matrix = any(s.get('matrix_index') is not None for s in (spec_list or []))
-            if is_matrix:
-                stats['matrix_files'] += 1
-                stats['matrix_specs'] += len(spec_list)
-                stats['display_count'] += 1
-                if ext == ".dat":
-                    stats['matrix_dat_files'] += 1
-                # build/augment MatrixDataset
-                base, channel_code, ch_label = parse_matrix_filename(p.name)
-                # infer grid
-                grid_cols = None
-                grid_rows = None
-                for s in spec_list:
-                    grid_cols = grid_cols or s.get('grid_cols')
-                    grid_rows = grid_rows or s.get('grid_rows')
-                    if grid_cols and grid_rows:
-                        break
-                if not grid_cols or not grid_rows:
-                    n = max(1, len(spec_list))
-                    side = int(round(n ** 0.5))
-                    grid_cols = grid_cols or side
-                    grid_rows = grid_rows or side
-                ds_key = base or Path(p).stem
-                ds = self.matrix_datasets.get(ds_key)
-                if ds is None:
-                    ds = MatrixDataset(ds_key, grid_rows, grid_cols)
-                    self.matrix_datasets[ds_key] = ds
-                ds.add_channel(p.name, channel_code=channel_code, label=ch_label, spectra_count=len(spec_list), path=p)
-                # describe grid if available
-                grid_cols = None
-                grid_rows = None
-                for s in spec_list:
-                    grid_cols = grid_cols or s.get('grid_cols')
-                    grid_rows = grid_rows or s.get('grid_rows')
-                    if grid_cols and grid_rows:
-                        break
-                if grid_cols and grid_rows:
-                    grid_desc = f"{grid_cols}x{grid_rows}"
-                else:
-                    # fallback: infer from count if square
-                    n = len(spec_list)
-                    side = int(round(n ** 0.5))
-                    grid_desc = f"~{side}x{side}" if side * side == n else f"{n} spectra"
-                if len(stats['matrix_samples']) < 3:
-                    stats['matrix_samples'].append(
-                        f"Matrix file {p.name}: {grid_desc} -> {len(spec_list)} spectra (counted as 1)."
-                    )
-            else:
-                if ext == ".dat":
-                    if spec_list:
-                        stats['single_dat_files'] += 1
-                        stats['single_entries'] += len(spec_list)
-                    else:
-                        stats['empty_files'] += 1
-                stats['display_count'] += len(spec_list)
-            if total and (idx % progress_step == 0 or idx == total):
-                pct = idx / total * 100.0
-                log_status(f"  - spectroscopy load {idx}/{total} ({pct:4.0f}%)")
-        stale = [k for k in list(cache.keys()) if k not in seen_keys]
-        for k in stale:
-            cache.pop(k, None)
-        specs.sort(key=lambda s: s.get('time') or datetime.min)
-        stats['total_specs'] = len(specs)
-        # logging summary
-        single_files = stats.get('single_dat_files', 0)
-        matrix_count = len(self.matrix_datasets)
-        matrix_specs = stats.get('matrix_specs', 0)
-        log_status(
-            f"SXMSpectro scan: folder={folder} files_scanned={total} spectra_total={stats['total_specs']} | "
-            f"single_files={single_files} -> {stats.get('single_entries', single_files)} | "
-            f"matrix_datasets={matrix_count} -> {matrix_specs} spectra"
-        )
-        try:
-            import json
-            verbose = os.environ.get("SXM_VERBOSE")
-            json_line = {
-                "folder": str(folder),
-                "files_scanned": total,
-                "spectra_total": stats['total_specs'],
-                "single_files": single_files,
-                "single_entries": stats.get('single_entries', single_files),
-                "matrix_datasets": matrix_count,
-                "matrix_spectra": matrix_specs,
-            }
-            log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
-            if verbose:
-                log_status("Matrix datasets:")
-                for key, ds in self.matrix_datasets.items():
-                    log_status(f"  - {ds.base}: {len(ds.channels)} channel(s) — {ds.rows}x{ds.cols} -> "
-                               f"{sum(c.get('spectra_count',0) for c in ds.channels)} spectra")
-                    for ch in ds.channels:
-                        log_status(f"      * {Path(ch['path']).name} ({ch.get('channel_code')}) {ch.get('label','')} "
-                                   f"-> {ch.get('spectra_count')} spectra")
-        except Exception:
-            pass
-        return specs, stats
+        return viewer_loader._scan_spectros(self, folder)
 
     def _assign_spectros_to_images(self):
-        """Assign spectroscopy entries to images using time and spatial sanity (prefer in-extent matches)."""
-        self.spectros_by_image = defaultdict(list)
-        images = list(getattr(self, 'image_meta', []) or [])
-        specs = list(self.spectros or [])
-        if not images or not specs:
-            return
-        # precompute extents for images
-        image_extents = {}
-        for img in images:
-            try:
-                header, _fds = self.headers.get(str(img['path']), (None, None))
-                extent = self._header_extent(header or {}) if header is not None else None
-            except Exception:
-                extent = None
-            image_extents[str(img['path'])] = extent
-        try:
-            images.sort(key=lambda img: img.get('time') or datetime.min)
-        except Exception:
-            pass
-        try:
-            specs.sort(key=lambda s: s.get('time') or datetime.min)
-        except Exception:
-            pass
-
-        for spec in specs:
-            match = self._choose_image_for_spec(spec, images, image_extents)
-            if not match:
-                continue
-            image_key = str(match['path'])
-            spec['image_key'] = image_key
-            self.spectros_by_image[image_key].append(spec)
-        for k in list(self.spectros_by_image.keys()):
-            self.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
+        return spectro_controller._assign_spectros_to_images(self)
 
     def _choose_image_for_spec(self, spec, images, image_extents):
-        """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
-        st = spec.get('time')
-        sx = spec.get('x'); sy = spec.get('y')
-        candidates = []
-        # First pass: images whose extents contain the point (with a small margin)
-        if sx is not None and sy is not None:
-            for img in images:
-                ext = image_extents.get(str(img['path']))
-                if ext and self._spec_within_extent(sx, sy, ext, margin_frac=0.02):
-                    candidates.append(img)
-            if candidates:
-                if st:
-                    candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - st))
-                return candidates[0]
-        # Second pass: closest by space (even if slightly outside), then by time
-        if sx is not None and sy is not None:
-            scored = []
-            for img in images:
-                ext = image_extents.get(str(img['path']))
-                if not ext:
-                    continue
-                cx, cy = self._extent_center(ext)
-                try:
-                    d2 = (float(sx) - cx) ** 2 + (float(sy) - cy) ** 2
-                except Exception:
-                    continue
-                scored.append((d2, img))
-            if scored:
-                scored.sort(key=lambda t: (t[0], abs(((t[1].get('time') or datetime.min) - st)) if st else datetime.max))
-                best = scored[0][1]
-                # ensure distance is not absurdly large compared to image span
-                ext = image_extents.get(str(best['path']))
-                if ext and self._spec_within_extent(sx, sy, ext, margin_frac=1.0):
-                    return best
-        # Fallback: time-ordered + name hints
-        if st:
-            try:
-                idx = 0
-                n_img = len(images)
-                while idx + 1 < n_img and (images[idx + 1].get('time') or datetime.max) <= st:
-                    idx += 1
-                match = images[idx] if 0 <= idx < n_img else None
-            except Exception:
-                match = None
-            if match:
-                return match
-        return self._match_spec_to_image_by_hint(spec, images)
+        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)
 
     def _extent_center(self, extent):
-        try:
-            x0, x1, y1, y0 = extent
-            cx = 0.5 * (x0 + x1)
-            cy = 0.5 * (y0 + y1)
-            return float(cx), float(cy)
-        except Exception:
-            return 0.0, 0.0
+        return spectro_controller._extent_center(self, extent)
 
     def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05):
-        try:
-            x0, x1, y1, y0 = extent
-            xmin, xmax = sorted((x0, x1))
-            ymin, ymax = sorted((y0, y1))
-            mx = (xmax - xmin) * margin_frac
-            my = (ymax - ymin) * margin_frac
-            xmin -= mx; xmax += mx; ymin -= my; ymax += my
-            return xmin <= float(sx) <= xmax and ymin <= float(sy) <= ymax
-        except Exception:
-            return False
+        return spectro_controller._spec_within_extent(self, sx, sy, extent, margin_frac=margin_frac)
 
     def _match_spec_to_image_by_hint(self, spec, images):
-        def normalize(stem):
-            stem = stem.lower().strip()
-            stem = re.sub(r'(?:_matrix|-matrix).*$', '', stem)
-            stem = stem.replace('-', '_')
-            return stem
-        spec_stem = normalize(Path(spec.get('path', '')).stem)
-        if not spec_stem:
-            return None
-        spec_tokens = [tok for tok in spec_stem.split('_') if tok]
-        best = None
-        best_score = -1
-        for img in images:
-            img_stem = normalize(Path(img['path']).stem)
-            img_tokens = [tok for tok in img_stem.split('_') if tok]
-            score = 0
-            for a, b in zip(spec_tokens, img_tokens):
-                if a == b:
-                    score += 10
-                else:
-                    break
-            common_prefix = 0
-            for a, b in zip(spec_stem, img_stem):
-                if a == b:
-                    common_prefix += 1
-                else:
-                    break
-            score += common_prefix
-            if spec_stem in img_stem or img_stem in spec_stem:
-                score += 50
-            if score > best_score:
-                best_score = score
-                best = img
-        return best
+        return spectro_controller._match_spec_to_image_by_hint(self, spec, images)
 
     def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
         try:
@@ -4268,178 +2416,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         return col, row
 
     def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
-        """Render spectroscopy overlays with density + matrix footprints."""
-        if not self.show_spectra:
-            return []
-        specs = entries_override if entries_override is not None else self.spectros_by_image.get(file_key, [])
-        if not specs:
-            return []
-        markers = []
-        painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        w_scale = pixmap.width() / max(1, xpix - 1)
-        h_scale = pixmap.height() / max(1, ypix - 1)
-        if reveal_points_override is None:
-            reveal_points = hasattr(self, '_temp_reveal') and file_key in getattr(self, '_temp_reveal', set())
-        else:
-            reveal_points = bool(reveal_points_override)
-
-        singles = [s for s in specs if s.get('matrix_index') is None]
-        matrices = {}
-        for s in specs:
-            if s.get('matrix_index') is None:
-                continue
-            key = str(s.get('path'))
-            matrices.setdefault(key, []).append(s)
-
-        # When requested (e.g., matrix preview dialog), render matrix entries as points too.
-        if matrix_as_points and matrices:
-            flat_matrix_entries = []
-            for ms in matrices.values():
-                flat_matrix_entries.extend(ms)
-            singles = singles + flat_matrix_entries
-
-        # Matrix footprints (skip when explicitly rendering matrix entries as individual points)
-        if self.show_matrix_markers and matrices and not matrix_as_points:
-            for m_specs in matrices.values():
-                rect = self._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
-                if rect is None:
-                    continue
-                fill = QtGui.QColor(0, 205, 255, 90)
-                pen = QtGui.QPen(QtGui.QColor(0, 180, 230))
-                pen.setWidth(3)
-                painter.setBrush(fill)
-                painter.setPen(pen)
-                painter.drawRect(rect)
-                try:
-                    grid_cols = m_specs[0].get('grid_cols')
-                    grid_rows = m_specs[0].get('grid_rows')
-                    label = f"{grid_cols}x{grid_rows}" if grid_cols and grid_rows else f"{len(m_specs)}"
-                except Exception:
-                    label = "M"
-                painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
-                painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
-                painter.drawText(rect, QtCore.Qt.AlignCenter, label)
-                markers.append({'rect': rect, 'spec': m_specs[0], 'label': label, 'kind': 'matrix'})
-
-        color_single = getattr(self, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
-        color_matrix = getattr(self, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
-
-        # Single spectroscopies (density or points)
-        if (self.show_single_markers or reveal_points or matrix_as_points) and singles:
-            coords = []
-            for idx, spec in enumerate(singles, 1):
-                c = self._map_spec_to_pixels(spec, header, xpix, ypix, file_key)
-                if c is None:
-                    c = self._fallback_spec_coords(idx, xpix, ypix)
-                col, row = c
-                coords.append((col * w_scale, row * h_scale, spec))
-
-            coords_xy = np.array([(c[0], c[1]) for c in coords], dtype=float)
-            count = coords_xy.shape[0]
-            use_density = (not reveal_points) and self.use_density_markers and self._use_density_for(count, pixmap.width(), pixmap.height())
-            if matrix_as_points:
-                use_density = False
-
-            if use_density:
-                self._draw_density_overlay(painter, coords_xy, pixmap.width(), pixmap.height())
-                # add count badge for interaction
-                pad = 6
-                size = 18
-                rect = QtCore.QRectF(pixmap.width() - size - pad, pad, size, size)
-                painter.setBrush(QtGui.QColor(255, 160, 0, 230))
-                pen = QtGui.QPen(QtGui.QColor(40, 30, 20))
-                pen.setWidth(2)
-                painter.setPen(pen)
-                painter.drawEllipse(rect)
-                painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
-                painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
-                painter.drawText(rect, QtCore.Qt.AlignCenter, f"{count}")
-                markers.append({'rect': rect, 'spec': singles[0], 'label': f"{count}"})
-            else:
-                # choose a compact, low-occlusion marker style when crowd is large
-                crowded = count > 200 or self.compact_markers
-                for x, y, spec in coords:
-                    highlight = False
-                    try:
-                        if selected_spec and self._spec_identity_key(spec) == self._spec_identity_key(selected_spec):
-                            highlight = True
-                    except Exception:
-                        highlight = False
-                    base_color = color_matrix if spec.get('matrix_index') is not None else color_single
-                    if reveal_points or crowded:
-                        # small cross, minimal occlusion
-                        arm = 2 if crowded and not reveal_points else 4
-                        color = QtGui.QColor(base_color)
-                        color.setAlpha(180 if crowded else base_color.alpha())
-                        pen = QtGui.QPen(color)
-                        pen.setWidth(1)
-                        painter.setPen(pen)
-                        painter.drawLine(QtCore.QPointF(x-arm, y), QtCore.QPointF(x+arm, y))
-                        painter.drawLine(QtCore.QPointF(x, y-arm), QtCore.QPointF(x, y+arm))
-                        if highlight:
-                            painter.setPen(QtGui.QPen(QtGui.QColor(0, 230, 255), 2))
-                            painter.drawEllipse(QtCore.QPointF(x, y), arm+3, arm+3)
-                        rect = QtCore.QRectF(x-arm-3, y-arm-3, (arm+3)*2, (arm+3)*2)
-                    else:
-                        radius = 3
-                        color = QtGui.QColor(base_color)
-                        color.setAlpha(160)
-                        pen = QtGui.QPen(color)
-                        pen.setWidth(1)
-                        painter.setPen(pen)
-                        bc = QtGui.QColor(base_color)
-                        bc.setAlpha(180)
-                        painter.setBrush(bc)
-                        painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
-                        if highlight:
-                            painter.setPen(QtGui.QPen(QtGui.QColor(0, 230, 255), 2))
-                            painter.drawEllipse(QtCore.QPointF(x, y), radius+2, radius+2)
-                        rect = QtCore.QRectF(x-radius-2, y-radius-2, (radius+2)*2, (radius+2)*2)
-                    markers.append({'rect': rect, 'spec': spec, 'label': ''})
-        # summary badge (S/M counts and matrix grid if available)
-        try:
-            total_s = len(singles)
-            total_m = sum(len(v) for v in matrices.values()) if matrices else 0
-            badge_w = 64
-            badge_h = 18
-            bx = pixmap.width() - badge_w - 6
-            by = 6
-            painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
-            painter.setBrush(QtGui.QColor(35, 35, 40, 200))
-            painter.drawRoundedRect(bx, by, badge_w, badge_h, 7, 7)
-            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
-            painter.setPen(QtGui.QColor(240, 240, 240))
-            # include matrix grid hint if available
-            dims_hint = ""
-            if matrices:
-                try:
-                    any_list = next(iter(matrices.values()))
-                    gc = any_list[0].get('grid_cols'); gr = any_list[0].get('grid_rows')
-                    if gc and gr:
-                        dims_hint = f" ({gc}x{gr})"
-                except Exception:
-                    dims_hint = ""
-            painter.drawText(bx + 6, by + 12, f"S:{total_s} M:{len(matrices)}{dims_hint}")
-            # optional matrix dims hint
-            if matrices:
-                dims = None
-                try:
-                    m_any = next(iter(matrices.values()))
-                    gc = m_any[0].get('grid_cols'); gr = m_any[0].get('grid_rows')
-                    if gc and gr:
-                        dims = f"{gc}x{gr}"
-                except Exception:
-                    dims = None
-                if dims:
-                    painter.setFont(QtGui.QFont("Segoe UI", 7))
-                    painter.drawText(bx + badge_w - 32, by + 12, dims)
-            markers.append({'rect': QtCore.QRectF(bx, by, badge_w, badge_h), 'spec': None, 'label': 'badge'})
-        except Exception:
-            pass
-
-        painter.end()
-        return markers
+        return spectro_overlays._render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=reveal_points_override, selected_spec=selected_spec, entries_override=entries_override, matrix_as_points=matrix_as_points)
 
     def _use_density_for(self, count, pix_w, pix_h):
         """Decide if density overlay should be used based on count and thumb size."""
@@ -4569,22 +2546,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         return False
 
     def _open_spectroscopy_popup(self, spec):
-        if not spec:
-            return
-        try:
-            dlg = SpectroscopyPopup(spec, parent=self)
-            try:
-                dlg.setWindowModality(QtCore.Qt.NonModal)
-                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-                dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowCloseButtonHint | QtCore.Qt.WindowMinimizeButtonHint)
-                dlg.move(self._next_popup_pos())
-            except Exception:
-                pass
-            dlg.show()
-            self._spectro_popups.append(dlg)
-            dlg.finished.connect(lambda _: self._spectro_popups.remove(dlg) if dlg in self._spectro_popups else None)
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Spectroscopy", str(e))
+        return spectro_popups._open_spectroscopy_popup(self, spec)
 
     def _on_thumb_context_menu(self, label_widget, pos):
         fp = str(label_widget.property("file_path"))
@@ -4678,19 +2640,10 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self._apply_filter_to_paths(paths, pipeline=pipeline, label=dlg.pipeline_label())
 
     def _toggle_thumb_multi_selection(self, file_path):
-        path = str(file_path)
-        if not hasattr(self, 'thumb_multi_select'):
-            self.thumb_multi_select = set()
-        if path in self.thumb_multi_select:
-            self.thumb_multi_select.remove(path)
-        else:
-            self.thumb_multi_select.add(path)
-        self._refresh_thumb_selection_styles()
+        return viewer_thumb_ui._toggle_thumb_multi_selection(self, file_path)
 
     def _clear_thumb_multi_selection(self, update_styles=True):
-        self.thumb_multi_select = set()
-        if update_styles:
-            self._refresh_thumb_selection_styles()
+        return viewer_thumb_ui._clear_thumb_multi_selection(self, update_styles=update_styles)
 
     def _spec_identity_key(self, spec):
         if not spec:
@@ -4748,83 +2701,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._clear_multi_spec_selection()
 
     def _open_multi_spectroscopy_popup(self):
-        specs = list(self._multi_spec_selection)
-        if len(specs) < 2:
-            return
-        # close previous multi popups
-        for dlg in list(self._multi_spectro_popups):
-            try:
-                dlg.close()
-            except Exception:
-                pass
-        self._multi_spectro_popups = []
-        dlg = SpectroscopyCompareDialog(specs, parent=self)
-        try:
-            dlg.move(self._next_popup_pos())
-        except Exception:
-            pass
-        dlg.show()
-        self._multi_spectro_popups.append(dlg)
-        dlg.finished.connect(lambda _: self._multi_spectro_popups.remove(dlg) if dlg in self._multi_spectro_popups else None)
+        return spectro_popups._open_multi_spectroscopy_popup(self)
 
     def on_show_matrix_spectro_viewer(self):
-        matrix_files = defaultdict(list)
-        for spec in self.matrix_spectros:
-            matrix_files[str(spec.get('path'))].append(spec)
-        if not matrix_files:
-            QtWidgets.QMessageBox.information(self, "Matrix spectra", "No matrix spectroscopy files detected for this folder.")
-            return
-        choices = sorted(matrix_files.items(), key=lambda item: Path(item[0]).name.lower())
-        names = [Path(dat_path).name for dat_path, _ in choices]
-        item, ok = QtWidgets.QInputDialog.getItem(self, "Matrix spectroscopies", "Select matrix file:", names, 0, False)
-        if not ok or not item:
-            return
-        dat_key = None; target_specs = None
-        for k, specs in choices:
-            if Path(k).name == item:
-                dat_key = k
-                target_specs = specs
-                break
-        if not dat_key or not target_specs:
-            return
-        images = getattr(self, 'image_meta', [])
-        if not images:
-            QtWidgets.QMessageBox.information(self, "Matrix spectra", "No SXM images available to anchor matrix data.")
-            return
-        images = getattr(self, 'image_meta', [])
-        if not images:
-            QtWidgets.QMessageBox.information(self, "Matrix spectra", "No SXM images available to anchor matrix data.")
-            return
-        try:
-            matrix_time = datetime.fromtimestamp(Path(dat_key).stat().st_mtime)
-        except Exception:
-            matrix_time = None
-        if matrix_time is None:
-            for spec in target_specs:
-                if spec.get('time'):
-                    matrix_time = spec.get('time')
-                    break
-        base_name = _matrix_base_name(Path(dat_key).stem).lower()
-        candidates = [img for img in images if _matrix_base_name(Path(img['path']).stem).lower() == base_name]
-        match = None
-        if candidates:
-            earlier = [img for img in candidates if img.get('time') and matrix_time and img['time'] <= matrix_time]
-            if earlier:
-                earlier.sort(key=lambda img: img['time'], reverse=True)
-                match = earlier[0]
-            else:
-                candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - (matrix_time or datetime.min)))
-                match = candidates[0]
-        if not match:
-            match = find_last_image_for_spec(matrix_time, images)
-        if not match:
-            QtWidgets.QMessageBox.warning(self, "Matrix spectra", "Could not find a preceding SXM image for this matrix file.")
-            return
-        entry = {'path': Path(match['path']), 'time': match.get('time')}
-        dlg = MatrixSpectroViewer(self, entry, target_specs)
-        dlg.show()
-        self._popup_refs.append(dlg)
-        dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+        return spectro_popups.on_show_matrix_spectro_viewer(self)
 
     def on_spec_coord_mode_changed(self, idx):
         try:
@@ -4854,14 +2734,14 @@ class SXMGridViewer(QtWidgets.QWidget):
     def on_channel_dropdown_changed(self, idx):
         self.last_channel_index = int(idx); self.config['last_channel_index'] = self.last_channel_index; save_config(self.config)
         self.populate_thumbnails_for_channel(idx)
+        if getattr(self, 'frame_real_view', False):
+            self._refresh_frame_map_pixmaps()
 
     def on_thumb_cmap_changed(self, idx):
-        self.thumb_cmap = self.thumb_cmap_combo.currentText(); self.config['thumbnail_cmap'] = self.thumb_cmap; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return viewer_thumb_ui.on_thumb_cmap_changed(self, idx)
 
     def on_preview_cmap_changed(self, idx):
-        self.preview_cmap = self.preview_cmap_combo.currentText(); self.config['preview_cmap'] = self.preview_cmap; save_config(self.config)
-        if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        return viewer_preview.on_preview_cmap_changed(self, idx)
 
     def on_show_spectra_toggled(self, checked):
         self.show_spectra = bool(checked)
@@ -4938,57 +2818,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._apply_detail_view_theme()
 
     def on_export_selected_same_view(self):
-        targets = list(getattr(self, 'thumb_multi_select', set()))
-        if not targets:
-            if getattr(self, 'selected_file_for_thumbs', None):
-                targets = [self.selected_file_for_thumbs]
-            elif self.last_preview:
-                targets = [self.last_preview[0]]
-        if not targets:
-            QtWidgets.QMessageBox.information(self, "Export", "No thumbnails selected.")
-            return
-        config = self.get_current_detail_config()
-        if not config.get('channels'):
-            QtWidgets.QMessageBox.information(self, "Export", "No channels configured to export.")
-            return
-        out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select export folder", str(self.last_dir))
-        if not out_dir:
-            return
-        worker = BatchExportWorker(self, targets, config, out_dir)
-        worker.signals.progress.connect(self._on_batch_export_progress)
-        worker.signals.finished.connect(self._on_batch_export_finished)
-        self._batch_export_worker = worker
-        progress = QtWidgets.QProgressDialog("Exporting...", "Cancel", 0, len(targets), self)
-        progress.setWindowTitle("Batch export")
-        progress.setWindowModality(QtCore.Qt.WindowModal)
-        progress.canceled.connect(worker.cancel)
-        progress.show()
-        self._batch_export_progress = progress
-        QtCore.QThreadPool.globalInstance().start(worker)
+        return viewer_export.on_export_selected_same_view(self)
 
     def _on_batch_export_progress(self, current, total, path):
-        dlg = getattr(self, '_batch_export_progress', None)
-        if dlg is None:
-            return
-        dlg.setMaximum(total)
-        dlg.setValue(current)
-        dlg.setLabelText(f"Exporting {Path(path).name} ({current}/{total})")
+        return viewer_export._on_batch_export_progress(self, current, total, path)
 
     def _on_batch_export_finished(self, saved_paths, errors, cancelled):
-        dlg = getattr(self, '_batch_export_progress', None)
-        if dlg is not None:
-            dlg.close()
-            self._batch_export_progress = None
-        self._batch_export_worker = None
-        msg_lines = [f"Saved {len(saved_paths)} file(s)."]
-        if saved_paths:
-            preview_paths = "\n".join(saved_paths[:5])
-            msg_lines.append(preview_paths + ("\n..." if len(saved_paths) > 5 else ""))
-        if cancelled:
-            msg_lines.append("Operation cancelled.")
-        if errors:
-            msg_lines.append("Errors:\n" + "\n".join(errors[:10]))
-        QtWidgets.QMessageBox.information(self, "Batch export", "\n".join(msg_lines))
+        return viewer_export._on_batch_export_finished(self, saved_paths, errors, cancelled)
 
     def _on_purge_config(self):
         """Purge stored configuration data (tags, last_dir, cmaps) and clear runtime caches."""

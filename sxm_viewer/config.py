@@ -7,6 +7,7 @@ from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".sxm_viewer_config.json"
 HEADER_CACHE_PATH = Path.home() / ".sxm_viewer_header_cache.json"
+HEADER_CACHE_VERSION = 2
 CH_EQUALITY_TOL_NM = 0.001    # 1 pm tolerance for "flat" topo samples
 CH_SAMPLE_POINTS = 16         # number of points to probe when classifying CH/CC
 CHANNEL_DATA_CACHE_LIMIT = 24  # max channel arrays cached in-memory
@@ -32,14 +33,20 @@ def load_header_cache():
     """Load cached headers parsed in previous sessions."""
     try:
         s = HEADER_CACHE_PATH.read_text()
-        return json.loads(s)
+        data = json.loads(s)
+        if not isinstance(data, dict):
+            return {}
+        if data.get("_version") != HEADER_CACHE_VERSION:
+            return {}
+        return data.get("entries", {})
     except Exception:
         return {}
 
 def save_header_cache(cache):
     """Persist header cache (used to speed up future loads)."""
     try:
-        HEADER_CACHE_PATH.write_text(json.dumps(cache))
+        payload = {"_version": HEADER_CACHE_VERSION, "entries": cache}
+        HEADER_CACHE_PATH.write_text(json.dumps(payload))
     except Exception:
         pass
 
@@ -47,6 +54,7 @@ def save_header_cache(cache):
 __all__ = [
     "CONFIG_PATH",
     "HEADER_CACHE_PATH",
+    "HEADER_CACHE_VERSION",
     "CH_EQUALITY_TOL_NM",
     "CH_SAMPLE_POINTS",
     "CHANNEL_DATA_CACHE_LIMIT",
