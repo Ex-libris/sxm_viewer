@@ -10,6 +10,7 @@ from ..data.spectroscopy import *
 
 def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
     arr = np.asarray(arr, dtype=np.float64)
+    invalid = ~np.isfinite(arr)
     try:
         if vmin is None:
             vmin = np.nanpercentile(arr, 1.0)
@@ -20,8 +21,14 @@ def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
         vmin = float(np.nanmin(arr)); vmax = float(np.nanmax(arr))
     norm = (arr - vmin) / (vmax - vmin + 1e-30)
     norm = np.clip(norm, 0.0, 1.0) ** (1.0/gamma)
+    if invalid.any():
+        norm = np.array(norm, copy=True)
+        norm[invalid] = 0.0
     cmap = colormaps.get_cmap(cmap_name)
     rgba = cmap(norm)
+    if invalid.any():
+        rgba = np.array(rgba, copy=True)
+        rgba[invalid, 0:3] = 0.0
     rgba8 = (rgba * 255).astype(np.uint8)
     h,w = rgba8.shape[:2]
     img = QtGui.QImage(rgba8.data, w, h, rgba8.strides[0], QtGui.QImage.Format_RGBA8888)
@@ -274,13 +281,14 @@ def apply_adjustment_spec(arr, extent, spec):
         result = np.flip(result, axis=0)
     if abs(rot) > 1e-3:
         if _scipy_ndimage is not None:
-            result = _scipy_ndimage.rotate(result, rot, reshape=False, order=1, mode='nearest')
+            result = _scipy_ndimage.rotate(result, rot, reshape=True, order=1, mode='constant', cval=np.nan)
         else:
             k = int(round(rot / 90.0)) % 4
             if k:
                 result = np.rot90(result, k)
         if out_extent is not None:
-            out_extent = None
+            out_extent = _rotate_extent_box(out_extent, rot)
+        result, out_extent = _trim_nan_border(result, out_extent)
     clip = spec.get('clip') or {}
     low_pct = clip.get('low')
     high_pct = clip.get('high')
@@ -304,6 +312,57 @@ def apply_adjustment_spec(arr, extent, spec):
             norm = norm ** gamma
             result = norm * (vmax - vmin) + vmin
     return result, out_extent
+
+
+def _rotate_extent_box(extent, angle_deg):
+    if extent is None:
+        return None
+    xmin, xmax, ymin, ymax = map(float, extent)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    rad = np.deg2rad(angle_deg)
+    sin_t = np.sin(rad)
+    cos_t = np.cos(rad)
+    corners = [
+        (xmin, ymin),
+        (xmin, ymax),
+        (xmax, ymin),
+        (xmax, ymax),
+    ]
+    rx = []
+    ry = []
+    for x, y in corners:
+        dx = x - cx
+        dy = y - cy
+        rx.append(cx + dx * cos_t - dy * sin_t)
+        ry.append(cy + dx * sin_t + dy * cos_t)
+    return [min(rx), max(rx), min(ry), max(ry)]
+
+
+def _trim_nan_border(arr, extent):
+    if arr.size == 0:
+        return arr, extent
+    mask = np.isfinite(arr)
+    if not np.any(mask):
+        return arr, extent
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    r0, r1 = rows[0], rows[-1] + 1
+    c0, c1 = cols[0], cols[-1] + 1
+    if r0 == 0 and c0 == 0 and r1 == arr.shape[0] and c1 == arr.shape[1]:
+        return arr, extent
+    trimmed = arr[r0:r1, c0:c1]
+    if extent is not None:
+        xmin, xmax, ymin, ymax = map(float, extent)
+        h, w = arr.shape
+        dx = (xmax - xmin) / float(w)
+        dy = (ymax - ymin) / float(h)
+        new_xmin = xmin + dx * c0
+        new_xmax = xmin + dx * c1
+        new_ymin = ymin + dy * r0
+        new_ymax = ymin + dy * r1
+        extent = [new_xmin, new_xmax, new_ymin, new_ymax]
+    return trimmed, extent
 
 def save_wsxm_xyz(path, arr, x_vals, y_vals, name, z_unit="a.u.", z_scale=1.0):
     """Save arr as WSxM ASCII XYZ file (same structure as historical exports)."""

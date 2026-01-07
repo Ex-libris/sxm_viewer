@@ -2691,9 +2691,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             arr_adj, adjusted_extent = self._apply_adjustments_for_channel(file_key, channel_idx, self._last_base_array, base_extent)
             display_extent = self._display_extent(adjusted_extent, header)
             display_unit, display_arr, zero_offset = self._scale_unit_for_display(unit_normalized, arr_adj)
+            self._last_display_array = np.asarray(display_arr)
+            self._last_display_unit = display_unit
+            self._last_display_extent = display_extent
+            self._last_colorbar_label = None
             axis_unit = header.get('XPhysUnit') or header.get('ScanUnit') or header.get('PhysUnit') or ''
             if not axis_unit:
                 axis_unit = 'px' if display_extent is None else 'nm'
+            self._last_axis_unit = axis_unit
         except Exception as e:
             self.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
 
@@ -2715,6 +2720,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         colorbar_label = caption
         if display_unit:
             colorbar_label = f"{caption} [{display_unit}]"
+        self._last_colorbar_label = colorbar_label
         main = {'arr': display_arr, 'extent': display_extent, 'cmap': cmap_to_use, 'unit': display_unit,
                 'title': title_text, 'colorbar_label': colorbar_label, 'axis_unit': axis_unit,
                 'relative_axes': bool(self.relative_axes)}
@@ -3326,7 +3332,15 @@ class SXMGridViewer(QtWidgets.QWidget):
             'cmap': current_cmap,
         }
         spec.setdefault('cmap', current_cmap)
-        dlg = ImageAdjustDialog(self, base_arr, spec, spec.get('cmap', current_cmap))
+        base_extent = getattr(self, '_last_base_extent', None)
+        axis_unit = getattr(self, '_last_axis_unit', 'px')
+        display_extent = getattr(self, '_last_display_extent', None)
+        colorbar_label = getattr(self, '_last_colorbar_label', None)
+        dlg = ImageAdjustDialog(self, base_arr, spec, spec.get('cmap', current_cmap),
+                                base_extent=base_extent, display_extent=display_extent,
+                                axis_unit=axis_unit, colorbar_label=colorbar_label,
+                                base_unit=getattr(self, '_last_base_unit', None),
+                                relative_axes=bool(getattr(self, 'relative_axes', False)))
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             new_spec = dlg.current_spec
             self._set_adjust_spec(file_key, channel_idx, new_spec)
