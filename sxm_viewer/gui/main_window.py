@@ -419,8 +419,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_header = QtWidgets.QHBoxLayout()
         preview_header.addWidget(QtWidgets.QLabel("Preview"))
         preview_header.addStretch(1)
-        self.open_canvas_btn = QtWidgets.QPushButton("Open canvas")
-        preview_header.addWidget(self.open_canvas_btn)
+        # Canvas launch button moved to the main toolbar for prominence.
         preview_panel_layout.addLayout(preview_header)
         self.preview_canvas = MultiPreviewCanvas(self, figsize=(6,5))
         self.preview_canvas.setToolTip(
@@ -440,7 +439,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self._apply_detail_view_theme()
-        self.open_canvas_btn.clicked.connect(self._on_open_canvas)
+        # open_canvas handled in toolbar
 
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         right_splitter.addWidget(thumbs_panel)
@@ -1130,6 +1129,25 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         self.toolbar_open_act = toolbar.addAction(_icon("folder-open"), "Open folder")
         self.toolbar_open_act.triggered.connect(self.open_folder_dialog)
+        toolbar.addSeparator()
+
+        self.toolbar_canvas_btn = QtWidgets.QPushButton("Open Canvas")
+        self.toolbar_canvas_btn.setToolTip("Open the publication canvas for layout/export")
+        self.toolbar_canvas_btn.setMinimumHeight(30)
+        self.toolbar_canvas_btn.setMinimumWidth(140)
+        self.toolbar_canvas_btn.setStyleSheet(
+            "QPushButton {"
+            " background-color: #2563eb;"
+            " color: #ffffff;"
+            " font-weight: 600;"
+            " padding: 4px 10px;"
+            " border-radius: 6px;"
+            "}"
+            "QPushButton:hover { background-color: #1d4ed8; }"
+            "QPushButton:pressed { background-color: #1e40af; }"
+        )
+        self.toolbar_canvas_btn.clicked.connect(self._on_open_canvas)
+        toolbar.addWidget(self.toolbar_canvas_btn)
         toolbar.addSeparator()
 
         self.toolbar_export_png_act = toolbar.addAction(_icon("image-x-generic"), "Export PNGs")

@@ -33,6 +33,31 @@ def _format_colorbar_value(value):
         return f"{value:.3f}"
     return f"{value:.2f}"
 
+def _normalize_cbar_label(label: str) -> str:
+    if not label:
+        return ""
+    lbl = label.strip()
+    low = lbl.lower()
+    if low.startswith("df"):
+        return f"Δf{lbl[2:]}"
+    if low.startswith("delta f"):
+        return f"Δf{lbl[6:]}"
+    return lbl
+
+
+def _format_scale_bar_label(length: float, unit: str) -> str:
+    if length is None:
+        return ""
+    if abs(length) < 1e-6:
+        return f"0 {unit}".strip()
+    if abs(length) >= 100 or abs(length) < 0.01:
+        return f"{length:.2g} {unit}".strip()
+    if abs(length) < 1:
+        return f"{length:.2f} {unit}".strip()
+    if abs(length) < 10:
+        return f"{length:.2f} {unit}".strip()
+    return f"{length:.1f} {unit}".strip()
+
 
 def _normalized_value(norm, value):
     try:
@@ -43,14 +68,24 @@ def _normalized_value(norm, value):
     return float(np.clip(norm_val, 0.0, 1.0))
 
 
-def _label_color_for_value(cmap, norm, value):
-    rgba = cmap(_normalized_value(norm, value))
-    lum = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
-    return "#000000" if lum > 0.57 else "#ffffff"
+def _text_color_for_frame(frame_color):
+    color = QtGui.QColor(frame_color or "#070707")
+    if not color.isValid():
+        color = QtGui.QColor("#070707")
+    lum = (0.299 * color.redF()) + (0.587 * color.greenF()) + (0.114 * color.blueF())
+    return "#101010" if lum > 0.55 else "#f5f5f5"
 
 
-def _annotate_colorbar(cb, vmin, vmax, scale, cmap, norm, orientation):
+def _annotate_colorbar(cb, vmin, vmax, scale, orientation, show_ticks, text_color):
     if cb is None or vmin is None or vmax is None:
+        return
+    if not show_ticks:
+        axis = cb.ax.xaxis if orientation == "horizontal" else cb.ax.yaxis
+        axis.set_ticks([])
+        axis.set_ticklabels([])
+        axis.set_tick_params(length=0)
+        for spine in cb.ax.spines.values():
+            spine.set_visible(False)
         return
     ticks = [float(vmin), float(vmax)]
     cb.set_ticks(ticks)
@@ -58,9 +93,9 @@ def _annotate_colorbar(cb, vmin, vmax, scale, cmap, norm, orientation):
     labels = [_format_colorbar_value(val) for val in ticks]
     axis.set_ticklabels(labels)
     label_size = max(6.0, 8.0 * scale)
-    axis.set_tick_params(labelsize=label_size, length=4, colors="#f0f0f0", width=0.8)
-    for label, value in zip(axis.get_ticklabels(), ticks):
-        label.set_color(_label_color_for_value(cmap, norm, value))
+    axis.set_tick_params(labelsize=label_size, length=4, colors=text_color, width=0.8)
+    for label in axis.get_ticklabels():
+        label.set_color(text_color)
         label.set_fontsize(label_size)
     for spine in cb.ax.spines.values():
         spine.set_visible(False)
@@ -78,7 +113,8 @@ def render_tile_mpl(
     height_px,
     dpi=200,
     show_colorbar=True,
-    show_title=True,
+    show_colorbar_ticks=True,
+    show_title=False,
     show_metadata=True,
     metadata_left="",
     metadata_right="",
@@ -89,6 +125,12 @@ def render_tile_mpl(
     cbar_position="bottom",
     metadata_height=0.0,
     frame_color="#070707",
+    text_scale=None,
+    text_color=None,
+    show_scale_bar=False,
+    scale_bar_length=None,
+    scale_bar_unit="",
+    scale_bar_width=None,
 ):
     """Render a canvas tile through Matplotlib, including annotations."""
     import matplotlib
@@ -109,19 +151,47 @@ def render_tile_mpl(
     metadata_ratio = 0.0
     if show_metadata and metadata_height > 0:
         metadata_ratio = min(0.35, metadata_height / height_px)
-    bottom_margin = 0.02 + metadata_ratio
-    annotation_scale = max(0.7, min(1.3, width_px / 240.0))
+    bottom_margin = 0.002 + metadata_ratio
+    if text_scale is None:
+        text_scale = 1.0
+    text_scale = max(0.002, min(2.4, float(text_scale)))
+    text_color = text_color or _text_color_for_frame(frame_color)
+    cbar_label_text = _normalize_cbar_label(colorbar_label or "")
 
+    min_title_px = 2.0
+    min_tick_px = 2.0
+    min_label_px = 2.0
+    min_overlay_px = 2.0
+    min_meta_px = 2.0
+
+    title_fs = max(min_title_px, 11.0 * text_scale)
+    tick_fs = max(min_tick_px, 9.5 * text_scale)
+    label_fs = max(min_label_px, 9.5 * text_scale)
+    overlay_fs = max(min_overlay_px, 8.5 * text_scale)
+    meta_fs = max(min_meta_px, 8.5 * text_scale)
+    tick_pad = max(2.0, 0.25 * tick_fs)
+
+    extra_tick_margin = 0.0
+    if rendered_colorbar and show_colorbar_ticks and normalized_position in ("top", "bottom"):
+        extra_tick_margin = min(0.18, max(0.06, (tick_fs * 2.2) / max(1.0, height_px)))
+    top_margin = 0.98 - (extra_tick_margin if normalized_position == "top" else 0.0)
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=frame_color or "#070707")
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.96, bottom=bottom_margin)
+    fig.subplots_adjust(
+        left=0.0,
+        right=1.0,
+        top=top_margin,
+        bottom=bottom_margin + (extra_tick_margin if normalized_position == "bottom" else 0.0),
+    )
     canvas = FigureCanvasAgg(fig)
 
     ax = None
     cax = None
     orientation = "horizontal"
     if rendered_colorbar and normalized_position in ("top", "bottom"):
-        ratios = [0.12, 1] if normalized_position == "top" else [1, 0.12]
-        gs = fig.add_gridspec(2, 1, height_ratios=ratios, hspace=0.05)
+        cbar_height = max(10.0, 1.5 * tick_fs)
+        cbar_ratio = min(0.45, max(0.08, cbar_height / max(1.0, height_px)))
+        ratios = [cbar_ratio, 1] if normalized_position == "top" else [1, cbar_ratio]
+        gs = fig.add_gridspec(2, 1, height_ratios=ratios, hspace=0.04)
         if normalized_position == "top":
             cax = fig.add_subplot(gs[0])
             ax = fig.add_subplot(gs[1])
@@ -130,8 +200,10 @@ def render_tile_mpl(
             cax = fig.add_subplot(gs[1])
         orientation = "horizontal"
     elif rendered_colorbar and normalized_position in ("left", "right"):
-        ratios = [0.12, 1] if normalized_position == "left" else [1, 0.12]
-        gs = fig.add_gridspec(1, 2, width_ratios=ratios, wspace=0.05)
+        cbar_width = max(10.0, 1.5 * tick_fs)
+        cbar_ratio = min(0.45, max(0.08, cbar_width / max(1.0, width_px)))
+        ratios = [cbar_ratio, 1] if normalized_position == "left" else [1, cbar_ratio]
+        gs = fig.add_gridspec(1, 2, width_ratios=ratios, wspace=0.04)
         if normalized_position == "left":
             cax = fig.add_subplot(gs[0])
             ax = fig.add_subplot(gs[1])
@@ -175,32 +247,99 @@ def render_tile_mpl(
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    if show_title and title:
-        ax.set_title(title, fontsize=max(8.0, 11 * annotation_scale), color="#f5f5f5", pad=6)
+    # Title display removed; keep colorbar label inside the bar instead.
 
     cb = None
     if rendered_colorbar and normalized_position in ("top", "bottom", "left", "right"):
         cb = fig.colorbar(im, cax=cax, orientation=orientation)
-        cb.set_label(colorbar_label or "", fontsize=9, color="#f0f0f0")
-        cb.ax.tick_params(labelsize=8, length=3, width=0.6, colors="#f0f0f0")
+        cb.set_label("")  # place label manually inside
+        cb.ax.tick_params(labelsize=tick_fs, length=3, width=0.7, colors=text_color, pad=tick_pad)
         cb.outline.set_edgecolor("#797979")
         cb.outline.set_linewidth(0.6)
         if orientation == "horizontal":
-            cb.ax.xaxis.label.set_color("#f0f0f0")
+            cb.ax.xaxis.set_ticks_position("bottom")
+            cb.ax.xaxis.set_label_position("bottom")
+            cb.ax.text(0.5, 0.5, cbar_label_text, color=text_color, fontsize=label_fs, ha="center", va="center", transform=cb.ax.transAxes)
         else:
-            cb.ax.yaxis.label.set_color("#f0f0f0")
+            cb.ax.yaxis.set_ticks_position("left")
+            cb.ax.yaxis.set_label_position("left")
+            cb.ax.text(0.5, 0.5, cbar_label_text, color=text_color, fontsize=label_fs, ha="center", va="center", rotation=90, rotation_mode="anchor", transform=cb.ax.transAxes)
     elif rendered_colorbar and normalized_position == "inset":
         inset_pos = [0.62, bottom_margin + 0.02, 0.3, 0.035]
         cax = fig.add_axes(inset_pos)
         cb = fig.colorbar(im, cax=cax, orientation="horizontal")
-        cb.set_label(colorbar_label or "", fontsize=8, color="#f0f0f0")
-        cb.ax.tick_params(labelsize=8, length=3, width=0.5, colors="#f0f0f0")
+        cb.set_label("")
+        cb.ax.tick_params(labelsize=tick_fs, length=3, width=0.5, colors=text_color, pad=tick_pad)
         cb.outline.set_edgecolor("#797979")
         cb.outline.set_linewidth(0.6)
+        cb.ax.text(0.5, 0.5, cbar_label_text, color=text_color, fontsize=label_fs, ha="center", va="center", transform=cb.ax.transAxes)
 
     if cb is not None:
         annotate_orientation = orientation if normalized_position != "inset" else "horizontal"
-        _annotate_colorbar(cb, actual_vmin, actual_vmax, annotation_scale, cmap_obj, cb.norm, annotate_orientation)
+        _annotate_colorbar(
+            cb,
+            actual_vmin,
+            actual_vmax,
+            tick_fs / 8.0,
+            annotate_orientation,
+            show_colorbar_ticks,
+            text_color,
+        )
+
+    if ax is not None and cax is not None and normalized_position in ("top", "bottom"):
+        ax_pos = ax.get_position()
+        cax_pos = cax.get_position()
+        cax.set_position([ax_pos.x0, cax_pos.y0, ax_pos.width, cax_pos.height])
+    if ax is not None and cax is not None and normalized_position in ("left", "right"):
+        ax_pos = ax.get_position()
+        cax_pos = cax.get_position()
+        cax.set_position([cax_pos.x0, ax_pos.y0, cax_pos.width, ax_pos.height])
+
+    if show_scale_bar and scale_bar_length and scale_bar_width:
+        try:
+            length_frac = float(scale_bar_length) / max(1e-6, float(scale_bar_width))
+        except Exception:
+            length_frac = 0.0
+        if 0.02 < length_frac < 0.9:
+            bar_y = 0.06
+            bar_x = 0.08
+            bar_h = max(0.003, min(0.02, 0.006 * text_scale))
+            ax.plot(
+                [bar_x, bar_x + length_frac],
+                [bar_y, bar_y],
+                color=text_color,
+                linewidth=max(1.2, 1.5 * text_scale),
+                transform=ax.transAxes,
+                solid_capstyle="butt",
+                zorder=5,
+            )
+            ax.plot(
+                [bar_x, bar_x],
+                [bar_y - bar_h, bar_y + bar_h],
+                color=text_color,
+                linewidth=max(1.0, 1.3 * text_scale),
+                transform=ax.transAxes,
+                zorder=5,
+            )
+            ax.plot(
+                [bar_x + length_frac, bar_x + length_frac],
+                [bar_y - bar_h, bar_y + bar_h],
+                color=text_color,
+                linewidth=max(1.0, 1.3 * text_scale),
+                transform=ax.transAxes,
+                zorder=5,
+            )
+            ax.text(
+                bar_x + length_frac / 2.0,
+                bar_y + (bar_h * 2.5),
+                _format_scale_bar_label(float(scale_bar_length), scale_bar_unit),
+                color=text_color,
+                fontsize=max(2.0, 7.0 * text_scale),
+                ha="center",
+                va="bottom",
+                transform=ax.transAxes,
+                zorder=5,
+            )
 
     overlay_lines = []
     if show_overlay_main and overlay_main:
@@ -208,30 +347,32 @@ def render_tile_mpl(
     if show_overlay_file and overlay_file:
         overlay_lines.append(overlay_file)
     if overlay_lines:
+        overlay_face = "#0b1424" if text_color == "#f5f5f5" else "#f5f5f5"
         ax.text(
             0.02,
             0.96,
             "\n".join(overlay_lines),
-            fontsize=max(6.0, 8 * annotation_scale),
-            color="#fefefe",
+            fontsize=overlay_fs,
+            color=text_color,
             weight="bold",
             ha="left",
             va="top",
             transform=ax.transAxes,
-            bbox=dict(facecolor="#0b1424", alpha=0.8, edgecolor="none", boxstyle="round,pad=0.2"),
+            bbox=dict(facecolor=overlay_face, alpha=0.75, edgecolor="none", boxstyle="round,pad=0.2"),
         )
 
     if show_metadata and (metadata_left or metadata_right):
         text_y = bottom_margin / 2
-        bbox = dict(facecolor="#050505", alpha=0.9, edgecolor="none", boxstyle="round,pad=0.2")
-        font_size = max(6.0, 8 * annotation_scale)
+        meta_face = "#050505" if text_color == "#f5f5f5" else "#f5f5f5"
+        bbox = dict(facecolor=meta_face, alpha=0.9, edgecolor="none", boxstyle="round,pad=0.2")
+        font_size = meta_fs
         if metadata_left:
             fig.text(
                 0.02,
                 text_y,
                 metadata_left,
                 fontsize=font_size,
-                color="#f0f0f0",
+                color=text_color,
                 ha="left",
                 va="center",
                 bbox=bbox,
@@ -242,7 +383,7 @@ def render_tile_mpl(
                 text_y,
                 metadata_right,
                 fontsize=font_size,
-                color="#f0f0f0",
+                color=text_color,
                 ha="right",
                 va="center",
                 bbox=bbox,
@@ -353,12 +494,25 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._colorbar_height = 10
         self._colorbar_pad_y = 4
         self._colorbar_padding_x = 6
-        self._show_title = True
+        self._show_title = False
         self._show_colorbar = True
+        self._show_colorbar_ticks = True
         self._canvas_width = float(canvas_width)
+        self._full_dpi = 200
+        self._fast_dpi = 96
+        self._fast_render = False
         self._colorbar_width = 16
         self._colorbar_mode = "bottom"
+        self._use_fixed_text_scale = True
+        self._fixed_text_scale_value = 1.0
+        self._show_scale_bar = False
+        self._text_color_override: QtGui.QColor | None = None
         self._rendered_pixmap: QtGui.QPixmap | None = None
+        self._render_timer = QtCore.QTimer()
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(60)
+        self._render_timer.timeout.connect(self._render_now)
+        self._render_pending = False
         self._resizing = False
         self._resize_origin = None
         self._resize_size = None
@@ -384,7 +538,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._metadata_left_text = ""
         self._metadata_right_text = ""
         self._refresh_metadata_text()
-        self._update_rendered_pixmap()
+        self._render_pending = True
+        self._render_now()
 
     def boundingRect(self) -> QtCore.QRectF:
         return QtCore.QRectF(self._rect)
@@ -413,25 +568,38 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     def _tile_total_width(self) -> float:
         width, _ = self._tile_image_size()
         if self._show_colorbar and self._colorbar_mode in ("left", "right"):
-            width += self._colorbar_width + self._colorbar_padding_x
+            width += self._colorbar_thickness() + self._colorbar_padding_x
         return width
 
     def _tile_total_height(self) -> float:
         _, height = self._tile_image_size()
         extra = 0.0
         if self._show_colorbar and self._colorbar_mode in ("bottom", "top"):
-            extra += self._colorbar_height + self._colorbar_pad_y
+            extra += self._colorbar_thickness() + self._colorbar_pad_y
         extra += self._metadata_bar_height()
         return height + extra
 
     def _metadata_bar_height(self) -> float:
         if not self._metadata_bar_visible:
             return 0.0
+        if not (self._metadata_left_text or self._metadata_right_text):
+            return 0.0
         return self._metadata_height + (self._metadata_padding * 2)
 
     def _canvas_height(self) -> float:
         aspect = max(1e-6, self._image_aspect)
         return self._canvas_width / aspect
+
+    def _effective_text_scale(self) -> float:
+        if self._locked_text_scale is not None:
+            return self._locked_text_scale
+        if self._use_fixed_text_scale:
+            return self._fixed_text_scale_value
+        return self._text_scale_for_width(self._canvas_width)
+
+    def _colorbar_thickness(self) -> float:
+        scale = self._effective_text_scale()
+        return max(8.0, 12.0 * scale)
 
     def _scale_bar_spec(self):
         if not self._extent or not self._axis_unit or self._axis_unit == "px":
@@ -446,7 +614,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if self._scale_bar_length:
             return self._scale_bar_length, width
         targets = [0.2 * width, 0.1 * width, 0.3 * width]
-        candidates = [0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+        candidates = self._scale_bar_candidates()
         best = None
         best_err = None
         for t in targets:
@@ -459,12 +627,47 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             return None
         return best, width
 
+    def _scale_bar_candidates(self) -> list[float]:
+        base_nm = [0.5, 1, 2, 3, 5, 10, 20, 50, 100, 200, 500]
+        unit = (self._axis_unit or "").strip().lower()
+        if unit in ("a", "å", "angstrom", "angstroms"):
+            return [val * 10.0 for val in base_nm]
+        return base_nm
+
+    def _scale_bar_width(self) -> float | None:
+        if not self._extent or not self._axis_unit or self._axis_unit == "px":
+            return None
+        try:
+            x0, x1, y1, y0 = self._extent
+            return abs(float(x1) - float(x0))
+        except Exception:
+            return None
+
     def _update_rendered_pixmap(self):
+        self._render_pending = True
+        if not self._render_timer.isActive():
+            self._render_timer.start()
+
+    def _render_now(self):
+        if not self._render_pending:
+            return
+        self._render_pending = False
         if self._arr is None:
             return
         width = max(2, int(round(self._tile_total_width())))
         height = max(2, int(round(self._tile_total_height())))
         metadata_height = self._metadata_bar_height() if self._metadata_bar_visible and (self._metadata_left_text or self._metadata_right_text) else 0.0
+        text_scale = self._effective_text_scale()
+        frame_color = self._frame_color.name() if isinstance(self._frame_color, QtGui.QColor) else "#070707"
+        if self._text_color_override is not None and self._text_color_override.isValid():
+            text_color = self._text_color_override.name()
+        else:
+            text_color = _text_color_for_frame(frame_color)
+        show_overlay_main = self._show_overlay_main and not self._metadata_bar_visible
+        show_overlay_file = self._show_overlay_file and not self._metadata_bar_visible
+        scale_spec = self._scale_bar_spec()
+        scale_length = scale_spec[0] if scale_spec else None
+        scale_width = scale_spec[1] if scale_spec else None
         pixmap = render_tile_mpl(
             self._arr,
             cmap=self._cmap,
@@ -474,18 +677,26 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             colorbar_label=self._colorbar_label,
             width_px=width,
             height_px=height,
+            dpi=self._fast_dpi if self._fast_render else self._full_dpi,
             show_colorbar=self._show_colorbar,
+            show_colorbar_ticks=self._show_colorbar_ticks,
             show_title=self._show_title,
             show_metadata=self._metadata_bar_visible and bool(self._metadata_left_text or self._metadata_right_text),
             metadata_left=self._metadata_left_text,
             metadata_right=self._metadata_right_text,
-            show_overlay_main=self._show_overlay_main,
+            show_overlay_main=show_overlay_main,
             overlay_main=self._overlay_main_text,
-            show_overlay_file=self._show_overlay_file,
+            show_overlay_file=show_overlay_file,
             overlay_file=self._overlay_file_text,
             cbar_position=self._colorbar_mode,
             metadata_height=metadata_height,
-            frame_color=self._frame_color.name() if isinstance(self._frame_color, QtGui.QColor) else "#070707",
+            frame_color=frame_color,
+            text_scale=text_scale,
+            text_color=text_color,
+            show_scale_bar=self._show_scale_bar,
+            scale_bar_length=scale_length,
+            scale_bar_unit=self._axis_unit,
+            scale_bar_width=scale_width,
         )
         self.prepareGeometryChange()
         self._rendered_pixmap = pixmap
@@ -503,7 +714,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         return self._canvas_width
 
     def reset_to_data_size(self):
-        self.set_canvas_width(max(80.0, self._base_image_width))
+        self.set_canvas_width(max(120.0, self._base_image_width))
 
     def paint(self, painter: QtGui.QPainter, option, widget=None):
         if self._rendered_pixmap is None:
@@ -541,6 +752,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton and self._resize_handle_rect().contains(event.pos()):
             self._resizing = True
+            self._fast_render = True
             self._resize_origin = event.pos()
             self._resize_size = QtCore.QSizeF(self._rect.width(), self._rect.height())
             self._resize_start_canvas_width = self._canvas_width
@@ -576,6 +788,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         
         if self._resizing:
             self._resizing = False
+            self._fast_render = False
             self._resize_origin = None
             self._resize_size = None
             self._resize_start_canvas_width = None
@@ -709,12 +922,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._vmax = vmax
         self._update_rendered_pixmap()
 
-    def set_show_title(self, show: bool):
-        self._show_title = show
-        self._update_rendered_pixmap()
-
     def set_show_colorbar(self, show: bool):
         self._show_colorbar = show
+        self._update_rendered_pixmap()
+
+    def set_show_colorbar_ticks(self, show: bool):
+        self._show_colorbar_ticks = bool(show)
         self._update_rendered_pixmap()
 
     def set_colorbar_mode(self, mode: str):
@@ -764,13 +977,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._update_rendered_pixmap()
 
     def _refresh_metadata_text(self):
-        left = self._overlay_main_text
         right_parts = []
         if self._axis_unit:
             right_parts.append(self._axis_unit)
         if self._metadata_file_visible and self._overlay_file_text:
             right_parts.append(self._overlay_file_text)
-        self._metadata_left_text = left
+        self._metadata_left_text = ""
         self._metadata_right_text = " | ".join(right_parts)
 
     def _text_scale_factor(self, img_rect: QtCore.QRectF) -> float:
@@ -778,11 +990,11 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             return self._locked_text_scale
         width = max(40.0, img_rect.width())
         ratio = width / max(self._base_image_width, 1.0)
-        return max(1.0, min(3.0, ratio * 1.1))
+        return max(0.6, min(2.4, ratio * 1.1))
 
     def _text_scale_for_width(self, width: float) -> float:
         ratio = width / max(self._base_image_width, 1.0)
-        return max(1.0, min(3.0, ratio * 1.1))
+        return max(0.6, min(2.4, ratio * 1.1))
 
     def set_locked_text_scale(self, scale: float | None):
         self._locked_text_scale = scale
@@ -801,9 +1013,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             "pos": [self.pos().x(), self.pos().y()],
             "size": [rect.width(), rect.height()],
             "canvas_width": self._canvas_width,
-            "show_title": self._show_title,
             "show_colorbar": self._show_colorbar,
+            "show_colorbar_ticks": self._show_colorbar_ticks,
             "kind": self._kind,
+            "text_scale": self._fixed_text_scale_value if self._use_fixed_text_scale else None,
         }
 
     def apply_state(self, state: dict):
@@ -813,8 +1026,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         vmin = state.get("vmin")
         vmax = state.get("vmax")
         self.set_range(vmin, vmax)
-        self.set_show_title(state.get("show_title", True))
         self.set_show_colorbar(state.get("show_colorbar", True))
+        self.set_show_colorbar_ticks(state.get("show_colorbar_ticks", True))
         self._kind = state.get("kind", self._kind)
         canvas_width = state.get("canvas_width")
         if canvas_width is not None:
@@ -826,6 +1039,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         pos = state.get("pos") or []
         if len(pos) == 2:
             self.setPos(float(pos[0]), float(pos[1]))
+        ts = state.get("text_scale")
+        if ts is not None:
+            self._fixed_text_scale_value = max(0.01, min(2.4, float(ts)))
+            self._use_fixed_text_scale = True
 
     @property
     def file_path(self) -> str:
@@ -883,6 +1100,15 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
 
     def set_scale_bar_length(self, length: float | None):
         self._scale_bar_length = length
+        self._update_rendered_pixmap()
+
+    def set_show_scale_bar(self, show: bool):
+        self._show_scale_bar = bool(show)
+        self._update_rendered_pixmap()
+
+    def set_text_color_override(self, color: QtGui.QColor | None):
+        self._text_color_override = color
+        self._update_rendered_pixmap()
 
     @property
     def data_array(self) -> np.ndarray:
@@ -1323,8 +1549,14 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._show_overlay_file = False
         self._last_aligned_width: float | None = None
         self._grid_locked = False  # prevents automatic resizing
-        self._global_show_title = True
+        self._global_show_title = False
         self._global_show_colorbar = True
+        self._global_show_colorbar_ticks = True
+        self._global_text_scale = 1.0
+        self._global_text_color: QtGui.QColor | None = None
+        self._global_show_scale_bar = False
+        self._global_scale_bar_length_nm: float | None = None
+        self._metadata_bar_default = True
         self._colorbar_mode = "bottom"
         self._undo_stack = []
         self._undo_index = -1
@@ -1470,13 +1702,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         row2.setSpacing(8)
 
         annotation_group, annotation_layout = self._create_toolbar_group("ANNOTATE")
-        self.show_title_check = QtWidgets.QCheckBox("Title")
-        self.show_title_check.setToolTip("Show titles on all tiles")
-        self.show_title_check.setChecked(self._global_show_title)
         self.show_colorbar_check = QtWidgets.QCheckBox("Colorbar")
         self.show_colorbar_check.setToolTip("Show colorbars on all tiles")
         self.show_colorbar_check.setChecked(self._global_show_colorbar)
-        annotation_layout.addWidget(self.show_title_check)
         annotation_layout.addWidget(self.show_colorbar_check)
         row2.addWidget(annotation_group)
 
@@ -1508,9 +1736,13 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         row2.addWidget(self._create_separator())
 
         colorbar_group, colorbar_layout = self._create_toolbar_group("COLORBAR")
+        self.colorbar_ticks_check = QtWidgets.QCheckBox("Ticks")
+        self.colorbar_ticks_check.setToolTip("Show min/max ticks on colorbars")
+        self.colorbar_ticks_check.setChecked(self._global_show_colorbar_ticks)
         self.colorbar_mode_combo = QtWidgets.QComboBox()
         for label in ("Bottom", "Top", "Right", "Left", "Inset", "Hidden"):
             self.colorbar_mode_combo.addItem(label)
+        colorbar_layout.addWidget(self.colorbar_ticks_check)
         colorbar_layout.addWidget(QtWidgets.QLabel("Position"))
         colorbar_layout.addWidget(self.colorbar_mode_combo)
         row2.addWidget(colorbar_group)
@@ -1543,6 +1775,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self.sync_by_channel_check.toggled.connect(self._on_sync_by_channel_toggled)
         self.overlay_info_check.toggled.connect(self._on_overlay_info_toggled)
         self.overlay_file_check.toggled.connect(self._on_overlay_file_toggled)
+        self.colorbar_ticks_check.toggled.connect(self._on_global_show_colorbar_ticks_toggled)
         self.colorbar_mode_combo.currentTextChanged.connect(self._on_colorbar_position_changed)
         self.canvas_color_btn.clicked.connect(self._on_canvas_color_clicked)
         self.align_btn.clicked.connect(self._on_align_selected)
@@ -1814,17 +2047,50 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         appearance_layout.setVerticalSpacing(10)
         appearance_layout.setHorizontalSpacing(12)
 
-        title_label = QtWidgets.QLabel("Title:")
-        title_label.setStyleSheet(label_style)
-        self.title_edit = QtWidgets.QLineEdit()
-        self.title_edit.setPlaceholderText("Enter title...")
-        appearance_layout.addRow(title_label, self.title_edit)
-
         colorbar_label = QtWidgets.QLabel("Label:")
         colorbar_label.setStyleSheet(label_style)
         self.colorbar_edit = QtWidgets.QLineEdit()
         self.colorbar_edit.setPlaceholderText("Enter label...")
         appearance_layout.addRow(colorbar_label, self.colorbar_edit)
+
+        font_color_label = QtWidgets.QLabel("Font Color:")
+        font_color_label.setStyleSheet(label_style)
+        font_color_row = QtWidgets.QWidget()
+        font_color_layout = QtWidgets.QHBoxLayout(font_color_row)
+        font_color_layout.setContentsMargins(0, 0, 0, 0)
+        font_color_layout.setSpacing(6)
+        self.font_color_auto_check = QtWidgets.QCheckBox("Auto")
+        self.font_color_auto_check.setChecked(True)
+        self.font_color_btn = QtWidgets.QPushButton("Pick")
+        self.font_color_btn.setMaximumWidth(80)
+        font_color_layout.addWidget(self.font_color_auto_check)
+        font_color_layout.addWidget(self.font_color_btn)
+        appearance_layout.addRow(font_color_label, font_color_row)
+
+        text_scale_label = QtWidgets.QLabel("Text Scale:")
+        text_scale_label.setStyleSheet(label_style)
+        self.text_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.text_scale_slider.setMinimum(1)
+        self.text_scale_slider.setMaximum(240)
+        self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
+        self.text_scale_slider.setEnabled(True)
+        appearance_layout.addRow(text_scale_label, self.text_scale_slider)
+
+        scale_bar_label = QtWidgets.QLabel("Scale Bar:")
+        scale_bar_label.setStyleSheet(label_style)
+        scale_bar_row = QtWidgets.QWidget()
+        scale_bar_layout = QtWidgets.QHBoxLayout(scale_bar_row)
+        scale_bar_layout.setContentsMargins(0, 0, 0, 0)
+        scale_bar_layout.setSpacing(6)
+        self.scale_bar_check = QtWidgets.QCheckBox("Show")
+        self.scale_bar_check.setChecked(self._global_show_scale_bar)
+        self.scale_bar_combo = QtWidgets.QComboBox()
+        self.scale_bar_combo.addItem("Auto")
+        for label in ("0.5 nm", "1 nm", "2 nm", "3 nm", "5 nm", "10 nm", "20 nm", "50 nm", "100 nm"):
+            self.scale_bar_combo.addItem(label)
+        scale_bar_layout.addWidget(self.scale_bar_check)
+        scale_bar_layout.addWidget(self.scale_bar_combo)
+        appearance_layout.addRow(scale_bar_label, scale_bar_row)
 
         appearance_group.setLayout(appearance_layout)
         layout.addWidget(appearance_group)
@@ -1932,14 +2198,17 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         layout.addStretch(1)
 
         # Connect signals
-        self.title_edit.editingFinished.connect(self._on_title_changed)
         self.colorbar_edit.editingFinished.connect(self._on_colorbar_changed)
+        self.text_scale_slider.valueChanged.connect(self._on_text_scale_changed)
+        self.font_color_auto_check.toggled.connect(self._on_font_color_auto_toggled)
+        self.font_color_btn.clicked.connect(self._on_font_color_pick)
+        self.scale_bar_check.toggled.connect(self._on_scale_bar_toggled)
+        self.scale_bar_combo.currentTextChanged.connect(self._on_scale_bar_size_changed)
         self.cmap_combo.currentTextChanged.connect(self._on_cmap_changed)
         self.vmin_edit.editingFinished.connect(self._on_range_changed)
         self.vmax_edit.editingFinished.connect(self._on_range_changed)
         self.auto_range_btn.clicked.connect(self._on_auto_range)
         self.copy_range_btn.clicked.connect(self._on_copy_range)
-        self.show_title_check.toggled.connect(self._on_global_show_title_toggled)
         self.show_colorbar_check.toggled.connect(self._on_global_show_colorbar_toggled)
         self.duplicate_btn.clicked.connect(self._on_duplicate_item)
         self.remove_btn.clicked.connect(self._on_remove_item)
@@ -1956,7 +2225,6 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _set_inspector_enabled(self, enabled: bool):
         for widget in (
-            self.title_edit,
             self.colorbar_edit,
             self.cmap_combo,
             self.vmin_edit,
@@ -1975,8 +2243,18 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         if item is None:
             self.file_label.setText("-")
             self.channel_label.setText("-")
-            self.title_edit.setText("")
             self.colorbar_edit.setText("")
+            self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
+            try:
+                self.font_color_auto_check.blockSignals(True)
+                self.font_color_auto_check.setChecked(self._global_text_color is None)
+            finally:
+                self.font_color_auto_check.blockSignals(False)
+            try:
+                self.scale_bar_check.blockSignals(True)
+                self.scale_bar_check.setChecked(self._global_show_scale_bar)
+            finally:
+                self.scale_bar_check.blockSignals(False)
             self.vmin_edit.setText("")
             self.vmax_edit.setText("")
             self.stats_label.setText("-")
@@ -1985,8 +2263,32 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._set_inspector_enabled(True)
         self.file_label.setText(Path(item.file_path).name)
         self.channel_label.setText(str(item.channel_index))
-        self.title_edit.setText(item.title)
         self.colorbar_edit.setText(item.colorbar_label)
+        try:
+            self.text_scale_slider.blockSignals(True)
+            self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
+        finally:
+            self.text_scale_slider.blockSignals(False)
+        try:
+            self.font_color_auto_check.blockSignals(True)
+            self.font_color_auto_check.setChecked(self._global_text_color is None)
+        finally:
+            self.font_color_auto_check.blockSignals(False)
+        try:
+            self.scale_bar_check.blockSignals(True)
+            self.scale_bar_check.setChecked(self._global_show_scale_bar)
+        finally:
+            self.scale_bar_check.blockSignals(False)
+        try:
+            self.scale_bar_combo.blockSignals(True)
+            if self._global_scale_bar_length_nm is None:
+                self.scale_bar_combo.setCurrentText("Auto")
+            else:
+                label = f"{self._global_scale_bar_length_nm:g} nm"
+                idx = self.scale_bar_combo.findText(label)
+                self.scale_bar_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self.scale_bar_combo.blockSignals(False)
         self.cmap_combo.setCurrentText(item.cmap)
         self.vmin_edit.setText("" if item.vmin is None else str(item.vmin))
         self.vmax_edit.setText("" if item.vmax is None else str(item.vmax))
@@ -2005,17 +2307,67 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         n_selected = len([i for i in self.scene.items() if isinstance(i, CanvasImageItem) and i.isSelected()])
         self.status_label.setText(f"{n_selected} selected | {len(self.scene.items())} total items")
 
-    def _on_title_changed(self):
-        if self._selected_item is None:
-            return
-        self._selected_item.set_title(self.title_edit.text().strip())
-        self._push_undo_state()
-
     def _on_colorbar_changed(self):
         if self._selected_item is None:
             return
         self._selected_item.set_colorbar_label(self.colorbar_edit.text().strip())
         self._push_undo_state()
+
+    def _on_text_scale_changed(self, value: int):
+        scale = max(0.01, min(2.4, value / 100.0))
+        self._global_text_scale = scale
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item._fixed_text_scale_value = scale
+                item._use_fixed_text_scale = True
+                # Clear any alignment-locked text scale so the slider takes effect.
+                item.set_locked_text_scale(None)
+                item._update_rendered_pixmap()
+        self._push_undo_state()
+
+    def _on_font_color_auto_toggled(self, checked: bool):
+        self._global_text_color = None if checked else self._global_text_color
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_text_color_override(self._global_text_color)
+
+    def _on_font_color_pick(self):
+        color = QtWidgets.QColorDialog.getColor(self._global_text_color or QtGui.QColor("#ffffff"), self, "Select font color")
+        if not color.isValid():
+            return
+        self._global_text_color = color
+        self.font_color_auto_check.setChecked(False)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_text_color_override(self._global_text_color)
+
+    def _on_scale_bar_toggled(self, checked: bool):
+        self._global_show_scale_bar = bool(checked)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_show_scale_bar(self._global_show_scale_bar)
+
+    def _on_scale_bar_size_changed(self, text: str):
+        if text.lower().startswith("auto"):
+            self._global_scale_bar_length_nm = None
+        else:
+            try:
+                self._global_scale_bar_length_nm = float(text.split()[0])
+            except Exception:
+                self._global_scale_bar_length_nm = None
+        for item in self.scene.items():
+            if not isinstance(item, CanvasImageItem):
+                continue
+            length = self._convert_scale_bar_length(item._axis_unit, self._global_scale_bar_length_nm)
+            item.set_scale_bar_length(length)
+
+    def _convert_scale_bar_length(self, unit: str, length_nm: float | None) -> float | None:
+        if length_nm is None:
+            return None
+        unit_norm = (unit or "").strip().lower()
+        if unit_norm in ("a", "å", "angstrom", "angstroms"):
+            return length_nm * 10.0
+        return length_nm
 
     def _on_cmap_changed(self, name: str):
         if self._selected_item is None or not name:
@@ -2091,14 +2443,18 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         for item in self.scene.items():
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
-                item.set_metadata_bar_visible(self._show_overlay_info)
+                item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
 
     def _on_overlay_file_toggled(self, checked: bool):
         self._show_overlay_file = bool(checked)
         for item in self.scene.items():
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
+                item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
                 item.set_metadata_file_visible(self._show_overlay_file)
+
+    def _metadata_bar_visible_default(self) -> bool:
+        return bool(self._metadata_bar_default)
 
     def _on_colorbar_position_changed(self, text: str):
         mode = text.lower()
@@ -2114,23 +2470,23 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 item.set_colorbar_mode(mode)
         self.status_label.setText(f"Colorbar mode: {mode.capitalize()}")
 
-    def _on_global_show_title_toggled(self, checked: bool):
-        self._apply_global_show_title(checked)
-
     def _on_global_show_colorbar_toggled(self, checked: bool):
         self._apply_global_show_colorbar(checked)
 
-    def _apply_global_show_title(self, show: bool):
-        self._global_show_title = bool(show)
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_show_title(self._global_show_title)
+    def _on_global_show_colorbar_ticks_toggled(self, checked: bool):
+        self._apply_global_show_colorbar_ticks(checked)
 
     def _apply_global_show_colorbar(self, show: bool):
         self._global_show_colorbar = bool(show)
         for item in self.scene.items():
             if isinstance(item, CanvasImageItem):
                 item.set_show_colorbar(self._global_show_colorbar)
+
+    def _apply_global_show_colorbar_ticks(self, show: bool):
+        self._global_show_colorbar_ticks = bool(show)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
 
     def _on_canvas_color_clicked(self):
         color = QtWidgets.QColorDialog.getColor(self.view.backgroundBrush().color(), self, "Canvas color")
@@ -2164,7 +2520,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _display_channel_label(self, kind: str | None, unit_display: str | None) -> str:
         if kind == "df":
-            base = "δf"
+            base = "Δf"
             unit = unit_display or "Hz"
         elif kind == "current":
             base = "I_tunnel"
@@ -2299,6 +2655,27 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         if datetime_txt:
             overlay_txt = f"{overlay_label} | {datetime_txt}"
         file_overlay = header_path.name
+        # Choose an initial canvas width based on available viewport space to avoid oversized tiles.
+        try:
+            window_width = float(self.width())
+            canvas_width_area = window_width * 0.65  # account for inspector panel
+        except Exception:
+            canvas_width_area = 900.0
+
+        existing_items = [i for i in self.scene.items() if isinstance(i, CanvasImageItem)]
+        if not existing_items:
+            # First drop: make the primary item large for legibility
+            target_cols = 2.0
+            total_gap_space = 80.0 + (24.0 * (target_cols - 1))
+            default_width = (canvas_width_area - total_gap_space) / target_cols
+            default_width = max(340.0, min(520.0, default_width))
+        else:
+            # Subsequent items: moderate size grid
+            num_columns = 3.0
+            total_gap_space = 80.0 + (24.0 * (num_columns - 1))  # margins + gaps
+            default_width = (canvas_width_area - total_gap_space) / num_columns
+            default_width = max(240.0, min(320.0, default_width))
+
         item = CanvasImageItem(
             arr_display,
             cmap=cmap,
@@ -2307,12 +2684,20 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             file_path=str(header_path),
             channel_index=channel_idx,
             unit=unit_display,
+            canvas_width=default_width,
         )
         self.scene.addItem(item)
         item.set_kind(kind)
         item.set_scale_info(disp_extent, axis_unit)
         item.set_overlay_text(overlay_txt, file_overlay)
         item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
+        item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+        item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
+        item._fixed_text_scale_value = self._global_text_scale
+        item._use_fixed_text_scale = True
+        item.set_text_color_override(self._global_text_color)
+        item.set_show_scale_bar(self._global_show_scale_bar)
+        item.set_scale_bar_length(self._convert_scale_bar_length(axis_unit, self._global_scale_bar_length_nm))
         item.set_parent_window(self)
         if file_key not in self._file_scale_bars:
             self._file_scale_bars[file_key] = item._scale_bar_spec()[0] if item._scale_bar_spec() else None
@@ -2464,15 +2849,11 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             return
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
         ref_item = selected[0] if selected else items[0]
-        ref_width = ref_item.get_canvas_width()
-        needs_resize = self._last_aligned_width is None
-        target_width = self._last_aligned_width or ref_width
-        if needs_resize:
-            self._last_aligned_width = target_width
-        target_scale = ref_item._text_scale_for_width(target_width)
+        target_width = ref_item.get_canvas_width()
+        self._last_aligned_width = target_width
+        target_scale = ref_item._effective_text_scale()
         for item in items:
-            if needs_resize:
-                item.set_canvas_width(target_width)
+            item.set_canvas_width(target_width)
             item.set_locked_text_scale(target_scale)
         self._grid_locked = True
         groups = {}

@@ -29,6 +29,10 @@ backup_2/
 # Keep source helpers tracked even though they live under `sxm_viewer/data`
 !sxm_viewer/data/
 !sxm_viewer/data/**
+# But still ignore cache artifacts there
+sxm_viewer/data/**/__pycache__/
+sxm_viewer/data/**/*.py[cod]
+sxm_viewer/data/**/*$py.class
 
 # Logs & temporary files
 *.log
