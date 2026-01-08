@@ -76,11 +76,14 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         lbl.setProperty("channel_index", int(channel_idx))
         lbl.setProperty("spec_markers", [])
         lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
+        lbl.setProperty("drag_start", None)
+        lbl.setProperty("dragging", False)
         placeholder = QtGui.QPixmap(thumb_w, thumb_h)
         placeholder.fill(QtGui.QColor('#0b0b12'))
         lbl.setPixmap(placeholder)
         lbl.setMouseTracking(True)
-        lbl.mousePressEvent = viewer._make_thumb_click_handler(lbl)
+        lbl.mousePressEvent = viewer._make_thumb_press_handler(lbl)
+        lbl.mouseReleaseEvent = viewer._make_thumb_release_handler(lbl)
         lbl.mouseMoveEvent = viewer._make_thumb_move_handler(lbl)
         lbl.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         lbl.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
@@ -215,37 +218,81 @@ def _refresh_thumb_selection_styles(viewer):
             continue
 
 
-def _make_thumb_click_handler(viewer, label_widget):
+def _handle_thumb_click(viewer, label_widget, event):
+    if event.button() != QtCore.Qt.LeftButton:
+        return
+    if viewer._handle_spec_marker_click(label_widget, event):
+        return
+    fp = label_widget.property("file_path")
+    ch_idx = int(label_widget.property("channel_index"))
+    mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
+    if mods & QtCore.Qt.ShiftModifier:
+        viewer._toggle_thumb_multi_selection(fp)
+        return
+    if mods & QtCore.Qt.ControlModifier:
+        viewer._toggle_thumb_multi_selection(fp)
+        return
+    viewer._clear_thumb_multi_selection(update_styles=False)
+    viewer.on_thumbnail_clicked(fp, ch_idx)
+    try:
+        if viewer.show_spectra and viewer.spectros_by_image.get(str(fp)):
+            entries = viewer.spectros_by_image.get(str(fp), [])
+            has_matrix = any(s.get('matrix_index') is not None for s in entries)
+            has_single = any(s.get('matrix_index') is None for s in entries)
+            mode = "matrix" if has_matrix and not has_single else "single"
+            viewer._open_spectro_summary_for_file(fp, show_mode=mode)
+    except Exception:
+        pass
+
+
+def _make_thumb_press_handler(viewer, label_widget):
     def handler(event):
         if event.button() != QtCore.Qt.LeftButton:
             return
-        if viewer._handle_spec_marker_click(label_widget, event):
+        label_widget.setProperty("drag_start", event.pos())
+        label_widget.setProperty("dragging", False)
+        QtWidgets.QLabel.mousePressEvent(label_widget, event)
+    return handler
+
+
+def _make_thumb_release_handler(viewer, label_widget):
+    def handler(event):
+        dragging = bool(label_widget.property("dragging"))
+        label_widget.setProperty("drag_start", None)
+        label_widget.setProperty("dragging", False)
+        if dragging:
             return
-        fp = label_widget.property("file_path")
-        ch_idx = int(label_widget.property("channel_index"))
-        mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
-        if mods & QtCore.Qt.ShiftModifier:
-            viewer._toggle_thumb_multi_selection(fp)
-            return
-        if mods & QtCore.Qt.ControlModifier:
-            viewer._toggle_thumb_multi_selection(fp)
-            return
-        viewer._clear_thumb_multi_selection(update_styles=False)
-        viewer.on_thumbnail_clicked(fp, ch_idx)
-        try:
-            if viewer.show_spectra and viewer.spectros_by_image.get(str(fp)):
-                entries = viewer.spectros_by_image.get(str(fp), [])
-                has_matrix = any(s.get('matrix_index') is not None for s in entries)
-                has_single = any(s.get('matrix_index') is None for s in entries)
-                mode = "matrix" if has_matrix and not has_single else "single"
-                viewer._open_spectro_summary_for_file(fp, show_mode=mode)
-        except Exception:
-            pass
+        _handle_thumb_click(viewer, label_widget, event)
     return handler
 
 
 def _make_thumb_move_handler(viewer, label_widget):
     def handler(event):
+        dragging = bool(label_widget.property("dragging"))
+        start = label_widget.property("drag_start")
+        if start is not None and event.buttons() & QtCore.Qt.LeftButton and not dragging:
+            if (event.pos() - start).manhattanLength() >= 10:
+                fp = label_widget.property("file_path")
+                ch_idx = int(label_widget.property("channel_index"))
+                payload = {
+                    "file_path": fp,
+                    "channel_index": ch_idx,
+                    "cmap": viewer.preview_cmap_combo.currentText() or viewer.preview_cmap,
+                }
+                drag = QtGui.QDrag(label_widget)
+                mime = QtCore.QMimeData()
+                try:
+                    mime.setData("application/x-sxm-view", json.dumps(payload).encode("utf-8"))
+                except Exception:
+                    pass
+                pix = label_widget.pixmap()
+                if pix is not None:
+                    mime.setImageData(pix.toImage())
+                    drag.setPixmap(pix)
+                drag.setMimeData(mime)
+                drag.exec_(QtCore.Qt.CopyAction)
+                label_widget.setProperty("dragging", True)
+                return
         if not viewer._handle_spec_hover(label_widget, event):
             QtWidgets.QLabel.mouseMoveEvent(label_widget, event)
     return handler
@@ -281,7 +328,9 @@ __all__ = [
     "on_thumb_filter_changed",
     "_thumbnail_pixmap_for_file",
     "_refresh_thumb_selection_styles",
-    "_make_thumb_click_handler",
+    "_handle_thumb_click",
+    "_make_thumb_press_handler",
+    "_make_thumb_release_handler",
     "_make_thumb_move_handler",
     "_toggle_thumb_multi_selection",
     "_clear_thumb_multi_selection",

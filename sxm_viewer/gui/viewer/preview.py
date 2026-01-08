@@ -286,6 +286,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'time': time_txt,
         'datetime': datetime_txt,
         'channel': caption,
+        'channel_index': int(channel_idx),
     }
     main = {'arr': display_arr, 'extent': display_extent, 'cmap': cmap_to_use, 'unit': display_unit,
             'title': title_text, 'colorbar_label': colorbar_label, 'axis_unit': axis_unit,
@@ -315,6 +316,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                 cbar_label2 = f"{caption2} [{unit2_display}]"
             meta2 = dict(meta)
             meta2['channel'] = caption2
+            meta2['channel_index'] = int(idx2)
             views.append({'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
                           'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                           'relative_axes': bool(viewer.relative_axes), 'meta': meta2})

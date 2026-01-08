@@ -77,6 +77,7 @@ from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
 from .viewer import thumb_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
+from .canvases.experimental_canvas import ExperimentalCanvasWindow
 
 class SXMGridViewer(QtWidgets.QWidget):
     SpectroSummaryDialog = SpectroSummaryDialog
@@ -236,6 +237,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_export_png_act = None
         self.toolbar_export_xyz_act = None
         self.toolbar_adjust_act = None
+        self._canvas_window = None
 
         # UI: left controls + meta + inspector; right thumbs + preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(8)
@@ -414,6 +416,12 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         preview_panel = QtWidgets.QWidget()
         preview_panel_layout = QtWidgets.QVBoxLayout(); preview_panel_layout.setContentsMargins(0,0,0,0)
+        preview_header = QtWidgets.QHBoxLayout()
+        preview_header.addWidget(QtWidgets.QLabel("Preview"))
+        preview_header.addStretch(1)
+        self.open_canvas_btn = QtWidgets.QPushButton("Open canvas")
+        preview_header.addWidget(self.open_canvas_btn)
+        preview_panel_layout.addLayout(preview_header)
         self.preview_canvas = MultiPreviewCanvas(self, figsize=(6,5))
         self.preview_canvas.setToolTip(
             "Preview area:\n"
@@ -432,6 +440,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self._apply_detail_view_theme()
+        self.open_canvas_btn.clicked.connect(self._on_open_canvas)
 
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         right_splitter.addWidget(thumbs_panel)
@@ -1618,11 +1627,21 @@ class SXMGridViewer(QtWidgets.QWidget):
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
 
-    def _make_thumb_click_handler(self, label_widget):
-        return viewer_thumb_ui._make_thumb_click_handler(self, label_widget)
+    def _make_thumb_press_handler(self, label_widget):
+        return viewer_thumb_ui._make_thumb_press_handler(self, label_widget)
+
+    def _make_thumb_release_handler(self, label_widget):
+        return viewer_thumb_ui._make_thumb_release_handler(self, label_widget)
 
     def _make_thumb_move_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_move_handler(self, label_widget)
+
+    def _on_open_canvas(self):
+        if self._canvas_window is None or not self._canvas_window.isVisible():
+            self._canvas_window = ExperimentalCanvasWindow(self, self)
+        self._canvas_window.show()
+        self._canvas_window.raise_()
+        self._canvas_window.activateWindow()
 
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
         """

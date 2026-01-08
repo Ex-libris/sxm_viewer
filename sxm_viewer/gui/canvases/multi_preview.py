@@ -1825,6 +1825,17 @@ class MultiPreviewCanvas(FigureCanvas):
             drag = QtGui.QDrag(self)
             mime = QtCore.QMimeData()
             mime.setImageData(qimg)
+            try:
+                meta = view.get('meta') or {}
+                payload = {
+                    'file_path': meta.get('file_path'),
+                    'channel_index': meta.get('channel_index'),
+                    'cmap': view.get('cmap'),
+                }
+                if payload.get('file_path') is not None and payload.get('channel_index') is not None:
+                    mime.setData('application/x-sxm-view', json.dumps(payload).encode('utf-8'))
+            except Exception:
+                pass
             drag.setMimeData(mime)
             drag.setPixmap(pix.scaled(128, 128, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
             drag.exec_(QtCore.Qt.CopyAction)
