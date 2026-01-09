@@ -274,11 +274,20 @@ def _make_thumb_move_handler(viewer, label_widget):
             if (event.pos() - start).manhattanLength() >= 10:
                 fp = label_widget.property("file_path")
                 ch_idx = int(label_widget.property("channel_index"))
-                payload = {
-                    "file_path": fp,
-                    "channel_index": ch_idx,
-                    "cmap": viewer.preview_cmap_combo.currentText() or viewer.preview_cmap,
-                }
+                cmap = viewer.preview_cmap_combo.currentText() or viewer.preview_cmap
+                selected = list(getattr(viewer, "thumb_multi_select", set()) or [])
+                if fp in selected and len(selected) > 1:
+                    payload = {
+                        "items": sorted({str(p) for p in selected}),
+                        "channel_index": ch_idx,
+                        "cmap": cmap,
+                    }
+                else:
+                    payload = {
+                        "file_path": fp,
+                        "channel_index": ch_idx,
+                        "cmap": cmap,
+                    }
                 if hasattr(viewer, "_ensure_canvas_for_drag"):
                     viewer._ensure_canvas_for_drag()
                 drag = QtGui.QDrag(label_widget)
