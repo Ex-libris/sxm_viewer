@@ -626,7 +626,11 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         settings = QtCore.QSettings()
         saved_mode = str(settings.value("lowerPane/lastMode", "Browse"))
-        self._apply_mode(self._mode_from_name(saved_mode), remember=False)
+        mode = self._mode_from_name(saved_mode)
+        # Always start in Browse so no measurement overlays appear by default.
+        if mode == self.MODE_MEASURE:
+            mode = self.MODE_BROWSE
+        self._apply_mode(mode, remember=False)
         self._apply_lower_control_theme()
         return frame
 
@@ -1660,6 +1664,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._canvas_window.show()
         self._canvas_window.raise_()
         self._canvas_window.activateWindow()
+
+    def _ensure_canvas_for_drag(self):
+        """Open the canvas window as a drop target during thumbnail drags."""
+        if self._canvas_window is None or not self._canvas_window.isVisible():
+            self._canvas_window = ExperimentalCanvasWindow(self, self)
+        self._canvas_window.show()
+        self._canvas_window.raise_()
 
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
         """

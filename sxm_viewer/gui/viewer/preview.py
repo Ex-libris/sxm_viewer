@@ -327,7 +327,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     preserve = False
     try:
         last = viewer.last_preview[0] if viewer.last_preview else None
-        preserve = bool(getattr(viewer, 'preserve_profiles_on_channel_change', False)) and last == str(header_path)
+        preserve = (
+            bool(getattr(viewer, 'preserve_profiles_on_channel_change', False))
+            and last == str(header_path)
+            and getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE
+        )
     except Exception:
         preserve = False
     viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
@@ -338,6 +342,14 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             pass
     elif getattr(viewer, '_pending_profile_enable', False):
         viewer._pending_profile_enable = False
+    else:
+        # Ensure profiles are cleared when not in Measure mode.
+        try:
+            viewer.preview_canvas.enable_profile(False)
+            if hasattr(viewer.preview_canvas, 'clear_saved_profiles'):
+                viewer.preview_canvas.clear_saved_profiles()
+        except Exception:
+            pass
 
     # Styled HTML metadata
     try:

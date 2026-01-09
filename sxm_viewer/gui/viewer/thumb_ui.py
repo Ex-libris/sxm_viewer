@@ -279,6 +279,8 @@ def _make_thumb_move_handler(viewer, label_widget):
                     "channel_index": ch_idx,
                     "cmap": viewer.preview_cmap_combo.currentText() or viewer.preview_cmap,
                 }
+                if hasattr(viewer, "_ensure_canvas_for_drag"):
+                    viewer._ensure_canvas_for_drag()
                 drag = QtGui.QDrag(label_widget)
                 mime = QtCore.QMimeData()
                 try:
