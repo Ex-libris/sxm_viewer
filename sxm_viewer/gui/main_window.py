@@ -378,6 +378,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.scroll.installEventFilter(self)
         self.thumb_container.installEventFilter(self)
         thumbs_panel = QtWidgets.QWidget()
+        self.left_w = left_w
         thumbs_panel_layout = QtWidgets.QVBoxLayout(); thumbs_panel_layout.setContentsMargins(0,0,0,0)
         thumbs_panel_layout.addWidget(title_lbl)
         thumbs_panel_layout.addWidget(self.scroll, 1)
@@ -422,6 +423,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Canvas launch button moved to the main toolbar for prominence.
         preview_panel_layout.addLayout(preview_header)
         self.preview_canvas = MultiPreviewCanvas(self, figsize=(6,5))
+        self.preview_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.preview_canvas.setMinimumWidth(240)
         self.preview_canvas.setToolTip(
             "Preview area:\n"
             " • Right-click for copy/save options\n"
@@ -441,28 +444,39 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._apply_detail_view_theme()
         # open_canvas handled in toolbar
 
-        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        right_splitter.addWidget(thumbs_panel)
-        right_splitter.addWidget(preview_panel)
-        right_splitter.setStretchFactor(0, 3)
-        right_splitter.setStretchFactor(1, 2)
-        right_w = QtWidgets.QWidget()
+        # Store for layout toggling
+        self._thumbs_panel = thumbs_panel
+        self._preview_panel = preview_panel
+
+        self._right_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self._right_splitter.addWidget(self._thumbs_panel)
+        self._right_splitter.addWidget(self._preview_panel)
+        self._right_splitter.setStretchFactor(0, 3)
+        self._right_splitter.setStretchFactor(1, 2)
+        self._right_container = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(); right_layout.setContentsMargins(0,0,0,0)
-        right_layout.addWidget(right_splitter, 1)
-        right_w.setLayout(right_layout)
+        right_layout.addWidget(self._right_splitter, 1)
+        self._right_container.setLayout(right_layout)
 
         main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         main_splitter.addWidget(left_w)
-        main_splitter.addWidget(right_w)
-        # prefer to give the right pane more space by default
+        main_splitter.addWidget(self._thumbs_panel)
+        main_splitter.addWidget(self._preview_panel)
+        main_splitter.setHandleWidth(8)
+        # left = inspector, middle = thumbnails, right = preview stack
         main_splitter.setStretchFactor(0, 1)
-        main_splitter.setStretchFactor(1, 3)
+        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setStretchFactor(2, 3)
+        self.main_splitter = main_splitter
+        self._layout_mode = "columns"
+        self._layout_sizes = {}
 
         # Prevent panes from collapsing to zero width when the user drags the splitter.
         # This avoids the left inspector disappearing when the user expands the thumbnails.
         try:
             main_splitter.setCollapsible(0, False)
-            main_splitter.setCollapsible(1, False)
+            main_splitter.setCollapsible(1, True)
+            main_splitter.setCollapsible(2, True)
         except Exception:
             # older PyQt versions may not support setCollapsible; ignore safely
             pass
@@ -472,10 +486,23 @@ class SXMGridViewer(QtWidgets.QWidget):
             left_w.setMinimumWidth(360)
         except Exception:
             pass
+        try:
+            thumbs_panel.setMinimumWidth(140)
+        except Exception:
+            pass
+        try:
+            preview_panel.setMinimumWidth(220)
+        except Exception:
+            pass
+        try:
+            thumbs_panel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+            preview_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        except Exception:
+            pass
 
         # Set reasonable initial sizes (left, right). Adjust these numbers to taste.
         try:
-            main_splitter.setSizes([360, 1080])
+            main_splitter.setSizes([360, 520, 820])
         except Exception:
             pass
 
@@ -1168,6 +1195,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_shortcuts_act = toolbar.addAction(_icon("help-about"), "Shortcuts")
         self.toolbar_shortcuts_act.triggered.connect(self._on_show_shortcuts_requested)
 
+        toolbar.addSeparator()
+        self.toolbar_layout_act = toolbar.addAction("Layout: Columns")
+        self.toolbar_layout_act.setToolTip("Toggle between Columns and Stack layouts")
+        self.toolbar_layout_act.triggered.connect(self._on_toggle_layout_mode)
+
         self._update_toolbar_actions(False)
         return toolbar
 
@@ -1175,6 +1207,58 @@ class SXMGridViewer(QtWidgets.QWidget):
         for act in (self.toolbar_export_png_act, self.toolbar_export_xyz_act, self.toolbar_adjust_act):
             if act is not None:
                 act.setEnabled(bool(enabled))
+
+    def _on_toggle_layout_mode(self):
+        target = "stacked" if self._layout_mode == "columns" else "columns"
+        self._apply_layout_mode(target)
+
+    def _apply_layout_mode(self, mode: str):
+        if not hasattr(self, "main_splitter"):
+            return
+        if mode not in ("columns", "stacked"):
+            mode = "columns"
+        # preserve sizes
+        if hasattr(self, "_layout_mode"):
+            self._layout_sizes[self._layout_mode] = self.main_splitter.sizes()
+        # detach all but left
+        for idx in reversed(range(self.main_splitter.count())):
+            widget = self.main_splitter.widget(idx)
+            if widget is getattr(self, "left_w", None):
+                continue
+            widget.setParent(None)
+        if mode == "columns":
+            # reattach panels directly
+            if self._thumbs_panel.parent() is not None and self._thumbs_panel.parent() is not self.main_splitter:
+                self._thumbs_panel.setParent(None)
+            if self._preview_panel.parent() is not None and self._preview_panel.parent() is not self.main_splitter:
+                self._preview_panel.setParent(None)
+            self.main_splitter.addWidget(self._thumbs_panel)
+            self.main_splitter.addWidget(self._preview_panel)
+            self.main_splitter.setStretchFactor(0, 1)
+            self.main_splitter.setStretchFactor(1, 2)
+            self.main_splitter.setStretchFactor(2, 3)
+        else:
+            # stack thumbs + preview vertically on the right
+            if self._thumbs_panel.parent() is not self._right_splitter:
+                self._thumbs_panel.setParent(None)
+                self._right_splitter.insertWidget(0, self._thumbs_panel)
+            if self._preview_panel.parent() is not self._right_splitter:
+                self._preview_panel.setParent(None)
+                self._right_splitter.addWidget(self._preview_panel)
+            self.main_splitter.addWidget(self._right_container)
+            self.main_splitter.setStretchFactor(0, 1)
+            self.main_splitter.setStretchFactor(1, 3)
+        self._layout_mode = mode
+        if hasattr(self, "toolbar_layout_act"):
+            self.toolbar_layout_act.setText("Layout: Columns" if mode == "columns" else "Layout: Stack")
+        sizes = self._layout_sizes.get(mode)
+        if sizes:
+            self.main_splitter.setSizes(sizes)
+        else:
+            if mode == "columns":
+                self.main_splitter.setSizes([360, 520, 820])
+            else:
+                self.main_splitter.setSizes([360, 1080])
 
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
