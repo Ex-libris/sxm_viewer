@@ -1,9 +1,7 @@
 """Enhanced canvas window with modern UI/UX and polished aesthetics."""
 from __future__ import annotations
 
-import io
 import json
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,20 +43,6 @@ def _normalize_cbar_label(label: str) -> str:
     if low.startswith("delta f"):
         return f"Δf{lbl[6:]}"
     return lbl
-
-
-def _format_scale_bar_label(length: float, unit: str) -> str:
-    if length is None:
-        return ""
-    if abs(length) < 1e-6:
-        return f"0 {unit}".strip()
-    if abs(length) >= 100 or abs(length) < 0.01:
-        return f"{length:.2g} {unit}".strip()
-    if abs(length) < 1:
-        return f"{length:.2f} {unit}".strip()
-    if abs(length) < 10:
-        return f"{length:.2f} {unit}".strip()
-    return f"{length:.1f} {unit}".strip()
 
 
 def _normalized_value(norm, value):
@@ -103,7 +87,7 @@ def _annotate_colorbar(cb, vmin, vmax, scale, orientation, show_ticks, text_colo
         spine.set_visible(False)
 
 
-def render_tile_figure_mpl(
+def render_tile_mpl(
     data,
     *,
     cmap,
@@ -116,7 +100,7 @@ def render_tile_figure_mpl(
     dpi=200,
     show_colorbar=True,
     show_colorbar_ticks=True,
-    show_title=False,
+    show_title=True,
     show_metadata=True,
     metadata_left="",
     metadata_right="",
@@ -129,16 +113,13 @@ def render_tile_figure_mpl(
     frame_color="#070707",
     text_scale=None,
     text_color=None,
-    show_scale_bar=False,
-    scale_bar_length=None,
-    scale_bar_unit="",
-    scale_bar_width=None,
 ):
-    """Build a Matplotlib figure for a canvas tile, including annotations."""
+    """Render a canvas tile through Matplotlib, including annotations."""
     import matplotlib
 
     matplotlib.use("Agg")
     from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
 
     width_px = max(2, int(round(width_px)))
     height_px = max(2, int(round(height_px)))
@@ -152,18 +133,18 @@ def render_tile_figure_mpl(
     metadata_ratio = 0.0
     if show_metadata and metadata_height > 0:
         metadata_ratio = min(0.35, metadata_height / height_px)
-    bottom_margin = 0.002 + metadata_ratio
+    bottom_margin = 0.02 + metadata_ratio
     if text_scale is None:
         text_scale = 1.0
-    text_scale = max(0.002, min(2.4, float(text_scale)))
+    text_scale = max(0.2, min(2.4, float(text_scale)))
     text_color = text_color or _text_color_for_frame(frame_color)
     cbar_label_text = _normalize_cbar_label(colorbar_label or "")
 
-    min_title_px = 2.0
-    min_tick_px = 2.0
-    min_label_px = 2.0
-    min_overlay_px = 2.0
-    min_meta_px = 2.0
+    min_title_px = 10.0
+    min_tick_px = 9.0
+    min_label_px = 9.0
+    min_overlay_px = 8.5
+    min_meta_px = 8.5
 
     title_fs = max(min_title_px, 11.0 * text_scale)
     tick_fs = max(min_tick_px, 9.5 * text_scale)
@@ -183,6 +164,7 @@ def render_tile_figure_mpl(
         top=top_margin,
         bottom=bottom_margin + (extra_tick_margin if normalized_position == "bottom" else 0.0),
     )
+    canvas = FigureCanvasAgg(fig)
 
     ax = None
     cax = None
@@ -247,7 +229,8 @@ def render_tile_figure_mpl(
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    # Title display removed; keep colorbar label inside the bar instead.
+    if show_title and title:
+        ax.set_title(title, fontsize=title_fs, color=text_color, pad=6)
 
     cb = None
     if rendered_colorbar and normalized_position in ("top", "bottom", "left", "right"):
@@ -294,52 +277,6 @@ def render_tile_figure_mpl(
         ax_pos = ax.get_position()
         cax_pos = cax.get_position()
         cax.set_position([cax_pos.x0, ax_pos.y0, cax_pos.width, ax_pos.height])
-
-    if show_scale_bar and scale_bar_length and scale_bar_width:
-        try:
-            length_frac = float(scale_bar_length) / max(1e-6, float(scale_bar_width))
-        except Exception:
-            length_frac = 0.0
-        if 0.02 < length_frac < 0.9:
-            bar_y = 0.06
-            bar_x = 0.08
-            bar_h = max(0.003, min(0.02, 0.006 * text_scale))
-            ax.plot(
-                [bar_x, bar_x + length_frac],
-                [bar_y, bar_y],
-                color=text_color,
-                linewidth=max(1.2, 1.5 * text_scale),
-                transform=ax.transAxes,
-                solid_capstyle="butt",
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x, bar_x],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x + length_frac, bar_x + length_frac],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.text(
-                bar_x + length_frac / 2.0,
-                bar_y + (bar_h * 2.5),
-                _format_scale_bar_label(float(scale_bar_length), scale_bar_unit),
-                color=text_color,
-                fontsize=max(2.0, 7.0 * text_scale),
-                ha="center",
-                va="bottom",
-                transform=ax.transAxes,
-                zorder=5,
-            )
 
     overlay_lines = []
     if show_overlay_main and overlay_main:
@@ -388,77 +325,7 @@ def render_tile_figure_mpl(
                 va="center",
                 bbox=bbox,
             )
-    return fig
 
-
-def render_tile_mpl(
-    data,
-    *,
-    cmap,
-    vmin,
-    vmax,
-    title,
-    colorbar_label,
-    width_px,
-    height_px,
-    dpi=200,
-    show_colorbar=True,
-    show_colorbar_ticks=True,
-    show_title=False,
-    show_metadata=True,
-    metadata_left="",
-    metadata_right="",
-    show_overlay_main=False,
-    overlay_main="",
-    show_overlay_file=False,
-    overlay_file="",
-    cbar_position="bottom",
-    metadata_height=0.0,
-    frame_color="#070707",
-    text_scale=None,
-    text_color=None,
-    show_scale_bar=False,
-    scale_bar_length=None,
-    scale_bar_unit="",
-    scale_bar_width=None,
-):
-    """Render a canvas tile through Matplotlib, including annotations."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-
-    fig = render_tile_figure_mpl(
-        data,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        title=title,
-        colorbar_label=colorbar_label,
-        width_px=width_px,
-        height_px=height_px,
-        dpi=dpi,
-        show_colorbar=show_colorbar,
-        show_colorbar_ticks=show_colorbar_ticks,
-        show_title=show_title,
-        show_metadata=show_metadata,
-        metadata_left=metadata_left,
-        metadata_right=metadata_right,
-        show_overlay_main=show_overlay_main,
-        overlay_main=overlay_main,
-        show_overlay_file=show_overlay_file,
-        overlay_file=overlay_file,
-        cbar_position=cbar_position,
-        metadata_height=metadata_height,
-        frame_color=frame_color,
-        text_scale=text_scale,
-        text_color=text_color,
-        show_scale_bar=show_scale_bar,
-        scale_bar_length=scale_bar_length,
-        scale_bar_unit=scale_bar_unit,
-        scale_bar_width=scale_bar_width,
-    )
-    canvas = FigureCanvasAgg(fig)
     canvas.draw()
     buf = np.asarray(canvas.buffer_rgba())
     h, w, _ = buf.shape
@@ -564,7 +431,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._colorbar_height = 10
         self._colorbar_pad_y = 4
         self._colorbar_padding_x = 6
-        self._show_title = False
+        self._show_title = True
         self._show_colorbar = True
         self._show_colorbar_ticks = True
         self._canvas_width = float(canvas_width)
@@ -575,8 +442,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._colorbar_mode = "bottom"
         self._use_fixed_text_scale = True
         self._fixed_text_scale_value = 1.0
-        self._show_scale_bar = False
-        self._text_color_override: QtGui.QColor | None = None
         self._rendered_pixmap: QtGui.QPixmap | None = None
         self._render_timer = QtCore.QTimer()
         self._render_timer.setSingleShot(True)
@@ -684,7 +549,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if self._scale_bar_length:
             return self._scale_bar_length, width
         targets = [0.2 * width, 0.1 * width, 0.3 * width]
-        candidates = self._scale_bar_candidates()
+        candidates = [0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
         best = None
         best_err = None
         for t in targets:
@@ -696,22 +561,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if best is None:
             return None
         return best, width
-
-    def _scale_bar_candidates(self) -> list[float]:
-        base_nm = [0.5, 1, 2, 3, 5, 10, 20, 50, 100, 200, 500]
-        unit = (self._axis_unit or "").strip().lower()
-        if unit in ("a", "å", "angstrom", "angstroms"):
-            return [val * 10.0 for val in base_nm]
-        return base_nm
-
-    def _scale_bar_width(self) -> float | None:
-        if not self._extent or not self._axis_unit or self._axis_unit == "px":
-            return None
-        try:
-            x0, x1, y1, y0 = self._extent
-            return abs(float(x1) - float(x0))
-        except Exception:
-            return None
 
     def _update_rendered_pixmap(self):
         self._render_pending = True
@@ -729,15 +578,9 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         metadata_height = self._metadata_bar_height() if self._metadata_bar_visible and (self._metadata_left_text or self._metadata_right_text) else 0.0
         text_scale = self._effective_text_scale()
         frame_color = self._frame_color.name() if isinstance(self._frame_color, QtGui.QColor) else "#070707"
-        if self._text_color_override is not None and self._text_color_override.isValid():
-            text_color = self._text_color_override.name()
-        else:
-            text_color = _text_color_for_frame(frame_color)
+        text_color = _text_color_for_frame(frame_color)
         show_overlay_main = self._show_overlay_main and not self._metadata_bar_visible
         show_overlay_file = self._show_overlay_file and not self._metadata_bar_visible
-        scale_spec = self._scale_bar_spec()
-        scale_length = scale_spec[0] if scale_spec else None
-        scale_width = scale_spec[1] if scale_spec else None
         pixmap = render_tile_mpl(
             self._arr,
             cmap=self._cmap,
@@ -763,10 +606,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             frame_color=frame_color,
             text_scale=text_scale,
             text_color=text_color,
-            show_scale_bar=self._show_scale_bar,
-            scale_bar_length=scale_length,
-            scale_bar_unit=self._axis_unit,
-            scale_bar_width=scale_width,
         )
         self.prepareGeometryChange()
         self._rendered_pixmap = pixmap
@@ -820,11 +659,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.RightButton:
-            if not self.isSelected():
-                self.setSelected(True)
-            event.accept()
-            return
         if event.button() == QtCore.Qt.LeftButton and self._resize_handle_rect().contains(event.pos()):
             self._resizing = True
             self._fast_render = True
@@ -882,11 +716,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
 
         duplicate_action = menu.addAction("Duplicate")
         menu.addSeparator()
-        copy_svg_action = menu.addAction("Copy as SVG (vector)")
-        copy_svg_selected = menu.addAction("Copy selected as SVG (vector)")
-        save_svg_action = menu.addAction("Save as SVG...")
-        save_pdf_action = menu.addAction("Save as PDF...")
-        menu.addSeparator()
         bring_forward = menu.addAction("Bring Forward")
         send_backward = menu.addAction("Send Backward")
         menu.addSeparator()
@@ -905,13 +734,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             canvas_menu = menu.addMenu("Canvas")
             canvas_actions = _append_canvas_menu_actions(canvas_menu, parent, getattr(parent, "view", None))
 
-        selected_items = []
-        try:
-            if self.scene() is not None:
-                selected_items = [i for i in self.scene().selectedItems() if isinstance(i, CanvasImageItem)]
-        except Exception:
-            selected_items = []
-        copy_svg_selected.setEnabled(bool(selected_items))
         action = menu.exec_(event.screenPos())
 
         if action is not None:
@@ -921,14 +743,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             elif action == delete_action:
                 if self._parent_window:
                     self._parent_window._on_remove_item()
-            elif action == copy_svg_action:
-                self._copy_svg_to_clipboard()
-            elif action == copy_svg_selected:
-                self._copy_selected_svg()
-            elif action == save_svg_action:
-                self._save_vector_to_file("svg")
-            elif action == save_pdf_action:
-                self._save_vector_to_file("pdf")
             elif action == bring_forward:
                 self.setZValue(self.zValue() + 1)
             elif action == send_backward:
@@ -1015,6 +829,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     def set_range(self, vmin: float | None, vmax: float | None):
         self._vmin = vmin
         self._vmax = vmax
+        self._update_rendered_pixmap()
+
+    def set_show_title(self, show: bool):
+        self._show_title = show
         self._update_rendered_pixmap()
 
     def set_show_colorbar(self, show: bool):
@@ -1108,6 +926,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             "pos": [self.pos().x(), self.pos().y()],
             "size": [rect.width(), rect.height()],
             "canvas_width": self._canvas_width,
+            "show_title": self._show_title,
             "show_colorbar": self._show_colorbar,
             "show_colorbar_ticks": self._show_colorbar_ticks,
             "kind": self._kind,
@@ -1121,6 +940,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         vmin = state.get("vmin")
         vmax = state.get("vmax")
         self.set_range(vmin, vmax)
+        self.set_show_title(state.get("show_title", True))
         self.set_show_colorbar(state.get("show_colorbar", True))
         self.set_show_colorbar_ticks(state.get("show_colorbar_ticks", True))
         self._kind = state.get("kind", self._kind)
@@ -1136,7 +956,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             self.setPos(float(pos[0]), float(pos[1]))
         ts = state.get("text_scale")
         if ts is not None:
-            self._fixed_text_scale_value = max(0.01, min(2.4, float(ts)))
+            self._fixed_text_scale_value = max(0.2, min(2.4, float(ts)))
             self._use_fixed_text_scale = True
 
     @property
@@ -1195,133 +1015,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
 
     def set_scale_bar_length(self, length: float | None):
         self._scale_bar_length = length
-        self._update_rendered_pixmap()
-
-    def set_show_scale_bar(self, show: bool):
-        self._show_scale_bar = bool(show)
-        self._update_rendered_pixmap()
-
-    def set_text_color_override(self, color: QtGui.QColor | None):
-        self._text_color_override = color
-        self._update_rendered_pixmap()
-
-    def _copy_selected_svg(self):
-        items = []
-        try:
-            if self.scene() is not None:
-                items = [i for i in self.scene().selectedItems() if isinstance(i, CanvasImageItem)]
-        except Exception:
-            items = []
-        if not items:
-            return
-        if len(items) == 1:
-            items[0]._copy_svg_to_clipboard()
-            return
-        view = self._first_canvas_view()
-        if view is None:
-            return
-        svg_bytes = view._compose_svg_bytes(items)
-        if svg_bytes:
-            mime = QtCore.QMimeData()
-            mime.setData("image/svg+xml", svg_bytes)
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-
-    def _first_canvas_view(self):
-        try:
-            if self.scene() is None:
-                return None
-            views = self.scene().views()
-            if not views:
-                return None
-            return views[0]
-        except Exception:
-            return None
-
-    def _render_vector_figure(self):
-        if self._arr is None:
-            return None
-        width = max(2, int(round(self._tile_total_width())))
-        height = max(2, int(round(self._tile_total_height())))
-        metadata_height = self._metadata_bar_height() if self._metadata_bar_visible and (self._metadata_left_text or self._metadata_right_text) else 0.0
-        text_scale = self._effective_text_scale()
-        frame_color = self._frame_color.name() if isinstance(self._frame_color, QtGui.QColor) else "#070707"
-        if self._text_color_override is not None and self._text_color_override.isValid():
-            text_color = self._text_color_override.name()
-        else:
-            text_color = _text_color_for_frame(frame_color)
-        show_overlay_main = self._show_overlay_main and not self._metadata_bar_visible
-        show_overlay_file = self._show_overlay_file and not self._metadata_bar_visible
-        scale_spec = self._scale_bar_spec()
-        scale_length = scale_spec[0] if scale_spec else None
-        scale_width = scale_spec[1] if scale_spec else None
-        return render_tile_figure_mpl(
-            self._arr,
-            cmap=self._cmap,
-            vmin=self._vmin,
-            vmax=self._vmax,
-            title=self._title,
-            colorbar_label=self._colorbar_label,
-            width_px=width,
-            height_px=height,
-            dpi=self._full_dpi,
-            show_colorbar=self._show_colorbar,
-            show_colorbar_ticks=self._show_colorbar_ticks,
-            show_title=self._show_title,
-            show_metadata=self._metadata_bar_visible and bool(self._metadata_left_text or self._metadata_right_text),
-            metadata_left=self._metadata_left_text,
-            metadata_right=self._metadata_right_text,
-            show_overlay_main=show_overlay_main,
-            overlay_main=self._overlay_main_text,
-            show_overlay_file=show_overlay_file,
-            overlay_file=self._overlay_file_text,
-            cbar_position=self._colorbar_mode,
-            metadata_height=metadata_height,
-            frame_color=frame_color,
-            text_scale=text_scale,
-            text_color=text_color,
-            show_scale_bar=self._show_scale_bar,
-            scale_bar_length=scale_length,
-            scale_bar_unit=self._axis_unit,
-            scale_bar_width=scale_width,
-        )
-
-    def _copy_svg_to_clipboard(self):
-        try:
-            fig = self._render_vector_figure()
-            if fig is None:
-                return
-            buf = io.BytesIO()
-            fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
-            svg_bytes = buf.getvalue()
-            mime = QtCore.QMimeData()
-            mime.setData("image/svg+xml", svg_bytes)
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-        except Exception:
-            pass
-
-    def _save_vector_to_file(self, fmt: str):
-        fmt = (fmt or "").strip().lower()
-        if fmt not in ("svg", "pdf"):
-            return
-        try:
-            title = self._title or "view"
-            default = f"{title}.{fmt}"
-            label = "SVG Files (*.svg)" if fmt == "svg" else "PDF Files (*.pdf)"
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(None, "Save view", default, label)
-            if not path:
-                return
-            if not path.lower().endswith(f".{fmt}"):
-                path = f"{path}.{fmt}"
-            fig = self._render_vector_figure()
-            if fig is None:
-                return
-            fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
-            try:
-                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
-            except Exception:
-                pass
-        except Exception:
-            QtWidgets.QMessageBox.warning(None, "Save view", "Unable to save vector image.")
 
     @property
     def data_array(self) -> np.ndarray:
@@ -1609,10 +1302,6 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
         select_all = menu.addAction("Select All")
         deselect_all = menu.addAction("Deselect All")
         menu.addSeparator()
-        copy_svg = menu.addAction("Copy selected as SVG (vector)")
-        save_svg = menu.addAction("Save selected as SVG...")
-        save_pdf = menu.addAction("Save selected as PDF...")
-        menu.addSeparator()
         zoom_in = menu.addAction("Zoom In")
         zoom_out = menu.addAction("Zoom Out")
         zoom_reset = menu.addAction("Reset Zoom")
@@ -1627,11 +1316,6 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
             menu.addSeparator()
             canvas_actions = _append_canvas_menu_actions(menu, parent, self)
 
-        selected_items = [i for i in self.scene().selectedItems() if isinstance(i, CanvasImageItem)]
-        has_selection = bool(selected_items)
-        copy_svg.setEnabled(has_selection)
-        save_svg.setEnabled(has_selection)
-        save_pdf.setEnabled(has_selection)
         action = menu.exec_(event.globalPos())
 
         if action == select_all:
@@ -1640,8 +1324,6 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                     item.setSelected(True)
         elif action == deselect_all:
             self.scene().clearSelection()
-        elif action in (copy_svg, save_svg, save_pdf):
-            self._export_selected_vectors(action, selected_items, copy_svg, save_svg, save_pdf)
         elif action == zoom_in:
             self.scale(1.15, 1.15)
         elif action == zoom_out:
@@ -1701,99 +1383,6 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                 parent._apply_layout("1x3")
             elif action == canvas_actions.get("layout_3x1"):
                 parent._apply_layout("3x1")
-        event.accept()
-
-    def _export_selected_vectors(self, action, items, copy_svg, save_svg, save_pdf):
-        if not items:
-            return
-        if action == copy_svg:
-            if len(items) == 1:
-                items[0]._copy_svg_to_clipboard()
-                return
-            svg_bytes = self._compose_svg_bytes(items)
-            if svg_bytes:
-                mime = QtCore.QMimeData()
-                mime.setData("image/svg+xml", svg_bytes)
-                QtWidgets.QApplication.clipboard().setMimeData(mime)
-            return
-        fmt = "svg" if action == save_svg else "pdf"
-        if len(items) == 1:
-            items[0]._save_vector_to_file(fmt)
-            return
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select export folder")
-        if not folder:
-            return
-        for idx, item in enumerate(items, 1):
-            title = item._title or "view"
-            safe = "".join(c for c in title if c.isalnum() or c in (" ", "_", "-")).strip()
-            if not safe:
-                safe = f"view_{idx}"
-            filename = f"{safe}_{idx}.{fmt}"
-            path = str(Path(folder) / filename)
-            try:
-                fig = item._render_vector_figure()
-                if fig is None:
-                    continue
-                fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
-            except Exception:
-                continue
-
-    def _compose_svg_bytes(self, items):
-        if not items:
-            return None
-        rect = None
-        for item in items:
-            try:
-                item_rect = item.sceneBoundingRect()
-            except Exception:
-                continue
-            rect = item_rect if rect is None else rect.united(item_rect)
-        if rect is None:
-            return None
-        width = float(rect.width())
-        height = float(rect.height())
-        if width <= 1 or height <= 1:
-            return None
-        svg_parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.2f}" height="{height:.2f}" viewBox="0 0 {width:.2f} {height:.2f}">']
-        for idx, item in enumerate(sorted(items, key=lambda i: i.zValue())):
-            try:
-                fig = item._render_vector_figure()
-                if fig is None:
-                    continue
-                buf = io.BytesIO()
-                fig.savefig(buf, format="svg")
-                svg = buf.getvalue().decode("utf-8", errors="ignore")
-                svg = re.sub(r"<\?xml[^>]*>\s*", "", svg, flags=re.IGNORECASE)
-                svg = re.sub(r"<!DOCTYPE[^>]*>\s*", "", svg, flags=re.IGNORECASE)
-                match = re.search(r"<svg[^>]*>", svg, flags=re.IGNORECASE)
-                if not match:
-                    continue
-                open_tag = match.group(0)
-                inner = svg[match.end():]
-                inner = re.sub(r"</svg>\s*$", "", inner, flags=re.IGNORECASE)
-                view_box = None
-                vb_match = re.search(r'viewBox="([^"]+)"', open_tag)
-                if vb_match:
-                    view_box = vb_match.group(1)
-                prefix = f"item{idx}_"
-                inner = re.sub(r'id="([^"]+)"', lambda m: f'id="{prefix}{m.group(1)}"', inner)
-                inner = re.sub(r'url\(#([^\)]+)\)', lambda m: f'url(#{prefix}{m.group(1)})', inner)
-                inner = re.sub(r'href="#([^"]+)"', lambda m: f'href="#{prefix}{m.group(1)}"', inner)
-                inner = re.sub(r'xlink:href="#([^"]+)"', lambda m: f'xlink:href="#{prefix}{m.group(1)}"', inner)
-                item_rect = item.sceneBoundingRect()
-                x = float(item_rect.left() - rect.left())
-                y = float(item_rect.top() - rect.top())
-                w = float(item_rect.width())
-                h = float(item_rect.height())
-                vb_attr = f' viewBox="{view_box}"' if view_box else ""
-                svg_parts.append(
-                    f'<svg x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}"{vb_attr}>'
-                    f"{inner}</svg>"
-                )
-            except Exception:
-                continue
-        svg_parts.append("</svg>")
-        return "".join(svg_parts).encode("utf-8")
 
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
@@ -1832,17 +1421,7 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
         if mime.hasFormat(_CANVAS_MIME):
             try:
                 data = bytes(mime.data(_CANVAS_MIME)).decode("utf-8")
-                payload = json.loads(data)
-                if isinstance(payload, dict) and payload.get("items"):
-                    for item in payload.get("items") or []:
-                        if item:
-                            payloads.append({
-                                "file_path": item,
-                                "cmap": payload.get("cmap"),
-                                "channel_index": payload.get("channel_index"),
-                            })
-                else:
-                    payloads.append(payload)
+                payloads.append(json.loads(data))
             except Exception:
                 payloads = []
         paths = []
@@ -1876,13 +1455,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._show_overlay_file = False
         self._last_aligned_width: float | None = None
         self._grid_locked = False  # prevents automatic resizing
-        self._global_show_title = False
+        self._global_show_title = True
         self._global_show_colorbar = True
         self._global_show_colorbar_ticks = True
-        self._global_text_scale = 1.0
-        self._global_text_color: QtGui.QColor | None = None
-        self._global_show_scale_bar = False
-        self._global_scale_bar_length_nm: float | None = None
         self._metadata_bar_default = True
         self._colorbar_mode = "bottom"
         self._undo_stack = []
@@ -2029,9 +1604,13 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         row2.setSpacing(8)
 
         annotation_group, annotation_layout = self._create_toolbar_group("ANNOTATE")
+        self.show_title_check = QtWidgets.QCheckBox("Title")
+        self.show_title_check.setToolTip("Show titles on all tiles")
+        self.show_title_check.setChecked(self._global_show_title)
         self.show_colorbar_check = QtWidgets.QCheckBox("Colorbar")
         self.show_colorbar_check.setToolTip("Show colorbars on all tiles")
         self.show_colorbar_check.setChecked(self._global_show_colorbar)
+        annotation_layout.addWidget(self.show_title_check)
         annotation_layout.addWidget(self.show_colorbar_check)
         row2.addWidget(annotation_group)
 
@@ -2380,44 +1959,14 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self.colorbar_edit.setPlaceholderText("Enter label...")
         appearance_layout.addRow(colorbar_label, self.colorbar_edit)
 
-        font_color_label = QtWidgets.QLabel("Font Color:")
-        font_color_label.setStyleSheet(label_style)
-        font_color_row = QtWidgets.QWidget()
-        font_color_layout = QtWidgets.QHBoxLayout(font_color_row)
-        font_color_layout.setContentsMargins(0, 0, 0, 0)
-        font_color_layout.setSpacing(6)
-        self.font_color_auto_check = QtWidgets.QCheckBox("Auto")
-        self.font_color_auto_check.setChecked(True)
-        self.font_color_btn = QtWidgets.QPushButton("Pick")
-        self.font_color_btn.setMaximumWidth(80)
-        font_color_layout.addWidget(self.font_color_auto_check)
-        font_color_layout.addWidget(self.font_color_btn)
-        appearance_layout.addRow(font_color_label, font_color_row)
-
         text_scale_label = QtWidgets.QLabel("Text Scale:")
         text_scale_label.setStyleSheet(label_style)
         self.text_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.text_scale_slider.setMinimum(1)
+        self.text_scale_slider.setMinimum(20)
         self.text_scale_slider.setMaximum(240)
-        self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
-        self.text_scale_slider.setEnabled(True)
+        self.text_scale_slider.setValue(100)
+        self.text_scale_slider.setEnabled(False)
         appearance_layout.addRow(text_scale_label, self.text_scale_slider)
-
-        scale_bar_label = QtWidgets.QLabel("Scale Bar:")
-        scale_bar_label.setStyleSheet(label_style)
-        scale_bar_row = QtWidgets.QWidget()
-        scale_bar_layout = QtWidgets.QHBoxLayout(scale_bar_row)
-        scale_bar_layout.setContentsMargins(0, 0, 0, 0)
-        scale_bar_layout.setSpacing(6)
-        self.scale_bar_check = QtWidgets.QCheckBox("Show")
-        self.scale_bar_check.setChecked(self._global_show_scale_bar)
-        self.scale_bar_combo = QtWidgets.QComboBox()
-        self.scale_bar_combo.addItem("Auto")
-        for label in ("0.5 nm", "1 nm", "2 nm", "3 nm", "5 nm", "10 nm", "20 nm", "50 nm", "100 nm"):
-            self.scale_bar_combo.addItem(label)
-        scale_bar_layout.addWidget(self.scale_bar_check)
-        scale_bar_layout.addWidget(self.scale_bar_combo)
-        appearance_layout.addRow(scale_bar_label, scale_bar_row)
 
         appearance_group.setLayout(appearance_layout)
         layout.addWidget(appearance_group)
@@ -2527,15 +2076,12 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         # Connect signals
         self.colorbar_edit.editingFinished.connect(self._on_colorbar_changed)
         self.text_scale_slider.valueChanged.connect(self._on_text_scale_changed)
-        self.font_color_auto_check.toggled.connect(self._on_font_color_auto_toggled)
-        self.font_color_btn.clicked.connect(self._on_font_color_pick)
-        self.scale_bar_check.toggled.connect(self._on_scale_bar_toggled)
-        self.scale_bar_combo.currentTextChanged.connect(self._on_scale_bar_size_changed)
         self.cmap_combo.currentTextChanged.connect(self._on_cmap_changed)
         self.vmin_edit.editingFinished.connect(self._on_range_changed)
         self.vmax_edit.editingFinished.connect(self._on_range_changed)
         self.auto_range_btn.clicked.connect(self._on_auto_range)
         self.copy_range_btn.clicked.connect(self._on_copy_range)
+        self.show_title_check.toggled.connect(self._on_global_show_title_toggled)
         self.show_colorbar_check.toggled.connect(self._on_global_show_colorbar_toggled)
         self.duplicate_btn.clicked.connect(self._on_duplicate_item)
         self.remove_btn.clicked.connect(self._on_remove_item)
@@ -2553,6 +2099,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
     def _set_inspector_enabled(self, enabled: bool):
         for widget in (
             self.colorbar_edit,
+            self.text_scale_slider,
             self.cmap_combo,
             self.vmin_edit,
             self.vmax_edit,
@@ -2571,17 +2118,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self.file_label.setText("-")
             self.channel_label.setText("-")
             self.colorbar_edit.setText("")
-            self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
-            try:
-                self.font_color_auto_check.blockSignals(True)
-                self.font_color_auto_check.setChecked(self._global_text_color is None)
-            finally:
-                self.font_color_auto_check.blockSignals(False)
-            try:
-                self.scale_bar_check.blockSignals(True)
-                self.scale_bar_check.setChecked(self._global_show_scale_bar)
-            finally:
-                self.scale_bar_check.blockSignals(False)
+            self.text_scale_slider.setValue(100)
             self.vmin_edit.setText("")
             self.vmax_edit.setText("")
             self.stats_label.setText("-")
@@ -2593,29 +2130,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self.colorbar_edit.setText(item.colorbar_label)
         try:
             self.text_scale_slider.blockSignals(True)
-            self.text_scale_slider.setValue(int(round(self._global_text_scale * 100)))
+            self.text_scale_slider.setValue(int(round((item._fixed_text_scale_value if item._use_fixed_text_scale else 1.0) * 100)))
         finally:
             self.text_scale_slider.blockSignals(False)
-        try:
-            self.font_color_auto_check.blockSignals(True)
-            self.font_color_auto_check.setChecked(self._global_text_color is None)
-        finally:
-            self.font_color_auto_check.blockSignals(False)
-        try:
-            self.scale_bar_check.blockSignals(True)
-            self.scale_bar_check.setChecked(self._global_show_scale_bar)
-        finally:
-            self.scale_bar_check.blockSignals(False)
-        try:
-            self.scale_bar_combo.blockSignals(True)
-            if self._global_scale_bar_length_nm is None:
-                self.scale_bar_combo.setCurrentText("Auto")
-            else:
-                label = f"{self._global_scale_bar_length_nm:g} nm"
-                idx = self.scale_bar_combo.findText(label)
-                self.scale_bar_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        finally:
-            self.scale_bar_combo.blockSignals(False)
         self.cmap_combo.setCurrentText(item.cmap)
         self.vmin_edit.setText("" if item.vmin is None else str(item.vmin))
         self.vmax_edit.setText("" if item.vmax is None else str(item.vmax))
@@ -2641,60 +2158,15 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._push_undo_state()
 
     def _on_text_scale_changed(self, value: int):
-        scale = max(0.01, min(2.4, value / 100.0))
-        self._global_text_scale = scale
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item._fixed_text_scale_value = scale
-                item._use_fixed_text_scale = True
-                # Clear any alignment-locked text scale so the slider takes effect.
-                item.set_locked_text_scale(None)
-                item._update_rendered_pixmap()
-        self._push_undo_state()
-
-    def _on_font_color_auto_toggled(self, checked: bool):
-        self._global_text_color = None if checked else self._global_text_color
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_text_color_override(self._global_text_color)
-
-    def _on_font_color_pick(self):
-        color = QtWidgets.QColorDialog.getColor(self._global_text_color or QtGui.QColor("#ffffff"), self, "Select font color")
-        if not color.isValid():
+        if self._selected_item is None:
             return
-        self._global_text_color = color
-        self.font_color_auto_check.setChecked(False)
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_text_color_override(self._global_text_color)
-
-    def _on_scale_bar_toggled(self, checked: bool):
-        self._global_show_scale_bar = bool(checked)
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_show_scale_bar(self._global_show_scale_bar)
-
-    def _on_scale_bar_size_changed(self, text: str):
-        if text.lower().startswith("auto"):
-            self._global_scale_bar_length_nm = None
-        else:
-            try:
-                self._global_scale_bar_length_nm = float(text.split()[0])
-            except Exception:
-                self._global_scale_bar_length_nm = None
-        for item in self.scene.items():
-            if not isinstance(item, CanvasImageItem):
-                continue
-            length = self._convert_scale_bar_length(item._axis_unit, self._global_scale_bar_length_nm)
-            item.set_scale_bar_length(length)
-
-    def _convert_scale_bar_length(self, unit: str, length_nm: float | None) -> float | None:
-        if length_nm is None:
-            return None
-        unit_norm = (unit or "").strip().lower()
-        if unit_norm in ("a", "å", "angstrom", "angstroms"):
-            return length_nm * 10.0
-        return length_nm
+        scale = max(0.4, min(2.4, value / 100.0))
+        self._selected_item._fixed_text_scale_value = scale
+        self._selected_item._use_fixed_text_scale = True
+        # Clear any alignment-locked text scale so the slider takes effect.
+        self._selected_item.set_locked_text_scale(None)
+        self._selected_item._update_rendered_pixmap()
+        self._push_undo_state()
 
     def _on_cmap_changed(self, name: str):
         if self._selected_item is None or not name:
@@ -2797,11 +2269,20 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 item.set_colorbar_mode(mode)
         self.status_label.setText(f"Colorbar mode: {mode.capitalize()}")
 
+    def _on_global_show_title_toggled(self, checked: bool):
+        self._apply_global_show_title(checked)
+
     def _on_global_show_colorbar_toggled(self, checked: bool):
         self._apply_global_show_colorbar(checked)
 
     def _on_global_show_colorbar_ticks_toggled(self, checked: bool):
         self._apply_global_show_colorbar_ticks(checked)
+
+    def _apply_global_show_title(self, show: bool):
+        self._global_show_title = bool(show)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_show_title(self._global_show_title)
 
     def _apply_global_show_colorbar(self, show: bool):
         self._global_show_colorbar = bool(show)
@@ -3020,11 +2501,6 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
         item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
         item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
-        item._fixed_text_scale_value = self._global_text_scale
-        item._use_fixed_text_scale = True
-        item.set_text_color_override(self._global_text_color)
-        item.set_show_scale_bar(self._global_show_scale_bar)
-        item.set_scale_bar_length(self._convert_scale_bar_length(axis_unit, self._global_scale_bar_length_nm))
         item.set_parent_window(self)
         if file_key not in self._file_scale_bars:
             self._file_scale_bars[file_key] = item._scale_bar_spec()[0] if item._scale_bar_spec() else None

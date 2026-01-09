@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 # Re-export shims for backward-compatible imports.
-from .canvases.multi_preview import MultiPreviewCanvas, SafeFigureCanvas
-from .dialogs.profile import ProfileDialog
-from .dialogs.spectroscopy import (
+from .canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
+from .dialogs.profile_dialog import ProfileDialog
+from .dialogs.spectroscopy_dialogs import (
     SpectroscopyPopup,
     MatrixSpectroViewer,
     _SpectroFitWorker,

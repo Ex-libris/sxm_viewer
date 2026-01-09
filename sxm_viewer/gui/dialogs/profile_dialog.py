@@ -19,7 +19,7 @@ from ...config import *
 from ...data.io import *
 from ...data.spectroscopy import *
 from ..thumbnails import *
-from ..canvases.multi_preview import MultiPreviewCanvas, SafeFigureCanvas
+from ..canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
 
 class ProfileDialog(QtWidgets.QDialog):
     """Dialog showing the sampled profile and basic stats."""

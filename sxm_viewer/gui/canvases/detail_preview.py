@@ -57,6 +57,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_state_callback = None
         self._profile_state_syncing = False
         self._profile_state_deferred = False
+        self._profile_update_timer = QtCore.QTimer(self)
+        self._profile_update_timer.setSingleShot(True)
+        self._profile_update_timer.setInterval(50)
+        self._profile_update_timer.timeout.connect(self._flush_profile_updates)
         self._saved_profiles = []
         self._profile_color_cycle = itertools.cycle([
             '#ffb300', '#64b5f6', '#81c784', '#e57373',
@@ -777,6 +781,31 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         self._emit_profile()
 
+    def _update_profile_artists_fast(self):
+        if self._profile_line is None or self._profile_p0 is None or self._profile_p1 is None:
+            return
+        if self.profile_pts is None:
+            return
+        x0, y0, x1, y1 = self.profile_pts
+        self._profile_line.set_data([x0, x1], [y0, y1])
+        self._profile_p0.set_data([x0], [y0])
+        self._profile_p1.set_data([x1], [y1])
+        self._update_profile_labels()
+        self.draw_idle()
+
+    def _schedule_profile_update(self):
+        if not self._profile_update_timer.isActive():
+            self._profile_update_timer.start()
+
+    def _flush_profile_updates(self):
+        if not self.profile_enabled:
+            return
+        if self.profile_pts is None:
+            return
+        self._update_profile_markers()
+        self._emit_profile()
+        self.draw_idle()
+
     def activate_saved_profile(self, index):
         """Promote a saved overlay back to the active profile line."""
         if index is None or not self._saved_profiles:
@@ -1108,6 +1137,45 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_marker_artists.append(marker)
         self.draw_idle()
         self._update_profile_hud()
+
+    def _update_profile_marker_artists_fast(self):
+        pts = self._profile_marker_pts()
+        if self.main_ax is None or pts is None:
+            return
+        points = self._profile_marker_points()
+        if len(points) < 2:
+            return
+        x0, y0, x1, y1 = pts
+        vx = x1 - x0
+        vy = y1 - y0
+        length = float(math.hypot(vx, vy)) if vx or vy else 0.0
+        if length > 0:
+            nx = -vy / length
+            ny = vx / length
+        else:
+            nx, ny = 0.0, 0.0
+        tick_len = 0.03 * length if length > 0 else 0.0
+        expected = len(points) * (2 if tick_len > 0 else 1)
+        if len(self._profile_marker_artists) != expected:
+            self._update_profile_marker_artists()
+            return
+        idx = 0
+        for px, py in points:
+            if tick_len > 0:
+                try:
+                    self._profile_marker_artists[idx].set_data(
+                        [px - nx * tick_len, px + nx * tick_len],
+                        [py - ny * tick_len, py + ny * tick_len],
+                    )
+                except Exception:
+                    pass
+                idx += 1
+            try:
+                self._profile_marker_artists[idx].set_data([px], [py])
+            except Exception:
+                pass
+            idx += 1
+        self.draw_idle()
 
     def _profile_marker_hit(self, x, y):
         points = self._profile_marker_points()
@@ -1620,13 +1688,14 @@ class MultiPreviewCanvas(FigureCanvas):
             dom_min, dom_max = self._profile_marker_domain
             pos = dom_min + t * (dom_max - dom_min)
             self._profile_marker_positions[self._profile_marker_drag_idx] = pos
-            self._update_profile_marker_artists()
+            self._update_profile_marker_artists_fast()
             if self._profile_marker_key is not None:
                 self._profile_marker_positions_by_key[self._profile_marker_key] = list(self._profile_marker_positions)
             else:
                 self._profile_marker_positions_by_key[None] = list(self._profile_marker_positions)
             if callable(self._profile_marker_callback):
                 self._profile_marker_callback(list(self._profile_marker_positions), tuple(self._profile_marker_domain))
+            self._schedule_profile_update()
             return
         if self._dragging is None:
             return
@@ -1640,7 +1709,8 @@ class MultiPreviewCanvas(FigureCanvas):
             dx = x - sx
             dy = y - sy
             self._set_profile_pts((pts[0] + dx, pts[1] + dy, pts[2] + dx, pts[3] + dy))
-        self._update_profile_artists()
+        self._update_profile_artists_fast()
+        self._schedule_profile_update()
 
     def _on_release(self, event):
         if not self.profile_enabled:
@@ -1648,6 +1718,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._dragging = None
         self._line_drag_origin = None
         self._profile_marker_drag_idx = None
+        self._flush_profile_updates()
         if self._profile_state_deferred:
             self._profile_state_deferred = False
             self._flush_profile_state()
