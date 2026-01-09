@@ -1,6 +1,7 @@
 ﻿"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import io
 import itertools
 import json
 import math
@@ -79,6 +80,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
+        self._view_layout = "grid"
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by)
         self._angle_lines = []
@@ -122,6 +124,15 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
 
+    def set_view_layout(self, layout: str):
+        layout = (layout or "").strip().lower()
+        if layout not in ("grid", "stacked"):
+            layout = "grid"
+        if layout == self._view_layout:
+            return
+        self._view_layout = layout
+        self._redraw()
+
     def clear_views(self):
         self.views = []
         self._redraw()
@@ -145,8 +156,12 @@ class MultiPreviewCanvas(FigureCanvas):
         n = len(self.views)
         if n == 0:
             self.draw(); return
-        cols = int(math.ceil(math.sqrt(n)))
-        rows = int(math.ceil(n / cols))
+        if self._view_layout == "stacked":
+            cols = 1
+            rows = n
+        else:
+            cols = int(math.ceil(math.sqrt(n)))
+            rows = int(math.ceil(n / cols))
         for i, v in enumerate(self.views):
             ax = self.fig.add_subplot(rows, cols, i+1)
             self._ax_view_map[ax] = v
@@ -1798,12 +1813,21 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         menu = QtWidgets.QMenu(self)
         copy_act = menu.addAction("Copy image")
+        copy_svg_act = menu.addAction("Copy view as SVG (vector)")
         save_act = menu.addAction("Save image as...")
+        save_svg_act = menu.addAction("Save view as SVG...")
+        save_pdf_act = menu.addAction("Save view as PDF...")
         chosen = menu.exec_(event.guiEvent.globalPos())
         if chosen == copy_act:
             self._copy_view_to_clipboard(view)
+        elif chosen == copy_svg_act:
+            self._copy_view_as_svg(view)
         elif chosen == save_act:
             self._save_view_to_file(view)
+        elif chosen == save_svg_act:
+            self._save_view_vector(view, "svg")
+        elif chosen == save_pdf_act:
+            self._save_view_vector(view, "pdf")
 
     def _save_view_to_file(self, view):
         try:
@@ -1816,6 +1840,125 @@ class MultiPreviewCanvas(FigureCanvas):
             qimg.save(path, "PNG")
         except Exception:
             QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save image.")
+
+    def _copy_view_as_svg(self, view):
+        try:
+            fig = self._render_view_figure(view)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
+            svg_bytes = buf.getvalue()
+            mime = QtCore.QMimeData()
+            mime.setData("image/svg+xml", svg_bytes)
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+            if callable(self._copy_feedback_handler):
+                self._copy_feedback_handler(view)
+        except Exception:
+            pass
+
+    def _save_view_vector(self, view, fmt):
+        fmt = (fmt or "").strip().lower()
+        if fmt not in ("svg", "pdf"):
+            return
+        try:
+            title = view.get('title') or 'view'
+            default = f"{title}.{fmt}"
+            label = "SVG Files (*.svg)" if fmt == "svg" else "PDF Files (*.pdf)"
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save view", default, label)
+            if not path:
+                return
+            if not path.lower().endswith(f".{fmt}"):
+                path = f"{path}.{fmt}"
+            fig = self._render_view_figure(view)
+            fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+            try:
+                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+            except Exception:
+                pass
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save vector image.")
+
+    def _render_view_figure(self, view):
+        fig = Figure(figsize=(6, 6))
+        ax = fig.add_subplot(1, 1, 1)
+        arr = np.asarray(view.get('arr'))
+        flip = bool(view.get('relative_axes'))
+        if flip:
+            arr_plot = np.flipud(arr)
+        else:
+            arr_plot = arr
+        extent = view.get('extent', None)
+        cmap = view.get('cmap', 'viridis')
+        origin = 'lower' if flip else 'upper'
+        if extent is None:
+            im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
+        else:
+            im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+        ax.set_autoscale_on(False)
+        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        cbar = None
+        if cbar_label:
+            cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
+            cbar.set_label(cbar_label)
+        title = view.get('title', '')
+        if title:
+            ax.set_title(title, fontsize=9)
+        ax.tick_params(labelsize=8)
+        self._style_export_figure(fig, ax, cbar)
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+        return fig
+
+    def _style_export_figure(self, fig, ax, cbar):
+        dark = bool(self._detail_dark)
+        fig_face = '#111217' if dark else '#ffffff'
+        ax_face = '#14161c' if dark else '#ffffff'
+        text_color = '#f5f5f5' if dark else '#111111'
+        grid_color = '#4f5a64' if dark else '#9a9a9a'
+        try:
+            fig.set_facecolor(fig_face)
+        except Exception:
+            pass
+        try:
+            ax.set_facecolor(ax_face)
+            ax.tick_params(colors=text_color, labelcolor=text_color)
+            ax.xaxis.label.set_color(text_color)
+            ax.yaxis.label.set_color(text_color)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+            if self._detail_grid:
+                ax.grid(True, color=grid_color, alpha=0.3, linewidth=0.6)
+            else:
+                ax.grid(False)
+        except Exception:
+            pass
+        if cbar is not None:
+            try:
+                cbar.ax.tick_params(colors=text_color, labelcolor=text_color)
+                cbar.ax.yaxis.label.set_color(text_color)
+                cbar.ax.xaxis.label.set_color(text_color)
+                cbar.outline.set_edgecolor(text_color)
+            except Exception:
+                pass
+        scale = max(0.6, min(1.8, getattr(self, '_view_font_scale', 1.0)))
+        tick_size = 8 * scale
+        label_size = 10 * scale
+        title_size = 9 * scale
+        try:
+            ax.tick_params(labelsize=tick_size)
+            ax.xaxis.label.set_fontsize(label_size)
+            ax.yaxis.label.set_fontsize(label_size)
+            ax.title.set_fontsize(title_size)
+        except Exception:
+            pass
+        if cbar is not None:
+            try:
+                cbar.ax.tick_params(labelsize=tick_size)
+                cbar.ax.yaxis.label.set_fontsize(label_size)
+                cbar.ax.xaxis.label.set_fontsize(label_size)
+            except Exception:
+                pass
 
     def _start_drag(self, view, qimg=None):
         try:

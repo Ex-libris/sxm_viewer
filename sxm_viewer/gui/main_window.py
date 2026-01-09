@@ -239,12 +239,16 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_adjust_act = None
         self._canvas_window = None
 
-        # UI: left controls + meta + inspector; right thumbs + preview
+        # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(8)
+        essentials_group = QtWidgets.QGroupBox("Essentials")
+        essentials_layout = QtWidgets.QVBoxLayout(essentials_group)
+
         path_h = QtWidgets.QHBoxLayout()
         self.path_le = QtWidgets.QLineEdit(str(self.last_dir))
         self.open_btn = QtWidgets.QPushButton("Open folder")
-        path_h.addWidget(self.path_le); path_h.addWidget(self.open_btn); left_v.addLayout(path_h)
+        path_h.addWidget(self.path_le); path_h.addWidget(self.open_btn)
+        essentials_layout.addLayout(path_h)
 
         spec_path_h = QtWidgets.QHBoxLayout()
         spec_path_h.addWidget(QtWidgets.QLabel("Spectra folder:"))
@@ -253,7 +257,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spec_folder_btn = QtWidgets.QPushButton("Browse")
         spec_path_h.addWidget(self.spec_folder_le, 1)
         spec_path_h.addWidget(self.spec_folder_btn)
-        left_v.addLayout(spec_path_h)
+        essentials_layout.addLayout(spec_path_h)
 
         controls_h = QtWidgets.QHBoxLayout()
         self.channel_label = QtWidgets.QLabel("Channel:")
@@ -282,9 +286,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.dark_mode_cb = QtWidgets.QCheckBox('Dark mode')
         self.dark_mode_cb.setChecked(self.dark_mode)
         controls_h.addWidget(self.dark_mode_cb)
-        left_v.addLayout(controls_h)
+        essentials_layout.addLayout(controls_h)
+        left_v.addWidget(essentials_group)
 
-        # Metadata / inspector box: preserve formatting and readability.
+        details_group = QtWidgets.QGroupBox("Details")
+        details_group.setCheckable(True)
+        details_group.setChecked(True)
+        details_layout = QtWidgets.QVBoxLayout(details_group)
         self.meta_box = QtWidgets.QTextEdit()
         self.meta_box.setReadOnly(True)
         self.meta_box.setFont(meta_font)
@@ -294,7 +302,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self.meta_box.setPlaceholderText("File metadata / header appears when selecting a thumbnail.")
-        left_v.addWidget(self.meta_box, 1)
+        details_layout.addWidget(self.meta_box, 1)
+        self.meta_box.setVisible(True)
+        details_group.toggled.connect(self.meta_box.setVisible)
+        left_v.addWidget(details_group, 1)
 
         frame_group = QtWidgets.QGroupBox("Folder layout (±1 µm)")
         frame_layout = QtWidgets.QVBoxLayout(frame_group)
@@ -395,13 +406,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_toolbar.addSpacing(8)
         self.unit_display_cb = QtWidgets.QCheckBox("Show SI units")
         self.unit_display_cb.setChecked(self.display_units_si)
-        thumbs_toolbar.addWidget(self.unit_display_cb)
         self.unit_relative_cb = QtWidgets.QCheckBox("Relative zero")
         self.unit_relative_cb.setChecked(self.display_units_relative)
-        thumbs_toolbar.addWidget(self.unit_relative_cb)
         self.relative_axes_cb = QtWidgets.QCheckBox("Relative axes")
         self.relative_axes_cb.setChecked(self.relative_axes)
-        thumbs_toolbar.addWidget(self.relative_axes_cb)
         thumbs_panel_layout.addLayout(thumbs_toolbar)
         # restore sort/filter from config if present
         try:
@@ -420,6 +428,37 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_header = QtWidgets.QHBoxLayout()
         preview_header.addWidget(QtWidgets.QLabel("Preview"))
         preview_header.addStretch(1)
+        display_strip = QtWidgets.QWidget()
+        display_layout = QtWidgets.QHBoxLayout(display_strip)
+        display_layout.setContentsMargins(0, 0, 0, 0)
+        display_layout.setSpacing(8)
+        display_layout.addWidget(self.unit_display_cb)
+        display_layout.addWidget(self.unit_relative_cb)
+        display_layout.addWidget(self.relative_axes_cb)
+        preview_header.addWidget(display_strip)
+        quick_strip = QtWidgets.QWidget()
+        quick_layout = QtWidgets.QHBoxLayout(quick_strip)
+        quick_layout.setContentsMargins(0, 0, 0, 0)
+        quick_layout.setSpacing(6)
+        self.quick_add_view_btn = QtWidgets.QToolButton()
+        self.quick_add_view_btn.setText("Add view")
+        self.quick_add_view_btn.setToolTip("Add channel view")
+        self.quick_adjust_btn = QtWidgets.QToolButton()
+        self.quick_adjust_btn.setText("Adjust")
+        self.quick_adjust_btn.setToolTip("Adjust image")
+        self.quick_export_png_btn = QtWidgets.QToolButton()
+        self.quick_export_png_btn.setText("Export PNGs")
+        self.quick_export_png_btn.setToolTip("Export PNGs")
+        self.quick_export_xyz_btn = QtWidgets.QToolButton()
+        self.quick_export_xyz_btn.setText("Export XYZ")
+        self.quick_export_xyz_btn.setToolTip("Export XYZ")
+        for btn in (self.quick_add_view_btn, self.quick_adjust_btn, self.quick_export_png_btn, self.quick_export_xyz_btn):
+            btn.setAutoRaise(True)
+        quick_layout.addWidget(self.quick_add_view_btn)
+        quick_layout.addWidget(self.quick_adjust_btn)
+        quick_layout.addWidget(self.quick_export_png_btn)
+        quick_layout.addWidget(self.quick_export_xyz_btn)
+        preview_header.addWidget(quick_strip)
         # Canvas launch button moved to the main toolbar for prominence.
         preview_panel_layout.addLayout(preview_header)
         self.preview_canvas = MultiPreviewCanvas(self, figsize=(6,5))
@@ -469,6 +508,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         main_splitter.setStretchFactor(2, 3)
         self.main_splitter = main_splitter
         self._layout_mode = "columns"
+        try:
+            self.preview_canvas.set_view_layout("stacked")
+        except Exception:
+            pass
         self._layout_sizes = {}
 
         # Prevent panes from collapsing to zero width when the user drags the splitter.
@@ -543,6 +586,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
         self.show_spectra_cb.toggled.connect(self.on_show_spectra_toggled)
+        self.quick_add_view_btn.clicked.connect(self.on_add_view)
+        self.quick_adjust_btn.clicked.connect(self.on_adjust_image)
+        self.quick_export_png_btn.clicked.connect(self.on_export_pngs)
+        self.quick_export_xyz_btn.clicked.connect(self.on_export_xyz_files)
         self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.export_selected_btn.clicked.connect(self.on_export_selected_same_view)
@@ -1237,6 +1284,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.main_splitter.setStretchFactor(0, 1)
             self.main_splitter.setStretchFactor(1, 2)
             self.main_splitter.setStretchFactor(2, 3)
+            try:
+                self.preview_canvas.set_view_layout("stacked")
+            except Exception:
+                pass
         else:
             # stack thumbs + preview vertically on the right
             if self._thumbs_panel.parent() is not self._right_splitter:
@@ -1248,6 +1299,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.main_splitter.addWidget(self._right_container)
             self.main_splitter.setStretchFactor(0, 1)
             self.main_splitter.setStretchFactor(1, 3)
+            try:
+                self.preview_canvas.set_view_layout("grid")
+            except Exception:
+                pass
         self._layout_mode = mode
         if hasattr(self, "toolbar_layout_act"):
             self.toolbar_layout_act.setText("Layout: Columns" if mode == "columns" else "Layout: Stack")
