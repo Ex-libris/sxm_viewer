@@ -358,7 +358,50 @@ class SXMGridViewer(QtWidgets.QWidget):
         frame_btn_row.addWidget(self.frame_real_view_btn)
         frame_btn_row.addStretch(1)
         frame_layout.addLayout(frame_btn_row)
-        left_v.addWidget(frame_group)
+
+        # Make details (metadata) + frame layout vertically resizable by the user
+        self.left_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        # Make handle visibly wider and styled so it's easy to find in dark mode
+        self.left_splitter.setHandleWidth(10)
+        self.left_splitter.setStyleSheet("""
+        QSplitter::handle:vertical {
+            background: rgba(255,255,255,0.06);
+            margin-left: 4px;
+            margin-right: 4px;
+            border-top: 1px solid rgba(0,0,0,0.2);
+            border-bottom: 1px solid rgba(0,0,0,0.2);
+        }
+        QSplitter::handle:vertical:hover {
+            background: rgba(255,255,255,0.12);
+        }
+        """)
+        self.left_splitter.addWidget(details_group)
+        self.left_splitter.addWidget(frame_group)
+        self.left_splitter.setStretchFactor(0, 1)
+        self.left_splitter.setStretchFactor(1, 0)
+        # restore saved sizes if present, otherwise use a sensible default
+        sizes = self.config.get('left_splitter_sizes')
+        if isinstance(sizes, (list, tuple)) and len(sizes) >= 2:
+            try:
+                self.left_splitter.setSizes(list(sizes[:2]))
+            except Exception:
+                pass
+        else:
+            try:
+                # default: make details area a bit larger than the layout area
+                self.left_splitter.setSizes([500, 200])
+            except Exception:
+                pass
+
+        def _save_left_splitter(pos, index):
+            try:
+                self.config['left_splitter_sizes'] = self.left_splitter.sizes()
+                save_config(self.config)
+            except Exception:
+                pass
+
+        self.left_splitter.splitterMoved.connect(_save_left_splitter)
+        left_v.addWidget(self.left_splitter, 1)
 
         # Path line-edit: tooltip + clear button for convenience.
         full_path = str(self.last_dir)
