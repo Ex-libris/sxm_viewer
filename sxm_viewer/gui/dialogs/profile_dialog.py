@@ -176,20 +176,41 @@ class ProfileDialog(QtWidgets.QDialog):
         plot_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._plot_splitter = plot_splitter
         plot_splitter.addWidget(self.canvas)
-        context_widget = QtWidgets.QWidget()
-        self._context_widget = context_widget
-        context_layout = QtWidgets.QVBoxLayout(context_widget)
-        context_layout.setContentsMargins(4, 4, 4, 4)
-        context_title = QtWidgets.QLabel("Preview")
-        context_title.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        context_layout.addWidget(context_title)
-        self.context_canvas = MultiPreviewCanvas(parent=context_widget)
-        self.context_canvas.setMinimumWidth(320)
-        context_layout.addWidget(self.context_canvas, 1)
-        plot_splitter.addWidget(context_widget)
-        plot_splitter.setStretchFactor(0, 3)
-        plot_splitter.setStretchFactor(1, 2)
-        plot_splitter.setSizes([700, 500])
+        # --- Preview panel disabled (commented out) ---
+        # The original implementation created a full Matplotlib-based preview inside this dialog
+        # (a `MultiPreviewCanvas`) which duplicated rendering work from the main preview. In some
+        # environments this doubles the CPU/GPU and memory load (matplotlib figures, colorbars and
+        # event callbacks), making the profile dialog expensive to open and use. The block below is
+        # intentionally commented out to save resources. To re-enable the preview, uncomment the
+        # block and remove the lightweight placeholder that follows.
+        #
+        # context_widget = QtWidgets.QWidget()
+        # self._context_widget = context_widget
+        # context_layout = QtWidgets.QVBoxLayout(context_widget)
+        # context_layout.setContentsMargins(4, 4, 4, 4)
+        # context_title = QtWidgets.QLabel("Preview")
+        # context_title.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        # context_layout.addWidget(context_title)
+        # self.context_canvas = MultiPreviewCanvas(parent=context_widget)
+        # self.context_canvas.setMinimumWidth(320)
+        # context_layout.addWidget(self.context_canvas, 1)
+        # plot_splitter.addWidget(context_widget)
+        # plot_splitter.setStretchFactor(0, 3)
+        # plot_splitter.setStretchFactor(1, 2)
+        # plot_splitter.setSizes([700, 500])
+        # Instead of the heavy preview we previously added a lightweight placeholder widget to indicate
+        # the preview is disabled. To avoid reserving any dialog space for this optional preview, the
+        # placeholder is intentionally commented out and not added to the layout below. To restore the
+        # debug placeholder (or re-enable a lightweight preview) in the future, uncomment the lines
+        # below and the placeholder will appear.
+        # placeholder = QtWidgets.QLabel("Preview disabled to reduce resource usage", alignment=QtCore.Qt.AlignCenter)
+        # placeholder.setMinimumWidth(320)
+        # placeholder.setStyleSheet("color: #999;")
+        # keep attributes present but empty so other code won't fail if it references them
+        self._context_widget = None
+        self.context_canvas = None
+        # (placeholder not added to layout to avoid occupying space)
+
         splitter.addWidget(plot_splitter)
         info_widget = QtWidgets.QWidget()
         info_layout = QtWidgets.QVBoxLayout(info_widget)
@@ -239,10 +260,12 @@ class ProfileDialog(QtWidgets.QDialog):
         self.precision_cb.setChecked(False)
         self.precision_cb.toggled.connect(self._on_plot_option_changed)
         plot_layout.addWidget(self.precision_cb)
-        self.preview_toggle_cb = QtWidgets.QCheckBox("Show preview")
-        self.preview_toggle_cb.setChecked(True)
-        self.preview_toggle_cb.toggled.connect(self._on_preview_toggle)
-        plot_layout.addWidget(self.preview_toggle_cb)
+        # Preview control disabled because the dialog preview is commented out to save resources.
+        # self.preview_toggle_cb = QtWidgets.QCheckBox("Show preview")
+        # self.preview_toggle_cb.setChecked(True)
+        # self.preview_toggle_cb.toggled.connect(self._on_preview_toggle)
+        # plot_layout.addWidget(self.preview_toggle_cb)
+        # (If you re-enable the preview panel above, uncomment these lines to restore the toggle.)
         self.preserve_profiles_cb = QtWidgets.QCheckBox("Keep profiles on channel switch")
         self.preserve_profiles_cb.setChecked(True)
         self.preserve_profiles_cb.toggled.connect(self._on_preserve_toggle)
@@ -774,13 +797,9 @@ class ProfileDialog(QtWidgets.QDialog):
         self.update_profiles(self._active, self._saved)
 
     def _on_preview_toggle(self, checked):
-        if self._context_widget is None:
-            return
-        self._context_widget.setVisible(bool(checked))
-        try:
-            self._plot_splitter.setSizes([700, 500] if checked else [1, 0])
-        except Exception:
-            pass
+        # Preview toggling is a no-op because the preview panel has been disabled to conserve resources.
+        # This safe no-op prevents any remaining UI hooks from raising exceptions.
+        return
 
     def _on_preserve_toggle(self, checked):
         if callable(self._preserve_cb):
@@ -798,56 +817,14 @@ class ProfileDialog(QtWidgets.QDialog):
                 pass
 
     def set_context_source(self, source_canvas, *, dark=None, grid=None):
-        if source_canvas is None:
-            return
-        self._context_source = source_canvas
-        try:
-            self.context_canvas.set_views(list(getattr(source_canvas, 'views', []) or []), preserve_profiles=True)
-        except Exception:
-            pass
-        try:
-            self.context_canvas.set_detail_theme(dark=dark, grid=grid)
-        except Exception:
-            pass
-        if hasattr(source_canvas, 'set_profile_state_callback'):
-            def _from_source(state):
-                if self._context_syncing:
-                    return
-                try:
-                    self._context_syncing = True
-                    if hasattr(self.context_canvas, 'import_profile_state'):
-                        self.context_canvas.import_profile_state(state, emit=False)
-                finally:
-                    self._context_syncing = False
-            source_canvas.set_profile_state_callback(_from_source)
-        if hasattr(source_canvas, 'set_views_callback'):
-            def _views_changed(views):
-                if self._context_syncing:
-                    return
-                try:
-                    self._context_syncing = True
-                    self.context_canvas.set_views(list(views or []), preserve_profiles=True)
-                finally:
-                    self._context_syncing = False
-            source_canvas.set_views_callback(_views_changed)
-        if hasattr(self.context_canvas, 'set_profile_state_callback'):
-            def _to_source(state):
-                if self._context_syncing:
-                    return
-                try:
-                    self._context_syncing = True
-                    if hasattr(source_canvas, 'import_profile_state'):
-                        source_canvas.import_profile_state(state, emit=False)
-                finally:
-                    self._context_syncing = False
-            self.context_canvas.set_profile_state_callback(_to_source)
-        if hasattr(source_canvas, 'export_profile_state'):
-            try:
-                state = source_canvas.export_profile_state()
-                if hasattr(self.context_canvas, 'import_profile_state'):
-                    self.context_canvas.import_profile_state(state, emit=False)
-            except Exception:
-                pass
+        # Context preview syncing is disabled to reduce resource consumption. The original method
+        # mirrored views, theme, layout and profile callbacks from the main canvas into the dialog
+        # preview which required creating additional Matplotlib canvases and event hooks.
+        # That behavior is intentionally turned off. If you want to re-enable the dialog preview
+        # later, restore the original implementation (look at the commented block above where the
+        # MultiPreviewCanvas creation was removed).
+        self._context_source = None
+        return
 
     def update_profiles(self, active_profile, saved_profiles=None, activate_overlay_callback=None,
                          highlight_overlay_callback=None):
