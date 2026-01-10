@@ -47,6 +47,11 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     label_color = '#a0a0a0' if dark else '#555'
     accent_border = '#6fa8ff' if dark else '#4a7edb'
     accent_bg = 'rgba(111,168,255,0.16)' if dark else 'rgba(74,126,219,0.10)'
+    # Respect the user's configured metadata font size (in px). Default to 10px if not present.
+    try:
+        font_size = int(getattr(viewer, 'config', {}).get('meta_font_size', 10))
+    except Exception:
+        font_size = 10
     filename = header_path.name
     date = header.get('Date', '')
     time = header.get('Time', '')
@@ -202,7 +207,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     ]
     key_section_rows = "".join(
         f"<tr><td style='padding:2px 6px;color:{label_color};font-weight:600'>{esc(lbl)}</td>"
-        f"<td style='padding:2px 6px;text-align:right;font-size:14px'><span style='color:{text_color};font-weight:600'>{val or ''}</span></td></tr>"
+        f"<td style='padding:2px 6px;text-align:right'><span style='color:{text_color};font-weight:600'>{val or ''}</span></td></tr>"
         for lbl, val in key_rows if val
     )
     key_section = f"""
@@ -216,8 +221,8 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         relative_row = f"<tr><td style='color:{label_color}'>Relative zero</td><td style='text-align:right'>{zero_offset:.6g} {esc(unit_display)}</td></tr>"
 
     html = f"""
-    <div style='font-family:Segoe UI, Arial; font-size:14px; color:{text_color}; background: transparent;'>
-      <div style='font-weight:600; font-size:16px; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
+    <div style='font-family:Segoe UI, Arial; font-size:{font_size}px; color:{text_color}; background: transparent;'>
+      <div style='font-weight:600; font-size:1.15em; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
       {key_section}
       <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
         <tr><td style='color:{label_color}'>Date</td><td style='text-align:right'>{esc(date) or '&nbsp;'}</td></tr>

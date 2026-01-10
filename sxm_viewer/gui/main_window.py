@@ -1,4 +1,4 @@
-﻿"""Main Qt widget implementing the SXM grid viewer."""
+﻿"""Main Qt widget implementing the SXM Viewer."""
 from __future__ import annotations
 
 import math
@@ -104,8 +104,8 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
-        log_status("Initializing SXM Grid Viewer...")
-        self.setWindowTitle("SXM Grid Viewer")
+        log_status("Initializing SXM Viewer...")
+        self.setWindowTitle("SXM Viewer")
         self.resize(*MAIN_WINDOW_SIZE)
 
         log_status("Loading configuration...")
@@ -255,28 +255,42 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(LEFT_PANEL_SPACING)
-        essentials_group = QtWidgets.QGroupBox("Essentials")
+        essentials_group = QtWidgets.QGroupBox("Data paths")
         essentials_layout = QtWidgets.QVBoxLayout(essentials_group)
 
+        # Images path (label above to save horizontal space)
+        img_container = QtWidgets.QWidget()
+        img_v = QtWidgets.QVBoxLayout(img_container)
+        img_v.setContentsMargins(0, 0, 0, 0)
+        img_v.setSpacing(4)
+        img_v.addWidget(QtWidgets.QLabel("Images"))
         path_h = QtWidgets.QHBoxLayout()
         self.path_le = QtWidgets.QLineEdit(str(self.last_dir))
         self.open_btn = QtWidgets.QPushButton("Open folder")
         path_h.addWidget(self.path_le); path_h.addWidget(self.open_btn)
-        essentials_layout.addLayout(path_h)
+        img_v.addLayout(path_h)
+        essentials_layout.addWidget(img_container)
 
-        spec_path_h = QtWidgets.QHBoxLayout()
-        spec_path_h.addWidget(QtWidgets.QLabel("Spectra folder:"))
+        # Spectra path: label above the path field
+        spec_container = QtWidgets.QWidget()
+        spec_v = QtWidgets.QVBoxLayout(spec_container)
+        spec_v.setContentsMargins(0, 0, 0, 0)
+        spec_v.setSpacing(4)
+        spec_v.addWidget(QtWidgets.QLabel("Spectra"))
+        spec_row = QtWidgets.QHBoxLayout()
         self.spec_folder_le = QtWidgets.QLineEdit(str(self.spec_folder_path))
         self.spec_folder_le.setPlaceholderText("Defaults to SXM folder")
         self.spec_folder_btn = QtWidgets.QPushButton("Browse")
-        spec_path_h.addWidget(self.spec_folder_le, 1)
-        spec_path_h.addWidget(self.spec_folder_btn)
-        essentials_layout.addLayout(spec_path_h)
+        spec_row.addWidget(self.spec_folder_le, 1)
+        spec_row.addWidget(self.spec_folder_btn)
+        spec_v.addLayout(spec_row)
+        essentials_layout.addWidget(spec_container)
 
+        # Channel controls (moved later into the Selected channel area)
         controls_h = QtWidgets.QHBoxLayout()
         self.channel_label = QtWidgets.QLabel("Channel:")
         self.channel_label.setFont(bold_font)
-        self.channel_dropdown = QtWidgets.QComboBox(); self.channel_dropdown.setMinimumWidth(380)
+        self.channel_dropdown = QtWidgets.QComboBox(); self.channel_dropdown.setMinimumWidth(160)
         self.thumb_cmap_combo = QtWidgets.QComboBox(); self.preview_cmap_combo = QtWidgets.QComboBox()
         
         # populate colormap combos with all available matplotlib colormaps and icons
@@ -293,14 +307,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.preview_cmap_combo.addItem(icon, m)
 
         self.thumb_cmap_combo.setCurrentText(self.thumb_cmap); self.preview_cmap_combo.setCurrentText(self.preview_cmap)
+        # Note: don't add these to the essentials panel here; we'll insert the layout into the Selected channel area below.
         controls_h.addWidget(self.channel_label); controls_h.addWidget(self.channel_dropdown)
-        controls_h.addWidget(QtWidgets.QLabel("Thumb cmap:")); controls_h.addWidget(self.thumb_cmap_combo)
-        controls_h.addWidget(QtWidgets.QLabel("Preview cmap:")); controls_h.addWidget(self.preview_cmap_combo)
-        # Dark mode toggle
-        self.dark_mode_cb = QtWidgets.QCheckBox('Dark mode')
-        self.dark_mode_cb.setChecked(self.dark_mode)
-        controls_h.addWidget(self.dark_mode_cb)
-        essentials_layout.addLayout(controls_h)
+        # Colormap combos will be shown in the main toolbar next to the dark-mode toggle (see main_window_toolbar)
+        # Dark mode handled via toolbar toggle; placeholder kept for compatibility
+        self.dark_mode_cb = None
         left_v.addWidget(essentials_group)
 
         details_group = QtWidgets.QGroupBox("Details")
@@ -322,6 +333,20 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self.meta_box.setPlaceholderText("File metadata / header appears when selecting a thumbnail.")
+        # Metadata font size control (user preference persisted to config)
+        try:
+            meta_font_h = QtWidgets.QHBoxLayout()
+            meta_font_h.addStretch(1)
+            meta_font_h.addWidget(QtWidgets.QLabel("Font:"))
+            self.meta_font_spin = QtWidgets.QSpinBox()
+            self.meta_font_spin.setRange(8, 24)
+            self.meta_font_spin.setValue(int(self.config.get('meta_font_size', 10)))
+            self.meta_font_spin.setToolTip("Font size for the metadata panel")
+            self.meta_font_spin.valueChanged.connect(self.on_meta_font_changed)
+            meta_font_h.addWidget(self.meta_font_spin)
+            details_layout.addLayout(meta_font_h)
+        except Exception:
+            pass
         details_layout.addWidget(self.meta_box, 1)
         self.meta_box.setVisible(True)
         details_group.toggled.connect(self.meta_box.setVisible)
@@ -354,6 +379,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         zoom_reset_btn.clicked.connect(self._reset_frame_view)
         zoom_row.addWidget(zoom_reset_btn)
         frame_layout.addLayout(zoom_row)
+
+        # Metadata font size control has been moved next to the Details header (see below)
+        # (Block removed here to change placement.)
         frame_btn_row = QtWidgets.QHBoxLayout()
         self.frame_show_all_btn = QtWidgets.QPushButton("Show all frames")
         self.frame_show_all_btn.clicked.connect(self._on_frame_show_all_clicked)
@@ -381,6 +409,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             background: rgba(255,255,255,0.12);
         }
         """)
+        # When user resizes the left/right panes, schedule a thumbnail reflow
+        try:
+            self.left_splitter.splitterMoved.connect(lambda pos, idx: self._thumbs_reflow_timer.start(150))
+        except Exception:
+            pass
         self.left_splitter.addWidget(details_group)
         self.left_splitter.addWidget(frame_group)
         self.left_splitter.setStretchFactor(0, 1)
@@ -437,7 +470,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         left_w = QtWidgets.QWidget(); left_w.setLayout(left_v)
 
         # Right panel with splitter for thumbnails/preview
-        title_lbl = QtWidgets.QLabel("Selected channel"); title_lbl.setFont(bold_font)
+        title_lbl = QtWidgets.QLabel(""); title_lbl.setFont(bold_font)
         self.scroll = QtWidgets.QScrollArea(); self.thumb_container = QtWidgets.QWidget(); self.thumb_layout = QtWidgets.QGridLayout(); self.thumb_layout.setSpacing(THUMB_LAYOUT_SPACING)
         self.scroll.setToolTip(
             "Thumbnails:\n"
@@ -453,8 +486,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_panel = QtWidgets.QWidget()
         self.left_w = left_w
         thumbs_panel_layout = QtWidgets.QVBoxLayout(); thumbs_panel_layout.setContentsMargins(0,0,0,0)
-        thumbs_panel_layout.addWidget(title_lbl)
-        thumbs_panel_layout.addWidget(self.scroll, 1)
         thumbs_toolbar = QtWidgets.QHBoxLayout()
         thumbs_toolbar.addWidget(QtWidgets.QLabel('Sort:'))
         self.thumb_sort_combo = QtWidgets.QComboBox()
@@ -472,7 +503,21 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.unit_relative_cb.setChecked(self.display_units_relative)
         self.relative_axes_cb = QtWidgets.QCheckBox("Relative axes")
         self.relative_axes_cb.setChecked(self.relative_axes)
+        # Create a compact header: title on the left, channel controls on the right
+        header_h = QtWidgets.QHBoxLayout()
+        header_h.setContentsMargins(0,0,0,0)
+        header_h.setSpacing(8)
+        header_h.addWidget(title_lbl)
+        header_h.addStretch(1)
+        # create a compact container for the controls so they do not span the full width
+        self.channel_controls_widget = QtWidgets.QWidget()
+        self.channel_controls_widget.setLayout(controls_h)
+        self.channel_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
+        header_h.addWidget(self.channel_controls_widget)
+        thumbs_panel_layout.addLayout(header_h)
+        thumbs_panel_layout.addWidget(self.scroll, 1)
         thumbs_panel_layout.addLayout(thumbs_toolbar)
+
         # restore sort/filter from config if present
         try:
             sort_label = self.config.get('thumb_sort', 'Name (A-Z)')
@@ -522,6 +567,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self._apply_detail_view_theme()
+        # apply saved metadata font size
+        try:
+            font = self.meta_box.font()
+            font.setPointSize(int(self.config.get('meta_font_size', 10)))
+            self.meta_box.setFont(font)
+        except Exception:
+            pass
         # open_canvas handled in toolbar
 
         # Store for layout toggling
@@ -590,6 +642,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
 
+        # Responsive thumbnail reflow: debounce splitter moves & window resizes to avoid
+        # repeated rebuilds while the user is dragging.
+        self._thumbs_reflow_timer = QtCore.QTimer(self)
+        self._thumbs_reflow_timer.setSingleShot(True)
+        self._thumbs_reflow_timer.timeout.connect(lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
+        try:
+            main_splitter.splitterMoved.connect(lambda pos, idx: self._thumbs_reflow_timer.start(150))
+        except Exception:
+            # older Qt versions may not expose splitterMoved the same way; ignore
+            pass
+
         toolbar = self._create_toolbar()
         container_layout = QtWidgets.QVBoxLayout()
         container_layout.setContentsMargins(0, 0, 0, 0)
@@ -600,6 +663,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         container_layout.addWidget(main_splitter)
         self.setLayout(container_layout)
         self._set_shortcuts_panel_visible(self.show_shortcuts_panel, remember=False)
+        # Ensure optimal initial thumbnail layout
+        QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
 
         # signals
         self.open_btn.clicked.connect(self.open_folder_dialog)
@@ -633,7 +698,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
-        self.dark_mode_cb.toggled.connect(self.on_dark_mode_toggled)
 
         # autoload
         if self.last_dir.exists():
@@ -670,8 +734,20 @@ class SXMGridViewer(QtWidgets.QWidget):
             palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(42,130,218))
             palette.setColor(QtGui.QPalette.HighlightedText, QtCore.Qt.black)
             app.setPalette(palette)
+            # apply left-panel dark style so group titles and labels match the theme
+            try:
+                if hasattr(self, 'left_w') and self.left_w is not None:
+                    self.left_w.setStyleSheet("QGroupBox:title { color: #e6e6e6; } QLabel { color: #e6e6e6; } QPushButton { color: #f0f0f0; }")
+            except Exception:
+                pass
         else:
             app.setPalette(app.style().standardPalette())
+            try:
+                if hasattr(self, 'left_w') and self.left_w is not None:
+                    # clear custom styling to return to native look
+                    self.left_w.setStyleSheet("")
+            except Exception:
+                pass
         if hasattr(self, 'shortcuts_label'):
             self.shortcuts_label.setText(self._shortcuts_html())
         try:
@@ -881,6 +957,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._set_shortcuts_panel_visible(True)
 
     def eventFilter(self, obj, event):
+        # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
         if obj in (getattr(self, '_thumb_viewport', None),
                    getattr(self, 'thumb_container', None),
                    getattr(self, 'scroll', None)) and event.type() == QtCore.QEvent.Wheel:
@@ -891,6 +968,17 @@ class SXMGridViewer(QtWidgets.QWidget):
                     self._resize_thumbnail_scale(step)
                 event.accept()
                 return True
+        # When the thumbnail viewport or container is resized, debounce and repopulate so
+        # the thumbnail grid recomputes columns responsively.
+        if obj in (getattr(self, '_thumb_viewport', None),
+                   getattr(self, 'thumb_container', None),
+                   getattr(self, 'scroll', None)) and event.type() == QtCore.QEvent.Resize:
+            try:
+                self._thumbs_reflow_timer.start(150)
+            except Exception:
+                pass
+            # allow normal resize processing to continue
+            return False
         return super().eventFilter(obj, event)
 
     def _thumb_dimensions(self):
@@ -967,6 +1055,13 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
+        # keep toolbar toggle in sync and show ON/OFF text
+        try:
+            if hasattr(self, 'toolbar_dark_btn'):
+                self.toolbar_dark_btn.setChecked(self.dark_mode)
+                self.toolbar_dark_btn.setText('dark mode: ON' if self.dark_mode else 'dark mode: OFF')
+        except Exception:
+            pass
         self.config['dark_mode'] = self.dark_mode; save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:
@@ -2560,8 +2655,44 @@ class SXMGridViewer(QtWidgets.QWidget):
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
+    def on_meta_font_changed(self, val:int):
+        try:
+            font = self.meta_box.font()
+            font.setPointSize(int(val))
+            self.meta_box.setFont(font)
+            self.config['meta_font_size'] = int(val); save_config(self.config)
+            # Re-render current metadata HTML so inline styles reflect the new font size
+            try:
+                if getattr(self, 'last_preview', None):
+                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
+        # keep toolbar toggle in sync and show ON/OFF text
+        try:
+            if hasattr(self, 'toolbar_dark_btn'):
+                self.toolbar_dark_btn.setChecked(self.dark_mode)
+                self.toolbar_dark_btn.setText('dark mode: ON' if self.dark_mode else 'dark mode: OFF')
+        except Exception:
+            pass
+        # update toolbar combobox and label styles to match dark/light theme
+        try:
+            combo_style = "QComboBox { background-color: #1f1f1f; border: 1px solid #444444; color: #f0f0f0; padding: 4px; }" if self.dark_mode else ""
+            label_style = "padding-left:8px; padding-right:4px; color: #e6e6e6;" if self.dark_mode else "padding-left:8px; padding-right:4px; color: #202020;"
+            if hasattr(self, 'thumb_cmap_combo'):
+                self.thumb_cmap_combo.setStyleSheet(combo_style)
+            if hasattr(self, 'preview_cmap_combo'):
+                self.preview_cmap_combo.setStyleSheet(combo_style)
+            if hasattr(self, 'thumb_cmap_label'):
+                self.thumb_cmap_label.setStyleSheet(label_style)
+            if hasattr(self, 'preview_cmap_label'):
+                self.preview_cmap_label.setStyleSheet(label_style)
+        except Exception:
+            pass
         self.config['dark_mode'] = self.dark_mode; save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:

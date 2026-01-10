@@ -14,6 +14,7 @@ from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from ..._shared import QtCore, QtGui, QtWidgets
 from ..thumbnail_render import sample_array_value
@@ -184,9 +185,16 @@ class MultiPreviewCanvas(FigureCanvas):
             ax.set_autoscale_on(False)
             cbar_label = v.get('colorbar_label') or v.get('unit', '')
             if cbar_label:
-                cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
-                cbar.set_label(cbar_label)
-                self._colorbars.append(cbar)
+                try:
+                    divider = make_axes_locatable(ax)
+                    cax = divider.append_axes("right", size="4%", pad=0.02)
+                    cbar = self.fig.colorbar(im, cax=cax, orientation='vertical')
+                    cbar.set_label(cbar_label)
+                    self._colorbars.append(cbar)
+                except Exception:
+                    cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
+                    cbar.set_label(cbar_label)
+                    self._colorbars.append(cbar)
             title = v.get('title', '')
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
@@ -1965,8 +1973,14 @@ class MultiPreviewCanvas(FigureCanvas):
         cbar_label = view.get('colorbar_label') or view.get('unit', '')
         cbar = None
         if cbar_label:
-            cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
-            cbar.set_label(cbar_label)
+            try:
+                divider = make_axes_locatable(ax)
+                cax = divider.append_axes("right", size="4%", pad=0.02)
+                cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                cbar.set_label(cbar_label)
+            except Exception:
+                cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
+                cbar.set_label(cbar_label)
         title = view.get('title', '')
         if title:
             ax.set_title(title, fontsize=9)

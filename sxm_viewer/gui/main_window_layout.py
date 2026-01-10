@@ -1,4 +1,4 @@
-"""Layout builders for the main SXM grid viewer window."""
+"""Layout builders for the main SXM Viewer window."""
 from __future__ import annotations
 
 from PyQt5 import QtCore, QtGui, QtWidgets

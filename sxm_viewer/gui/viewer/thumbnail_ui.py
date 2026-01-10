@@ -61,12 +61,21 @@ def clear_thumbs(viewer):
 
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
     viewer.clear_thumbs()
-    max_cols = 4; row = 0; col = 0
     thumb_w, thumb_h = viewer._thumb_dimensions()
+    # Compute number of columns responsively based on available viewport width so the
+    # thumbnail grid reflows when the splitter or window is resized.
+    try:
+        vp = getattr(viewer, '_thumb_viewport', None)
+        avail_w = vp.width() if vp is not None else (viewer.thumb_container.width() if hasattr(viewer, 'thumb_container') else 800)
+    except Exception:
+        avail_w = 800
+    # estimate per-card width including margins and label area
+    card_w = thumb_w + 24
+    max_cols = max(1, min(12, int(avail_w / card_w)))
+    row = 0; col = 0
     cmap_name = viewer.thumb_cmap_combo.currentText() or viewer.thumb_cmap
     viewer._thumb_generation += 1
     generation = viewer._thumb_generation
-    viewer.meta_box.setPlainText(f"Building thumbnails for channel {channel_idx} ...")
     files_iter = list(viewer.files)
 
     filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
@@ -164,7 +173,6 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         col += 1
         if col >= max_cols:
             col = 0; row += 1
-    viewer.meta_box.setPlainText(f"Thumbnails built for channel {channel_idx}  (thumb cmap: {cmap_name})")
     viewer._refresh_frame_map_pixmaps()
 
 def on_thumb_sort_changed(viewer, idx):
