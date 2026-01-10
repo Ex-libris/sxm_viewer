@@ -70,3 +70,6 @@ def place_item(window, item: CanvasImageItem):
         CANVAS_DROP_OFFSET_STEP,
         CANVAS_DROP_OFFSET_STEP,
     )
+
+
+

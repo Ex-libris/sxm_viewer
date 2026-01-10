@@ -1,8 +1,52 @@
-﻿"""Thumbnail helpers for SXMGridViewer."""
+"""Thumbnail helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
-from ...data.io import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ...data.io import (
+    parse_header,
+    read_channel_file,
+    normalize_unit_and_data,
+    _split_key_value,
+    _coerce_value,
+    _canonical_header_key,
+    _parse_inline_channels,
+    _trailing_digits,
+    _load_ascii_grid,
+    _load_binary_grid,
+    _load_tokenized_grid,
+    _load_binary_with_inference,
+    _binary_dtype_candidates,
+)
 from ...processing.filters import _filter_signature
 
 def _thumbnail_filter_signature(viewer, file_key):
@@ -80,3 +124,7 @@ __all__ = [
     "_thumbnail_data_key",
     "_invalidate_thumbnail_cache",
 ]
+
+
+
+

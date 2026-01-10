@@ -80,3 +80,6 @@ def load_canvas(window):
             item.apply_state(state)
     window.status_label.setText(f"Loaded canvas from {Path(path).name}")
     window._push_undo_state()
+
+
+

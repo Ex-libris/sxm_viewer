@@ -1,7 +1,37 @@
-﻿"""Preview helpers for SXMGridViewer."""
+"""Preview helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 from ...config import save_config
 
 def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel_idx:int,
@@ -98,7 +128,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
             pos_txt = f"{xs:.1f}/{ys:.1f} nm" if xs is not None and ys is not None else "n/a"
             rows.append(f"<tr><td>S{idx}</td><td>{esc(name)}</td><td style='text-align:right'>{esc(pos_txt)}</td></tr>")
         if len(spec_entries) > 6:
-            rows.append(f"<tr><td colspan='3' style='text-align:center;color:{label_color}'>+ {len(spec_entries)-6} more�</td></tr>")
+            rows.append(f"<tr><td colspan='3' style='text-align:center;color:{label_color}'>+ {len(spec_entries)-6} more?</td></tr>")
         spec_section = f"""
         <div style='height:6px'></div>
         <div style='font-weight:600; color:{label_color}; margin-bottom:2px'>Spectroscopies ({len(spec_entries)})</div>
@@ -148,19 +178,19 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     xpix = header.get('xPixel') or header.get('XPixel')
     ypix = header.get('yPixel') or header.get('YPixel')
     x_center = header.get('xCenter'); y_center = header.get('yCenter')
-    piezo_txt = f"{abs_nm:.3f} nm" if abs_nm is not None else "—"
-    date_display = " ".join(t for t in (date, time) if t).strip() or "—"
-    size_txt = "—"
+    piezo_txt = f"{abs_nm:.3f} nm" if abs_nm is not None else ""
+    date_display = " ".join(t for t in (date, time) if t).strip() or ""
+    size_txt = ""
     if x_range is not None and y_range is not None:
-        size_txt = f"{fmt_number(x_range)} {esc(x_unit)} × {fmt_number(y_range)} {esc(y_unit)}"
-    pixel_txt = "—"
+        size_txt = f"{fmt_number(x_range)} {esc(x_unit)}  {fmt_number(y_range)} {esc(y_unit)}"
+    pixel_txt = ""
     if xpix is not None and ypix is not None:
-        pixel_txt = f"{fmt_number(xpix,0)} × {fmt_number(ypix,0)}"
-    center_txt = "—"
+        pixel_txt = f"{fmt_number(xpix,0)}  {fmt_number(ypix,0)}"
+    center_txt = ""
     if x_center is not None and y_center is not None:
         center_txt = f"{fmt_number(x_center)} / {fmt_number(y_center)} {esc(x_unit)}"
-    bias_txt = f"{fmt_number(bias)} {esc(bias_unit)}" if bias is not None else "—"
-    setp_txt = f"{fmt_number(setp)} {esc(setp_unit)}" if setp is not None else "—"
+    bias_txt = f"{fmt_number(bias)} {esc(bias_unit)}" if bias is not None else ""
+    setp_txt = f"{fmt_number(setp)} {esc(setp_unit)}" if setp is not None else ""
     key_rows = [
         ("Acquired", date_display),
         ("Bias", bias_txt),
@@ -172,7 +202,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     ]
     key_section_rows = "".join(
         f"<tr><td style='padding:2px 6px;color:{label_color};font-weight:600'>{esc(lbl)}</td>"
-        f"<td style='padding:2px 6px;text-align:right;font-size:14px'><span style='color:{text_color};font-weight:600'>{val or '—'}</span></td></tr>"
+        f"<td style='padding:2px 6px;text-align:right;font-size:14px'><span style='color:{text_color};font-weight:600'>{val or ''}</span></td></tr>"
         for lbl, val in key_rows if val
     )
     key_section = f"""
@@ -272,9 +302,9 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
     base_title = Path(header_path).name
     if datetime_txt:
-        title_text = f"{base_title} — {caption} — {datetime_txt}"
+        title_text = f"{base_title}  {caption}  {datetime_txt}"
     else:
-        title_text = f"{base_title} — {caption}"
+        title_text = f"{base_title}  {caption}"
     colorbar_label = caption
     if display_unit:
         colorbar_label = f"{caption} [{display_unit}]"
@@ -308,9 +338,9 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             unit2_display, arr2_display, _ = viewer._scale_unit_for_display(unit2_final, arr2_adj)
             caption2 = fd2.get('Caption', fd2.get('FileName', ''))
             if datetime_txt:
-                title2 = f"{Path(header_path).name} — {caption2} — {datetime_txt}"
+                title2 = f"{Path(header_path).name}  {caption2}  {datetime_txt}"
             else:
-                title2 = f"{Path(header_path).name} — {caption2}"
+                title2 = f"{Path(header_path).name}  {caption2}"
             cbar_label2 = caption2
             if unit2_display:
                 cbar_label2 = f"{caption2} [{unit2_display}]"
@@ -381,3 +411,7 @@ __all__ = [
     "_on_preview_value",
     "on_preview_cmap_changed",
 ]
+
+
+
+

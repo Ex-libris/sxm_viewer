@@ -444,3 +444,6 @@ def render_tile_mpl(
     h, w, _ = buf.shape
     qimg = QtGui.QImage(buf.data, w, h, QtGui.QImage.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(qimg.copy())
+
+
+

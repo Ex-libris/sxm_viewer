@@ -1,7 +1,37 @@
-﻿"""Spectroscopy browser helpers for SXMGridViewer."""
+"""Spectroscopy browser helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 from PyQt5.QtWidgets import QLabel, QListWidget, QListWidgetItem
 
 def _update_spectro_stats_label(viewer, stats=None):
@@ -113,3 +143,7 @@ __all__ = [
     "_filter_spectro_browser",
     "_on_spectro_browser_selection",
 ]
+
+
+
+

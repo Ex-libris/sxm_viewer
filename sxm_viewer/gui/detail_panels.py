@@ -1,19 +1,19 @@
-﻿"""Detail canvases and spectroscopy dialogs."""
+"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
 # Re-export shims for backward-compatible imports.
-from .canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
-from .dialogs.profile_dialog import ProfileDialog
-from .dialogs.spectroscopy_dialogs import (
+from .detail_panels_export import BatchExportSignals, BatchExportWorker
+from .detail_panels_filters import CustomFilterDialog
+from .detail_panels_image import ImageAdjustPreviewPanel, ImageAdjustDialog
+from .detail_panels_matrix import MatrixFitWorker, MatrixFitDialog
+from .detail_panels_preview import MultiPreviewCanvas, SafeFigureCanvas
+from .detail_panels_profile import ProfileDialog
+from .detail_panels_spectro import (
     SpectroscopyPopup,
     MatrixSpectroViewer,
     _SpectroFitWorker,
     SpectroscopyCompareDialog,
 )
-from .dialogs.matrix_fit import MatrixFitWorker, MatrixFitDialog
-from .dialogs.filters import CustomFilterDialog
-from .dialogs.image_adjust import ImageAdjustPreviewPanel, ImageAdjustDialog
-from .workers.batch_export import BatchExportSignals, BatchExportWorker
 
 __all__ = [
     "MultiPreviewCanvas",
@@ -31,3 +31,6 @@ __all__ = [
     "BatchExportSignals",
     "BatchExportWorker",
 ]
+
+
+

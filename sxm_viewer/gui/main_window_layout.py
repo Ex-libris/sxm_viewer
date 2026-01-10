@@ -262,3 +262,6 @@ def create_shortcuts_panel(viewer):
     viewer.shortcuts_label.setTextFormat(QtCore.Qt.RichText)
     layout.addWidget(viewer.shortcuts_label)
     return frame
+
+
+

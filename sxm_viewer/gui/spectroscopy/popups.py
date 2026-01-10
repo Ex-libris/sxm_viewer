@@ -1,7 +1,37 @@
-﻿"""Spectroscopy popup helpers for SXMGridViewer."""
+"""Spectroscopy popup helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 from ...data.spectroscopy import _matrix_base_name, find_last_image_for_spec
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog, MatrixSpectroViewer
 
@@ -108,3 +138,7 @@ __all__ = [
     "_open_multi_spectroscopy_popup",
     "on_show_matrix_spectro_viewer",
 ]
+
+
+
+

@@ -1,8 +1,37 @@
-﻿"""Spectroscopy overlay helpers for SXMGridViewer."""
+"""Spectroscopy overlay helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
-
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
     """
     Map a click in thumbnail pixel coordinates to spectroscopy list ordered by distance.
@@ -210,3 +239,6 @@ __all__ = [
     "_spectros_near_thumb_pos",
     "_render_spectroscopy_overlays",
 ]
+
+
+

@@ -21,7 +21,7 @@ class MatrixDataset:
         })
 
     def summary(self):
-        return f"{self.base}: {len(self.channels)} channel(s) ΓÇö {self.rows}├ù{self.cols} each"
+        return f"{self.base}: {len(self.channels)} channel(s) GÇö {self.rows}+ù{self.cols} each"
 
 
 def parse_matrix_filename(fname: str):
@@ -48,3 +48,6 @@ __all__ = [
     "MatrixDataset",
     "parse_matrix_filename",
 ]
+
+
+

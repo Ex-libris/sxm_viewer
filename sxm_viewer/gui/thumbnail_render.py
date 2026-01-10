@@ -1,11 +1,102 @@
 """Thumbnail rendering, caching and export helpers."""
 from __future__ import annotations
 
-from .._shared import *
-from ..config import *
-from ..data.io import *
-from ..processing.filters import *
-from ..data.spectroscopy import *
+from .._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ..config import (
+    CONFIG_PATH,
+    HEADER_CACHE_PATH,
+    HEADER_CACHE_VERSION,
+    CH_EQUALITY_TOL_NM,
+    CH_SAMPLE_POINTS,
+    CHANNEL_DATA_CACHE_LIMIT,
+    FILTERED_CACHE_LIMIT,
+    THUMB_DISK_CACHE_DIR,
+    load_config,
+    save_config,
+    load_header_cache,
+    save_header_cache,
+)
+from ..data.io import (
+    parse_header,
+    read_channel_file,
+    normalize_unit_and_data,
+    _split_key_value,
+    _coerce_value,
+    _canonical_header_key,
+    _parse_inline_channels,
+    _trailing_digits,
+    _load_ascii_grid,
+    _load_binary_grid,
+    _load_tokenized_grid,
+    _load_binary_with_inference,
+    _binary_dtype_candidates,
+)
+from ..processing.filters import (
+    flatten_remove_median,
+    subtract_best_fit_plane,
+    subtract_2nd_order_plane,
+    gaussian_filter_image,
+    highpass_filter,
+    FILTER_DEFINITIONS,
+    _gaussian_available,
+    _filter_signature,
+)
+from ..data.spectroscopy import (
+    parse_spectroscopy_file,
+    fit_parabola_bias,
+    find_last_image_for_spec,
+    _matrix_base_name,
+    _rows_to_spec,
+    _channel_labels,
+    _clean_channel_label,
+    _normalize_bias_axis,
+    _extract_meta,
+    _guess_index_from_name,
+    _extract_section_value,
+    _parse_section_metadata,
+    _split_key_value,
+    _split_tokens,
+    _split_header_columns,
+    _row_is_numeric,
+    _normalize_meta_key,
+    _coerce_value,
+    _maybe_float,
+    _maybe_int,
+    _parse_datetime,
+    _parse_date_and_time,
+    _mtime,
+    _read_text,
+)
 
 
 def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
@@ -404,3 +495,6 @@ __all__ = [
     "apply_adjustment_spec",
     "save_wsxm_xyz",
 ]
+
+
+

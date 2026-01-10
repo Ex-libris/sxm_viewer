@@ -28,3 +28,6 @@ def apply_layout(window, layout_type: str):
 
 def place_item(window, item):
     return canvas_layout.place_item(window, item)
+
+
+

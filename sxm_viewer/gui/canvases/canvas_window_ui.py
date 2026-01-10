@@ -18,7 +18,7 @@ from ..styles import (
     CANVAS_TOOLBAR_SEPARATOR_STYLE,
     CANVAS_TOOLBAR_WIDGET_STYLE,
 )
-from ..thumbnails import _colormap_icon
+from ..thumbnail_render import _colormap_icon
 from ..text import (
     CANVAS_BUTTON_TEXT,
     CANVAS_CHECKBOX_TEXT,
@@ -430,3 +430,6 @@ def apply_styles(window):
 
 def apply_status_style(window):
     window.status_label.setStyleSheet(CANVAS_STATUS_LABEL_STYLE)
+
+
+

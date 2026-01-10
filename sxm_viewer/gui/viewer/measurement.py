@@ -1,7 +1,37 @@
-﻿"""Measurement helpers for SXMGridViewer."""
+"""Measurement helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 from ..detail_panels import ProfileDialog
 
 def _on_start_profile(viewer, force_enable=False):
@@ -318,7 +348,7 @@ def _on_angle_updated(viewer, info):
     if not info:
         viewer.angle_value_label.setText("Angle: --")
         return
-    angle_text = f"Angle: {info.get('angle_deg', 0.0):.2f}°"
+    angle_text = f"Angle: {info.get('angle_deg', 0.0):.2f}"
     unit = info.get('unit')
     if unit:
         angle_text += f" | L1={info.get('len_a', 0.0):.3f} {unit} L2={info.get('len_b', 0.0):.3f} {unit}"
@@ -415,3 +445,7 @@ __all__ = [
     "_on_show_profile_window",
     "_on_canvas_overlay_highlight",
 ]
+
+
+
+

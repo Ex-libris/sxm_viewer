@@ -1,10 +1,39 @@
-﻿"""Spectroscopy assignment helpers for SXMGridViewer."""
+"""Spectroscopy assignment helpers for SXMGridViewer."""
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from ..._shared import *
-
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
 def _assign_spectros_to_images(viewer):
     """Assign spectroscopy entries to images using time and spatial sanity (prefer in-extent matches)."""
     viewer.spectros_by_image = defaultdict(list)
@@ -155,3 +184,6 @@ __all__ = [
     "_spec_within_extent",
     "_match_spec_to_image_by_hint",
 ]
+
+
+

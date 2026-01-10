@@ -89,3 +89,6 @@ CANVAS_TOOLTIPS = {
     "duplicate": "Duplicate selected item (Ctrl+D)",
     "remove_item": "Remove selected item (Delete)",
 }
+
+
+

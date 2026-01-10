@@ -1,4 +1,4 @@
-﻿"""Spectroscopy summary dialog."""
+"""Spectroscopy summary dialog."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,8 +6,54 @@ from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
 
-from ..._shared import *
-from ..thumbnails import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ..thumbnail_render import (
+    array_to_qimage,
+    _ThumbnailJobSignals,
+    _ThumbnailJob,
+    _colormap_icon,
+    convert_to_si,
+    _unit_to_nm_factor,
+    _value_in_nm,
+    robust_limits,
+    _interp_index,
+    sample_array_value,
+    apply_adjustment_spec,
+    _rotate_extent_box,
+    _trim_nan_border,
+    save_wsxm_xyz,
+)
+
 class SpectroSummaryDialog(QtWidgets.QDialog):
     """Compact modal that lists spectros for a given file and offers quick actions."""
     def __init__(self, parent, file_key, header, fds, entries, nearest=None, show_mode="single"):
@@ -34,7 +80,7 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         n_total = len(self._entries)
         n_matrix = len(self._matrix_entries)
         n_single = len(self._single_entries)
-        label = QLabel(f"<b>{n_total}</b> spectroscopies — Single: {n_single} · Matrix: {n_matrix}")
+        label = QLabel(f"<b>{n_total}</b> spectroscopies  Single: {n_single}  Matrix: {n_matrix}")
         layout.addWidget(label)
 
         # Preview + channel selector + show-points toggle
@@ -266,3 +312,8 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
 __all__ = [
     "SpectroSummaryDialog",
 ]
+
+
+
+
+

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..._shared import QtCore, QtGui, QtWidgets, colormaps, np
-from ..thumbnails import _colormap_icon
+from ..thumbnail_render import _colormap_icon
 from ...data.io import parse_header
 from ...processing.detection import _find_topography_channel
 
@@ -2896,6 +2896,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
     def _place_item(self, item: CanvasImageItem):
         item.setPos(self._drop_offset)
         self._drop_offset = QtCore.QPointF(self._drop_offset.x() + 30.0, self._drop_offset.y() + 30.0)
+
+
+
 
 
 

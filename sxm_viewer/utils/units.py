@@ -1,4 +1,4 @@
-﻿"""Unit formatting helpers."""
+"""Unit formatting helpers."""
 from __future__ import annotations
 
 import math
@@ -97,3 +97,6 @@ __all__ = [
     "_auto_display_unit",
     "_safe_float",
 ]
+
+
+

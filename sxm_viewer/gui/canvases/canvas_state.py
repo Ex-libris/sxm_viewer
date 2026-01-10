@@ -68,3 +68,6 @@ def delete_selected(window):
     window._selected_item = None
     window._on_selection_changed()
     push_undo_state(window)
+
+
+

@@ -47,7 +47,7 @@ from ..utils.units import (
     _auto_display_unit,
     _safe_float,
 )
-from .thumbnails import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
+from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
 from .minimap import FrameMiniMap
 from .detail_panels import (
     BatchExportSignals,
@@ -319,7 +319,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         details_layout.addWidget(self.meta_box, 1)
         self.meta_box.setVisible(True)
         details_group.toggled.connect(self.meta_box.setVisible)
-        left_v.addWidget(details_group, 1)
 
         frame_group = QtWidgets.QGroupBox("Folder layout (±1 µm)")
         frame_layout = QtWidgets.QVBoxLayout(frame_group)
@@ -329,10 +328,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.frame_map_widget.zoomChanged.connect(self._on_frame_map_zoom_changed)
         self.frame_map_widget.setToolTip(
             "Frame layout:\n"
-            " • Click to focus a frame\n"
-            " • Shift+Click hides a frame (Show all resets)\n"
-            " • Mouse wheel zooms view; drag to pan\n"
-            " • Toggle “Show real view” for channel thumbnails"
+            "  Click to focus a frame\n"
+            "  Shift+Click hides a frame (Show all resets)\n"
+            "  Mouse wheel zooms view; drag to pan\n"
+            "  Toggle Show real view for channel thumbnails"
         )
         frame_layout.addWidget(self.frame_map_widget)
         zoom_row = QtWidgets.QHBoxLayout()
@@ -393,9 +392,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.scroll = QtWidgets.QScrollArea(); self.thumb_container = QtWidgets.QWidget(); self.thumb_layout = QtWidgets.QGridLayout(); self.thumb_layout.setSpacing(THUMB_LAYOUT_SPACING)
         self.scroll.setToolTip(
             "Thumbnails:\n"
-            " • Shift+Click or Ctrl+Click to multi-select\n"
-            " • Ctrl+Wheel to change thumbnail size\n"
-            " • Right-click a frame for filters & exports"
+            "  Shift+Click or Ctrl+Click to multi-select\n"
+            "  Ctrl+Wheel to change thumbnail size\n"
+            "  Right-click a frame for filters & exports"
         )
         self.thumb_container.setLayout(self.thumb_layout); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.thumb_container)
         self._thumb_viewport = self.scroll.viewport()
@@ -480,9 +479,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.setMinimumWidth(240)
         self.preview_canvas.setToolTip(
             "Preview area:\n"
-            " • Right-click for copy/save options\n"
-            " • Enable 'Measure profile' for line sampling\n"
-            " • Ctrl+C copies the focused image to clipboard"
+            "  Right-click for copy/save options\n"
+            "  Enable 'Measure profile' for line sampling\n"
+            "  Ctrl+C copies the focused image to clipboard"
         )
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         preview_panel_layout.addWidget(self.preview_canvas, 1)
@@ -1915,7 +1914,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             colorbar_label = label
             if unit_display:
                 colorbar_label = f"{label} [{unit_display}]"
-            title_text = f"{header_path.name} — {label}"
+            title_text = f"{header_path.name}  {label}"
             render_items.append({'arr': arr_display, 'extent': extent, 'unit': unit_display, 'label': label,
                                  'cmap': cmap, 'vmin': vmin, 'vmax': vmax, 'relative_axes': bool(self.relative_axes),
                                  'colorbar_label': colorbar_label, 'title': title_text})
@@ -2667,6 +2666,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, 'Purge config', 'Configuration and tags purged. Please reopen your folder.')
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, 'Purge failed', str(e))
+
+
+
 
 
 

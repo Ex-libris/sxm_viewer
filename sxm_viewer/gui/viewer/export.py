@@ -1,9 +1,78 @@
-﻿"""Export helpers for SXMGridViewer."""
+"""Export helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
-from ...data.io import *
-from ...data.spectroscopy import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ...data.io import (
+    parse_header,
+    read_channel_file,
+    normalize_unit_and_data,
+    _split_key_value,
+    _coerce_value,
+    _canonical_header_key,
+    _parse_inline_channels,
+    _trailing_digits,
+    _load_ascii_grid,
+    _load_binary_grid,
+    _load_tokenized_grid,
+    _load_binary_with_inference,
+    _binary_dtype_candidates,
+)
+from ...data.spectroscopy import (
+    parse_spectroscopy_file,
+    fit_parabola_bias,
+    find_last_image_for_spec,
+    _matrix_base_name,
+    _rows_to_spec,
+    _channel_labels,
+    _clean_channel_label,
+    _normalize_bias_axis,
+    _extract_meta,
+    _guess_index_from_name,
+    _extract_section_value,
+    _parse_section_metadata,
+    _split_key_value,
+    _split_tokens,
+    _split_header_columns,
+    _row_is_numeric,
+    _normalize_meta_key,
+    _coerce_value,
+    _maybe_float,
+    _maybe_int,
+    _parse_datetime,
+    _parse_date_and_time,
+    _mtime,
+    _read_text,
+)
 from ..detail_panels import BatchExportSignals, BatchExportWorker
 
 def _collect_channel_exports(viewer, header_path_str, main_channel_idx=None):
@@ -38,9 +107,9 @@ def _collect_channel_exports(viewer, header_path_str, main_channel_idx=None):
         time_txt = str(header.get('Time', '') or '').strip()
         datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
         if datetime_txt:
-            title_txt = f"{header_path.name} — {cap} — {datetime_txt}"
+            title_txt = f"{header_path.name}  {cap}  {datetime_txt}"
         else:
-            title_txt = f"{header_path.name} — {cap}"
+            title_txt = f"{header_path.name}  {cap}"
         exports.append({
             'arr': disp_arr,
             'extent': disp_extent,
@@ -258,3 +327,7 @@ __all__ = [
     "_on_batch_export_progress",
     "_on_batch_export_finished",
 ]
+
+
+
+

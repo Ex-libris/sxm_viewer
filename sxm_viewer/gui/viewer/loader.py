@@ -1,12 +1,87 @@
-﻿"""Loader helpers for SXMGridViewer."""
+"""Loader helpers for SXMGridViewer."""
 from __future__ import annotations
 
-from ..._shared import *
-from ...data.io import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ...data.io import (
+    parse_header,
+    read_channel_file,
+    normalize_unit_and_data,
+    _split_key_value,
+    _coerce_value,
+    _canonical_header_key,
+    _parse_inline_channels,
+    _trailing_digits,
+    _load_ascii_grid,
+    _load_binary_grid,
+    _load_tokenized_grid,
+    _load_binary_with_inference,
+    _binary_dtype_candidates,
+)
 from ...config import save_config
-from ...data.spectroscopy import *
+from ...data.spectroscopy import (
+    parse_spectroscopy_file,
+    fit_parabola_bias,
+    find_last_image_for_spec,
+    _matrix_base_name,
+    _rows_to_spec,
+    _channel_labels,
+    _clean_channel_label,
+    _normalize_bias_axis,
+    _extract_meta,
+    _guess_index_from_name,
+    _extract_section_value,
+    _parse_section_metadata,
+    _split_key_value,
+    _split_tokens,
+    _split_header_columns,
+    _row_is_numeric,
+    _normalize_meta_key,
+    _coerce_value,
+    _maybe_float,
+    _maybe_int,
+    _parse_datetime,
+    _parse_date_and_time,
+    _mtime,
+    _read_text,
+)
 from ...data.matrix import MatrixDataset, parse_matrix_filename
-from ...processing.detection import *
+from ...processing.detection import (
+    _detect_dtype_for_file,
+    _sample_channel_values_for_tagging,
+    header_indicates_constant,
+    _find_topography_channel,
+    filedesc_indicates_current_or_topo,
+)
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 def load_folder(viewer, folder:Path):
@@ -337,7 +412,7 @@ def _scan_spectros(viewer, folder:Path):
         if verbose:
             log_status("Matrix datasets:")
             for key, ds in viewer.matrix_datasets.items():
-                log_status(f"  - {ds.base}: {len(ds.channels)} channel(s) — {ds.rows}x{ds.cols} -> "
+                log_status(f"  - {ds.base}: {len(ds.channels)} channel(s)  {ds.rows}x{ds.cols} -> "
                            f"{sum(c.get('spectra_count',0) for c in ds.channels)} spectra")
                 for ch in ds.channels:
                     log_status(f"      * {Path(ch['path']).name} ({ch.get('channel_code')}) {ch.get('label','')} "
@@ -350,3 +425,8 @@ __all__ = [
     "_parse_header_datetime",
     "_scan_spectros",
 ]
+
+
+
+
+

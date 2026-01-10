@@ -129,3 +129,6 @@ def on_spectro_browser_selection(viewer, current, _prev):
 
 def update_spectro_stats_label(viewer, stats=None):
     return spectro_browser._update_spectro_stats_label(viewer, stats=stats)
+
+
+

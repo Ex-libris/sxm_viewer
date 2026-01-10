@@ -541,3 +541,6 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
         super().dropEvent(event)
 
 
+
+
+

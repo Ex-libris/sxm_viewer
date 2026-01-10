@@ -1,4 +1,4 @@
-﻿"""Detail canvases and spectroscopy dialogs."""
+"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
 import itertools
@@ -14,12 +14,110 @@ from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from ..._shared import *
-from ...config import *
-from ...data.io import *
-from ...data.spectroscopy import *
-from ..thumbnails import *
+from ..._shared import (
+    QtCore,
+    QtGui,
+    QtWidgets,
+    QIcon,
+    QPixmap,
+    QImage,
+    QPainter,
+    QPen,
+    QBrush,
+    FigureCanvas,
+    Figure,
+    Line2D,
+    colormaps,
+    np,
+    Path,
+    defaultdict,
+    OrderedDict,
+    datetime,
+    hashlib,
+    itertools,
+    io,
+    json,
+    math,
+    os,
+    sys,
+    threading,
+    _scipy_ndimage,
+    log_status,
+    matplotlib,
+)
+from ...config import (
+    CONFIG_PATH,
+    HEADER_CACHE_PATH,
+    HEADER_CACHE_VERSION,
+    CH_EQUALITY_TOL_NM,
+    CH_SAMPLE_POINTS,
+    CHANNEL_DATA_CACHE_LIMIT,
+    FILTERED_CACHE_LIMIT,
+    THUMB_DISK_CACHE_DIR,
+    load_config,
+    save_config,
+    load_header_cache,
+    save_header_cache,
+)
+from ...data.io import (
+    parse_header,
+    read_channel_file,
+    normalize_unit_and_data,
+    _split_key_value,
+    _coerce_value,
+    _canonical_header_key,
+    _parse_inline_channels,
+    _trailing_digits,
+    _load_ascii_grid,
+    _load_binary_grid,
+    _load_tokenized_grid,
+    _load_binary_with_inference,
+    _binary_dtype_candidates,
+)
+from ...data.spectroscopy import (
+    parse_spectroscopy_file,
+    fit_parabola_bias,
+    find_last_image_for_spec,
+    _matrix_base_name,
+    _rows_to_spec,
+    _channel_labels,
+    _clean_channel_label,
+    _normalize_bias_axis,
+    _extract_meta,
+    _guess_index_from_name,
+    _extract_section_value,
+    _parse_section_metadata,
+    _split_key_value,
+    _split_tokens,
+    _split_header_columns,
+    _row_is_numeric,
+    _normalize_meta_key,
+    _coerce_value,
+    _maybe_float,
+    _maybe_int,
+    _parse_datetime,
+    _parse_date_and_time,
+    _mtime,
+    _read_text,
+)
+from ..thumbnail_render import (
+    array_to_qimage,
+    _ThumbnailJobSignals,
+    _ThumbnailJob,
+    _colormap_icon,
+    convert_to_si,
+    _unit_to_nm_factor,
+    _value_in_nm,
+    robust_limits,
+    _interp_index,
+    sample_array_value,
+    apply_adjustment_spec,
+    _rotate_extent_box,
+    _trim_nan_border,
+    save_wsxm_xyz,
+)
 from ..canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
+from .profile_data import axis_label, format_marker_delta, format_stats_text, fmt_length
 
 class ProfileDialog(QtWidgets.QDialog):
     """Dialog showing the sampled profile and basic stats."""
@@ -72,7 +170,7 @@ class ProfileDialog(QtWidgets.QDialog):
         self.ax_top.set_visible(False)
         self._relative_axes = True
         self._font_scale = 1.0
-        self.ax.set_xlabel(self._axis_label('px'))
+        self.ax.set_xlabel(axis_label('px'))
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self._splitter = splitter
         plot_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -268,17 +366,10 @@ class ProfileDialog(QtWidgets.QDialog):
             self.ax.set_ylabel(f"Value ({unit})" if unit else 'Value')
 
     def _fmt_length(self, title, length_nm):
-        if length_nm is None:
-            return f"{title}: N/A"
-        return f"{title}: {length_nm:.3f} nm"
+        return fmt_length(title, length_nm)
 
     def _format_stats_text(self, active, saved):
-        lines = []
-        if active:
-            lines.append(self._fmt_length("Active", active.get('length_nm')))
-        for idx, data in enumerate(saved, 1):
-            lines.append(self._fmt_length(f"Overlay {idx}", data.get('length_nm')))
-        return "\n".join(lines) if lines else "No profile data"
+        return format_stats_text(active, saved)
 
     def _clear_marker_lines(self, reset_saved=True):
         for line in self._marker_lines:
@@ -445,14 +536,14 @@ class ProfileDialog(QtWidgets.QDialog):
             return
         axis_delta = abs(self._marker_positions[1] - self._marker_positions[0])
         disp_value, disp_unit = self._format_marker_delta(axis_delta)
-        info = f"Markers ╬ö: {disp_value:.3f} {disp_unit}"
+        info = f"Markers +: {disp_value:.3f} {disp_unit}"
         if self._marker_axis_scale is not None:
             info += f" ({axis_delta:.1f} px)"
         if self._marker_reference and self._marker_reference.get('y') is not None:
             v0 = self._marker_value_at(self._marker_positions[0])
             v1 = self._marker_value_at(self._marker_positions[1])
             if v0 is not None and v1 is not None:
-                info += f" | values: {v0:.3g} ΓåÆ {v1:.3g} (╬ö={abs(v1-v0):.3g})"
+                info += f" | values: {v0:.3g} G {v1:.3g} (+={abs(v1-v0):.3g})"
         self.marker_info.setText(info)
         self._remember_marker_positions()
         self._update_marker_annotation(axis_delta)
@@ -463,10 +554,7 @@ class ProfileDialog(QtWidgets.QDialog):
             self._marker_saved_positions = list(self._marker_positions)
 
     def _format_marker_delta(self, axis_delta):
-        unit = self._marker_display_unit or 'px'
-        if self._marker_axis_scale is not None:
-            return axis_delta * self._marker_axis_scale, unit or 'nm'
-        return axis_delta, unit or 'px'
+        return format_marker_delta(axis_delta, self._marker_axis_scale, self._marker_display_unit)
 
     def _update_marker_annotation(self, axis_delta, arrow_y=None):
         if not self._markers_enabled or len(self._marker_positions) < 2:
@@ -680,8 +768,7 @@ class ProfileDialog(QtWidgets.QDialog):
         self._marker_arrow_drag = y_level - event.ydata
 
     def _axis_label(self, unit):
-        unit = unit or 'px'
-        return f"d ({unit})"
+        return axis_label(unit)
 
     def _on_plot_option_changed(self, _checked=False):
         self.update_profiles(self._active, self._saved)
@@ -1201,3 +1288,7 @@ class ProfileDialog(QtWidgets.QDialog):
         blocks.append("\n".join(rows))
         QtWidgets.QApplication.clipboard().setText("\n\n".join(blocks))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Profiles copied", self)
+
+
+
+

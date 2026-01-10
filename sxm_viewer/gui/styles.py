@@ -162,3 +162,6 @@ CANVAS_REMOVE_BUTTON_STYLE = (
     " background-color: #8f2525;"
     "}"
 )
+
+
+

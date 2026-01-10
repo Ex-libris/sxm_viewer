@@ -869,3 +869,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         return self._arr
 
 
+
+
+
