@@ -309,6 +309,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         details_layout = QtWidgets.QVBoxLayout(details_group)
         self.meta_box = QtWidgets.QTextEdit()
         self.meta_box.setReadOnly(True)
+        # Keep the background transparent so HTML metadata respects the application palette
+        # when switching between light and dark modes.
+        try:
+            self.meta_box.setStyleSheet("QTextEdit { background-color: transparent; }")
+        except Exception:
+            pass
         self.meta_box.setFont(meta_font)
         self.meta_box.setMinimumWidth(380)
         try:

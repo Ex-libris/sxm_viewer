@@ -216,7 +216,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         relative_row = f"<tr><td style='color:{label_color}'>Relative zero</td><td style='text-align:right'>{zero_offset:.6g} {esc(unit_display)}</td></tr>"
 
     html = f"""
-    <div style='font-family:Segoe UI, Arial; font-size:14px; color:{text_color}'>
+    <div style='font-family:Segoe UI, Arial; font-size:14px; color:{text_color}; background: transparent;'>
       <div style='font-weight:600; font-size:16px; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
       {key_section}
       <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
