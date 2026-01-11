@@ -168,6 +168,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self.ax = fig.add_subplot(111)
         self.ax_top = self.ax.twiny()
         self.ax_top.set_visible(False)
+        self.ax_right = self.ax.twinx()
+        self.ax_right.set_visible(False)
         self._relative_axes = True
         self._font_scale = 1.0
         self.ax.set_xlabel(axis_label('px'))
@@ -260,6 +262,10 @@ class ProfileDialog(QtWidgets.QDialog):
         self.precision_cb.setChecked(False)
         self.precision_cb.toggled.connect(self._on_plot_option_changed)
         plot_layout.addWidget(self.precision_cb)
+        self.multi_channel_cb = QtWidgets.QCheckBox("Multi-channel")
+        self.multi_channel_cb.setChecked(False)
+        self.multi_channel_cb.toggled.connect(self._on_plot_option_changed)
+        plot_layout.addWidget(self.multi_channel_cb)
         # Preview control disabled because the dialog preview is commented out to save resources.
         # self.preview_toggle_cb = QtWidgets.QCheckBox("Show preview")
         # self.preview_toggle_cb.setChecked(True)
@@ -354,9 +360,11 @@ class ProfileDialog(QtWidgets.QDialog):
         try:
             self.ax.tick_params(axis='both', labelsize=tick_size)
             self.ax_top.tick_params(axis='both', labelsize=tick_size)
+            self.ax_right.tick_params(axis='both', labelsize=tick_size)
             self.ax.xaxis.label.set_fontsize(label_size)
             self.ax.yaxis.label.set_fontsize(label_size)
             self.ax_top.xaxis.label.set_fontsize(label_size)
+            self.ax_right.yaxis.label.set_fontsize(label_size)
         except Exception:
             pass
         for widget in (self.stats, self.marker_info):
@@ -865,6 +873,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self.ax.clear()
         self.ax_top.clear()
         self.ax_top.set_visible(False)
+        self.ax_right.clear()
+        self.ax_right.set_visible(False)
         self.ax.set_xlabel(self._axis_label(axis_label_unit))
         self._apply_ylabel(reference)
         show_points = bool(self.show_points_cb.isChecked()) if hasattr(self, 'show_points_cb') else False
@@ -879,6 +889,12 @@ class ProfileDialog(QtWidgets.QDialog):
         ref_points = None
         ref_length = None
         marker_dataset = active_profile if active_profile else (saved_profiles[0] if saved_profiles else None)
+        
+        # Add extra channels if requested
+        if self.multi_channel_cb.isChecked() and active_profile and active_profile.get('extra_channels'):
+            for extra in active_profile.get('extra_channels', []):
+                datasets.append((extra.get('name', 'Extra'), extra, True))
+
         for label, data, is_active in datasets:
             x = data.get('x_nm')
             if x is None:
@@ -889,7 +905,22 @@ class ProfileDialog(QtWidgets.QDialog):
             color = data.get('color') or ('#ffd54f' if is_active else '#80cbc4')
             lw = 1.5 if is_active else 1.0
             alpha = line_alpha_active if is_active else line_alpha_overlay
-            line, = self.ax.plot(
+            
+            # Determine axis
+            target_ax = self.ax
+            data_unit = data.get('unit') or ''
+            ref_unit = (reference.get('unit') if reference else '') or ''
+            if data_unit != ref_unit:
+                target_ax = self.ax_right
+                self.ax_right.set_visible(True)
+                self.ax_right.set_ylabel(f"{label} ({data_unit})")
+                self.ax_right.yaxis.set_label_position("right")
+                self.ax_right.yaxis.label.set_color(color)
+                self.ax_right.tick_params(axis='y', colors=color)
+                self.ax_right.spines['right'].set_color(color)
+                self.ax_right.spines['right'].set_visible(True)
+
+            line, = target_ax.plot(
                 x, y, color=color, lw=lw, label=label,
                 linestyle=line_style, marker=marker_style, markersize=marker_size,
                 markeredgewidth=0.9 if show_points else 0.0,
@@ -899,7 +930,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 alpha=alpha,
             )
             self._line_handles.append(line)
-            if is_active:
+            if is_active and label == 'Active':
                 ref_points = x
                 ref_length = data.get('length_nm')
         if marker_dataset is not None:
@@ -951,6 +982,20 @@ class ProfileDialog(QtWidgets.QDialog):
                 self._splitter.setSizes([int(total * 0.7), int(total * 0.3)])
         except Exception:
             pass
+        
+        # Re-apply right axis styling if it was used, as _apply_plot_theme may have reset colors
+        if self.ax_right.get_visible():
+            reference = active_profile or (saved_profiles[0] if saved_profiles else None)
+            ref_unit = (reference.get('unit') if reference else '') or ''
+            for label, data, is_active in datasets:
+                data_unit = data.get('unit') or ''
+                if data_unit != ref_unit:
+                    color = data.get('color') or ('#ffd54f' if is_active else '#80cbc4')
+                    self.ax_right.yaxis.label.set_color(color)
+                    self.ax_right.tick_params(axis='y', colors=color)
+                    self.ax_right.spines['right'].set_color(color)
+                    break
+
         self.canvas.draw_idle()
 
     def _populate_profile_list(self, active_profile, saved_profiles):
@@ -1066,7 +1111,7 @@ class ProfileDialog(QtWidgets.QDialog):
             self.canvas.figure.set_edgecolor(fig_face)
         except Exception:
             pass
-        for axis in (self.ax, self.ax_top):
+        for axis in (self.ax, self.ax_top, self.ax_right):
             try:
                 axis.set_facecolor(ax_face)
                 axis.tick_params(colors=text, labelcolor=text)
@@ -1265,7 +1310,3 @@ class ProfileDialog(QtWidgets.QDialog):
         blocks.append("\n".join(rows))
         QtWidgets.QApplication.clipboard().setText("\n\n".join(blocks))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Profiles copied", self)
-
-
-
-

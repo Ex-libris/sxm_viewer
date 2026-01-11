@@ -15,9 +15,11 @@ from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib
+import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets
-from ..thumbnail_render import sample_array_value
+from ..thumbnail_render import sample_array_value, array_to_qimage
 
 class MultiPreviewCanvas(FigureCanvas):
     def __init__(self, parent=None, figsize=(6,6)):
@@ -79,6 +81,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_highlight_cb = None
         self._profile_label_scale = 1.0
         self._view_font_scale = 1.0
+        self._colorbar_orientation = 'vertical'
+        self._show_ticks = True
+        self._show_colorbar = True
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
@@ -94,6 +99,17 @@ class MultiPreviewCanvas(FigureCanvas):
         self._angle_cids = []
         self._angle_drag_origin = None
         self.angle_callback = None
+        self.scale_bar_enabled = False
+        self._scale_bar_pos = (0.94, 0.06)  # default lower right (axes coords)
+        self._scale_bar_artists = []
+        self._scale_bar_cids = []
+        self._scale_bar_drag_start = None
+        self._profile_echo_artists = []
+        self._scale_bar_settings = {
+            'text_color': None,
+            'bar_color': None,
+            'font_family': 'sans-serif'
+        }
 
     def draw(self):
         try:
@@ -154,7 +170,13 @@ class MultiPreviewCanvas(FigureCanvas):
     def _redraw(self):
         self.fig.clf()
         self._ax_view_map = {}
+        self._scale_bar_artists = []
         self._colorbars = []
+        # Reset profile artists as figure was cleared
+        self._profile_line = None
+        self._profile_p0 = None
+        self._profile_p1 = None
+        self._profile_echo_artists = []
         n = len(self.views)
         if n == 0:
             self.draw(); return
@@ -184,20 +206,40 @@ class MultiPreviewCanvas(FigureCanvas):
                 im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
             ax.set_autoscale_on(False)
             cbar_label = v.get('colorbar_label') or v.get('unit', '')
-            if cbar_label:
+            if cbar_label and self._show_colorbar:
                 try:
                     divider = make_axes_locatable(ax)
-                    cax = divider.append_axes("right", size="4%", pad=0.02)
-                    cbar = self.fig.colorbar(im, cax=cax, orientation='vertical')
-                    cbar.set_label(cbar_label)
-                    self._colorbars.append(cbar)
+                    if self._colorbar_orientation == 'horizontal':
+                        cax = divider.append_axes("bottom", size="5%", pad=0.08)
+                        cbar = self.fig.colorbar(im, cax=cax, orientation='horizontal')
+                        cbar.set_label(cbar_label)
+                        cbar.ax.xaxis.set_label_coords(0.5, 0.5)
+                        cbar.ax.xaxis.label.set_horizontalalignment('center')
+                        cbar.ax.xaxis.label.set_verticalalignment('center')
+                    else:
+                        cax = divider.append_axes("right", size="4%", pad=0.02)
+                        cbar = self.fig.colorbar(im, cax=cax, orientation='vertical')
+                        cbar.set_label(cbar_label)
+                        cbar.ax.yaxis.set_label_coords(0.5, 0.5)
+                        cbar.ax.yaxis.label.set_horizontalalignment('center')
+                        cbar.ax.yaxis.label.set_verticalalignment('center')
                 except Exception:
-                    cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
+                    cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02, orientation=self._colorbar_orientation)
                     cbar.set_label(cbar_label)
-                    self._colorbars.append(cbar)
+                if not self._show_ticks:
+                    cbar.set_ticks([])
+                self._colorbars.append(cbar)
             title = v.get('title', '')
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
+            if not self._show_ticks:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            if self.scale_bar_enabled:
+                try:
+                    self._add_scale_bar(ax, v)
+                except Exception:
+                    pass
         try: self.fig.tight_layout()
         except Exception: pass
         self._apply_view_theme()
@@ -205,7 +247,189 @@ class MultiPreviewCanvas(FigureCanvas):
         # if profile mode is enabled, (re)create artists on main ax
         if self.profile_enabled:
             self._ensure_profile_artists()
+            self._emit_profile()
         self.draw()
+
+    def enable_scale_bar(self, enable: bool):
+        if enable == self.scale_bar_enabled:
+            return
+        self.scale_bar_enabled = enable
+        if enable:
+            self._connect_scale_bar_events()
+        else:
+            self._disconnect_scale_bar_events()
+        self._redraw()
+
+    def _connect_scale_bar_events(self):
+        if self._scale_bar_cids:
+            return
+        self._scale_bar_cids = [
+            self.mpl_connect('button_press_event', self._on_sb_press),
+            self.mpl_connect('motion_notify_event', self._on_sb_motion),
+            self.mpl_connect('button_release_event', self._on_sb_release),
+        ]
+
+    def _disconnect_scale_bar_events(self):
+        for cid in self._scale_bar_cids:
+            self.mpl_disconnect(cid)
+        self._scale_bar_cids = []
+
+    def _calculate_best_scale_bar(self, width, unit):
+        if width <= 0:
+            return 1.0, unit
+        # Target roughly 15-20% of the image width
+        target = width * 0.18
+        exponent = math.floor(math.log10(target))
+        fraction = target / (10**exponent)
+        
+        # Candidates for "elegant" sizes: 1, 2, 3, 4, 5, 10
+        candidates = [1, 2, 3, 4, 5, 10]
+        best_mantissa = min(candidates, key=lambda x: abs(x - fraction))
+        size = best_mantissa * (10**exponent)
+        
+        # Auto-format label for common units
+        label = f"{size:g} {unit}"
+        if unit == 'nm':
+            if size < 1.0:
+                label = f"{size*1000:.0f} pm"
+            elif size >= 1000:
+                label = f"{size/1000:.2g} µm"
+            else:
+                label = f"{size:g} nm"
+        elif unit == 'µm':
+            if size < 1.0:
+                label = f"{size*1000:.0f} nm"
+            else:
+                label = f"{size:g} µm"
+        
+        return size, label
+
+    def _add_scale_bar(self, ax, view):
+        extent = view.get('extent')
+        if extent is None:
+            # Fallback for pixel coords
+            h, w = np.shape(view['arr'])
+            width = w
+            unit = 'px'
+        else:
+            width = abs(extent[1] - extent[0])
+            unit = view.get('axis_unit') or 'nm'
+            
+        size, label = self._calculate_best_scale_bar(width, unit)
+        
+        font_scale = getattr(self, '_view_font_scale', 1.0)
+        sb = AnchoredSizeBar(ax.transData, size, label, 
+                             loc='center',  # Anchor point on the artist itself
+                             pad=0.4, borderpad=0, sep=3, 
+                             frameon=False, 
+                             size_vertical=width*0.004*font_scale,
+                             color='white',
+                             label_top=True,
+                             bbox_to_anchor=self._scale_bar_pos,
+                             bbox_transform=ax.transAxes)
+        
+        # Apply font scaling
+        sb.size_bar.get_children()[0].set_linewidth(0) # remove border if any
+        text = sb.txt_label.get_children()[0]
+        
+        text.set_fontsize(10 * font_scale)
+        text.set_fontweight('bold')
+        sb.set_zorder(20)
+        
+        ax.add_artist(sb)
+        self._scale_bar_artists.append(sb)
+
+    def _on_sb_press(self, event):
+        if not self.scale_bar_enabled: return
+        
+        # Check if we clicked a scale bar
+        target_sb = None
+        for sb in self._scale_bar_artists:
+            if sb.contains(event)[0]:
+                target_sb = sb
+                break
+        
+        if target_sb is None:
+            return
+
+        if event.button == 1:
+            self._scale_bar_drag_start = (event.x, event.y)
+        elif event.button == 3:
+            self._show_sb_context_menu(event)
+
+    def _show_sb_context_menu(self, event):
+        menu = QtWidgets.QMenu(self)
+        
+        col_menu = menu.addMenu("Colors")
+        txt_act = col_menu.addAction("Text Color")
+        bar_act = col_menu.addAction("Bar Color")
+        
+        font_menu = menu.addMenu("Font")
+        # Top common fonts in Python/World (Windows/Linux/Mac safe-ish subset)
+        fonts = [
+            "Arial", "DejaVu Sans", "Times New Roman", "Courier New",
+            "Verdana", "Tahoma", "Georgia", "Segoe UI",
+            "Trebuchet MS", "Impact", "Calibri", "Cambria"
+        ]
+        for font_name in fonts:
+            act = font_menu.addAction(font_name)
+            # Show font in its own style
+            try:
+                f = QtGui.QFont(font_name)
+                f.setPointSize(10)
+                act.setFont(f)
+            except Exception:
+                pass
+            act.triggered.connect(lambda checked, f=font_name: self._set_sb_font(f))
+            
+        txt_act.triggered.connect(self._pick_sb_text_color)
+        bar_act.triggered.connect(self._pick_sb_bar_color)
+        
+        if getattr(event, 'guiEvent', None):
+            menu.exec_(event.guiEvent.globalPos())
+
+    def _set_sb_font(self, font):
+        self._scale_bar_settings['font_family'] = font
+        self._redraw()
+
+    def _pick_sb_text_color(self):
+        col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Text Color")
+        if col.isValid():
+            self._scale_bar_settings['text_color'] = col.name()
+            self._redraw()
+
+    def _pick_sb_bar_color(self):
+        col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Bar Color")
+        if col.isValid():
+            self._scale_bar_settings['bar_color'] = col.name()
+            self._redraw()
+
+    def _on_sb_motion(self, event):
+        if self._scale_bar_drag_start is None:
+            if self.scale_bar_enabled and event.inaxes:
+                for sb in self._scale_bar_artists:
+                    if sb.contains(event)[0]:
+                        self.setCursor(QtCore.Qt.SizeAllCursor)
+                        return
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            return
+
+        if event.inaxes is None: return
+        ax = event.inaxes
+        dx = (event.x - self._scale_bar_drag_start[0]) / ax.bbox.width
+        dy = (event.y - self._scale_bar_drag_start[1]) / ax.bbox.height
+        cur_x, cur_y = self._scale_bar_pos
+        self._scale_bar_pos = (cur_x + dx, cur_y + dy)
+        self._scale_bar_drag_start = (event.x, event.y)
+        
+        for sb in self._scale_bar_artists:
+            if sb.axes:
+                sb.set_bbox_to_anchor(self._scale_bar_pos, sb.axes.transAxes)
+            
+        self.draw_idle()
+
+    def _on_sb_release(self, event):
+        self._scale_bar_drag_start = None
 
     # ---------- Interactive profile helpers ----------
     def set_profile_callback(self, cb):
@@ -434,12 +658,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.outline.set_edgecolor(text_color)
             except Exception:
                 pass
+        # Update scale bar colors
+        sb_settings = getattr(self, '_scale_bar_settings', {})
+        sb_text_col = sb_settings.get('text_color') or text_color
+        sb_bar_col = sb_settings.get('bar_color') or text_color
+        
+        for sb in self._scale_bar_artists:
+            try:
+                sb.size_bar.get_children()[0].set_color(sb_bar_col)
+                sb.txt_label.get_children()[0].set_color(sb_text_col)
+            except Exception:
+                pass
         if self.angle_pts:
             self._update_angle_artists()
         self.draw_idle()
 
     def _apply_view_font_scale(self):
-        scale = max(0.6, min(1.8, getattr(self, '_view_font_scale', 1.0)))
+        scale = max(0.6, min(2.5, getattr(self, '_view_font_scale', 1.0)))
         tick_size = 8 * scale
         label_size = 10 * scale
         title_size = 9 * scale
@@ -456,6 +691,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.ax.tick_params(labelsize=tick_size)
                 cbar.ax.yaxis.label.set_fontsize(label_size)
                 cbar.ax.xaxis.label.set_fontsize(label_size)
+            except Exception:
+                pass
+        # Update scale bar font size
+        for sb in self._scale_bar_artists:
+            try:
+                sb.txt_label.get_children()[0].set_fontsize(10 * scale)
             except Exception:
                 pass
         self.draw_idle()
@@ -501,7 +742,7 @@ class MultiPreviewCanvas(FigureCanvas):
             delta = event.angleDelta().y() if hasattr(event, 'angleDelta') else 0
             if delta:
                 step = 0.05 * (1 if delta > 0 else -1)
-                self._view_font_scale = min(1.8, max(0.6, self._view_font_scale + step))
+                self._view_font_scale = min(2.5, max(0.6, self._view_font_scale + step))
                 self._apply_view_font_scale()
             event.accept()
             return
@@ -579,6 +820,25 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_endpoint_labels = self._create_endpoint_labels((x0, y0, x1, y1), color)
             self._profile_label = self._create_profile_id_label((x0, y0, x1, y1), "Active", color)
             self._update_profile_markers()
+        
+        # Clear existing echo artists to prevent duplicates
+        for entry in self._profile_echo_artists:
+            for art in entry.values():
+                try: art.remove()
+                except Exception: pass
+        self._profile_echo_artists = []
+        x0, y0, x1, y1 = self.profile_pts
+        color = self._active_profile_color
+        for ax in self._ax_view_map:
+            if ax is self.main_ax:
+                continue
+            try:
+                l, = ax.plot([x0,x1],[y0,y1], color=color, lw=2, alpha=0.95, zorder=9)
+                p0, = ax.plot([x0],[y0], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
+                p1, = ax.plot([x1],[y1], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
+                self._profile_echo_artists.append({'line': l, 'p0': p0, 'p1': p1})
+            except Exception:
+                pass
 
     def _ensure_angle_artists(self):
         if self.main_ax is None:
@@ -771,6 +1031,11 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         self._profile_endpoint_labels = []
+        for entry in self._profile_echo_artists:
+            for art in entry.values():
+                try: art.remove()
+                except Exception: pass
+        self._profile_echo_artists = []
         self._clear_profile_hud()
         self.draw_idle()
 
@@ -781,6 +1046,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line.set_data([x0,x1],[y0,y1])
         self._profile_p0.set_data([x0],[y0])
         self._profile_p1.set_data([x1],[y1])
+        for entry in self._profile_echo_artists:
+            try:
+                entry['line'].set_data([x0,x1],[y0,y1])
+                entry['p0'].set_data([x0],[y0])
+                entry['p1'].set_data([x1],[y1])
+            except Exception: pass
         self._update_profile_markers()
         self._update_profile_marker_artists()
         self.draw_idle()
@@ -795,6 +1066,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line.set_data([x0, x1], [y0, y1])
         self._profile_p0.set_data([x0], [y0])
         self._profile_p1.set_data([x1], [y1])
+        for entry in self._profile_echo_artists:
+            try:
+                entry['line'].set_data([x0,x1],[y0,y1])
+                entry['p0'].set_data([x0],[y0])
+                entry['p1'].set_data([x1],[y1])
+            except Exception: pass
         self._update_profile_labels()
         self.draw_idle()
 
@@ -1197,11 +1474,11 @@ class MultiPreviewCanvas(FigureCanvas):
             return min_idx
         return None
 
-    def _build_profile_data(self, pts, color=None):
+    def _build_profile_data(self, pts, color=None, view=None):
         if pts is None or not self.views:
             return None
         try:
-            v0 = self.views[0]
+            v0 = view if view is not None else self.views[0]
             arr = np.asarray(v0['arr'], dtype=float)
             h, w = arr.shape
             extent = v0.get('extent', None)
@@ -1265,7 +1542,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 'distance_unit': distance_unit if x_phys is not None else 'px',
                 'color': color,
                 'label': self._format_profile_label(pts),
-                'relative_axes': bool(self.views[0].get('relative_axes')),
+                'relative_axes': bool(v0.get('relative_axes')),
                 'meta': meta,
             }
         except Exception:
@@ -1791,7 +2068,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if not callable(self.profile_callback):
             self._emit_profile_state()
             return
-        active = self._build_profile_data(self.profile_pts, color=self._active_profile_color)
+        active = self._build_profile_data(self.profile_pts, color=self._active_profile_color, view=self.views[0] if self.views else None)
         if active:
             ref = active.get('x_nm') if active.get('x_nm') is not None else active.get('x_px')
             if ref is not None:
@@ -1806,6 +2083,19 @@ class MultiPreviewCanvas(FigureCanvas):
                         self._update_profile_marker_artists()
                 except Exception:
                     pass
+            # Build extra channels if present
+            if len(self.views) > 1:
+                extras = []
+                extra_colors = ['#ff4081', '#00e5ff', '#76ff03', '#d500f9']
+                for i, v in enumerate(self.views[1:]):
+                    col = extra_colors[i % len(extra_colors)]
+                    p = self._build_profile_data(self.profile_pts, color=col, view=v)
+                    if p:
+                        name = v.get('colorbar_label') or v.get('title') or f"Ch{i+2}"
+                        p['name'] = name
+                        extras.append(p)
+                active['extra_channels'] = extras
+
         saved_data = []
         for entry in self._saved_profiles:
             data = entry.get('data')
@@ -1845,6 +2135,13 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _on_base_click(self, event):
         if event is None or event.inaxes is None:
+            return
+        # If clicking on a scale bar, do not trigger base canvas actions (like drag/copy)
+        if self.scale_bar_enabled:
+            for sb in self._scale_bar_artists:
+                if sb.contains(event)[0]:
+                    return
+        if self.scale_bar_enabled and self._scale_bar_drag_start is not None:
             return
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
@@ -1893,6 +2190,21 @@ class MultiPreviewCanvas(FigureCanvas):
         save_act = menu.addAction("Save image as...")
         save_svg_act = menu.addAction("Save view as SVG...")
         save_pdf_act = menu.addAction("Save view as PDF...")
+        
+        menu.addSeparator()
+        reset_zoom_act = menu.addAction("Reset Zoom")
+        
+        cbar_text = "Horizontal Colorbar" if self._colorbar_orientation == 'vertical' else "Vertical Colorbar"
+        toggle_cbar_act = menu.addAction(cbar_text)
+
+        menu.addSeparator()
+        show_ticks_act = menu.addAction("Show Ticks")
+        show_ticks_act.setCheckable(True)
+        show_ticks_act.setChecked(self._show_ticks)
+        show_cbar_act = menu.addAction("Show Colorbar")
+        show_cbar_act.setCheckable(True)
+        show_cbar_act.setChecked(self._show_colorbar)
+        
         chosen = menu.exec_(event.guiEvent.globalPos())
         if chosen == copy_act:
             self._copy_view_to_clipboard(view)
@@ -1904,6 +2216,14 @@ class MultiPreviewCanvas(FigureCanvas):
             self._save_view_vector(view, "svg")
         elif chosen == save_pdf_act:
             self._save_view_vector(view, "pdf")
+        elif chosen == reset_zoom_act:
+            self._reset_view_zoom()
+        elif chosen == toggle_cbar_act:
+            self._toggle_colorbar_orientation()
+        elif chosen == show_ticks_act:
+            self._toggle_ticks()
+        elif chosen == show_cbar_act:
+            self._toggle_colorbar()
 
     def _save_view_to_file(self, view):
         try:
@@ -1921,7 +2241,8 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             fig = self._render_view_figure(view)
             buf = io.BytesIO()
-            fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
+            with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
             svg_bytes = buf.getvalue()
             mime = QtCore.QMimeData()
             mime.setData("image/svg+xml", svg_bytes)
@@ -1945,13 +2266,33 @@ class MultiPreviewCanvas(FigureCanvas):
             if not path.lower().endswith(f".{fmt}"):
                 path = f"{path}.{fmt}"
             fig = self._render_view_figure(view)
-            fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+            if fmt == 'svg':
+                with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                    fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+            else:
+                fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
             try:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
             except Exception:
                 pass
         except Exception:
             QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save vector image.")
+
+    def _reset_view_zoom(self):
+        self._view_font_scale = 1.0
+        self._apply_view_font_scale()
+
+    def _toggle_colorbar_orientation(self):
+        self._colorbar_orientation = 'horizontal' if self._colorbar_orientation == 'vertical' else 'vertical'
+        self._redraw()
+
+    def _toggle_ticks(self):
+        self._show_ticks = not self._show_ticks
+        self._redraw()
+
+    def _toggle_colorbar(self):
+        self._show_colorbar = not self._show_colorbar
+        self._redraw()
 
     def _render_view_figure(self, view):
         fig = Figure(figsize=(6, 6))
@@ -1972,19 +2313,70 @@ class MultiPreviewCanvas(FigureCanvas):
         ax.set_autoscale_on(False)
         cbar_label = view.get('colorbar_label') or view.get('unit', '')
         cbar = None
-        if cbar_label:
+        if cbar_label and self._show_colorbar:
             try:
                 divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="4%", pad=0.02)
-                cbar = fig.colorbar(im, cax=cax, orientation='vertical')
-                cbar.set_label(cbar_label)
+                if self._colorbar_orientation == 'horizontal':
+                    cax = divider.append_axes("bottom", size="5%", pad=0.08)
+                    cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
+                    cbar.set_label(cbar_label)
+                    cbar.ax.xaxis.set_label_coords(0.5, 0.5)
+                    cbar.ax.xaxis.label.set_horizontalalignment('center')
+                    cbar.ax.xaxis.label.set_verticalalignment('center')
+                else:
+                    cax = divider.append_axes("right", size="4%", pad=0.02)
+                    cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                    cbar.set_label(cbar_label)
+                    cbar.ax.yaxis.set_label_coords(0.5, 0.5)
+                    cbar.ax.yaxis.label.set_horizontalalignment('center')
+                    cbar.ax.yaxis.label.set_verticalalignment('center')
             except Exception:
-                cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
+                cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02, orientation=self._colorbar_orientation)
                 cbar.set_label(cbar_label)
+            if not self._show_ticks:
+                cbar.set_ticks([])
         title = view.get('title', '')
         if title:
             ax.set_title(title, fontsize=9)
         ax.tick_params(labelsize=8)
+
+        if self.scale_bar_enabled:
+            extent = view.get('extent')
+            if extent is None:
+                h, w = np.shape(view['arr'])
+                width = w
+                unit = 'px'
+            else:
+                width = abs(extent[1] - extent[0])
+                unit = view.get('axis_unit') or 'nm'
+            
+            size, label = self._calculate_best_scale_bar(width, unit)
+            font_scale = getattr(self, '_view_font_scale', 1.0)
+            
+            dark = bool(self._detail_dark)
+            default_color = '#f5f5f5' if dark else '#111111'
+            sb_settings = getattr(self, '_scale_bar_settings', {})
+            sb_text_col = sb_settings.get('text_color') or default_color
+            sb_bar_col = sb_settings.get('bar_color') or default_color
+            font_family = sb_settings.get('font_family', 'sans-serif')
+
+            sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
+                                 pad=0.4, borderpad=0, sep=3, frameon=False,
+                                 size_vertical=width*0.004*font_scale, color=sb_bar_col,
+                                 label_top=True,
+                                 bbox_to_anchor=self._scale_bar_pos, bbox_transform=ax.transAxes)
+            sb.size_bar.get_children()[0].set_linewidth(0)
+            text = sb.txt_label.get_children()[0]
+            text.set_color(sb_text_col)
+            text.set_fontfamily(font_family)
+            text.set_fontsize(10 * font_scale)
+            text.set_fontweight('bold')
+            ax.add_artist(sb)
+
+        if not self._show_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
         self._style_export_figure(fig, ax, cbar)
         try:
             fig.tight_layout()
@@ -2023,7 +2415,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.outline.set_edgecolor(text_color)
             except Exception:
                 pass
-        scale = max(0.6, min(1.8, getattr(self, '_view_font_scale', 1.0)))
+        scale = max(0.6, min(2.5, getattr(self, '_view_font_scale', 1.0)))
         tick_size = 8 * scale
         label_size = 10 * scale
         title_size = 9 * scale
@@ -2034,7 +2426,7 @@ class MultiPreviewCanvas(FigureCanvas):
             ax.title.set_fontsize(title_size)
         except Exception:
             pass
-        if cbar is not None:
+        if cbar is not None:    
             try:
                 cbar.ax.tick_params(labelsize=tick_size)
                 cbar.ax.yaxis.label.set_fontsize(label_size)
@@ -2111,6 +2503,3 @@ class SafeFigureCanvas(FigureCanvas):
         except np.linalg.LinAlgError:
             # Ignore transient singular transforms during layout updates.
             return
-
-
-

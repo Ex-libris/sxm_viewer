@@ -6,7 +6,10 @@ import json
 import re
 from pathlib import Path
 
-from ..._shared import QtCore, QtGui, QtWidgets
+import matplotlib
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from ..._shared import QtCore, QtGui, QtWidgets, np
+from ..thumbnail_render import array_to_qimage
 from .canvas_items import CanvasImageItem, AlignmentGuide, RubberBandSelection, _append_canvas_menu_actions
 
 _CANVAS_MIME = "application/x-sxm-view"
@@ -418,7 +421,11 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                 fig = item._render_vector_figure()
                 if fig is None:
                     continue
-                fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+                if fmt == 'svg':
+                    with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                        fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+                else:
+                    fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
             except Exception:
                 continue
 
@@ -445,7 +452,8 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                 if fig is None:
                     continue
                 buf = io.BytesIO()
-                fig.savefig(buf, format="svg")
+                with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                    fig.savefig(buf, format="svg")
                 svg = buf.getvalue().decode("utf-8", errors="ignore")
                 svg = re.sub(r"<\?xml[^>]*>\s*", "", svg, flags=re.IGNORECASE)
                 svg = re.sub(r"<!DOCTYPE[^>]*>\s*", "", svg, flags=re.IGNORECASE)
@@ -539,8 +547,3 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
             event.acceptProposedAction()
             return
         super().dropEvent(event)
-
-
-
-
-

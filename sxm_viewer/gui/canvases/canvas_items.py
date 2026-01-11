@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 
-from ..._shared import QtCore, QtGui, QtWidgets, np
+from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame
 
 
@@ -832,7 +832,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             if fig is None:
                 return
             buf = io.BytesIO()
-            fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
+            with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
             svg_bytes = buf.getvalue()
             mime = QtCore.QMimeData()
             mime.setData("image/svg+xml", svg_bytes)
@@ -856,7 +857,11 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             fig = self._render_vector_figure()
             if fig is None:
                 return
-            fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+            if fmt == 'svg':
+                with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                    fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
+            else:
+                fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
             try:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
             except Exception:
@@ -867,8 +872,3 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     @property
     def data_array(self) -> np.ndarray:
         return self._arr
-
-
-
-
-

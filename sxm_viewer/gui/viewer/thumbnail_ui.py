@@ -132,6 +132,8 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         vbox.addWidget(lbl)
         cap = QtWidgets.QLabel(Path(t).name); cap.setAlignment(QtCore.Qt.AlignCenter); cap.setMaximumHeight(18)
         cap.setFont(QtGui.QFont("Segoe UI", 9)); vbox.addWidget(cap)
+        cap.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        cap.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
         card_layout.addLayout(vbox)
         viewer.thumb_layout.addWidget(card, row, col)
         viewer.thumb_widgets[key] = card
@@ -264,10 +266,13 @@ def _handle_thumb_click(viewer, label_widget, event):
     fp = label_widget.property("file_path")
     ch_idx = int(label_widget.property("channel_index"))
     mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
-    if mods & QtCore.Qt.ShiftModifier:
-        viewer._toggle_thumb_multi_selection(fp)
-        return
-    if mods & QtCore.Qt.ControlModifier:
+    if mods & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier):
+        # If starting a multi-selection (set is empty), ensure the currently active single selection is included.
+        multi = getattr(viewer, 'thumb_multi_select', None)
+        if not multi and getattr(viewer, 'selected_file_for_thumbs', None):
+            if multi is None:
+                viewer.thumb_multi_select = set()
+            viewer.thumb_multi_select.add(str(viewer.selected_file_for_thumbs))
         viewer._toggle_thumb_multi_selection(fp)
         return
     viewer._clear_thumb_multi_selection(update_styles=False)
@@ -385,7 +390,3 @@ __all__ = [
     "_clear_thumb_multi_selection",
     "on_thumb_cmap_changed",
 ]
-
-
-
-

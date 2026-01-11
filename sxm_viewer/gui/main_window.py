@@ -15,6 +15,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
 
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status
 from ..config import (
     CONFIG_PATH,
@@ -309,6 +310,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_cmap_combo.setCurrentText(self.thumb_cmap); self.preview_cmap_combo.setCurrentText(self.preview_cmap)
         # Note: don't add these to the essentials panel here; we'll insert the layout into the Selected channel area below.
         controls_h.addWidget(self.channel_label); controls_h.addWidget(self.channel_dropdown)
+
         # Colormap combos will be shown in the main toolbar next to the dark-mode toggle (see main_window_toolbar)
         # Dark mode handled via toolbar toggle; placeholder kept for compatibility
         self.dark_mode_cb = None
@@ -542,6 +544,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         display_layout.addWidget(self.unit_display_cb)
         display_layout.addWidget(self.unit_relative_cb)
         display_layout.addWidget(self.relative_axes_cb)
+        self.scale_bar_cb = QtWidgets.QCheckBox("Scale bar")
+        self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
+        display_layout.addWidget(self.scale_bar_cb)
         preview_header.addWidget(display_strip)
         # Canvas launch button moved to the main toolbar for prominence.
         preview_panel_layout.addLayout(preview_header)
@@ -566,6 +571,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel_layout.addWidget(self.angle_value_label)
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
+        self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
         try:
@@ -679,6 +685,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.unit_display_cb.toggled.connect(self.on_unit_display_toggled)
         self.unit_relative_cb.toggled.connect(self.on_unit_relative_toggled)
         self.relative_axes_cb.toggled.connect(self.on_relative_axes_toggled)
+        self.scale_bar_cb.toggled.connect(self.on_scale_bar_toggled)
         # no size slider callback
         # inspector widgets removed -> no connections required here
         self.add_view_btn.clicked.connect(self.on_add_view)
@@ -1351,6 +1358,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
+    def on_scale_bar_toggled(self, checked: bool):
+        self.config['show_scale_bar'] = bool(checked)
+        save_config(self.config)
+        if self.preview_canvas:
+            self.preview_canvas.enable_scale_bar(bool(checked))
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
     # removed size change handler
 
     def _parse_header_datetime(self, header):
@@ -1988,14 +2003,8 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.per_file_channel_cmap[(str(file_key), int(channel_idx))] = new_cmap
             self.show_file_channel(file_key, channel_idx)
 
-    def render_and_save_file_using_config(self, header_path, config, out_dir):
-        """
-        Render the given file using the supplied config (as returned by get_current_detail_config)
-        and save a multi-panel PNG. Returns a list with the saved file path.
-        """
+    def _prepare_render_items(self, header_path, config):
         header_path = Path(header_path)
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
         header, fds = self.headers.get(str(header_path), (None, None))
         if header is None or fds is None:
             header, fds = parse_header(header_path)
@@ -2037,6 +2046,17 @@ class SXMGridViewer(QtWidgets.QWidget):
             render_items.append({'arr': arr_display, 'extent': extent, 'unit': unit_display, 'label': label,
                                  'cmap': cmap, 'vmin': vmin, 'vmax': vmax, 'relative_axes': bool(self.relative_axes),
                                  'colorbar_label': colorbar_label, 'title': title_text})
+        return render_items
+
+    def render_and_save_file_using_config(self, header_path, config, out_dir):
+        """
+        Render the given file using the supplied config (as returned by get_current_detail_config)
+        and save a multi-panel PNG. Returns a list with the saved file path.
+        """
+        header_path = Path(header_path)
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        render_items = self._prepare_render_items(header_path, config)
         if not render_items:
             raise ValueError("No matching channels for export.")
         fig_size = config.get('figure_size', (6, 5))
@@ -2078,6 +2098,121 @@ class SXMGridViewer(QtWidgets.QWidget):
             counter += 1
         fig.savefig(out_path, dpi=300, bbox_inches='tight')
         return [str(out_path)]
+
+    def copy_selected_as_svg(self, paths):
+        """Render selected files to a single SVG and copy to clipboard."""
+        import io
+        import matplotlib
+        from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+
+        if not paths:
+            return
+        
+        config = self.get_current_detail_config()
+        all_items = []
+        for p in paths:
+            try:
+                items = self._prepare_render_items(p, config)
+                if items:
+                    all_items.extend(items)
+            except Exception:
+                pass
+        
+        if not all_items:
+            QtWidgets.QMessageBox.warning(self, "Copy SVG", "No valid data found in selection.")
+            return
+
+        # Layout: simple grid
+        total = len(all_items)
+        cols = int(math.ceil(math.sqrt(total)))
+        rows = int(math.ceil(total / cols))
+        
+        # Base size on config but scale up for grid
+        base_w, base_h = config.get('figure_size', (6, 5))
+        fig = Figure(figsize=(base_w * cols, base_h * rows))
+        
+        # Apply theme to figure background
+        dark = bool(self.detail_dark_view)
+        fig_face = '#111217' if dark else '#ffffff'
+        fig.set_facecolor(fig_face)
+        
+        # Text color for axes titles etc
+        text_color = '#f5f5f5' if dark else '#111111'
+        
+        sb_enabled = self.scale_bar_cb.isChecked()
+        sb_pos = getattr(self.preview_canvas, '_scale_bar_pos', (0.94, 0.06))
+        
+        # Scale bar settings
+        sb_settings = getattr(self.preview_canvas, '_scale_bar_settings', {})
+        sb_font = sb_settings.get('font_family', 'sans-serif')
+        sb_text_col = sb_settings.get('text_color') or text_color
+        sb_bar_col = sb_settings.get('bar_color') or text_color
+        font_scale = getattr(self.preview_canvas, '_view_font_scale', 1.0)
+        show_ticks = getattr(self.preview_canvas, '_show_ticks', True)
+        show_cbar = getattr(self.preview_canvas, '_show_colorbar', True)
+
+        for i, item in enumerate(all_items, 1):
+            ax = fig.add_subplot(rows, cols, i)
+            arr_plot = item['arr']
+            flip = bool(item.get('relative_axes'))
+            origin = 'lower' if flip else 'upper'
+            if flip:
+                arr_plot = np.flipud(arr_plot)
+            
+            im = ax.imshow(arr_plot, extent=item['extent'], origin=origin, interpolation='nearest',
+                           aspect='equal' if item['extent'] else 'auto', cmap=item['cmap'],
+                           vmin=item['vmin'], vmax=item['vmax'])
+            
+            ax.set_title(item.get('title', item['label']), fontsize=9 * font_scale, color=text_color)
+            ax.tick_params(labelsize=8 * font_scale, colors=text_color, labelcolor=text_color)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+            
+            if not show_ticks:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            
+            cbar_label = item.get('colorbar_label') or item.get('unit')
+            if cbar_label and show_cbar:
+                try:
+                    divider = make_axes_locatable(ax)
+                    cax = divider.append_axes("right", size="5%", pad=0.05)
+                    cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                    cbar.set_label(cbar_label, size=10 * font_scale)
+                    cbar.ax.yaxis.label.set_color(text_color)
+                    cbar.ax.tick_params(colors=text_color, labelcolor=text_color, labelsize=8 * font_scale)
+                    if not show_ticks:
+                        cbar.set_ticks([])
+                    cbar.outline.set_edgecolor(text_color)
+                    cbar.ax.yaxis.set_label_coords(0.5, 0.5)
+                    cbar.ax.yaxis.label.set_horizontalalignment('center')
+                    cbar.ax.yaxis.label.set_verticalalignment('center')
+                except Exception:
+                    pass
+            
+            if sb_enabled and self.preview_canvas:
+                # Reuse logic from canvas to calculate size
+                width = abs(item['extent'][1] - item['extent'][0]) if item['extent'] else arr_plot.shape[1]
+                unit = 'nm' if item['extent'] else 'px' # simplified assumption based on prepare_render_items
+                size, label = self.preview_canvas._calculate_best_scale_bar(width, unit)
+                sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
+                                     pad=0.4, borderpad=0, sep=3, frameon=False,
+                                     size_vertical=width*0.004*font_scale, color=sb_bar_col,
+                                     label_top=True,
+                                     bbox_to_anchor=sb_pos, bbox_transform=ax.transAxes)
+                sb.size_bar.get_children()[0].set_linewidth(0)
+                text = sb.txt_label.get_children()[0]
+                text.set_color(sb_text_col)
+                text.set_fontsize(10 * font_scale)
+                text.set_fontweight('bold')
+                ax.add_artist(sb)
+
+        buf = io.BytesIO()
+        with matplotlib.rc_context({'svg.fonttype': 'none'}):
+            fig.savefig(buf, format="svg", bbox_inches="tight")
+        mime = QtCore.QMimeData()
+        mime.setData("image/svg+xml", buf.getvalue())
+        QtWidgets.QApplication.clipboard().setMimeData(mime)
 
     # ---------- Profile measurement (interactive line) ----------
     def _on_start_profile(self, force_enable=False):
@@ -2502,6 +2637,12 @@ class SXMGridViewer(QtWidgets.QWidget):
             clear_sel = QtWidgets.QAction("Clear filter (selected)", menu)
             clear_sel.triggered.connect(lambda _, paths=list(targets): self._clear_filter_for_paths(paths))
             menu.addAction(clear_sel)
+
+        menu.addSeparator()
+        copy_svg_act = QtWidgets.QAction("Copy selected as SVG (current view)", menu)
+        copy_svg_act.triggered.connect(lambda: self.copy_selected_as_svg(targets))
+        menu.addAction(copy_svg_act)
+
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None):
@@ -2821,10 +2962,3 @@ class SXMGridViewer(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, 'Purge config', 'Configuration and tags purged. Please reopen your folder.')
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, 'Purge failed', str(e))
-
-
-
-
-
-
-

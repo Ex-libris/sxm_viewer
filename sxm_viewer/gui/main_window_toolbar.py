@@ -106,6 +106,3 @@ def update_toolbar_actions(viewer, enabled: bool):
     for act in (viewer.toolbar_export_png_act, viewer.toolbar_export_xyz_act, viewer.toolbar_adjust_act):
         if act is not None:
             act.setEnabled(bool(enabled))
-
-
-
