@@ -105,6 +105,7 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setAcceptDrops(True)
         log_status("Initializing SXM Viewer...")
         self.setWindowTitle("SXM Viewer")
         self.resize(*MAIN_WINDOW_SIZE)
@@ -962,6 +963,27 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def _on_show_shortcuts_requested(self):
         self._set_shortcuts_panel_visible(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = Path(url.toLocalFile())
+                    if path.is_dir():
+                        event.acceptProposedAction()
+                        return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = Path(url.toLocalFile())
+                    if path.is_dir():
+                        self.load_folder(path)
+                        event.acceptProposedAction()
+                        return
+        super().dropEvent(event)
 
     def eventFilter(self, obj, event):
         # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
