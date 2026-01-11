@@ -104,6 +104,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         order = {'constant-height': 0, 'constant-current': 1, None: 2}
         files_iter.sort(key=lambda p: (order.get((viewer.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
 
+    viewer.current_thumb_files = [str(f) for f in files_iter]
     for i, t in enumerate(files_iter):
         key = str(t)
         if key not in viewer.headers:
@@ -266,17 +267,40 @@ def _handle_thumb_click(viewer, label_widget, event):
     fp = label_widget.property("file_path")
     ch_idx = int(label_widget.property("channel_index"))
     mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
-    if mods & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier):
-        # If starting a multi-selection (set is empty), ensure the currently active single selection is included.
-        multi = getattr(viewer, 'thumb_multi_select', None)
-        if not multi and getattr(viewer, 'selected_file_for_thumbs', None):
-            if multi is None:
-                viewer.thumb_multi_select = set()
-            viewer.thumb_multi_select.add(str(viewer.selected_file_for_thumbs))
-        viewer._toggle_thumb_multi_selection(fp)
+    
+    if mods & QtCore.Qt.ShiftModifier:
+        if not hasattr(viewer, 'thumb_multi_select') or viewer.thumb_multi_select is None:
+            viewer.thumb_multi_select = set()
+        
+        anchor = getattr(viewer, 'last_thumb_anchor', None)
+        if not anchor and getattr(viewer, 'selected_file_for_thumbs', None):
+            anchor = str(viewer.selected_file_for_thumbs)
+        if not anchor:
+            anchor = str(fp)
+            
+        current_files = getattr(viewer, 'current_thumb_files', [])
+        if str(anchor) in current_files and str(fp) in current_files:
+            idx1 = current_files.index(str(anchor))
+            idx2 = current_files.index(str(fp))
+            start, end = min(idx1, idx2), max(idx1, idx2)
+            subset = current_files[start : end+1]
+            if mods & QtCore.Qt.ControlModifier:
+                viewer.thumb_multi_select.update(subset)
+            else:
+                viewer.thumb_multi_select = set(subset)
+        else:
+            viewer.thumb_multi_select.add(str(fp))
+        viewer._refresh_thumb_selection_styles()
         return
+
+    if mods & QtCore.Qt.ControlModifier:
+        viewer._toggle_thumb_multi_selection(fp)
+        viewer.last_thumb_anchor = str(fp)
+        return
+
     viewer._clear_thumb_multi_selection(update_styles=False)
     viewer.on_thumbnail_clicked(fp, ch_idx)
+    viewer.last_thumb_anchor = str(fp)
     try:
         if viewer.show_spectra and viewer.spectros_by_image.get(str(fp)):
             entries = viewer.spectros_by_image.get(str(fp), [])

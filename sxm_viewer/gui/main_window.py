@@ -49,6 +49,7 @@ from ..utils.units import (
     _safe_float,
 )
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
+from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si
 from .minimap import FrameMiniMap
 from .detail_panels import (
     BatchExportSignals,
@@ -78,6 +79,10 @@ from .spectroscopy import popups as spectro_popups
 from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
+
+# Patch export module with missing dependency
+viewer_export.convert_to_si = convert_to_si
+
 from . import main_window_layout
 from . import main_window_spectro
 from . import main_window_toolbar
@@ -997,6 +1002,38 @@ class SXMGridViewer(QtWidgets.QWidget):
                     self._resize_thumbnail_scale(step)
                 event.accept()
                 return True
+        
+        # Rubber band selection on thumb_container
+        if obj is getattr(self, 'thumb_container', None):
+            if event.type() == QtCore.QEvent.MouseButtonPress:
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._rubber_band_origin = event.pos()
+                    if not hasattr(self, '_rubber_band'):
+                        self._rubber_band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Rectangle, self.thumb_container)
+                    self._rubber_band.setGeometry(QtCore.QRect(self._rubber_band_origin, QtCore.QSize()))
+                    self._rubber_band.show()
+                    
+                    if not hasattr(self, 'thumb_multi_select') or self.thumb_multi_select is None:
+                        self.thumb_multi_select = set()
+                    self._selection_before_drag = set(self.thumb_multi_select)
+                    
+                    if not (event.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier)):
+                        self._selection_before_drag = set()
+                        self._clear_thumb_multi_selection()
+                    return True
+            elif event.type() == QtCore.QEvent.MouseMove:
+                if hasattr(self, '_rubber_band') and self._rubber_band.isVisible():
+                    rect = QtCore.QRect(self._rubber_band_origin, event.pos()).normalized()
+                    self._rubber_band.setGeometry(rect)
+                    self._update_rubber_band_selection(rect, event.modifiers())
+                    return True
+            elif event.type() == QtCore.QEvent.MouseButtonRelease:
+                if hasattr(self, '_rubber_band') and self._rubber_band.isVisible():
+                    self._rubber_band.hide()
+                    if hasattr(self, '_selection_before_drag'):
+                        del self._selection_before_drag
+                    return True
+
         # When the thumbnail viewport or container is resized, debounce and repopulate so
         # the thumbnail grid recomputes columns responsively.
         if obj in (getattr(self, '_thumb_viewport', None),
@@ -1009,6 +1046,23 @@ class SXMGridViewer(QtWidgets.QWidget):
             # allow normal resize processing to continue
             return False
         return super().eventFilter(obj, event)
+
+    def _update_rubber_band_selection(self, rect, modifiers):
+        in_rect = set()
+        for key, widget in self.thumb_widgets.items():
+            if widget.geometry().intersects(rect):
+                in_rect.add(str(key))
+        
+        base = getattr(self, '_selection_before_drag', set())
+        if modifiers & QtCore.Qt.ControlModifier:
+            new_selection = base.symmetric_difference(in_rect)
+        elif modifiers & QtCore.Qt.ShiftModifier:
+            new_selection = base.union(in_rect)
+        else:
+            new_selection = in_rect
+            
+        self.thumb_multi_select = new_selection
+        self._refresh_thumb_selection_styles()
 
     def _thumb_dimensions(self):
         return viewer_thumb_ui._thumb_dimensions(self)
@@ -2311,6 +2365,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     # ---------- Spectroscopy helpers ----------
+    def on_load_molecule(self):
+        if self.preview_canvas:
+            self.preview_canvas._load_molecule_dialog()
+
     def on_spec_folder_browse(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select spectroscopy folder", str(self.spec_folder_path))
         if folder:

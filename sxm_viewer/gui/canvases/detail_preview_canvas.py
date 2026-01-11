@@ -16,9 +16,11 @@ from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib
+from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets
+from .molecular_overlay import Molecule, MoleculePropertiesDialog, get_cpk_color
 from ..thumbnail_render import sample_array_value, array_to_qimage
 
 class MultiPreviewCanvas(FigureCanvas):
@@ -35,6 +37,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._drag_candidate = None  # (view, QPoint start, QImage cache)
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
+        self.mpl_connect('motion_notify_event', self._on_molecule_motion)
+        self.mpl_connect('button_release_event', self._on_molecule_release)
         # profile (interactive line) state
         self.profile_enabled = False
         self.profile_pts = None  # (x0, y0, x1, y1) in data coords of main ax
@@ -110,6 +114,15 @@ class MultiPreviewCanvas(FigureCanvas):
             'bar_color': None,
             'font_family': 'sans-serif'
         }
+        # Molecular overlay state
+        self.molecules = []
+        self._molecule_drag_idx = None
+        self._molecule_drag_start = None
+        self._molecule_drag_start_px = None
+        self._molecule_drag_mol_start = None
+        self._molecule_drag_mol_angles = None
+        self._molecule_drag_mode = None
+        self._molecule_rotation_guide = None
 
     def draw(self):
         try:
@@ -240,6 +253,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._add_scale_bar(ax, v)
                 except Exception:
                     pass
+            # Draw molecules on every view
+            self._draw_molecules(ax)
         try: self.fig.tight_layout()
         except Exception: pass
         self._apply_view_theme()
@@ -249,6 +264,67 @@ class MultiPreviewCanvas(FigureCanvas):
             self._ensure_profile_artists()
             self._emit_profile()
         self.draw()
+
+    def _draw_molecules(self, ax):
+        if not self.molecules:
+            return
+
+        for mol in self.molecules:
+            coords = mol.get_transformed_coordinates()
+            if len(coords) == 0:
+                continue
+            
+            # Z-range for depth cueing
+            z_vals = coords[:, 2]
+            z_min = z_vals.min()
+            z_range = z_vals.ptp()
+            if z_range < 1e-6:
+                z_range = 1.0
+
+            # Draw Bonds
+            if 'Bonds' in mol.display_mode and mol.bonds:
+                lines = []
+                colors = []
+                linewidths = []
+                for (i, j) in mol.bonds:
+                    if i >= len(coords) or j >= len(coords): continue
+                    p1 = coords[i]
+                    p2 = coords[j]
+                    lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                    
+                    # Depth cueing for bonds
+                    z_mid = (p1[2] + p2[2]) * 0.5
+                    z_norm = (z_mid - z_min) / z_range
+                    alpha = 0.4 + 0.6 * z_norm
+                    colors.append((0.9, 0.9, 0.9, alpha)) # White/Grey bonds
+                    linewidths.append(1.0 + 2.0 * z_norm)
+                
+                lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
+                ax.add_collection(lc)
+
+            # Draw Atoms
+            if 'Atoms' in mol.display_mode:
+                # Sort atoms by Z for simple painter's algorithm
+                order = np.argsort(z_vals)
+                coords_sorted = coords[order]
+                elements_sorted = [mol.elements[i] for i in order]
+                
+                x = coords_sorted[:, 0]
+                y = coords_sorted[:, 1]
+                z = coords_sorted[:, 2]
+                
+                z_norm = (z - z_min) / z_range
+                sizes = 40 + 80 * z_norm
+                
+                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
+                final_colors = []
+                for i, (r, g, b, a) in enumerate(rgba_colors):
+                    depth_alpha = 0.4 + 0.6 * z_norm[i]
+                    final_colors.append((r, g, b, depth_alpha))
+                
+                ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black', linewidths=0.5, zorder=30)
+
 
     def enable_scale_bar(self, enable: bool):
         if enable == self.scale_bar_enabled:
@@ -2144,6 +2220,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.scale_bar_enabled and self._scale_bar_drag_start is not None:
             return
         ax = event.inaxes
+        
+        if self._check_molecule_hit(event):
+            return
+
         view = self._ax_view_map.get(ax)
         if self.profile_enabled and ax is self.main_ax:
             # avoid starting thumbnail drag/other actions while measuring profiles
@@ -2166,6 +2246,152 @@ class MultiPreviewCanvas(FigureCanvas):
         if view and getattr(event, 'guiEvent', None) is not None:
             pos = event.guiEvent.globalPos()
             self._drag_candidate = {'view': view, 'start': QtCore.QPoint(pos), 'image': None}
+
+    def _load_molecule_dialog(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Molecule", "", "Molecule Files (*.xyz *.pdb *.mol);;All Files (*)"
+        )
+        if path:
+            self.add_molecule(path)
+
+    def add_molecule(self, path):
+        try:
+            mol = Molecule(path)
+            # Center in current view if possible
+            if self.main_ax:
+                xlim = self.main_ax.get_xlim()
+                ylim = self.main_ax.get_ylim()
+                mol.offset = np.array([(xlim[0]+xlim[1])/2, (ylim[0]+ylim[1])/2, 0.0])
+            self.molecules.append(mol)
+            self._redraw()
+        except Exception as e:
+            print(f"Failed to load molecule: {e}")
+
+    def _clear_molecules(self):
+        self.molecules = []
+        self._redraw()
+
+    def _check_molecule_hit(self, event):
+        if not self.molecules or event.inaxes is None:
+            return False
+        
+        # Simple hit test: check distance to any atom in any molecule
+        # Iterate in reverse to pick top-most
+        for idx, mol in reversed(list(enumerate(self.molecules))):
+            coords = mol.get_transformed_coordinates()
+            if len(coords) == 0: continue
+            
+            # Map event data coords to display coords is hard without transform
+            # We'll just check data distance. 
+            # Assuming atoms are roughly 0.1-0.3 nm radius visually
+            dx = coords[:, 0] - event.xdata
+            dy = coords[:, 1] - event.ydata
+            dist_sq = dx*dx + dy*dy
+            min_dist = np.min(dist_sq)
+            
+            # Threshold: 0.5 nm radius click tolerance
+            if min_dist < 0.25: 
+                if event.button == 1:
+                    self._molecule_drag_idx = idx
+                    self._molecule_drag_start = (event.xdata, event.ydata)
+                    self._molecule_drag_start_px = (event.x, event.y)
+                    self._molecule_drag_mol_start = mol.offset.copy()
+                    self._molecule_drag_mol_angles = mol.angles.copy()
+                    
+                    key = str(event.key).lower() if event.key else ''
+                    if 'control' in key and 'shift' in key:
+                        self._molecule_drag_mode = 'rotate_3d'
+                    elif 'shift' in key:
+                        self._molecule_drag_mode = 'rotate_z'
+                    else:
+                        self._molecule_drag_mode = 'translate'
+                        
+                    return True
+                elif event.button == 3:
+                    self._show_molecule_menu(event, mol)
+                    return True
+        return False
+
+    def _on_molecule_motion(self, event):
+        if self._molecule_drag_idx is not None:
+            if event.xdata is None or event.ydata is None:
+                return
+            mol = self.molecules[self._molecule_drag_idx]
+            
+            if self._molecule_drag_mode == 'translate':
+                dx = event.xdata - self._molecule_drag_start[0]
+                dy = event.ydata - self._molecule_drag_start[1]
+                mol.offset = self._molecule_drag_mol_start + np.array([dx, dy, 0.0])
+            
+            elif self._molecule_drag_mode == 'rotate_z':
+                center = self._molecule_drag_mol_start
+                v_start = np.array([self._molecule_drag_start[0] - center[0], self._molecule_drag_start[1] - center[1]])
+                v_curr = np.array([event.xdata - center[0], event.ydata - center[1]])
+                if np.linalg.norm(v_start) > 0.01 and np.linalg.norm(v_curr) > 0.01:
+                    angle_start = np.arctan2(v_start[1], v_start[0])
+                    angle_curr = np.arctan2(v_curr[1], v_curr[0])
+                    delta_deg = np.degrees(angle_curr - angle_start)
+                    new_angles = self._molecule_drag_mol_angles.copy()
+                    new_angles[2] += delta_deg
+                    mol.angles = new_angles
+            
+            elif self._molecule_drag_mode == 'rotate_3d':
+                if event.x is None or event.y is None: return
+                dx_px = event.x - self._molecule_drag_start_px[0]
+                dy_px = event.y - self._molecule_drag_start_px[1]
+                sensitivity = 0.5 # degrees per pixel
+                new_angles = self._molecule_drag_mol_angles.copy()
+                new_angles[0] += dy_px * sensitivity
+                new_angles[1] += dx_px * sensitivity
+                mol.angles = new_angles
+
+            # Update rotation guide
+            if self._molecule_drag_mode in ('rotate_z', 'rotate_3d'):
+                if self._molecule_rotation_guide is None and self.main_ax:
+                    self._molecule_rotation_guide = patches.Circle(
+                        (mol.offset[0], mol.offset[1]), 
+                        radius=2.0, # Fixed visual radius or dynamic based on molecule size
+                        fill=False, edgecolor='yellow', linestyle='--', linewidth=1.5, alpha=0.6, zorder=40
+                    )
+                    self.main_ax.add_patch(self._molecule_rotation_guide)
+                elif self._molecule_rotation_guide:
+                    self._molecule_rotation_guide.center = (mol.offset[0], mol.offset[1])
+
+            self._redraw()
+
+    def _on_molecule_release(self, event):
+        if self._molecule_drag_idx is not None:
+            self._molecule_drag_idx = None
+            self._molecule_drag_start = None
+            self._molecule_drag_start_px = None
+            self._molecule_drag_mode = None
+            self._molecule_drag_mol_angles = None
+            
+            if self._molecule_rotation_guide:
+                try: self._molecule_rotation_guide.remove()
+                except: pass
+                self._molecule_rotation_guide = None
+                self._redraw()
+
+    def _show_molecule_menu(self, event, mol):
+        menu = QtWidgets.QMenu(self)
+        props_act = menu.addAction("Properties (Rotate/Scale)...")
+        dup_act = menu.addAction("Duplicate")
+        del_act = menu.addAction("Delete")
+        
+        action = menu.exec_(event.guiEvent.globalPos())
+        if action == props_act:
+            dlg = MoleculePropertiesDialog(mol, self, callback=self._redraw)
+            dlg.show()
+        elif action == dup_act:
+            new_mol = mol.copy()
+            new_mol.offset += np.array([1.0, 1.0, 0.0]) # Slight offset
+            self.molecules.append(new_mol)
+            self._redraw()
+        elif action == del_act:
+            if mol in self.molecules:
+                self.molecules.remove(mol)
+                self._redraw()
 
     def _copy_view_to_clipboard(self, view):
         try:
@@ -2205,6 +2431,10 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(self._show_colorbar)
         
+        menu.addSeparator()
+        load_mol_act = menu.addAction("Load Molecule (XYZ/PDB)...")
+        clear_mols_act = menu.addAction("Clear Molecules")
+
         chosen = menu.exec_(event.guiEvent.globalPos())
         if chosen == copy_act:
             self._copy_view_to_clipboard(view)
@@ -2224,6 +2454,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._toggle_ticks()
         elif chosen == show_cbar_act:
             self._toggle_colorbar()
+        elif chosen == load_mol_act:
+            self._load_molecule_dialog()
+        elif chosen == clear_mols_act:
+            self._clear_molecules()
 
     def _save_view_to_file(self, view):
         try:
@@ -2376,6 +2610,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if not self._show_ticks:
             ax.set_xticks([])
             ax.set_yticks([])
+
+        self._draw_molecules(ax)
 
         self._style_export_figure(fig, ax, cbar)
         try:

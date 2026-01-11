@@ -84,12 +84,16 @@ def build_browse_context_page(viewer):
     viewer.adjust_image_btn = QtWidgets.QPushButton("Adjust image")
     viewer.adjust_image_btn.setEnabled(False)
     viewer.adjust_image_btn.setToolTip("Adjust image scaling and filtering")
+    viewer.load_mol_btn = QtWidgets.QPushButton("Load Molecule")
+    viewer.load_mol_btn.setToolTip("Overlay a molecular structure (XYZ, PDB, MOL)")
+    viewer.load_mol_btn.clicked.connect(viewer.on_load_molecule)
     for btn in (
         viewer.add_view_btn,
         viewer.clear_views_btn,
         viewer.export_pngs_btn,
         viewer.export_xyz_btn,
         viewer.adjust_image_btn,
+        viewer.load_mol_btn,
     ):
         layout.addWidget(btn)
     layout.addStretch(1)
@@ -262,6 +266,3 @@ def create_shortcuts_panel(viewer):
     viewer.shortcuts_label.setTextFormat(QtCore.Qt.RichText)
     layout.addWidget(viewer.shortcuts_label)
     return frame
-
-
-
