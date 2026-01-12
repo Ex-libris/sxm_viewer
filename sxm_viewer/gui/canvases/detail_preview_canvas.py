@@ -1768,6 +1768,23 @@ class MultiPreviewCanvas(FigureCanvas):
         line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
         # Combine endpoints into one artist
         endpoints, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], marker='o', linestyle='None', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+        
+        artists = [line, endpoints]
+        
+        # Add echo artists for other views
+        for ax in self._ax_view_map:
+            if ax is self.main_ax:
+                continue
+            try:
+                l, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]],
+                             color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
+                ep, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]], 
+                              marker='o', linestyle='None', color=color,
+                              ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+                artists.extend([l, ep])
+            except Exception:
+                pass
+
         base_size = 8
         ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
         overlay_idx = len(self._saved_profiles) + 1
@@ -1783,7 +1800,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 lbl.set_visible(False)
             except Exception:
                 pass
-        artists = [line, endpoints]
         if ticks: artists.append(ticks)
         if text: artists.append(text)
         if overlay_label is not None:
@@ -1955,6 +1971,23 @@ class MultiPreviewCanvas(FigureCanvas):
                                   color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
         endpoints, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], marker='o', linestyle='None', color=color,
                                        ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+        
+        artists = [line, endpoints]
+        
+        # Add echo artists for other views
+        for ax in self._ax_view_map:
+            if ax is self.main_ax:
+                continue
+            try:
+                l, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]],
+                             color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
+                ep, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]], 
+                              marker='o', linestyle='None', color=color,
+                              ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+                artists.extend([l, ep])
+            except Exception:
+                pass
+
         base_size = 8
         ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
         overlay_idx = len(self._saved_profiles) + 1
@@ -1970,7 +2003,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 lbl.set_visible(False)
             except Exception:
                 pass
-        artists = [line, endpoints]
         if ticks: artists.append(ticks)
         if text: artists.append(text)
         if overlay_label is not None:
@@ -2004,17 +2036,32 @@ class MultiPreviewCanvas(FigureCanvas):
             artists = entry.get('artists', [])
             if not artists:
                 continue
-            line = artists[0]
             base_lw = entry.get('lw', 1.5)
-            try:
-                if idx == self._highlighted_overlay:
-                    line.set_linewidth(base_lw + 1.0)
-                    line.set_alpha(1.0)
-                else:
-                    line.set_linewidth(base_lw)
-                    line.set_alpha(0.35)
-            except Exception:
-                pass
+            
+            # Update all line artists (main + echoes)
+            for art in artists:
+                # Check if it's a line (has set_linewidth) and not markers (linestyle='None')
+                if hasattr(art, 'set_linewidth') and hasattr(art, 'get_linestyle'):
+                    if art.get_linestyle() != 'None':
+                        try:
+                            if idx == self._highlighted_overlay:
+                                art.set_linewidth(base_lw + 1.0)
+                                art.set_alpha(1.0)
+                            else:
+                                art.set_linewidth(base_lw)
+                                art.set_alpha(0.35)
+                        except Exception:
+                            pass
+                    # Optional: dim markers too
+                    elif art.get_linestyle() == 'None':
+                        try:
+                            if idx == self._highlighted_overlay:
+                                art.set_alpha(0.9)
+                            else:
+                                art.set_alpha(0.35)
+                        except Exception:
+                            pass
+
             for label in entry.get('endpoint_labels', []) or []:
                 try:
                     label.set_visible(idx == self._highlighted_overlay)
