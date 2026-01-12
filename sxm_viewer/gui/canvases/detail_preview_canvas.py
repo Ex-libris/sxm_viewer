@@ -2628,6 +2628,8 @@ class MultiPreviewCanvas(FigureCanvas):
         menu = QtWidgets.QMenu(self)
         copy_act = menu.addAction("Copy image")
         copy_svg_act = menu.addAction("Copy view as SVG (vector)")
+        copy_disp_png = menu.addAction("Copy displayed (PNG)")
+        copy_disp_svg = menu.addAction("Copy displayed (SVG)")
         save_act = menu.addAction("Save image as...")
         save_svg_act = menu.addAction("Save view as SVG...")
         save_pdf_act = menu.addAction("Save view as PDF...")
@@ -2655,6 +2657,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._copy_view_to_clipboard(view)
         elif chosen == copy_svg_act:
             self._copy_view_as_svg(view)
+        elif chosen == copy_disp_png:
+            self._copy_displayed("png")
+        elif chosen == copy_disp_svg:
+            self._copy_displayed("svg")
         elif chosen == save_act:
             self._save_view_to_file(view)
         elif chosen == save_svg_act:
@@ -2685,6 +2691,20 @@ class MultiPreviewCanvas(FigureCanvas):
             qimg.save(path, "PNG")
         except Exception:
             QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save image.")
+
+    def _copy_displayed(self, fmt='png'):
+        """Copy the current figure exactly as displayed (including overlays)."""
+        buf = io.BytesIO()
+        if fmt == 'svg':
+            with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                self.fig.savefig(buf, format='svg', bbox_inches='tight')
+            mime = QtCore.QMimeData()
+            mime.setData("image/svg+xml", buf.getvalue())
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+        else:
+            self.fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+            qimg = QtGui.QImage.fromData(buf.getvalue())
+            QtWidgets.QApplication.clipboard().setImage(qimg)
 
     def _copy_view_as_svg(self, view):
         try:

@@ -166,6 +166,8 @@ class ProfileDialog(QtWidgets.QDialog):
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
         self.ax = fig.add_subplot(111)
+        self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.canvas.customContextMenuRequested.connect(self._on_context_menu)
         self.ax_top = self.ax.twiny()
         self.ax_top.set_visible(False)
         self.ax_right = self.ax.twinx()
@@ -324,6 +326,30 @@ class ProfileDialog(QtWidgets.QDialog):
         self._context_source = None
         self._context_syncing = False
         self._preserve_cb = None
+
+    def _on_context_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        copy_png = menu.addAction("Copy plot (PNG)")
+        copy_svg = menu.addAction("Copy plot (SVG)")
+        action = menu.exec_(self.canvas.mapToGlobal(pos))
+        if action == copy_png:
+            self._copy_plot("png")
+        elif action == copy_svg:
+            self._copy_plot("svg")
+
+    def _copy_plot(self, fmt):
+        buf = io.BytesIO()
+        if fmt == "svg":
+            with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                self.canvas.figure.savefig(buf, format="svg", bbox_inches='tight')
+            data = buf.getvalue()
+            mime = QtCore.QMimeData()
+            mime.setData("image/svg+xml", data)
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+        else:
+            self.canvas.figure.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+            qimg = QtGui.QImage.fromData(buf.getvalue())
+            QtWidgets.QApplication.clipboard().setImage(qimg)
 
     def wheelEvent(self, event):
         try:
