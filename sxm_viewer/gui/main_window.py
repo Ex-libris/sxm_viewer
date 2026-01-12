@@ -170,8 +170,18 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
         }
-        self.spectro_marker_color_single = QtGui.QColor(255, 160, 0, 200)
-        self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
+        c_single = self.config.get('spectro_marker_color_single')
+        if c_single:
+            self.spectro_marker_color_single = QtGui.QColor(c_single)
+        else:
+            self.spectro_marker_color_single = QtGui.QColor(255, 20, 147, 255)
+        c_matrix = self.config.get('spectro_marker_color_matrix')
+        if c_matrix:
+            self.spectro_marker_color_matrix = QtGui.QColor(c_matrix)
+        else:
+            self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
+        self.spectro_marker_symbol = self.config.get('spectro_marker_symbol', 'circle')
+        self.spectro_marker_size = float(self.config.get('spectro_marker_size', 5.0))
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
         self._temp_reveal = set()
@@ -1230,6 +1240,15 @@ class SXMGridViewer(QtWidgets.QWidget):
     def _downsample_for_thumbnail(self, arr, thumb_w, thumb_h):
         return viewer_thumbnails._downsample_for_thumbnail(self, arr, thumb_w, thumb_h)
 
+    def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
+        return viewer_preview._map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=file_key)
+
+    def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None):
+        return viewer_preview._matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=file_key)
+
+    def _fallback_spec_coords(self, idx, xpix, ypix):
+        return viewer_preview._fallback_spec_coords(self, idx, xpix, ypix)
+
     def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds):
         """Draw tag borders, filter badges, and spectroscopy markers."""
         marker_defs = []
@@ -1267,7 +1286,16 @@ class SXMGridViewer(QtWidgets.QWidget):
             try:
                 xpix = int(header.get('xPixel', 128))
                 ypix = int(header.get('yPixel', xpix))
-                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix, matrix_as_points=False)
+                
+                matrix_as_points = False
+                entries = self.spectros_by_image.get(str(file_key), [])
+                for s in entries:
+                    if s.get('matrix_index') is not None:
+                        p = Path(s.get('path', ''))
+                        if "matrix" not in p.name.lower():
+                            matrix_as_points = True
+                            break
+                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix, matrix_as_points=matrix_as_points)
             except Exception:
                 marker_defs = []
         return marker_defs
@@ -2118,7 +2146,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             colorbar_label = label
             if unit_display:
                 colorbar_label = f"{label} [{unit_display}]"
-            title_text = f"{header_path.name}  {label}"
+            title_text = f"{header_path.name} - {label}"
             render_items.append({'arr': arr_display, 'extent': extent, 'unit': unit_display, 'label': label,
                                  'cmap': cmap, 'vmin': vmin, 'vmax': vmax, 'relative_axes': bool(self.relative_axes),
                                  'colorbar_label': colorbar_label, 'title': title_text})
@@ -2443,7 +2471,49 @@ class SXMGridViewer(QtWidgets.QWidget):
         return viewer_loader._scan_spectros(self, folder)
 
     def _assign_spectros_to_images(self):
-        return spectro_controller._assign_spectros_to_images(self)
+        """Assign spectroscopies to images based on file system modification time."""
+        self.spectros_by_image.clear()
+        if not self.spectros:
+            return
+
+        # Collect all images with file system timestamps
+        images = []
+        for key in self.files:
+            try:
+                ts = key.stat().st_mtime
+                skey = str(key)
+            except Exception:
+                continue
+            images.append((ts, skey))
+        
+        # Sort images by time
+        images.sort(key=lambda x: x[0])
+
+        # Assign each spec to the latest image that started before the spec
+        count = 0
+        for spec in self.spectros:
+            path = spec.get('path')
+            if not path:
+                continue
+            try:
+                spec_ts = Path(path).stat().st_mtime
+            except Exception:
+                continue
+
+            # Find last image where image_time <= spec_time
+            best_img = None
+            for img_ts, img_key in images:
+                if img_ts <= spec_ts:
+                    best_img = img_key
+                else:
+                    break
+            
+            if best_img:
+                self.spectros_by_image[best_img].append(spec)
+                spec['image_key'] = best_img
+                count += 1
+        
+        log_status(f"Assigned {count} spectroscopies to images based on file timestamps.")
 
     def _choose_image_for_spec(self, spec, images, image_extents):
         return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)
@@ -2563,7 +2633,89 @@ class SXMGridViewer(QtWidgets.QWidget):
         return col, row
 
     def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
-        return spectro_overlays._render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=reveal_points_override, selected_spec=selected_spec, entries_override=entries_override, matrix_as_points=matrix_as_points)
+        """Render spectroscopy markers directly on the thumbnail pixmap."""
+        specs = entries_override if entries_override is not None else self.spectros_by_image.get(str(file_key), [])
+        if not specs:
+            return []
+
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        
+        w_scale = pixmap.width() / max(1, xpix)
+        h_scale = pixmap.height() / max(1, ypix)
+        
+        marker_defs = []
+        singles = []
+        matrices = defaultdict(list)
+        
+        for s in specs:
+            midx = s.get('matrix_index')
+            # Treat as single point if it's not a matrix, OR if we force matrix_as_points,
+            # OR if the filename doesn't contain "matrix" (user preference)
+            is_matrix_file = "matrix" in Path(s.get('path', '')).name.lower()
+            if midx is None or matrix_as_points or not is_matrix_file:
+                singles.append(s)
+            else:
+                matrices[midx].append(s)
+
+        # Draw matrix bounding boxes
+        pen_matrix = QtGui.QPen(self.spectro_marker_color_matrix, 1.5)
+        painter.setPen(pen_matrix)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        for midx, m_specs in matrices.items():
+            rect = self._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
+            if rect:
+                painter.drawRect(rect)
+                marker_defs.append({'rect': rect, 'spec': m_specs[0], 'kind': 'matrix', 'label': f'M{midx}'})
+
+        # Draw single points (dots)
+        # Use a high-contrast style: bright fill with dark border
+        dot_brush = QtGui.QBrush(self.spectro_marker_color_single)
+        dot_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 240), 1.5) # White border
+        painter.setBrush(dot_brush)
+        painter.setPen(dot_pen)
+        
+        symbol = getattr(self, 'spectro_marker_symbol', 'circle')
+        radius = getattr(self, 'spectro_marker_size', 5.0)
+
+        for s in singles:
+            coords = self._map_spec_to_pixels(s, header, xpix, ypix, file_key)
+            if coords:
+                cx, cy = coords
+                px = cx * w_scale
+                py = cy * h_scale
+                
+                if symbol == 'square':
+                    painter.drawRect(QtCore.QRectF(px - radius, py - radius, radius*2, radius*2))
+                elif symbol == 'triangle':
+                    poly = QtGui.QPolygonF([
+                        QtCore.QPointF(px, py - radius),
+                        QtCore.QPointF(px + radius, py + radius),
+                        QtCore.QPointF(px - radius, py + radius)
+                    ])
+                    painter.drawPolygon(poly)
+                elif symbol == 'diamond':
+                    poly = QtGui.QPolygonF([
+                        QtCore.QPointF(px, py - radius),
+                        QtCore.QPointF(px + radius, py),
+                        QtCore.QPointF(px, py + radius),
+                        QtCore.QPointF(px - radius, py)
+                    ])
+                    painter.drawPolygon(poly)
+                else:
+                    painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
+                
+                # Hit target slightly larger than visual dot
+                hit_radius = radius + 3.0
+                hit_rect = QtCore.QRectF(px - hit_radius, py - hit_radius, hit_radius * 2, hit_radius * 2)
+                marker_defs.append({
+                    'rect': hit_rect,
+                    'spec': s,
+                    'label': 'point'
+                })
+        
+        painter.end()
+        return marker_defs
 
     def _use_density_for(self, count, pix_w, pix_h):
         """Decide if density overlay should be used based on count and thumb size."""
@@ -2872,6 +3024,38 @@ class SXMGridViewer(QtWidgets.QWidget):
     def on_spec_invert_changed(self, checked: bool):
         self.spec_invert_y = bool(checked)
         self.config['spectro_invert_y'] = self.spec_invert_y; save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_pick_spectro_single_color(self):
+        col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_single, self, "Select Single Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
+        if col.isValid():
+            self.spectro_marker_color_single = col
+            self.config['spectro_marker_color_single'] = col.name(QtGui.QColor.HexArgb)
+            save_config(self.config)
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def on_pick_spectro_matrix_color(self):
+        col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_matrix, self, "Select Matrix Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
+        if col.isValid():
+            self.spectro_marker_color_matrix = col
+            self.config['spectro_marker_color_matrix'] = col.name(QtGui.QColor.HexArgb)
+            save_config(self.config)
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def on_set_spectro_symbol(self, symbol):
+        self.spectro_marker_symbol = symbol
+        self.config['spectro_marker_symbol'] = symbol
+        save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_set_spectro_size(self, size):
+        self.spectro_marker_size = float(size)
+        self.config['spectro_marker_size'] = self.spectro_marker_size
+        save_config(self.config)
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])

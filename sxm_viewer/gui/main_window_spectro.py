@@ -1,7 +1,8 @@
 """Spectroscopy-related helpers for the main window."""
 from __future__ import annotations
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from pathlib import Path
+from PyQt5 import QtCore, QtWidgets
 
 from .spectroscopy import browser as spectro_browser
 from .spectroscopy import overlays as spectro_overlays
@@ -100,8 +101,11 @@ def open_spectro_summary_for_file(viewer, file_key, show_mode="single"):
     if not entries:
         QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this file.")
         return
-    header, fds = viewer.headers.get(str(file_key), (None, None))
-    dlg = viewer.SpectroSummaryDialog(viewer, str(file_key), header or {}, fds or [], entries, show_mode=show_mode)
+    
+    # Use the modern SpectroscopyCompareDialog (table view) instead of the old summary
+    from .detail_panels import SpectroscopyCompareDialog
+    dlg = SpectroscopyCompareDialog(entries, parent=viewer)
+    dlg.setWindowTitle(f"Spectroscopy: {Path(file_key).name}")
     try:
         dlg.setWindowModality(QtCore.Qt.NonModal)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -109,6 +113,8 @@ def open_spectro_summary_for_file(viewer, file_key, show_mode="single"):
     except Exception:
         pass
     dlg.show()
+    if hasattr(viewer, '_popup_refs'):
+        viewer._popup_refs.append(dlg)
 
 
 def ensure_spectro_dock(viewer):
@@ -129,6 +135,3 @@ def on_spectro_browser_selection(viewer, current, _prev):
 
 def update_spectro_stats_label(viewer, stats=None):
     return spectro_browser._update_spectro_stats_label(viewer, stats=stats)
-
-
-

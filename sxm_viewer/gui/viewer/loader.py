@@ -297,30 +297,60 @@ def _scan_spectros(viewer, folder:Path):
             except Exception:
                 stats['empty_files'] += 1
                 continue
+            
+            # --- Fallback: Parse coordinates from header comments if missing (e.g. Nanonis .dat) ---
+            if spec_list and ext == ".dat":
+                if any(s.get('x') is None or s.get('y') is None for s in spec_list):
+                    try:
+                        with open(p, 'r', encoding='latin-1') as f:
+                            # Scan first 30 lines for metadata
+                            for _ in range(30):
+                                line = f.readline()
+                                if not line: break
+                                # Look for line like: ;x/y-Pos: -104.75/-266
+                                if "x/y-Pos:" in line:
+                                    parts = line.split(":", 1)[1].strip().split("/")
+                                    if len(parts) == 2:
+                                        try:
+                                            x_val, y_val = float(parts[0]), float(parts[1])
+                                            for s in spec_list:
+                                                if s.get('x') is None: s['x'] = x_val
+                                                if s.get('y') is None: s['y'] = y_val
+                                        except ValueError: pass
+                                    break
+                    except Exception: pass
+
             # ensure basic metadata is present for assignment
             for s in spec_list or []:
                 if 'path' not in s or not s.get('path'):
                     s['path'] = str(p)
                 # normalize/ensure time for ordering; fallback to file mtime
                 t = s.get('time')
-                if t is None or isinstance(t, (int, float, str)):
+                use_mtime = False
+                if t is None:
+                    use_mtime = True
+                elif isinstance(t, datetime):
+                    if t.year < 1990:
+                        use_mtime = True
+                elif isinstance(t, (int, float)):
                     try:
-                        # accept float timestamp or string timestamp
-                        if isinstance(t, (int, float)):
-                            s['time'] = datetime.fromtimestamp(float(t))
-                        elif isinstance(t, str) and t.strip():
-                            # last resort: try parse ISO-ish string
-                            try:
-                                s['time'] = datetime.fromisoformat(t)
-                            except Exception:
-                                s['time'] = datetime.fromtimestamp(mtime)
-                        else:
-                            s['time'] = datetime.fromtimestamp(mtime)
+                        s['time'] = datetime.fromtimestamp(float(t))
                     except Exception:
+                        use_mtime = True
+                elif isinstance(t, str):
+                    if not t.strip():
+                        use_mtime = True
+                    else:
                         try:
-                            s['time'] = datetime.fromtimestamp(mtime)
+                            s['time'] = datetime.fromisoformat(t)
                         except Exception:
-                            pass
+                            use_mtime = True
+                
+                if use_mtime:
+                    try:
+                        s['time'] = datetime.fromtimestamp(mtime)
+                    except Exception:
+                        pass
             cache[norm_key] = {'mtime': mtime, 'data': spec_list}
         specs.extend(spec_list or [])
         # counting logic: treat matrix files as a single entry for display purposes
@@ -425,8 +455,3 @@ __all__ = [
     "_parse_header_datetime",
     "_scan_spectros",
 ]
-
-
-
-
-

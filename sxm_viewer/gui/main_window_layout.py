@@ -181,6 +181,33 @@ def build_display_widget(viewer, parent):
     viewer.density_markers_act.setToolTip("Show density overlay for spectroscopy clusters")
     viewer.density_markers_act.toggled.connect(viewer.on_density_markers_toggled)
     viewer.display_menu.addSeparator()
+    
+    markers_menu = viewer.display_menu.addMenu("Marker Style")
+    col_single = markers_menu.addAction("Single marker color...")
+    col_single.triggered.connect(viewer.on_pick_spectro_single_color)
+    col_matrix = markers_menu.addAction("Matrix marker color...")
+    col_matrix.triggered.connect(viewer.on_pick_spectro_matrix_color)
+    markers_menu.addSeparator()
+    sym_grp = QtWidgets.QActionGroup(viewer)
+    for sym in ['circle', 'square', 'triangle', 'diamond']:
+        act = markers_menu.addAction(sym.capitalize())
+        act.setCheckable(True)
+        act.setChecked(getattr(viewer, 'spectro_marker_symbol', 'circle') == sym)
+        act.triggered.connect(lambda checked, s=sym: viewer.on_set_spectro_symbol(s))
+        sym_grp.addAction(act)
+    
+    markers_menu.addSeparator()
+    size_menu = markers_menu.addMenu("Marker Size")
+    size_grp = QtWidgets.QActionGroup(viewer)
+    current_size = getattr(viewer, 'spectro_marker_size', 5.0)
+    for label, val in [("Tiny", 2.0), ("Small", 3.5), ("Medium", 5.0), ("Large", 7.0), ("Huge", 10.0)]:
+        act = size_menu.addAction(label)
+        act.setCheckable(True)
+        act.setChecked(abs(current_size - val) < 0.1)
+        act.triggered.connect(lambda checked, v=val: viewer.on_set_spectro_size(v))
+        size_grp.addAction(act)
+
+    viewer.display_menu.addSeparator()
     viewer.detail_dark_act = viewer.display_menu.addAction("Detail dark background")
     viewer.detail_dark_act.setCheckable(True)
     viewer.detail_dark_act.setChecked(viewer.detail_dark_view)

@@ -486,8 +486,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.filter_edit = QtWidgets.QLineEdit()
         self.filter_edit.setPlaceholderText("Filter spectra...")
         self.filter_edit.textChanged.connect(self._apply_filter)
-        self.spec_list = QtWidgets.QListWidget()
+        self.spec_list = QtWidgets.QTreeWidget()
+        self.spec_list.setHeaderLabels(["File", "Type", "Pos (nm)", "Time", "Chans"])
         self.spec_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.spec_list.setAlternatingRowColors(True)
+        self.spec_list.setRootIsDecorated(False)
+        self.spec_list.setSortingEnabled(True)
         self.spec_list.itemChanged.connect(self._on_item_check_changed)
         self.spec_list.itemSelectionChanged.connect(self._on_list_selection_changed)
         self.spec_list.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -508,6 +512,22 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.grid(True, alpha=0.2)
         center_layout.addWidget(self.canvas, 1)
         self.status_label = QtWidgets.QLabel("0 selected / 0 total")
+        
+        # Visualization controls (Waterfall)
+        vis_row = QtWidgets.QHBoxLayout()
+        self.waterfall_cb = QtWidgets.QCheckBox("Waterfall")
+        self.waterfall_cb.toggled.connect(self._update_plot)
+        vis_row.addWidget(self.waterfall_cb)
+        
+        self.offset_spin = QtWidgets.QDoubleSpinBox()
+        self.offset_spin.setRange(-1e9, 1e9)
+        self.offset_spin.setDecimals(14) # High precision for small currents
+        self.offset_spin.setSingleStep(0.1)
+        self.offset_spin.valueChanged.connect(self._update_plot)
+        vis_row.addWidget(QtWidgets.QLabel("Offset:"))
+        vis_row.addWidget(self.offset_spin)
+        vis_row.addStretch(1)
+        center_layout.addLayout(vis_row)
         center_layout.addWidget(self.status_label)
         splitter.addWidget(center)
         splitter.setStretchFactor(1, 2)
@@ -598,13 +618,39 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.spec_list.clear()
         self._item_map = {}
         for spec in self.specs:
-            item = QtWidgets.QListWidgetItem(self._display_name(spec))
+            path = Path(spec.get('path', ''))
+            name = path.name
+            
+            # Type/Index
+            midx = spec.get('matrix_index')
+            type_str = f"Matrix [{midx}]" if midx is not None else "Single"
+            
+            # Pos
+            x, y = spec.get('x'), spec.get('y')
+            pos_str = f"{x:.1f}, {y:.1f}" if x is not None and y is not None else "-"
+            
+            # Time
+            t = spec.get('time')
+            time_str = ""
+            if isinstance(t, datetime):
+                time_str = t.strftime("%H:%M:%S")
+            else:
+                time_str = str(t)
+
+            # Channels
+            chans = list((spec.get('channels') or {}).keys())
+            chans_str = ", ".join(chans)
+
+            item = QtWidgets.QTreeWidgetItem([name, type_str, pos_str, time_str, chans_str])
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable)
-            item.setCheckState(QtCore.Qt.Checked)
-            item.setData(QtCore.Qt.UserRole, spec)
-            item.setData(QtCore.Qt.UserRole + 1, self._spec_id(spec))
-            self.spec_list.addItem(item)
+            item.setCheckState(0, QtCore.Qt.Checked)
+            item.setData(0, QtCore.Qt.UserRole, spec)
+            item.setData(0, QtCore.Qt.UserRole + 1, self._spec_id(spec))
+            self.spec_list.addTopLevelItem(item)
             self._item_map[self._spec_id(spec)] = item
+        
+        for i in range(5):
+            self.spec_list.resizeColumnToContents(i)
         self.spec_list.blockSignals(False)
 
     def _populate_channels(self):
@@ -619,24 +665,35 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _apply_filter(self, text):
         text = text.lower()
-        for i in range(self.spec_list.count()):
-            item = self.spec_list.item(i)
-            item.setHidden(text not in item.text().lower())
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            match = False
+            for c in range(item.columnCount()):
+                if text in item.text(c).lower():
+                    match = True
+                    break
+            item.setHidden(not match)
         self._update_status()
 
     def _checked_items(self):
-        return [self.spec_list.item(i) for i in range(self.spec_list.count())
-                if self.spec_list.item(i).checkState() == QtCore.Qt.Checked and not self.spec_list.item(i).isHidden()]
+        items = []
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.checkState(0) == QtCore.Qt.Checked and not item.isHidden():
+                items.append(item)
+        return items
 
     def _selected_items(self):
-        return [item for item in self._checked_items() if item.isSelected()]
+        return self.spec_list.selectedItems()
 
     def _on_channel_changed(self):
         self._fit_results = {}
         self._populate_results_table()
         self._update_plot()
 
-    def _on_item_check_changed(self):
+    def _on_item_check_changed(self, item, column):
         self._update_plot()
 
     def _on_list_selection_changed(self):
@@ -648,26 +705,42 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.grid(True, alpha=0.2)
         self._line_map.clear()
         self._legend_map.clear()
-        selected_ids = {item.data(QtCore.Qt.UserRole + 1) for item in self._selected_items()}
+        
+        waterfall = self.waterfall_cb.isChecked()
+        offset_val = self.offset_spin.value()
+        
+        selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         colors = itertools.cycle(matplotlib.cm.get_cmap('tab10').colors)
         plotted = 0
-        for item in self._checked_items():
-            spec = item.data(QtCore.Qt.UserRole)
-            spec_id = item.data(QtCore.Qt.UserRole + 1)
+        
+        # Plot both checked items AND selected items (even if unchecked) for quick preview
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.isHidden(): continue
+            if item.checkState(0) != QtCore.Qt.Checked and not item.isSelected():
+                continue
+
+            spec = item.data(0, QtCore.Qt.UserRole)
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             channels = spec.get('channels') or {}
             data = channels.get(channel)
             V = np.asarray(spec.get('V', []), dtype=float)
             if data is None or not V.size:
                 continue
+            
+            # Apply waterfall offset
+            y_data = data + (plotted * offset_val) if waterfall else data
+            
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
-            line, = self.ax.plot(V, data, color=color, lw=2.4 if highlight else 1.2,
+            line, = self.ax.plot(V, y_data, color=color, lw=2.4 if highlight else 1.2,
                                  alpha=1.0 if highlight else 0.4, label=label_txt)
             self._line_map[spec_id] = line
             plotted += 1
             if spec_id in self._fit_results:
-                self._draw_fit_for_spec(spec_id, color)
+                self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
         if plotted == 0:
             self.ax.text(0.5,0.5,"No data for selected items", ha='center', va='center', transform=self.ax.transAxes)
         else:
@@ -685,8 +758,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         # include unit if available
         unit = None
         # look up unit from any spec carrying this channel
-        for item in self._checked_items():
-            spec = item.data(QtCore.Qt.UserRole)
+        for item in self._selected_items() or self._checked_items():
+            spec = item.data(0, QtCore.Qt.UserRole)
             if not spec:
                 continue
             unit_map = spec.get('unit_map') or {}
@@ -700,7 +773,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.draw_idle()
         self._update_status(plotted)
 
-    def _draw_fit_for_spec(self, spec_id, color):
+    def _draw_fit_for_spec(self, spec_id, color, offset=0.0):
         res = self._fit_results.get(spec_id)
         if not res:
             return
@@ -709,8 +782,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if not V.size:
             return
         x_dense = np.linspace(np.nanmin(V), np.nanmax(V), 400)
-        self.ax.plot(x_dense, res['func'](x_dense), '--', color=color, lw=1.2)
-        b = res['b']; c = res['c']; be = res.get('b_err', 0.0)
+        self.ax.plot(x_dense, res['func'](x_dense) + offset, '--', color=color, lw=1.2)
+        b = res['b']; c = res['c'] + offset; be = res.get('b_err', 0.0)
         self.ax.errorbar([b], [c], xerr=[be], fmt='o', color=color, ecolor=color, capsize=3)
 
     def _spec_id_by_name(self, name):
@@ -732,7 +805,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.draw_idle()
 
     def _update_status(self, plotted=None):
-        total = sum(1 for i in range(self.spec_list.count()) if not self.spec_list.item(i).isHidden())
+        root = self.spec_list.invisibleRootItem()
+        total = 0
+        for i in range(root.childCount()):
+            if not root.child(i).isHidden():
+                total += 1
         checked = len(self._checked_items())
         text = f"{checked} selected / {total} total"
         if plotted is not None:
@@ -745,7 +822,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._popup_refs.append(dlg)
 
     def _on_item_double_clicked(self, item):
-        self._show_popup_for_spec(item.data(QtCore.Qt.UserRole))
+        self._show_popup_for_spec(item.data(0, QtCore.Qt.UserRole))
 
     def _on_list_context_menu(self, pos):
         item = self.spec_list.itemAt(pos)
@@ -756,7 +833,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         copy_act = menu.addAction("Copy selected to clipboard")
         chosen = menu.exec_(self.spec_list.mapToGlobal(pos))
         if chosen == act:
-            self._show_popup_for_spec(item.data(QtCore.Qt.UserRole))
+            self._show_popup_for_spec(item.data(0, QtCore.Qt.UserRole))
         elif chosen == copy_act:
             self._copy_selected_to_clipboard()
 
@@ -798,7 +875,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         spec_id = self.results_table.item(row,0).data(QtCore.Qt.UserRole)
         item = self._item_map.get(spec_id)
         if item:
-            self.spec_list.setCurrentItem(item, QtCore.QItemSelectionModel.SelectCurrent)
+            self.spec_list.setCurrentItem(item)
             self._update_plot()
 
     def _copy_selected_to_clipboard(self):
@@ -810,7 +887,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         blocks = []
         for it in items:
-            spec = it.data(QtCore.Qt.UserRole)
+            spec = it.data(0, QtCore.Qt.UserRole)
             if not spec:
                 continue
             V = np.asarray(spec.get('V', []), dtype=float)
@@ -856,10 +933,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _clear_selected(self):
         removed = False
         for item in list(self._selected_items()):
-            spec_id = item.data(QtCore.Qt.UserRole + 1)
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             if spec_id in self._fit_results:
                 self._fit_results.pop(spec_id, None)
-            row = self.spec_list.row(item)
+            row = self.spec_list.indexOfTopLevelItem(item)
             self.spec_list.takeItem(row)
             removed = True
         if removed:
@@ -887,10 +964,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _fit_selected(self):
         items = self._selected_items() or self._checked_items()
-        self._start_fit([item.data(QtCore.Qt.UserRole) for item in items])
+        self._start_fit([item.data(0, QtCore.Qt.UserRole) for item in items])
 
     def _fit_all(self):
-        self._start_fit([item.data(QtCore.Qt.UserRole) for item in self._checked_items()])
+        self._start_fit([item.data(0, QtCore.Qt.UserRole) for item in self._checked_items()])
 
     def _start_fit(self, specs):
         if not specs or self._fit_thread:
@@ -975,7 +1052,3 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _log(self, text):
         self.log.appendPlainText(text)
-
-
-
-
