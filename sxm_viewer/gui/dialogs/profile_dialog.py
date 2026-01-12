@@ -609,37 +609,61 @@ class ProfileDialog(QtWidgets.QDialog):
             y_level = y_min + 0.05 * (y_max - y_min)
         y_level = max(y_min + 0.01*(y_max-y_min), min(y_max - 0.01*(y_max-y_min), y_level))
         self._marker_arrow_y = y_level
-        if self._marker_arrow is not None:
-            try: self._marker_arrow.remove()
-            except Exception: pass
-        if self._marker_label is not None:
-            try: self._marker_label.remove()
-            except Exception: pass
         arrow_color = "#f5f5f5" if self._dark_background else "#111111"
-        arrow = self.ax.annotate(
-            "",
-            xy=(xmax, y_level),
-            xytext=(xmin, y_level),
-            arrowprops=dict(arrowstyle="<->", color=arrow_color, lw=1.8),
-            annotation_clip=False,
-        )
         display_value, display_unit = self._format_marker_delta(axis_delta)
         text = f"{display_value:.3f} {display_unit}"
         label_size = 9.0 * getattr(self, '_font_scale', 1.0)
         bbox_face = "#050506" if self._dark_background else "white"
-        label = self.ax.text(
-            (xmin + xmax) / 2.0,
-            y_level + 0.02 * (y_max - y_min),
-            text,
-            color=arrow_color,
-            ha="center",
-            va="bottom",
-            fontsize=label_size,
-            bbox=dict(boxstyle="round,pad=0.2", facecolor=bbox_face,
-                      alpha=0.7 if not self._dark_background else 0.6, edgecolor="none"),
-        )
-        self._marker_arrow = arrow
-        self._marker_label = label
+        bbox_alpha = 0.7 if not self._dark_background else 0.6
+
+        if self._marker_arrow is not None:
+            try:
+                self._marker_arrow.xy = (xmax, y_level)
+                self._marker_arrow.set_position((xmin, y_level))
+                if hasattr(self._marker_arrow, 'arrow_patch'):
+                    self._marker_arrow.arrow_patch.set_edgecolor(arrow_color)
+                    self._marker_arrow.arrow_patch.set_facecolor(arrow_color)
+            except Exception:
+                try: self._marker_arrow.remove()
+                except: pass
+                self._marker_arrow = None
+
+        if self._marker_arrow is None:
+            self._marker_arrow = self.ax.annotate(
+                "",
+                xy=(xmax, y_level),
+                xytext=(xmin, y_level),
+                arrowprops=dict(arrowstyle="<->", color=arrow_color, lw=1.8),
+                annotation_clip=False,
+            )
+
+        label_x = (xmin + xmax) / 2.0
+        label_y = y_level + 0.02 * (y_max - y_min)
+
+        if self._marker_label is not None:
+            try:
+                self._marker_label.set_text(text)
+                self._marker_label.set_position((label_x, label_y))
+                self._marker_label.set_color(arrow_color)
+                self._marker_label.set_fontsize(label_size)
+            except Exception:
+                try: self._marker_label.remove()
+                except: pass
+                self._marker_label = None
+
+        if self._marker_label is None:
+            self._marker_label = self.ax.text(
+                label_x,
+                label_y,
+                text,
+                color=arrow_color,
+                ha="center",
+                va="bottom",
+                fontsize=label_size,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=bbox_face,
+                          alpha=bbox_alpha, edgecolor="none"),
+            )
+
         self.canvas.draw_idle()
 
     def _marker_value_at(self, pos):

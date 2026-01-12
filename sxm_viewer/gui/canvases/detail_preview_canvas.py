@@ -45,7 +45,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line = None
         self._profile_p0 = None
         self._profile_p1 = None
-        self._profile_ticks = []
+        self._profile_ticks = None
         self._profile_info_text = None
         self._profile_label = None
         self._profile_endpoint_labels = []
@@ -67,15 +67,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_update_timer.timeout.connect(self._flush_profile_updates)
         self._saved_profiles = []
         self._profile_color_cycle = itertools.cycle([
-            '#ffb300', '#64b5f6', '#81c784', '#e57373',
-            '#ba68c8', '#4db6ac', '#ffd54f', '#90caf9',
-            '#a5d6a7', '#ff8a65', '#9575cd', '#4fc3f7',
-            '#aed581', '#f06292', '#7986cb', '#4dd0e1',
-            '#dce775', '#ffb74d', '#4db6ac', '#9575cd',
-            '#26a69a', '#ff7043', '#29b6f6', '#9ccc65'
+            '#000000', '#e6194B', '#4363d8', '#3cb44b',
+            '#911eb4', '#f58231', '#a9a9a9'
         ])
         self._line_drag_origin = None
         self._active_profile_color = '#fbc02d'
+        self._active_profile_lw = 2.0
         self._highlighted_overlay = None
         self._cids = []
         self._base_click_cid = self.mpl_connect('button_press_event', self._on_base_click)
@@ -123,6 +120,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_drag_mol_angles = None
         self._molecule_drag_mode = None
         self._molecule_rotation_guide = None
+        self._molecule_artists = []
+        self._profile_background = None
+        self._active_profile_original_color = None
 
     def draw(self):
         try:
@@ -185,6 +185,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._ax_view_map = {}
         self._scale_bar_artists = []
         self._colorbars = []
+        self._molecule_artists = []
         # Reset profile artists as figure was cleared
         self._profile_line = None
         self._profile_p0 = None
@@ -281,6 +282,8 @@ class MultiPreviewCanvas(FigureCanvas):
             if z_range < 1e-6:
                 z_range = 1.0
 
+            lc = None
+            sc = None
             # Draw Bonds
             if 'Bonds' in mol.display_mode and mol.bonds:
                 lines = []
@@ -301,6 +304,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
                 ax.add_collection(lc)
+                lc.set_pickradius(5) # Help hit testing if needed later
 
             # Draw Atoms
             if 'Atoms' in mol.display_mode:
@@ -323,8 +327,73 @@ class MultiPreviewCanvas(FigureCanvas):
                     depth_alpha = 0.4 + 0.6 * z_norm[i]
                     final_colors.append((r, g, b, depth_alpha))
                 
-                ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black', linewidths=0.5, zorder=30)
+                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black', linewidths=0.5, zorder=30)
 
+            self._molecule_artists.append({
+                'mol': mol,
+                'ax': ax,
+                'scatter': sc,
+                'lines': lc
+            })
+
+    def _update_molecule_artists(self):
+        """Update positions of existing molecule artists without full redraw."""
+        for entry in self._molecule_artists:
+            mol = entry['mol']
+            sc = entry['scatter']
+            lc = entry['lines']
+            
+            coords = mol.get_transformed_coordinates()
+            if len(coords) == 0: continue
+            
+            # Re-calculate Z sort and props (same logic as _draw_molecules)
+            z_vals = coords[:, 2]
+            z_min = z_vals.min()
+            z_range = z_vals.ptp()
+            if z_range < 1e-6: z_range = 1.0
+            
+            if lc:
+                # Update bonds
+                lines = []
+                colors = []
+                linewidths = []
+                for (i, j) in mol.bonds:
+                    if i >= len(coords) or j >= len(coords): continue
+                    p1 = coords[i]; p2 = coords[j]
+                    lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                    z_mid = (p1[2] + p2[2]) * 0.5
+                    z_norm = (z_mid - z_min) / z_range
+                    alpha = 0.4 + 0.6 * z_norm
+                    colors.append((0.9, 0.9, 0.9, alpha))
+                    linewidths.append(1.0 + 2.0 * z_norm)
+                lc.set_segments(lines)
+                lc.set_color(colors)
+                lc.set_linewidths(linewidths)
+
+            if sc:
+                # Update atoms
+                order = np.argsort(z_vals)
+                coords_sorted = coords[order]
+                elements_sorted = [mol.elements[i] for i in order]
+                x = coords_sorted[:, 0]
+                y = coords_sorted[:, 1]
+                z_norm = (z_vals[order] - z_min) / z_range
+                sc.set_offsets(np.c_[x, y])
+                # Note: updating sizes/colors is possible but expensive; 
+                # for pure translation we could skip it, but rotation needs it.
+                # We'll skip full color/size recalc for speed during drag if needed, 
+                # but for now let's do it to keep depth cues correct.
+                sizes = 40 + 80 * z_norm
+                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
+                final_colors = []
+                for i, (r, g, b, a) in enumerate(rgba_colors):
+                    depth_alpha = 0.4 + 0.6 * z_norm[i]
+                    final_colors.append((r, g, b, depth_alpha))
+                sc.set_sizes(sizes)
+                sc.set_facecolors(final_colors)
+        
+        self.draw_idle()
 
     def enable_scale_bar(self, enable: bool):
         if enable == self.scale_bar_enabled:
@@ -546,7 +615,7 @@ class MultiPreviewCanvas(FigureCanvas):
             pts = entry.get('pts')
             if pts is None:
                 continue
-            saved.append({'pts': tuple(pts), 'color': entry.get('color')})
+            saved.append({'pts': tuple(pts), 'color': entry.get('color'), 'lw': entry.get('lw')})
         state = {
             'active_pts': tuple(self.profile_pts) if self.profile_pts is not None else None,
             'saved': saved,
@@ -590,7 +659,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pts = entry.get('pts')
                 if pts is None:
                     continue
-                self._add_saved_profile_from_pts(tuple(pts), entry.get('color'))
+                self._add_saved_profile_from_pts(tuple(pts), entry.get('color'), entry.get('lw'))
             self._ensure_profile_artists()
             self._update_profile_artists()
             self.set_profile_marker_key(self._profile_marker_key)
@@ -836,6 +905,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._clear_profile_artists()
             self.profile_pts = None
             self._clear_saved_profile_artists(notify=False)
+            self._active_profile_original_color = None
             self._profile_marker_positions = None
             self._profile_marker_domain = None
             self._clear_profile_hud()
@@ -890,7 +960,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._set_profile_pts((x0, y0, x1, y1))
             x0, y0, x1, y1 = self.profile_pts
             color = self._active_profile_color
-            self._profile_line, = self.main_ax.plot([x0,x1],[y0,y1], color=color, lw=2, alpha=0.95, zorder=9)
+            self._profile_line, = self.main_ax.plot([x0,x1],[y0,y1], color=color, lw=self._active_profile_lw, alpha=0.95, zorder=9)
             self._profile_p0, = self.main_ax.plot([x0],[y0], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
             self._profile_p1, = self.main_ax.plot([x1],[y1], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
             self._profile_endpoint_labels = self._create_endpoint_labels((x0, y0, x1, y1), color)
@@ -909,7 +979,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if ax is self.main_ax:
                 continue
             try:
-                l, = ax.plot([x0,x1],[y0,y1], color=color, lw=2, alpha=0.95, zorder=9)
+                l, = ax.plot([x0,x1],[y0,y1], color=color, lw=self._active_profile_lw, alpha=0.95, zorder=9)
                 p0, = ax.plot([x0],[y0], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
                 p1, = ax.plot([x1],[y1], marker='o', color=color, ms=7, mec='black', mew=1.0, zorder=10)
                 self._profile_echo_artists.append({'line': l, 'p0': p0, 'p1': p1})
@@ -1133,7 +1203,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         self._emit_profile()
 
-    def _update_profile_artists_fast(self):
+    def _update_profile_artists_fast(self, draw=True):
         if self._profile_line is None or self._profile_p0 is None or self._profile_p1 is None:
             return
         if self.profile_pts is None:
@@ -1142,14 +1212,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_line.set_data([x0, x1], [y0, y1])
         self._profile_p0.set_data([x0], [y0])
         self._profile_p1.set_data([x1], [y1])
-        for entry in self._profile_echo_artists:
-            try:
-                entry['line'].set_data([x0,x1],[y0,y1])
-                entry['p0'].set_data([x0],[y0])
-                entry['p1'].set_data([x1],[y1])
-            except Exception: pass
         self._update_profile_labels()
-        self.draw_idle()
+        if draw:
+            self.draw_idle()
 
     def _schedule_profile_update(self):
         if not self._profile_update_timer.isActive():
@@ -1175,6 +1240,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if idx < 0 or idx >= len(self._saved_profiles):
             return False
         entry = self._saved_profiles.pop(idx)
+        self._active_profile_original_color = entry.get('color')
         if self._profile_marker_positions_by_key:
             new_map = {}
             new_domain = {}
@@ -1244,13 +1310,13 @@ class MultiPreviewCanvas(FigureCanvas):
         self._snapshot_active_profile()
 
     def _remove_profile_markers(self):
-        for tick in getattr(self, '_profile_ticks', []):
+        if getattr(self, '_profile_ticks', None) is not None:
             try:
-                if tick is not None:
-                    tick.remove()
+                self._profile_ticks.remove()
             except Exception:
                 pass
-        self._profile_ticks = []
+            self._profile_ticks = None
+            
         if self._profile_info_text is not None:
             try:
                 self._profile_info_text.remove()
@@ -1319,18 +1385,19 @@ class MultiPreviewCanvas(FigureCanvas):
         return f"L={length:.3g} {unit} | dx={dx:.3g} {unit} | dy={dy:.3g} {unit}"
 
     def _create_ticks_and_label(self, pts, color, alpha=0.85, base_size=9):
-        ticks = []
         size = base_size * getattr(self, '_profile_label_scale', 1.0)
         try:
             fractions = (0.25, 0.5, 0.75)
+            tx, ty = [], []
             for frac in fractions:
                 x = pts[0] + (pts[2] - pts[0]) * frac
                 y = pts[1] + (pts[3] - pts[1]) * frac
-                tick, = self.main_ax.plot(
-                    [x], [y], marker='s', color=color,
-                    ms=max(3.0, 4.0 * self._profile_label_scale),
-                    alpha=alpha, zorder=9)
-                ticks.append(tick)
+                tx.append(x)
+                ty.append(y)
+            ticks, = self.main_ax.plot(
+                tx, ty, marker='s', linestyle='None', color=color,
+                ms=max(3.0, 4.0 * self._profile_label_scale),
+                alpha=alpha, zorder=9)
             label_text = self._format_profile_label(pts)
             xm = pts[0] + (pts[2] - pts[0]) * 0.5
             ym = pts[1] + (pts[3] - pts[1]) * 0.5
@@ -1340,20 +1407,22 @@ class MultiPreviewCanvas(FigureCanvas):
                 bbox={'facecolor': 'black', 'alpha': 0.35, 'edgecolor': 'none', 'pad': 2},
                 zorder=11)
         except Exception:
-            for tick in ticks:
-                try:
-                    tick.remove()
-                except Exception:
-                    pass
-            return [], None
+            return None, None
         return ticks, text
 
     def _update_profile_markers(self):
         if self.profile_pts is None or self.main_ax is None:
             self._remove_profile_markers()
             return
-        self._remove_profile_markers()
-        ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+        
+        # Reuse existing artists if possible
+        if self._profile_ticks is not None and self._profile_info_text is not None:
+            self._remove_profile_markers() # Fallback to recreate if complex update needed, or optimize further
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+        else:
+            self._remove_profile_markers()
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+            
         self._profile_ticks = ticks
         self._profile_info_text = text
         self._update_profile_marker_artists()
@@ -1690,10 +1759,15 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.profile_pts is None or self.main_ax is None:
             return
         pts = tuple(self.profile_pts)
-        color = next(self._profile_color_cycle)
-        line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], color=color, lw=1.5, alpha=0.7, zorder=6, linestyle='--')
-        p0, = self.main_ax.plot([pts[0]], [pts[1]], marker='o', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
-        p1, = self.main_ax.plot([pts[2]], [pts[3]], marker='o', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+        if self._active_profile_original_color:
+            color = self._active_profile_original_color
+            self._active_profile_original_color = None
+        else:
+            color = next(self._profile_color_cycle)
+        lw = self._active_profile_lw
+        line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
+        # Combine endpoints into one artist
+        endpoints, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], marker='o', linestyle='None', color=color, ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
         base_size = 8
         ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
         overlay_idx = len(self._saved_profiles) + 1
@@ -1709,13 +1783,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 lbl.set_visible(False)
             except Exception:
                 pass
-        artists = [line, p0, p1] + ticks + ([text] if text is not None else [])
+        artists = [line, endpoints]
+        if ticks: artists.append(ticks)
+        if text: artists.append(text)
         if overlay_label is not None:
             artists.append(overlay_label)
         artists += endpoint_labels
         data = self._build_profile_data(pts, color=color)
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
-                 'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels}
+                 'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw}
         if text is not None:
             entry['label_artist'] = text
             entry['label_base_size'] = base_size
@@ -1869,17 +1945,16 @@ class MultiPreviewCanvas(FigureCanvas):
             self._emit_profile()
         self._refresh_overlay_labels()
 
-    def _add_saved_profile_from_pts(self, pts, color):
+    def _add_saved_profile_from_pts(self, pts, color, lw=1.5):
         if pts is None or self.main_ax is None:
             return
         pts = tuple(pts)
         color = color or next(self._profile_color_cycle)
+        lw = float(lw or 1.5)
         line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]],
-                                  color=color, lw=1.5, alpha=0.7, zorder=6, linestyle='--')
-        p0, = self.main_ax.plot([pts[0]], [pts[1]], marker='o', color=color,
-                                ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
-        p1, = self.main_ax.plot([pts[2]], [pts[3]], marker='o', color=color,
-                                ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
+                                  color=color, lw=lw, alpha=0.7, zorder=6, linestyle='--')
+        endpoints, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], marker='o', linestyle='None', color=color,
+                                       ms=5, mec='black', mew=0.7, alpha=0.9, zorder=7)
         base_size = 8
         ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
         overlay_idx = len(self._saved_profiles) + 1
@@ -1895,13 +1970,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 lbl.set_visible(False)
             except Exception:
                 pass
-        artists = [line, p0, p1] + ticks + ([text] if text is not None else [])
+        artists = [line, endpoints]
+        if ticks: artists.append(ticks)
+        if text: artists.append(text)
         if overlay_label is not None:
             artists.append(overlay_label)
         artists += endpoint_labels
         data = self._build_profile_data(pts, color=color)
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
-                 'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels}
+                 'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw}
         if text is not None:
             entry['label_artist'] = text
             entry['label_base_size'] = base_size
@@ -1928,12 +2005,13 @@ class MultiPreviewCanvas(FigureCanvas):
             if not artists:
                 continue
             line = artists[0]
+            base_lw = entry.get('lw', 1.5)
             try:
                 if idx == self._highlighted_overlay:
-                    line.set_linewidth(2.5)
+                    line.set_linewidth(base_lw + 1.0)
                     line.set_alpha(1.0)
                 else:
-                    line.set_linewidth(1.5)
+                    line.set_linewidth(base_lw)
                     line.set_alpha(0.35)
             except Exception:
                 pass
@@ -1957,11 +2035,20 @@ class MultiPreviewCanvas(FigureCanvas):
         if x is None or y is None:
             return
         shift_pressed = self._shift_pressed(event)
+        
+        # Right click context menu for profiles
         if event.button == 3:
-            overlay_idx = self._overlay_index_near(x, y)
+            # Check overlay first (increased threshold for easier hitting)
+            overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
             if overlay_idx is not None:
-                self._remove_saved_profile(overlay_idx)
+                self._show_profile_context_menu(event, overlay_idx=overlay_idx)
                 return
+            # Check active profile
+            if self.profile_pts is not None:
+                dist_line = self._distance_to_segment_pixels(x, y, self.profile_pts)
+                if dist_line <= 15.0:
+                    self._show_profile_context_menu(event, active=True)
+                    return
             return
         if event.button != 1:
             return
@@ -1995,8 +2082,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._dragging = 'line'
                 self._line_drag_origin = (x, y, self.profile_pts)
                 return
-        overlay_idx = self._overlay_index_near(x, y)
+        # Increased threshold to 15.0 to prevent accidental "misses" causing profile loss
+        overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
         if overlay_idx is not None:
+            if self.profile_pts is not None:
+                self._snapshot_active_profile()
             activated = self.activate_saved_profile(overlay_idx)
             if activated:
                 if callable(self._profile_highlight_cb):
@@ -2005,6 +2095,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     except Exception:
                         pass
                 x0, y0, x1, y1 = self.profile_pts
+                return
             else:
                 self.highlight_saved_profile(overlay_idx)
                 if callable(self._profile_highlight_cb):
@@ -2016,12 +2107,99 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._line_drag_origin = None
                 return
         # else: start a new line from here
-        if shift_pressed:
+        if self.profile_pts is not None:
             self._snapshot_active_profile()
+        self._active_profile_original_color = None
         self._set_profile_pts((x, y, x, y))
         self._dragging = 'p1'
         self._line_drag_origin = None
+        
+        # Prepare for blitting
+        self._set_profile_animated(True)
+        self.draw()
+        self._profile_background = self.copy_from_bbox(self.main_ax.bbox)
+        self._draw_profile_animated()
+        self.blit(self.main_ax.bbox)
         self._update_profile_artists()
+
+    def _show_profile_context_menu(self, event, overlay_idx=None, active=False):
+        menu = QtWidgets.QMenu(self)
+        color_act = menu.addAction("Change Color")
+        thicker_act = menu.addAction("Thicker")
+        thinner_act = menu.addAction("Thinner")
+        
+        if overlay_idx is not None:
+            menu.addSeparator()
+            delete_act = menu.addAction("Delete Profile")
+        
+        action = menu.exec_(event.guiEvent.globalPos())
+        
+        if action == color_act:
+            self._change_profile_color(overlay_idx, active)
+        elif action == thicker_act:
+            self._change_profile_width(overlay_idx, active, 0.5)
+        elif action == thinner_act:
+            self._change_profile_width(overlay_idx, active, -0.5)
+        elif overlay_idx is not None and action == delete_act:
+            self._remove_saved_profile(overlay_idx)
+
+    def _change_profile_color(self, overlay_idx, active):
+        current_color = self._active_profile_color
+        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
+            current_color = self._saved_profiles[overlay_idx].get('color', current_color)
+        
+        col = QtWidgets.QColorDialog.getColor(QtGui.QColor(current_color), self, "Select Profile Color")
+        if not col.isValid(): return
+        new_color = col.name()
+        
+        if active:
+            self._active_profile_color = new_color
+            if self._profile_line:
+                self._profile_line.set_color(new_color)
+            if self._profile_p0:
+                self._profile_p0.set_color(new_color)
+            if self._profile_p1:
+                self._profile_p1.set_color(new_color)
+            for entry in self._profile_echo_artists:
+                if entry.get('line'): entry['line'].set_color(new_color)
+                if entry.get('p0'): entry['p0'].set_color(new_color)
+                if entry.get('p1'): entry['p1'].set_color(new_color)
+            self.draw_idle()
+            self._emit_profile()
+        
+        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
+            entry = self._saved_profiles[overlay_idx]
+            entry['color'] = new_color
+            # Update artists
+            for art in entry.get('artists', []):
+                try: art.set_color(new_color)
+                except: pass
+                try: art.set_markeredgecolor('black')
+                except: pass
+            if entry.get('overlay_label_artist'):
+                entry['overlay_label_artist'].set_color(new_color)
+            self.draw_idle()
+            self._emit_profile()
+
+    def _change_profile_width(self, overlay_idx, active, delta):
+        if active:
+            self._active_profile_lw = max(0.5, self._active_profile_lw + delta)
+            if self._profile_line:
+                self._profile_line.set_linewidth(self._active_profile_lw)
+                for entry in self._profile_echo_artists:
+                    if entry.get('line'): entry['line'].set_linewidth(self._active_profile_lw)
+            self.draw_idle()
+        
+        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
+            entry = self._saved_profiles[overlay_idx]
+            cur_lw = entry.get('lw', 1.5)
+            new_lw = max(0.5, cur_lw + delta)
+            entry['lw'] = new_lw
+            # Update artists (first artist is usually the line)
+            artists = entry.get('artists', [])
+            if artists and isinstance(artists[0], Line2D):
+                artists[0].set_linewidth(new_lw)
+            self.draw_idle()
 
     def _on_motion(self, event):
         if not self.profile_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
@@ -2058,6 +2236,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._dragging is None:
             return
         x0, y0, x1, y1 = self.profile_pts
+        # Hide echo artists during drag for performance
+        for entry in self._profile_echo_artists:
+            for art in entry.values():
+                art.set_visible(False)
         if self._dragging == 'p0':
             self._set_profile_pts((x, y, x1, y1))
         elif self._dragging == 'p1':
@@ -2067,19 +2249,52 @@ class MultiPreviewCanvas(FigureCanvas):
             dx = x - sx
             dy = y - sy
             self._set_profile_pts((pts[0] + dx, pts[1] + dy, pts[2] + dx, pts[3] + dy))
-        self._update_profile_artists_fast()
+        
+        # Use blitting for smooth drag
+        if self._profile_background:
+            self.restore_region(self._profile_background)
+            self._update_profile_artists_fast(draw=False)
+            self._draw_profile_animated()
+            self.blit(self.main_ax.bbox)
+        else:
+            self._update_profile_artists_fast()
+            
         self._schedule_profile_update()
 
     def _on_release(self, event):
         if not self.profile_enabled:
             return
         self._dragging = None
+        self._set_profile_animated(False)
+        self._profile_background = None
+        # Restore echo artists
+        for entry in self._profile_echo_artists:
+            for art in entry.values():
+                art.set_visible(True)
         self._line_drag_origin = None
         self._profile_marker_drag_idx = None
         self._flush_profile_updates()
         if self._profile_state_deferred:
             self._profile_state_deferred = False
             self._flush_profile_state()
+
+    def _set_profile_animated(self, animated):
+        """Set animated state for active profile artists to enable/disable blitting."""
+        artists = [self._profile_line, self._profile_p0, self._profile_p1, 
+                   self._profile_label, self._profile_ticks, self._profile_info_text]
+        artists.extend(self._profile_endpoint_labels)
+        for art in artists:
+            if art is not None:
+                art.set_animated(animated)
+
+    def _draw_profile_animated(self):
+        """Draw only the active profile artists (for blitting)."""
+        artists = [self._profile_line, self._profile_p0, self._profile_p1, 
+                   self._profile_label, self._profile_ticks, self._profile_info_text]
+        artists.extend(self._profile_endpoint_labels)
+        for art in artists:
+            if art is not None and art.get_visible():
+                self.main_ax.draw_artist(art)
 
     def _on_angle_press(self, event):
         if not self.angle_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
@@ -2345,7 +2560,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 new_angles[1] += dx_px * sensitivity
                 mol.angles = new_angles
 
-            # Update rotation guide
+            # Update rotation guide (visual only, no full redraw needed)
             if self._molecule_drag_mode in ('rotate_z', 'rotate_3d'):
                 if self._molecule_rotation_guide is None and self.main_ax:
                     self._molecule_rotation_guide = patches.Circle(
@@ -2357,7 +2572,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 elif self._molecule_rotation_guide:
                     self._molecule_rotation_guide.center = (mol.offset[0], mol.offset[1])
 
-            self._redraw()
+            self._update_molecule_artists()
 
     def _on_molecule_release(self, event):
         if self._molecule_drag_idx is not None:
@@ -2719,6 +2934,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_motion_value(self, event):
         if self._value_callback is None:
             return
+        # Performance: skip value inspection while dragging profiles or molecules
+        if getattr(self, '_dragging', None) is not None or getattr(self, '_molecule_drag_idx', None) is not None:
+            return
+            
         if event.inaxes is None or event.inaxes not in self._ax_view_map:
             self._value_callback(None, None, None, None)
             return
