@@ -30,10 +30,21 @@ except Exception:  # pragma: no cover - optional dependency
     _scipy_ndimage = None
 
 
+class LogEmitter(QtCore.QObject):
+    message_logged = QtCore.pyqtSignal(str)
+
+
+log_emitter = LogEmitter()
+
+
 def log_status(message: str):
     """Emit startup/progress info to the terminal."""
     try:
         print(f"[SXMViewer] {message}", flush=True)
+    except Exception:
+        pass
+    try:
+        log_emitter.message_logged.emit(str(message))
     except Exception:
         pass
 
@@ -67,6 +78,7 @@ __all__ = [
     "threading",
     "_scipy_ndimage",
     "log_status",
+    "log_emitter",
     "matplotlib",
 ]
 

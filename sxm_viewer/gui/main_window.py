@@ -16,7 +16,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from .._shared import log_status
+from .._shared import log_status, log_emitter
 from ..config import (
     CONFIG_PATH,
     CH_EQUALITY_TOL_NM,
@@ -380,6 +380,26 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         details_layout.addWidget(self.meta_box, 1)
+        self.activity_group = QtWidgets.QGroupBox("Activity log")
+        self.activity_group.setCheckable(True)
+        self.activity_group.setChecked(True)
+        activity_layout = QtWidgets.QVBoxLayout(self.activity_group)
+        header = QtWidgets.QHBoxLayout()
+        header.addStretch(1)
+        self.activity_clear_btn = QtWidgets.QToolButton()
+        self.activity_clear_btn.setText("Clear")
+        self.activity_clear_btn.setAutoRaise(True)
+        header.addWidget(self.activity_clear_btn)
+        activity_layout.addLayout(header)
+        self.activity_log_box = QtWidgets.QTextEdit()
+        self.activity_log_box.setReadOnly(True)
+        self.activity_log_box.setMaximumHeight(140)
+        self.activity_log_box.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        activity_layout.addWidget(self.activity_log_box)
+        details_layout.addWidget(self.activity_group)
+        self._activity_log_entries = []
+        self.activity_group.toggled.connect(self.activity_log_box.setVisible)
+        self.activity_clear_btn.clicked.connect(self._on_clear_activity_log)
         self.meta_box.setVisible(True)
         details_group.toggled.connect(self.meta_box.setVisible)
 
@@ -744,6 +764,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         self._update_toolbar_actions(False)
         self._init_mode_shortcuts()
+        try:
+            log_emitter.message_logged.connect(self._append_activity_log)
+        except Exception:
+            pass
 
     def _apply_dark_mode(self, enabled: bool):
         app = QtWidgets.QApplication.instance()
@@ -836,6 +860,23 @@ QLabel:hover {{
             pixmap = None
         if pixmap and not pixmap.isNull():
             btn.setPixmap(pixmap)
+
+    def _append_activity_log(self, message: str):
+        box = getattr(self, "activity_log_box", None)
+        entries = getattr(self, "_activity_log_entries", None)
+        if box is None or entries is None:
+            return
+        entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+        entries.append(entry)
+        if len(entries) > 200:
+            del entries[: len(entries) - 200]
+        box.setPlainText("\n".join(entries))
+        box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
+
+    def _on_clear_activity_log(self):
+        self._activity_log_entries = []
+        if hasattr(self, "activity_log_box"):
+            self.activity_log_box.clear()
 
     def _create_lower_controls(self):
         return main_window_layout.create_lower_controls(self)
