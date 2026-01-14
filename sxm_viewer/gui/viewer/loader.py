@@ -93,7 +93,7 @@ def load_folder(viewer, folder:Path):
     viewer.path_le.setText(str(folder))
     # persist last dir early
     viewer.config['last_dir'] = str(folder)
-    save_config(viewer.config)
+    viewer._record_recent_dir(folder)
 
     txts = sorted(folder.glob("*.txt"))
     log_status(f"Found {len(txts)} .txt files")

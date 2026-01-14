@@ -77,23 +77,9 @@ def build_browse_context_page(viewer):
     viewer.add_view_btn.setToolTip("Add the current channel as an extra preview")
     viewer.clear_views_btn = QtWidgets.QPushButton("Clear views")
     viewer.clear_views_btn.setToolTip("Remove extra previews and keep only the main view")
-    viewer.export_pngs_btn = QtWidgets.QPushButton("Export PNGs")
-    viewer.export_pngs_btn.setToolTip("Export the current channel layout to PNG")
-    viewer.export_xyz_btn = QtWidgets.QPushButton("Export XYZ")
-    viewer.export_xyz_btn.setToolTip("Export the current selection to XYZ")
-    viewer.adjust_image_btn = QtWidgets.QPushButton("Adjust image")
-    viewer.adjust_image_btn.setEnabled(False)
-    viewer.adjust_image_btn.setToolTip("Adjust image scaling and filtering")
-    viewer.load_mol_btn = QtWidgets.QPushButton("Load Molecule")
-    viewer.load_mol_btn.setToolTip("Overlay a molecular structure (XYZ, PDB, MOL)")
-    viewer.load_mol_btn.clicked.connect(viewer.on_load_molecule)
     for btn in (
         viewer.add_view_btn,
         viewer.clear_views_btn,
-        viewer.export_pngs_btn,
-        viewer.export_xyz_btn,
-        viewer.adjust_image_btn,
-        viewer.load_mol_btn,
     ):
         layout.addWidget(btn)
     layout.addStretch(1)
@@ -150,15 +136,9 @@ def build_spectro_context_page(viewer):
     return page
 
 
-def build_display_widget(viewer, parent):
-    container = QtWidgets.QWidget(parent)
-    layout = QtWidgets.QHBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-    viewer.display_menu_btn = QtWidgets.QToolButton(container)
-    viewer.display_menu_btn.setText("Display Options")
-    viewer.display_menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-    viewer.display_menu_btn.setToolTip("Display options and marker overlays")
+def _ensure_display_menu(viewer):
+    if getattr(viewer, "display_menu", None):
+        return viewer.display_menu
     viewer.display_menu = QtWidgets.QMenu(viewer)
     viewer.matrix_markers_act = viewer.display_menu.addAction("Matrix markers")
     viewer.matrix_markers_act.setCheckable(True)
@@ -222,8 +202,15 @@ def build_display_widget(viewer, parent):
     reset_act = viewer.display_menu.addAction("Reset view")
     reset_act.setToolTip("Reset all display toggles to defaults")
     reset_act.triggered.connect(viewer._reset_display_options)
-    viewer.display_menu_btn.setMenu(viewer.display_menu)
-    layout.addWidget(viewer.display_menu_btn)
+    return viewer.display_menu
+
+
+def build_display_widget(viewer, parent):
+    container = QtWidgets.QWidget(parent)
+    layout = QtWidgets.QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    _ensure_display_menu(viewer)
 
     viewer.spectro_browser_btn = QtWidgets.QPushButton("Spectro Browser", container)
     viewer.spectro_browser_btn.setToolTip("Open the spectroscopy browser")

@@ -118,6 +118,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         log_status("Loading configuration...")
         self.config = load_config()
         self.last_dir = Path(self.config.get("last_dir", str(Path.cwd())))
+        raw_recents = self.config.get("recent_dirs", [])
+        self.recent_dirs = []
+        for entry in raw_recents:
+            if not entry:
+                continue
+            try:
+                self.recent_dirs.append(str(Path(entry)))
+            except Exception:
+                continue
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
         default_cmap = "Blues_r"
         thumb_cfg = self.config.get("thumbnail_cmap")
@@ -283,8 +292,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         img_v.addWidget(QtWidgets.QLabel("Images"))
         path_h = QtWidgets.QHBoxLayout()
         self.path_le = QtWidgets.QLineEdit(str(self.last_dir))
-        self.open_btn = QtWidgets.QPushButton("Open folder")
+        self.open_btn = QtWidgets.QToolButton()
+        self.open_btn.setText("Open folder")
+        self.open_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+        self.open_recent_menu = QtWidgets.QMenu(self.open_btn)
+        self.open_btn.setMenu(self.open_recent_menu)
         path_h.addWidget(self.path_le); path_h.addWidget(self.open_btn)
+        self._refresh_recent_dirs_menu()
         img_v.addLayout(path_h)
         essentials_layout.addWidget(img_container)
 
@@ -706,9 +720,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         # inspector widgets removed -> no connections required here
         self.add_view_btn.clicked.connect(self.on_add_view)
         self.clear_views_btn.clicked.connect(self.on_clear_views)
-        self.export_pngs_btn.clicked.connect(self.on_export_pngs)
-        self.adjust_image_btn.clicked.connect(self.on_adjust_image)
-        self.export_xyz_btn.clicked.connect(self.on_export_xyz_files)
         self.measure_profile_btn.clicked.connect(self._on_start_profile)
         self.measure_angle_btn.clicked.connect(self._on_start_angle)
         self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
@@ -722,9 +733,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
 
-        # autoload
-        if self.last_dir.exists():
-            QtCore.QTimer.singleShot(50, lambda: self.load_folder(self.last_dir))
         try:
             self.purge_config_btn.clicked.connect(self._on_purge_config)
         except Exception:
@@ -778,11 +786,56 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self._apply_detail_view_theme()
+        try:
+            self._apply_molecule_button_theme()
+        except Exception:
+            pass
 
     def _apply_detail_view_theme(self):
         canvas = getattr(self, 'preview_canvas', None)
         if canvas is not None and hasattr(canvas, 'set_detail_theme'):
             canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
+
+    def _apply_molecule_button_theme(self):
+        btn = getattr(self, "toolbar_load_mol_btn", None)
+        if btn is None:
+            return
+        if getattr(self, "dark_mode", False):
+            base = "#2d2d2d"
+            hover = "#3a3a3a"
+            color = QtGui.QColor("#ffffff")
+        else:
+            base = "#f0f3ff"
+            hover = base
+            color = QtGui.QColor("#1d1d1d")
+        btn.setStyleSheet(
+            f"""
+QLabel {{
+    background-color: {base};
+    border: none;
+    border-radius: 3px;
+}}
+QLabel:hover {{
+    background-color: {hover};
+}}
+"""
+        )
+        self._update_molecule_pixmap(color)
+
+    def _update_molecule_pixmap(self, color: QtGui.QColor | None = None):
+        btn = getattr(self, "toolbar_load_mol_btn", None)
+        size = getattr(self, "_molecule_pixmap_size", None)
+        if btn is None or size is None:
+            return
+        if color is None:
+            color = QtGui.QColor("#ffffff" if getattr(self, "dark_mode", False) else "#1d1d1d")
+        try:
+            from . import main_window_toolbar as _toolbar_mod
+            pixmap = _toolbar_mod._load_molecule_pixmap(size, color)
+        except Exception:
+            pixmap = None
+        if pixmap and not pixmap.isNull():
+            btn.setPixmap(pixmap)
 
     def _create_lower_controls(self):
         return main_window_layout.create_lower_controls(self)
@@ -1170,6 +1223,41 @@ class SXMGridViewer(QtWidgets.QWidget):
         p = Path(self.path_le.text().strip())
         if p.exists() and p.is_dir():
             self.load_folder(p)
+
+    def _refresh_recent_dirs_menu(self):
+        menu = getattr(self, "open_recent_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        recents = getattr(self, "recent_dirs", [])
+        if not recents:
+            act = menu.addAction("No recent folders")
+            act.setEnabled(False)
+            return
+        for path in recents:
+            act = menu.addAction(path)
+            act.setToolTip(path)
+            act.triggered.connect(lambda checked=False, p=path: self.load_folder(Path(p)))
+
+    def _record_recent_dir(self, folder: Path):
+        folder_path = Path(folder)
+        folder_str = str(folder_path)
+        recents = []
+        for p in getattr(self, "recent_dirs", []):
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() == folder_path.resolve():
+                    continue
+            except Exception:
+                if p == folder_str:
+                    continue
+            recents.append(p)
+        recents.insert(0, folder_str)
+        self.recent_dirs = recents[:8]
+        self.config["recent_dirs"] = self.recent_dirs
+        save_config(self.config)
+        self._refresh_recent_dirs_menu()
 
     def load_folder(self, folder:Path):
         return viewer_loader.load_folder(self, folder)
