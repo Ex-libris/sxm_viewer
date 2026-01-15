@@ -391,10 +391,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.activity_clear_btn.setAutoRaise(True)
         header.addWidget(self.activity_clear_btn)
         activity_layout.addLayout(header)
-        self.activity_log_box = QtWidgets.QTextEdit()
+        self.activity_log_box = QtWidgets.QPlainTextEdit()
         self.activity_log_box.setReadOnly(True)
         self.activity_log_box.setMaximumHeight(140)
-        self.activity_log_box.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self.activity_log_box.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        try:
+            self.activity_log_box.document().setMaximumBlockCount(500)
+        except Exception:
+            pass
         activity_layout.addWidget(self.activity_log_box)
         details_layout.addWidget(self.activity_group)
         self._activity_log_entries = []
@@ -863,18 +867,17 @@ QLabel:hover {{
 
     def _append_activity_log(self, message: str):
         box = getattr(self, "activity_log_box", None)
-        entries = getattr(self, "_activity_log_entries", None)
-        if box is None or entries is None:
+        if box is None:
             return
         entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
-        entries.append(entry)
-        if len(entries) > 200:
-            del entries[: len(entries) - 200]
-        box.setPlainText("\n".join(entries))
+        box.appendPlainText(entry)
         box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
+        try:
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+        except Exception:
+            pass
 
     def _on_clear_activity_log(self):
-        self._activity_log_entries = []
         if hasattr(self, "activity_log_box"):
             self.activity_log_box.clear()
 
