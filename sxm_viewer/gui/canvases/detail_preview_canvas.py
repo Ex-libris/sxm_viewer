@@ -173,12 +173,17 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def resizeEvent(self, event):
         size = event.size()
-        if size.width() <= 0 or size.height() <= 0:
-            safe = QtCore.QSize(max(1, size.width()), max(1, size.height()))
-            safe_event = QtGui.QResizeEvent(safe, event.oldSize())
-            super().resizeEvent(safe_event)
-            return
-        super().resizeEvent(event)
+        safe_size = QtCore.QSize(max(1, size.width()), max(1, size.height()))
+        if safe_size != size:
+            event = QtGui.QResizeEvent(safe_size, event.oldSize())
+        try:
+            super().resizeEvent(event)
+        except ValueError:
+            fallback = QtGui.QResizeEvent(QtCore.QSize(max(10, safe_size.width()), max(10, safe_size.height())), event.oldSize())
+            try:
+                super().resizeEvent(fallback)
+            except ValueError:
+                pass
 
     def _redraw(self):
         self.fig.clf()
