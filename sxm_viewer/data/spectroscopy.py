@@ -17,6 +17,9 @@ import re
 
 import numpy as np
 
+from .matrix import parse_matrix_filename, matrix_dataset_key
+from .channel_units import guess_channel_unit
+
 
 SECTION_RE = re.compile(r"^\s*(?:\[|#|point\b|trace\b|spectrum\b)", re.IGNORECASE)
 
@@ -38,6 +41,9 @@ def parse_spectroscopy_file(path: Path | str) -> List[Dict[str, object]]:
       when known, grid indices, and optional matrix index.
     """
     path = Path(path)
+    matrix_specs = _parse_matrix_dat(path)
+    if matrix_specs is not None:
+        return matrix_specs
     text = _read_text(path)
     lines = text.replace("\r", "\n").split("\n")
     base_meta: Dict[str, object] = {}
@@ -419,6 +425,88 @@ def _maybe_int(value) -> Optional[int]:
         return int(value)
     except Exception:
         return None
+
+
+def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
+    """Return spectra for Omicron/Anfatec matrix ``.dat`` files."""
+    name = path.name.lower()
+    if not name.endswith(".dat") or "matrix" not in name:
+        return None
+    text = _read_text(path).replace("\r", "\n")
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if len(lines) < 4:
+        return None
+    header_tokens = lines[0].split("\t")
+    coord_tokens = lines[1].split("\t") if len(lines) > 1 else []
+    if len(header_tokens) < 4 or len(coord_tokens) < 4:
+        return None
+    try:
+        xs = [float(tok) for tok in header_tokens[3:]]
+        ys = [float(tok) for tok in coord_tokens[3:]]
+    except Exception:
+        return None
+    if not xs or not ys or len(xs) != len(ys):
+        return None
+    base, channel_code, channel_label = parse_matrix_filename(path.name)
+    dataset_key, display_label = matrix_dataset_key(base, channel_code)
+    channel_display = display_label or channel_label or Path(path).stem
+    rows: List[tuple[float, List[float]]] = []
+    for line in lines[2:]:
+        tokens = line.split("\t")
+        if len(tokens) < 3 + len(xs):
+            continue
+        try:
+            bias = float(tokens[2])
+            values = [float(tok) for tok in tokens[3 : 3 + len(xs)]]
+        except Exception:
+            continue
+        rows.append((bias, values))
+    if not rows:
+        return None
+    bias_axis = np.asarray([row[0] for row in rows], dtype=float)
+    unit_tokens = coord_tokens[:3]
+    if unit_tokens and len(unit_tokens) >= 3:
+        unit = unit_tokens[2].lower()
+        if "mv" in unit:
+            bias_axis *= 1e-3
+        elif "kv" in unit:
+            bias_axis *= 1e3
+    data = np.asarray([row[1] for row in rows], dtype=float)
+    if data.shape[1] != len(xs):
+        return None
+    x_arr = np.asarray(xs, dtype=float)
+    y_arr = np.asarray(ys, dtype=float)
+    x_unique, x_inverse = np.unique(np.round(x_arr, 6), return_inverse=True)
+    y_unique, y_inverse = np.unique(np.round(y_arr, 6), return_inverse=True)
+    grid_cols = int(x_unique.size) or data.shape[1]
+    grid_rows = int(y_unique.size) or 1
+    specs: List[Dict[str, object]] = []
+    for col in range(data.shape[1]):
+        channel_series = data[:, col].copy()
+        unit = guess_channel_unit(channel_display)
+        unit_map = {channel_display: unit} if unit else {}
+        entry = {
+            "path": str(path),
+            "V": bias_axis.copy(),
+            "channels": {channel_display: channel_series},
+            "data": (bias_axis.copy(), channel_series),
+            "x": float(x_arr[col]),
+            "y": float(y_arr[col]),
+            "grid_cols": grid_cols,
+            "grid_rows": grid_rows,
+            "grid_col": int(x_inverse[col]),
+            "grid_row": int(y_inverse[col]),
+            "matrix_index": int(y_inverse[col] * grid_cols + x_inverse[col]),
+            "time": _mtime(path),
+            "matrix_dataset": dataset_key or base or Path(path).stem,
+            "channel_name": channel_display,
+            "channel_code": channel_code,
+            "unit_map": unit_map,
+        }
+        if unit:
+            entry["unit"] = unit
+        specs.append(entry)
+    return specs
 
 
 def _parse_datetime(value) -> Optional[datetime]:

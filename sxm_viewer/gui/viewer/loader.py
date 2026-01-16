@@ -74,7 +74,7 @@ from ...data.spectroscopy import (
     _mtime,
     _read_text,
 )
-from ...data.matrix import MatrixDataset, parse_matrix_filename
+from ...data.matrix import MatrixDataset, parse_matrix_filename, matrix_dataset_key
 from ...processing.detection import (
     _detect_dtype_for_file,
     _sample_channel_values_for_tagging,
@@ -363,6 +363,8 @@ def _scan_spectros(viewer, folder:Path):
                 stats['matrix_dat_files'] += 1
             # build/augment MatrixDataset
             base, channel_code, ch_label = parse_matrix_filename(p.name)
+            dataset_key, display_label = matrix_dataset_key(base, channel_code)
+            label = display_label or ch_label or channel_code or Path(p).stem
             # infer grid
             grid_cols = None
             grid_rows = None
@@ -376,12 +378,18 @@ def _scan_spectros(viewer, folder:Path):
                 side = int(round(n ** 0.5))
                 grid_cols = grid_cols or side
                 grid_rows = grid_rows or side
-            ds_key = base or Path(p).stem
+            ds_key = dataset_key or base or Path(p).stem
             ds = viewer.matrix_datasets.get(ds_key)
             if ds is None:
                 ds = MatrixDataset(ds_key, grid_rows, grid_cols)
                 viewer.matrix_datasets[ds_key] = ds
-            ds.add_channel(p.name, channel_code=channel_code, label=ch_label, spectra_count=len(spec_list), path=p)
+            ds.add_channel(p.name, channel_code=channel_code, label=label, spectra_count=len(spec_list), path=p)
+            for spec in spec_list or []:
+                spec.setdefault('matrix_dataset', ds_key)
+                if label:
+                    spec.setdefault('channel_name', label)
+                if channel_code:
+                    spec.setdefault('channel_code', channel_code)
             # describe grid if available
             grid_cols = None
             grid_rows = None

@@ -7,6 +7,8 @@ import math
 
 import numpy as np
 from matplotlib import patches
+from matplotlib.backend_bases import MouseButton
+from matplotlib import colors as mcolors
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
@@ -80,7 +82,6 @@ from ...data.spectroscopy import (
     find_last_image_for_spec,
     _matrix_base_name,
     _rows_to_spec,
-    _channel_labels,
     _clean_channel_label,
     _normalize_bias_axis,
     _extract_meta,
@@ -100,6 +101,8 @@ from ...data.spectroscopy import (
     _mtime,
     _read_text,
 )
+from ...data.channel_units import guess_channel_unit
+from ..palettes import list_color_cycles, get_color_cycle, DEFAULT_COLOR_CYCLE
 from ..thumbnail_render import (
     array_to_qimage,
     _ThumbnailJobSignals,
@@ -273,106 +276,579 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.fit_btn.setEnabled(enable)
 
 class MatrixSpectroViewer(QtWidgets.QDialog):
-    def __init__(self, parent, image_entry, specs):
+    def __init__(self, parent, image_entry, specs, dataset=None, palette_name=None):
         super().__init__(parent)
         self.image_entry = image_entry
         self.specs = list(specs)
         self.viewer = parent
-        self.setWindowTitle(f"Matrix Spectroscopies - {Path(image_entry['path']).name}")
-        self.resize(900, 700)
-        layout = QtWidgets.QVBoxLayout()
+        self.dataset = dataset
+        self.anchor_path = str(image_entry.get('path') or "")
+        if self.anchor_path:
+            try:
+                self.image_entry['path'] = Path(self.anchor_path)
+            except Exception:
+                pass
+        self._resolve_anchor_path()
+        base_name = self._matrix_file_name()
+        self.setWindowTitle(f"Matrix Explorer - {base_name}")
+        self.resize(1100, 720)
+        root = QtWidgets.QVBoxLayout(self)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        root.addWidget(splitter, 1)
+
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+
         self.canvas = FigureCanvas(Figure(figsize=(6,6)))
-        layout.addWidget(self.canvas, 1)
         self.ax = self.canvas.figure.add_subplot(111)
+        left_layout.addWidget(self.canvas, 1)
+
         self.image_value_label = QtWidgets.QLabel("Value: --")
-        layout.addWidget(self.image_value_label)
+        left_layout.addWidget(self.image_value_label)
+
         controls = QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Image channel:"))
+        controls.addWidget(QtWidgets.QLabel("Channel map:"))
         self.channel_combo = QtWidgets.QComboBox()
         controls.addWidget(self.channel_combo, 1)
+        self.map_mode_combo = QtWidgets.QComboBox()
+        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral"])
+        controls.addWidget(self.map_mode_combo)
+        left_layout.addLayout(controls)
+
+        ref_controls = QtWidgets.QHBoxLayout()
+        ref_controls.addWidget(QtWidgets.QLabel("Reference image:"))
+        self.image_channel_combo = QtWidgets.QComboBox()
+        ref_controls.addWidget(self.image_channel_combo, 1)
+        left_layout.addLayout(ref_controls)
+
+        palette_controls = QtWidgets.QHBoxLayout()
+        palette_controls.addWidget(QtWidgets.QLabel("Color cycle:"))
+        self.palette_combo = QtWidgets.QComboBox()
+        for name in list_color_cycles():
+            self.palette_combo.addItem(name)
+        palette_controls.addWidget(self.palette_combo, 1)
+        left_layout.addLayout(palette_controls)
+
         self.fit_matrix_btn = QtWidgets.QPushButton("Fit matrix parabolas...")
-        controls.addWidget(self.fit_matrix_btn)
-        layout.addLayout(controls)
-        self.info_label = QtWidgets.QLabel("Click a point to open its spectroscopy")
-        layout.addWidget(self.info_label)
-        layout.addSpacing(6)
-        self.setLayout(layout)
+        left_layout.addWidget(self.fit_matrix_btn)
+        self.reset_view_btn = QtWidgets.QPushButton("Reset view")
+        left_layout.addWidget(self.reset_view_btn)
+        self.matrix_info_label = QtWidgets.QLabel("")
+        self.matrix_info_label.setWordWrap(True)
+        left_layout.addWidget(self.matrix_info_label)
+
+        splitter.addWidget(left_panel)
+
+        right_panel = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+
+        self.curve_canvas = FigureCanvas(Figure(figsize=(4,4)))
+        self.curve_ax = self.curve_canvas.figure.add_subplot(111)
+        right_layout.addWidget(self.curve_canvas, 3)
+
+        self.selection_table = QtWidgets.QTableWidget(0, 3)
+        self.selection_table.setHorizontalHeaderLabels(["Channel", "X (nm)", "Y (nm)"])
+        self.selection_table.horizontalHeader().setStretchLastSection(True)
+        right_layout.addWidget(self.selection_table, 2)
+
+        export_row = QtWidgets.QHBoxLayout()
+        self.export_csv_btn = QtWidgets.QPushButton("Export selection to CSV")
+        export_row.addWidget(self.export_csv_btn)
+        self.clear_selection_btn = QtWidgets.QPushButton("Clear selection")
+        export_row.addWidget(self.clear_selection_btn)
+        export_row.addStretch(1)
+        right_layout.addLayout(export_row)
+
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+
+        self._channel_specs = self._group_specs_by_channel()
+
         self.canvas.mpl_connect("button_press_event", self._on_click)
         self.canvas.mpl_connect("motion_notify_event", self._on_canvas_hover)
+        self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.canvas.customContextMenuRequested.connect(self._on_canvas_context_menu)
         self._fit_dialogs = []
         self._current_image_arr = None
         self._current_image_extent = None
         self._current_image_unit = ''
+        self._selection = []
+        self._selection_keys = set()
+        self._selection_artists = []
+        self._aggregate_mode = False
+        self._focused_key = None
+        self.palette_name = palette_name or getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
+        self._color_palette = get_color_cycle(self.palette_name)
+        if not self._color_palette:
+            self._color_palette = ["#4c78a8"]
+        self._color_index = 0
+
         self._populate_channels()
-        self.channel_combo.currentIndexChanged.connect(self._draw)
+        self._populate_image_channels()
+        self.channel_combo.currentIndexChanged.connect(self._on_channel_combo_changed)
+        self.map_mode_combo.currentIndexChanged.connect(self._draw_image_layer)
+        self.image_channel_combo.currentIndexChanged.connect(self._draw_image_layer)
         self.fit_matrix_btn.clicked.connect(self._on_fit_matrix)
-        self._draw()
+        self.reset_view_btn.clicked.connect(self._reset_matrix_view)
+        self.export_csv_btn.clicked.connect(self._on_export_selection)
+        self.clear_selection_btn.clicked.connect(self._clear_selection)
+        idx = self.palette_combo.findText(self.palette_name)
+        self.palette_combo.blockSignals(True)
+        if idx >= 0:
+            self.palette_combo.setCurrentIndex(idx)
+        else:
+            self.palette_combo.setCurrentIndex(0)
+            self.palette_name = self.palette_combo.currentText()
+            self._color_palette = get_color_cycle(self.palette_name)
+        self.palette_combo.blockSignals(False)
+        self.selection_table.itemSelectionChanged.connect(self._update_curve_from_selection)
+        self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+        self._draw_image_layer()
+        self._update_matrix_info_label()
+
+    def _group_specs_by_channel(self):
+        mapping = defaultdict(list)
+        self._channel_labels_map = {}
+        for spec in self.specs:
+            path = spec.get('path')
+            if not path:
+                continue
+            key = self._normalize_path(path)
+            mapping[key].append(spec)
+            if key not in self._channel_labels_map:
+                label = spec.get('channel_name') or spec.get('channel_code')
+                if not label:
+                    chs = spec.get('channels') or {}
+                    if len(chs) == 1:
+                        label = next(iter(chs.keys()))
+                self._channel_labels_map[key] = label or Path(key).name
+        return mapping
+
+    def _reset_color_cycle(self):
+        self._color_index = 0
+
+    def _next_color(self):
+        if not self._color_palette:
+            self._color_palette = ["#4c78a8"]
+        color = self._color_palette[self._color_index % len(self._color_palette)]
+        self._color_index += 1
+        return color
+
+    def _selection_key(self, spec):
+        return (
+            str(spec.get('path')),
+            spec.get('matrix_index'),
+            spec.get('channel_name') or spec.get('channel_code'),
+        )
+
+    def _variant_color(self, base_color, factor=0.35):
+        rgb = np.array(mcolors.to_rgb(base_color))
+        factor = min(max(factor, 0.0), 1.0)
+        adjusted = rgb + (1.0 - rgb) * factor
+        return mcolors.to_hex(np.clip(adjusted, 0.0, 1.0))
+
+    def _event_modifiers(self, event):
+        qevent = getattr(event, "guiEvent", None)
+        if qevent is None:
+            return QtCore.Qt.NoModifier
+        try:
+            return qevent.modifiers()
+        except Exception:
+            return QtCore.Qt.NoModifier
+
+    def _channel_unit_for_spec(self, spec, channel_label):
+        unit_map = spec.get('unit_map') or {}
+        if channel_label and channel_label in unit_map and unit_map[channel_label]:
+            return unit_map[channel_label]
+        if unit_map:
+            for key, val in unit_map.items():
+                if val:
+                    return val
+        return guess_channel_unit(channel_label)
+
+    def _extract_channel_data(self, spec, channel_label):
+        channels = spec.get('channels') or {}
+        ys = None
+        label = channel_label
+        if label in channels:
+            ys = np.asarray(channels[label], dtype=float)
+        elif channels:
+            label, values = next(iter(channels.items()))
+            ys = np.asarray(values, dtype=float)
+        elif spec.get('data'):
+            data = spec.get('data')
+            try:
+                xs = np.asarray(data[0], dtype=float)
+                ys = np.asarray(data[1], dtype=float)
+                unit = self._channel_unit_for_spec(spec, label)
+                return xs, ys, unit, label
+            except Exception:
+                return None, None, None, label
+        xs = np.asarray(spec.get('V', []), dtype=float)
+        if xs.size == 0 or ys is None or ys.size == 0:
+            data = spec.get('data')
+            if data:
+                try:
+                    xs = np.asarray(data[0], dtype=float)
+                    ys = np.asarray(data[1], dtype=float)
+                except Exception:
+                    return None, None, None, label
+        if xs.size == 0 or ys is None or ys.size == 0:
+            return None, None, None, label
+        unit = self._channel_unit_for_spec(spec, label)
+        return xs, ys, unit, label
+
+    def _remove_selection_entry(self, key):
+        self._selection = [entry for entry in self._selection if entry.get("key") != key]
+        self._selection_keys.discard(key)
+        if self._selection:
+            self._focused_key = self._selection[-1].get("key")
+        else:
+            self._focused_key = None
+            self._aggregate_mode = False
+
+    def _update_selection_markers(self, redraw=True):
+        for artist in getattr(self, "_selection_artists", []):
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._selection_artists = []
+        if not self._selection:
+            if redraw:
+                self.canvas.draw_idle()
+            return
+        for entry in self._selection:
+            coords = entry.get("coords")
+            if not coords:
+                continue
+            size = 110 if entry.get("key") == self._focused_key else 70
+            face = entry.get("color", "#4c78a8")
+            edge = "#101010"
+            artist = self.ax.scatter(
+                [coords[0]],
+                [coords[1]],
+                s=size,
+                facecolors=face,
+                edgecolors=edge,
+                linewidths=1.0,
+                alpha=0.95,
+                zorder=5,
+            )
+            self._selection_artists.append(artist)
+        if redraw:
+            self.canvas.draw_idle()
 
     def _populate_channels(self):
         self.channel_combo.clear()
-        path = Path(self.image_entry['path'])
-        header, fds = self.viewer.headers.get(str(path), (None, None))
-        if not fds:
-            return
-        for idx, fd in enumerate(fds):
-            name = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
-            scale = fd.get('Scale')
-            offset = fd.get('Offset')
-            unit = fd.get('PhysUnit', '')
-            self.channel_combo.addItem(f"{idx}: {name}", (idx, scale, offset, unit))
-        if self.viewer.last_preview and self.viewer.last_preview[0] == str(path):
-            self.channel_combo.setCurrentIndex(int(self.viewer.last_preview[1]))
-        else:
+        added = set()
+        if self.dataset and self.dataset.channels:
+            for ch in self.dataset.channels:
+                path = self._normalize_path(ch.get('path', ch.get('filename')))
+                if path not in self._channel_specs or path in added:
+                    continue
+                label = ch.get('label') or self._channel_labels_map.get(path) or Path(path).name
+                self.channel_combo.addItem(label, path)
+                self._channel_labels_map[path] = label
+                added.add(path)
+        for path in sorted(self._channel_specs.keys()):
+            if path in added:
+                continue
+            label = self._channel_labels_map.get(path, Path(path).name)
+            self.channel_combo.addItem(label, path)
+            self._channel_labels_map[path] = label
+            added.add(path)
+        if self.channel_combo.count():
             self.channel_combo.setCurrentIndex(0)
 
-    def _draw(self):
-        path = Path(self.image_entry['path'])
-        header, fds = self.viewer.headers.get(str(path), (None, None))
-        data = self.channel_combo.currentData()
-        if data:
-            main_idx = int(data[0])
+    def _populate_image_channels(self):
+        anchor = self.anchor_path or self.image_entry.get('path')
+        path = Path(anchor) if anchor else None
+        header, fds = self.viewer.headers.get(str(path), (None, None)) if path else (None, None)
+        self.image_channel_combo.blockSignals(True)
+        self.image_channel_combo.clear()
+        if not fds:
+            self.image_channel_combo.addItem("No image", -1)
+            self.image_channel_combo.setEnabled(False)
         else:
-            main_idx = 0
-        try:
-            if header and fds and 0 <= main_idx < len(fds):
-                fd = fds[main_idx]
-                arr = self.viewer._get_channel_array(str(path), main_idx, header, fd)
-                arr = np.asarray(arr, dtype=float)
+            self.image_channel_combo.setEnabled(True)
+            for idx, fd in enumerate(fds):
+                label = fd.get('Caption', fd.get('FileName', f"Channel {idx}"))
+                self.image_channel_combo.addItem(label, idx)
+            default_idx = 0
+            if self.viewer.last_preview and self.viewer.last_preview[0] == str(path):
+                try:
+                    prev_idx = int(self.viewer.last_preview[1])
+                except Exception:
+                    prev_idx = 0
+                if 0 <= prev_idx < len(fds):
+                    default_idx = prev_idx
+            self.image_channel_combo.setCurrentIndex(default_idx)
+        self.image_channel_combo.blockSignals(False)
+
+    def _matrix_file_name(self):
+        if self.dataset and getattr(self.dataset, "channels", None):
+            first = next((ch for ch in self.dataset.channels if ch.get('filename') or ch.get('path')), None)
+            if first:
+                name = first.get('filename') or first.get('path')
+                if name:
+                    return Path(name).name
+        if self.specs:
+            name = self.specs[0].get('path')
+            if name:
+                return Path(name).name
+        return "matrix"
+
+    def _resolve_anchor_path(self):
+        headers = getattr(self.viewer, 'headers', {})
+        if self.anchor_path and str(self.anchor_path) in headers:
+            return
+        anchor = next((spec.get('image_key') for spec in self.specs if spec.get('image_key')), None)
+        if anchor:
+            self.anchor_path = str(anchor)
+            try:
+                self.image_entry['path'] = Path(self.anchor_path)
+            except Exception:
+                pass
+
+    def _update_matrix_info_label(self):
+        matrix_name = self._matrix_file_name()
+        total = len(self.specs)
+        rows = max((spec.get('grid_rows') or 0) for spec in self.specs) if self.specs else 0
+        cols = max((spec.get('grid_cols') or 0) for spec in self.specs) if self.specs else 0
+        xs = [float(spec.get('x')) for spec in self.specs if spec.get('x') is not None]
+        ys = [float(spec.get('y')) for spec in self.specs if spec.get('y') is not None]
+        x_txt = "n/a"
+        y_txt = "n/a"
+        if xs:
+            xmin, xmax = min(xs), max(xs)
+            x_txt = f"{xmin:.2f}→{xmax:.2f} nm (Δ {xmax - xmin:.2f} nm)"
+        if ys:
+            ymin, ymax = min(ys), max(ys)
+            y_txt = f"{ymin:.2f}→{ymax:.2f} nm (Δ {ymax - ymin:.2f} nm)"
+        times = [spec.get('time') for spec in self.specs if isinstance(spec.get('time'), datetime)]
+        time_txt = "n/a"
+        if times:
+            start = min(times)
+            end = max(times)
+            if start and end:
+                time_txt = f"{start:%Y-%m-%d %H:%M:%S}"
+                if end != start:
+                    try:
+                        seconds = abs((end - start).total_seconds())
+                    except Exception:
+                        seconds = 0.0
+                    time_txt += f" → {end:%H:%M:%S} (Δ {seconds:.1f}s)"
+        info = (
+            f"<b>{matrix_name}</b><br>"
+            f"Points: {total} ({rows}×{cols})<br>"
+            f"X range: {x_txt}<br>"
+            f"Y range: {y_txt}<br>"
+            f"Acquired: {time_txt}"
+        )
+        self.matrix_info_label.setText(info)
+
+    def _on_palette_changed(self):
+        self.palette_name = self.palette_combo.currentText() or DEFAULT_COLOR_CYCLE
+        self._color_palette = get_color_cycle(self.palette_name)
+        self._reset_color_cycle()
+        if hasattr(self.viewer, "set_spectro_color_cycle"):
+            self.viewer.set_spectro_color_cycle(self.palette_name)
+        if self._selection:
+            self._apply_palette_to_selection()
+            self._refresh_selection_table()
+        else:
+            self._update_selection_markers()
+
+    def _apply_palette_to_selection(self):
+        self._reset_color_cycle()
+        for entry in self._selection:
+            entry["color"] = self._next_color()
+
+    def _reset_matrix_view(self):
+        self._clear_selection()
+        if self.channel_combo.count():
+            self.channel_combo.blockSignals(True)
+            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.blockSignals(False)
+        if self.map_mode_combo.count():
+            self.map_mode_combo.setCurrentIndex(0)
+        if self.image_channel_combo.count():
+            self.image_channel_combo.setCurrentIndex(0)
+        target = getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
+        self.palette_combo.blockSignals(True)
+        idx = self.palette_combo.findText(target)
+        if idx < 0:
+            idx = 0
+        self.palette_combo.setCurrentIndex(idx)
+        self.palette_combo.blockSignals(False)
+        self._on_palette_changed()
+        self._draw_image_layer()
+
+    def _on_channel_combo_changed(self):
+        self._clear_selection()
+        self._draw_image_layer()
+
+    def _on_canvas_context_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        clear_act = menu.addAction("Clear selections")
+        reset_act = menu.addAction("Reset view")
+        action = menu.exec_(self.canvas.mapToGlobal(pos))
+        if action == clear_act:
+            self._clear_selection()
+        elif action == reset_act:
+            self._reset_matrix_view()
+
+    def _draw_image_layer(self):
+        anchor = self.anchor_path or self.image_entry.get('path')
+        if not anchor:
+            return
+        path = Path(anchor)
+        header, fds = self.viewer.headers.get(str(path), (None, None))
+        header_map = header or {}
+        channel_specs = self._current_channel_specs()
+        self.ax.clear()
+        self._selection_artists = []
+        agg_mode = self.map_mode_combo.currentText()
+        metric = None
+        file_key = str(path)
+        if agg_mode == "Max amplitude":
+            metric = self._build_stat_metric(np.nanmax, channel_specs, header_map, file_key)
+        elif agg_mode == "Integral":
+            metric = self._build_integral_metric(channel_specs, header_map, file_key)
+        elif agg_mode == "Peak position":
+            metric = self._build_peak_metric(channel_specs, header_map, file_key)
+        metric_valid = metric is not None and np.isfinite(metric).any()
+        if metric_valid:
+            self.ax.imshow(metric, cmap='inferno', origin='upper')
+            self._current_image_arr = metric
+            self._current_image_unit = ''
+        elif header and fds:
+            try:
+                idx = self.image_channel_combo.currentData()
+                if idx is None or idx < 0 or idx >= len(fds):
+                    idx = 0
+                fd = fds[idx]
+                arr = self.viewer._get_channel_array(str(path), idx, header, fd)
                 self.ax.imshow(arr, cmap='gray', origin='upper')
-                self._current_image_arr = arr
-                self._current_image_extent = None
+                self._current_image_arr = np.asarray(arr, dtype=float)
                 self._current_image_unit = fd.get('PhysUnit', '')
-            else:
+            except Exception:
                 self.ax.text(0.5, 0.5, Path(path).name, ha='center', va='center', transform=self.ax.transAxes)
                 self._current_image_arr = None
-        except Exception:
+        else:
             self.ax.text(0.5, 0.5, Path(path).name, ha='center', va='center', transform=self.ax.transAxes)
             self._current_image_arr = None
+        xpix = int(header_map.get('xPixel', 128))
+        ypix = int(header_map.get('yPixel', 128))
         xs = []
         ys = []
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        for spec in self.specs:
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix)
-            if coords is None:
-                continue
-            col, row = coords
-            xs.append(col)
-            ys.append(row)
+        for spec in channel_specs:
+            coords = self.viewer._map_spec_to_pixels(spec, header_map, xpix, ypix, file_key=file_key)
+            if coords:
+                xs.append(coords[0])
+                ys.append(coords[1])
         if xs and ys:
-            self.ax.scatter(xs, ys, s=30, c='red', alpha=0.8)
+            self.ax.scatter(xs, ys, s=20, c='white', edgecolors='black', linewidths=0.2, alpha=0.8)
+        self._update_selection_markers(redraw=False)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
             self.image_value_label.setText("Value: --")
 
-    def _pick_spec_from_point(self, x, y):
+    def _current_channel_specs(self):
+        path = self.channel_combo.currentData()
+        if not path:
+            return []
+        return self._channel_specs.get(self._normalize_path(path), [])
+
+    def _normalize_path(self, path):
+        try:
+            return str(Path(path))
+        except Exception:
+            return str(path)
+
+    def _channel_label_for_path(self, path):
+        key = self._normalize_path(path)
+        label = self._channel_labels_map.get(key)
+        if label:
+            return label
+        specs = self._channel_specs.get(key)
+        if specs:
+            sample = specs[0]
+            label = sample.get('channel_name') or sample.get('channel_code')
+            if not label:
+                channels = sample.get('channels') or {}
+                if len(channels) == 1:
+                    label = next(iter(channels.keys()))
+        return label or Path(key).name
+
+    def _build_stat_metric(self, fn, channel_specs, header, file_key):
+        if not channel_specs:
+            return None
+        xpix = int(header.get('xPixel', 128) if header else 128)
+        ypix = int(header.get('yPixel', 128) if header else 128)
+        grid = np.full((ypix, xpix), np.nan, dtype=float)
+        for spec in channel_specs:
+            data = spec.get('data')
+            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+            if data is None or coords is None:
+                continue
+            try:
+                values = np.asarray(data[1], dtype=float)
+                grid[coords[1], coords[0]] = fn(values)
+            except Exception:
+                continue
+        return grid
+
+    def _build_integral_metric(self, channel_specs, header, file_key):
+        if not channel_specs:
+            return None
+        xpix = int(header.get('xPixel', 128) if header else 128)
+        ypix = int(header.get('yPixel', 128) if header else 128)
+        grid = np.full((ypix, xpix), np.nan, dtype=float)
+        for spec in channel_specs:
+            data = spec.get('data')
+            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+            if data is None or coords is None:
+                continue
+            try:
+                xs = np.asarray(data[0], dtype=float)
+                ys = np.asarray(data[1], dtype=float)
+                grid[coords[1], coords[0]] = np.trapz(ys, xs)
+            except Exception:
+                continue
+        return grid
+
+    def _build_peak_metric(self, channel_specs, header, file_key):
+        if not channel_specs:
+            return None
+        xpix = int(header.get('xPixel', 128) if header else 128)
+        ypix = int(header.get('yPixel', 128) if header else 128)
+        grid = np.full((ypix, xpix), np.nan, dtype=float)
+        for spec in channel_specs:
+            data = spec.get('data')
+            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+            if data is None or coords is None:
+                continue
+            try:
+                ys = np.asarray(data[1], dtype=float)
+                idx = int(np.nanargmax(ys))
+                xs = np.asarray(data[0], dtype=float)
+                grid[coords[1], coords[0]] = xs[idx]
+            except Exception:
+                continue
+        return grid
+
+    def _pick_spec_from_point(self, x, y, channel_specs, file_key):
         best = None
         best_dist = None
         header, _ = self.viewer.headers.get(str(self.image_entry['path']), (None, None))
         xpix = int(header.get('xPixel', 128) if header else 128)
         ypix = int(header.get('yPixel', 128) if header else 128)
-        for spec in self.specs:
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix)
+        for spec in channel_specs:
+            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
             if coords is None:
                 continue
             col, row = coords
@@ -383,12 +859,191 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         return best
 
     def _on_click(self, event):
-        if event.inaxes != self.ax:
+        if event.inaxes != self.ax or event.button != MouseButton.LEFT:
             return
-        spec = self._pick_spec_from_point(event.xdata, event.ydata)
+        channel_specs = self._current_channel_specs()
+        spec = self._pick_spec_from_point(event.xdata, event.ydata, channel_specs, str(self.image_entry['path']))
         if not spec:
             return
-        self.viewer._open_spectroscopy_popup(spec)
+        header, _ = self.viewer.headers.get(str(self.image_entry['path']), (None, None))
+        xpix = int(header.get('xPixel', 128) if header else 128)
+        ypix = int(header.get('yPixel', 128) if header else 128)
+        coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=str(self.image_entry['path']))
+        key = self._selection_key(spec)
+        mods = self._event_modifiers(event)
+        shift = bool(mods & QtCore.Qt.ShiftModifier)
+        if shift and key in self._selection_keys:
+            self._remove_selection_entry(key)
+            if hasattr(self.viewer, '_toggle_multi_spec_selection'):
+                self.viewer._toggle_multi_spec_selection(spec)
+            self._refresh_selection_table()
+            return
+        if not shift:
+            self._selection = []
+            self._selection_keys = set()
+            self._aggregate_mode = False
+            self._focused_key = None
+            self._reset_color_cycle()
+            if hasattr(self.viewer, '_clear_multi_spec_selection'):
+                self.viewer._clear_multi_spec_selection()
+        primary_label = self._channel_label_for_path(self.channel_combo.currentData())
+        multi = self._gather_multi_channel_specs(spec.get('matrix_index')) or [(primary_label, spec)]
+        if primary_label:
+            multi.sort(key=lambda item: 0 if item[0] == primary_label else 1)
+        color = self._next_color()
+        nm_coords = (spec.get('x'), spec.get('y'))
+        entry = {
+            "spec": spec,
+            "coords": coords,
+            "nm_coords": nm_coords,
+            "multi": multi,
+            "label": primary_label,
+            "color": color,
+            "key": key,
+            "unit": self._channel_unit_for_spec(spec, primary_label),
+        }
+        self._selection.append(entry)
+        self._selection_keys.add(key)
+        self._focused_key = key
+        if shift:
+            self._aggregate_mode = True
+            if hasattr(self.viewer, '_toggle_multi_spec_selection'):
+                self.viewer._toggle_multi_spec_selection(spec)
+        else:
+            self.viewer._open_spectroscopy_popup(spec)
+        max_sel = 24
+        if len(self._selection) > max_sel:
+            overflow = len(self._selection) - max_sel
+            for stale in self._selection[:overflow]:
+                self._selection_keys.discard(stale.get("key"))
+            self._selection = self._selection[-max_sel:]
+        self._refresh_selection_table()
+
+    def _refresh_selection_table(self):
+        self.selection_table.setRowCount(len(self._selection))
+        for row, entry in enumerate(self._selection):
+            label = entry.get("label", "Channel")
+            color = QtGui.QColor(entry.get("color", "#4c78a8"))
+            swatch = color.lighter(140)
+            item = QtWidgets.QTableWidgetItem(label or "Channel")
+            item.setData(QtCore.Qt.UserRole, entry.get("key"))
+            item.setBackground(swatch)
+            self.selection_table.setItem(row, 0, item)
+            nm = entry.get("nm_coords") or (None, None)
+            x_nm, y_nm = nm
+            x_item = QtWidgets.QTableWidgetItem(f"{x_nm:.2f}" if x_nm is not None else "--")
+            y_item = QtWidgets.QTableWidgetItem(f"{y_nm:.2f}" if y_nm is not None else "--")
+            x_item.setBackground(swatch)
+            y_item.setBackground(swatch)
+            self.selection_table.setItem(row, 1, x_item)
+            self.selection_table.setItem(row, 2, y_item)
+        self.selection_table.scrollToBottom()
+        if self._aggregate_mode:
+            self._update_curve_plot()
+        else:
+            self._update_curve_plot(self._selection[-1] if self._selection else None)
+        self._update_selection_markers()
+
+    def _update_curve_from_selection(self):
+        rows = self.selection_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        idx = rows[0].row()
+        if 0 <= idx < len(self._selection):
+            entry = self._selection[idx]
+            self._focused_key = entry.get("key")
+            if self._aggregate_mode:
+                self._update_curve_plot()
+            else:
+                self._update_curve_plot(entry)
+            self._update_selection_markers()
+
+    def _update_curve_plot(self, entry=None):
+        self.curve_ax.clear()
+        entries = []
+        if self._aggregate_mode:
+            entries = list(self._selection)
+        else:
+            entry = entry or (self._selection[-1] if self._selection else None)
+            if entry:
+                entries = [entry]
+                self._focused_key = entry.get("key")
+        if not entries:
+            self.curve_canvas.draw_idle()
+            return
+        legend_handles = []
+        labels_seen = set()
+        units_seen = []
+        for sel in entries:
+            base_color = sel.get("color", "#4c78a8")
+            is_focus = sel.get("key") == self._focused_key
+            multi = sel.get("multi") or [(sel.get("label"), sel.get("spec"))]
+            for idx, (label, spec) in enumerate(multi):
+                xs, ys, unit, resolved_label = self._extract_channel_data(spec, label)
+                if xs is None or ys is None:
+                    continue
+                labels_seen.add(resolved_label or label)
+                if unit:
+                    units_seen.append(unit)
+                bias_mv = xs * 1000.0
+                color = base_color if idx == 0 else self._variant_color(base_color, 0.35 + idx * 0.15)
+                style = '-' if idx == 0 else '--'
+                lw = 2.4 if is_focus and idx == 0 else 1.4
+                alpha = 1.0 if is_focus else 0.75
+                legend_label = resolved_label or label or "channel"
+                if self._aggregate_mode:
+                    nm = sel.get("nm_coords") or (None, None)
+                    if nm[0] is not None and nm[1] is not None:
+                        legend_label = f"{legend_label} @ ({nm[0]:.1f}, {nm[1]:.1f} nm)"
+                line, = self.curve_ax.plot(bias_mv, ys, style, color=color, lw=lw, alpha=alpha, label=legend_label)
+                legend_handles.append(line)
+        self.curve_ax.set_xlabel("Bias (mV)")
+        axis_label = "Signal"
+        if not self._aggregate_mode:
+            active = entries[0]
+            unit = active.get("unit") or (units_seen[0] if units_seen else None)
+            base_label = active.get("label") or next(iter(labels_seen), "Signal")
+            if unit:
+                axis_label = f"{base_label} ({unit})"
+            else:
+                axis_label = base_label
+        elif units_seen:
+            distinct = {u for u in units_seen if u}
+            if len(distinct) == 1:
+                axis_label = f"Signal ({distinct.pop()})"
+        self.curve_ax.set_ylabel(axis_label)
+        self.curve_ax.grid(True, alpha=0.3)
+        if legend_handles:
+            self.curve_ax.legend(loc='upper right', fontsize=8)
+        self.curve_canvas.draw_idle()
+
+    def _gather_multi_channel_specs(self, matrix_index):
+        if matrix_index is None:
+            return []
+        entries = []
+        selected = self._normalize_path(self.channel_combo.currentData())
+        for path, specs in self._channel_specs.items():
+            if selected and path != selected:
+                continue
+            for spec in specs:
+                if spec.get('matrix_index') == matrix_index:
+                    entries.append((self._channel_label_for_path(path), spec))
+                    break
+        return entries
+
+    def _clear_selection(self):
+        self._selection = []
+        self._selection_keys = set()
+        self._aggregate_mode = False
+        self._focused_key = None
+        self._reset_color_cycle()
+        if hasattr(self.viewer, '_clear_multi_spec_selection'):
+            self.viewer._clear_multi_spec_selection()
+        self.selection_table.clearContents()
+        self.selection_table.setRowCount(0)
+        self.curve_ax.clear()
+        self._update_selection_markers()
+        self.curve_canvas.draw_idle()
 
     def _on_fit_matrix(self):
         dlg = MatrixFitDialog(self.viewer, self.specs, parent=self)
@@ -402,6 +1057,32 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._fit_dialogs.remove(dlg)
         except ValueError:
             pass
+
+    def _on_export_selection(self):
+        if not self._selection:
+            QtWidgets.QMessageBox.information(self, "Export", "Select at least one spectrum.")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export selection to CSV", "matrix_selection.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("channel,index,x_nm,y_nm,bias,value\n")
+            for entry in self._selection:
+                spec = entry.get("spec")
+                nm_coords = entry.get("nm_coords")
+                if not spec:
+                    continue
+                data = spec.get('data')
+                if not data:
+                    continue
+                xs, ys = data[0], data[1]
+                x_nm = nm_coords[0] if nm_coords and nm_coords[0] is not None else float('nan')
+                y_nm = nm_coords[1] if nm_coords and nm_coords[1] is not None else float('nan')
+                label = entry.get("label", Path(spec.get('path','')).name)
+                idx = spec.get('matrix_index')
+                for xv, yv in zip(xs, ys):
+                    fh.write(f"{label},{idx},{x_nm},{y_nm},{xv},{yv}\n")
+        QtWidgets.QMessageBox.information(self, "Export", f"Exported {len(self._selection)} selections to {Path(path).name}")
 
     def _on_canvas_hover(self, event):
         if event.inaxes != self.ax or self._current_image_arr is None:
@@ -447,9 +1128,13 @@ class _SpectroFitWorker(QtCore.QObject):
 
 class SpectroscopyCompareDialog(QtWidgets.QDialog):
     """Modern comparison UI for spectroscopy overlays and fitting."""
-    def __init__(self, specs, parent=None):
+    def __init__(self, specs, parent=None, palette_name=None):
         super().__init__(parent)
         self.specs = list(specs)
+        self._palette_name = palette_name or DEFAULT_COLOR_CYCLE
+        self._color_cycle = get_color_cycle(self._palette_name)
+        if not self._color_cycle:
+            self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
         self._line_map = {}
         self._legend_map = {}
         self._fit_results = {}
@@ -511,6 +1196,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax = self.fig.add_subplot(111)
         self.ax.grid(True, alpha=0.2)
         center_layout.addWidget(self.canvas, 1)
+        self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.canvas.customContextMenuRequested.connect(self._on_compare_canvas_menu)
         self.status_label = QtWidgets.QLabel("0 selected / 0 total")
         
         # Visualization controls (Waterfall)
@@ -543,6 +1230,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         channel_row.addWidget(self.channel_combo, 1)
         right_layout.addLayout(channel_row)
+
+        palette_row = QtWidgets.QHBoxLayout()
+        palette_row.addWidget(QtWidgets.QLabel("Color cycle:"))
+        self.palette_combo = QtWidgets.QComboBox()
+        for name in list_color_cycles():
+            self.palette_combo.addItem(name)
+        self.palette_combo.currentTextChanged.connect(self._on_palette_changed_compare)
+        self.palette_combo.blockSignals(True)
+        default_idx = max(0, self.palette_combo.findText(self._palette_name))
+        self.palette_combo.setCurrentIndex(default_idx)
+        self.palette_combo.blockSignals(False)
+        palette_row.addWidget(self.palette_combo, 1)
+        right_layout.addLayout(palette_row)
 
         btn_row = QtWidgets.QHBoxLayout()
         self.fit_selected_btn = QtWidgets.QPushButton("Fit selected (F)")
@@ -653,6 +1353,47 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self.spec_list.resizeColumnToContents(i)
         self.spec_list.blockSignals(False)
 
+    def set_specs(self, specs):
+        """Update the dialog with a new list of spectra without reopening."""
+        self.specs = list(specs)
+        self._fit_results = {}
+        self._item_map = {}
+        prev_channel = self.channel_combo.currentText()
+        filter_text = self.filter_edit.text()
+        self.spec_list.blockSignals(True)
+        self.spec_list.clear()
+        self.spec_list.blockSignals(False)
+        self._populate_list()
+        self._populate_channels()
+        if prev_channel:
+            idx = self.channel_combo.findText(prev_channel)
+            if idx >= 0:
+                self.channel_combo.setCurrentIndex(idx)
+        if filter_text:
+            self.filter_edit.setText(filter_text)
+            self._apply_filter(filter_text)
+        self._populate_results_table()
+        self._update_plot()
+
+    def set_palette_name(self, name):
+        cycle = name or DEFAULT_COLOR_CYCLE
+        if cycle == self._palette_name:
+            return
+        self._palette_name = cycle
+        self._color_cycle = get_color_cycle(self._palette_name)
+        if not self._color_cycle:
+            self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        idx = self.palette_combo.findText(self._palette_name)
+        self.palette_combo.blockSignals(True)
+        if idx >= 0:
+            self.palette_combo.setCurrentIndex(idx)
+        else:
+            self.palette_combo.setCurrentIndex(0)
+            self._palette_name = self.palette_combo.currentText()
+            self._color_cycle = get_color_cycle(self._palette_name)
+        self.palette_combo.blockSignals(False)
+        self._update_plot()
+
     def _populate_channels(self):
         channels = sorted({name for spec in self.specs for name in (spec.get('channels') or {}).keys()})
         self.channel_combo.blockSignals(True)
@@ -708,11 +1449,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         
         waterfall = self.waterfall_cb.isChecked()
         offset_val = self.offset_spin.value()
-        
+        scale = self._estimate_channel_scale(channel)
+        self._configure_offset_spin(scale)
+
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
-        colors = itertools.cycle(matplotlib.cm.get_cmap('tab10').colors)
+        colors = self._iter_color_cycle()
         plotted = 0
-        
+
         # Plot both checked items AND selected items (even if unchecked) for quick preview
         root = self.spec_list.invisibleRootItem()
         for i in range(root.childCount()):
@@ -728,10 +1471,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             V = np.asarray(spec.get('V', []), dtype=float)
             if data is None or not V.size:
                 continue
-            
+
             # Apply waterfall offset
             y_data = data + (plotted * offset_val) if waterfall else data
-            
+
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
@@ -772,6 +1515,64 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self.ax.set_ylabel(channel)
         self.canvas.draw_idle()
         self._update_status(plotted)
+
+    def _iter_color_cycle(self):
+        palette = self._color_cycle or get_color_cycle(DEFAULT_COLOR_CYCLE)
+        if not palette:
+            palette = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        return itertools.cycle(palette)
+
+    def _estimate_channel_scale(self, channel):
+        spreads = []
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.isHidden():
+                continue
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            arr = (spec.get('channels') or {}).get(channel)
+            if arr is None:
+                continue
+            vec = np.asarray(arr, dtype=float)
+            if vec.size == 0:
+                continue
+            try:
+                rng = float(np.nanmax(vec) - np.nanmin(vec))
+            except Exception:
+                continue
+            if np.isfinite(rng) and rng > 0:
+                spreads.append(rng)
+        if not spreads:
+            return 1.0
+        val = float(np.nanmedian(spreads))
+        if not np.isfinite(val) or val <= 0:
+            val = 1.0
+        return val
+
+    def _configure_offset_spin(self, scale):
+        if not np.isfinite(scale) or scale <= 0:
+            scale = 1.0
+        rng = max(scale * 20.0, 1e-6)
+        step = max(scale / 10.0, rng / 200.0)
+        value = self.offset_spin.value()
+        self.offset_spin.blockSignals(True)
+        self.offset_spin.setRange(-rng, rng)
+        self.offset_spin.setSingleStep(step)
+        if value > rng or value < -rng:
+            self.offset_spin.setValue(0.0)
+        self.offset_spin.blockSignals(False)
+
+    def _on_palette_changed_compare(self, name):
+        self._palette_name = name or DEFAULT_COLOR_CYCLE
+        self._color_cycle = get_color_cycle(self._palette_name)
+        if not self._color_cycle:
+            self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        parent = self.parent()
+        if parent and hasattr(parent, "set_spectro_color_cycle"):
+            parent.set_spectro_color_cycle(self._palette_name)
+        self._update_plot()
 
     def _draw_fit_for_spec(self, spec_id, color, offset=0.0):
         res = self._fit_results.get(spec_id)
@@ -929,6 +1730,51 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if len(rows) > 1:
             QtWidgets.QApplication.clipboard().setText("\n".join(rows))
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied table", self)
+
+    def _on_compare_canvas_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        copy_png = menu.addAction("Copy plot as PNG")
+        copy_svg = menu.addAction("Copy plot as SVG")
+        menu.addSeparator()
+        save_png = menu.addAction("Save PNG...")
+        save_svg = menu.addAction("Save SVG...")
+        action = menu.exec_(self.canvas.mapToGlobal(pos))
+        if action == copy_png:
+            self._copy_canvas_to_clipboard("png")
+        elif action == copy_svg:
+            self._copy_canvas_to_clipboard("svg")
+        elif action == save_png:
+            self._save_canvas("png")
+        elif action == save_svg:
+            self._save_canvas("svg")
+
+    def _copy_canvas_to_clipboard(self, fmt):
+        buf = io.BytesIO()
+        if fmt == "png":
+            self.fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+            image = QtGui.QImage.fromData(buf.getvalue(), "PNG")
+            QtWidgets.QApplication.clipboard().setImage(image)
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as PNG", self)
+        else:
+            self.fig.savefig(buf, format="svg", bbox_inches="tight")
+            QtWidgets.QApplication.clipboard().setText(buf.getvalue().decode("utf-8"))
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
+
+    def _save_canvas(self, fmt):
+        if fmt == "png":
+            filt = "PNG Files (*.png)"
+            default = "spectra.png"
+        else:
+            filt = "SVG Files (*.svg)"
+            default = "spectra.svg"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save plot", default, filt)
+        if not path:
+            return
+        try:
+            self.fig.savefig(path, format=fmt, dpi=300, bbox_inches="tight")
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved {Path(path).name}", self)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Save plot", str(exc))
 
     def _clear_selected(self):
         removed = False

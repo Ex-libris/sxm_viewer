@@ -79,6 +79,7 @@ from .spectroscopy import popups as spectro_popups
 from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
+from .palettes import DEFAULT_COLOR_CYCLE
 
 # Patch export module with missing dependency
 viewer_export.convert_to_si = convert_to_si
@@ -189,6 +190,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.spectro_marker_color_matrix = QtGui.QColor(c_matrix)
         else:
             self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
+        self.spectro_color_cycle = self.config.get('spectro_color_cycle', DEFAULT_COLOR_CYCLE)
         self.spectro_marker_symbol = self.config.get('spectro_marker_symbol', 'circle')
         self.spectro_marker_size = float(self.config.get('spectro_marker_size', 5.0))
         self.frame_entry_pixmaps = {}
@@ -1032,6 +1034,38 @@ QLabel:hover {{
 
     def _open_spectro_summary_for_file(self, file_key, show_mode="single"):
         return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode)
+
+    def _open_matrix_explorer_for_file(self, file_key):
+        image_specs = [s for s in self.spectros_by_image.get(str(file_key), []) if s.get('matrix_index') is not None]
+        dataset_specs = list(image_specs)
+        dataset = None
+        dataset_key = image_specs[0].get('matrix_dataset') if image_specs else None
+        if dataset_key:
+            dataset = self.matrix_datasets.get(dataset_key)
+            full = [spec for spec in self.matrix_spectros if spec.get('matrix_dataset') == dataset_key]
+            if full:
+                dataset_specs = full
+        if not dataset_specs:
+            QtWidgets.QMessageBox.information(self, "Matrix explorer", "No matrix spectroscopies available for this image.")
+            return
+
+        entry = {'path': Path(file_key)}
+        try:
+            entry['time'] = Path(file_key).stat().st_mtime
+        except Exception:
+            entry['time'] = None
+
+        dlg = MatrixSpectroViewer(
+            self,
+            entry,
+            dataset_specs,
+            dataset=dataset,
+            palette_name=getattr(self, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
+        )
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.show()
+        self._popup_refs.append(dlg)
+        dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
 
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
@@ -2779,7 +2813,7 @@ QLabel:hover {{
         marker_defs = []
         singles = []
         matrices = defaultdict(list)
-        
+
         for s in specs:
             midx = s.get('matrix_index')
             # Treat as single point if it's not a matrix, OR if we force matrix_as_points,
@@ -2788,17 +2822,21 @@ QLabel:hover {{
             if midx is None or matrix_as_points or not is_matrix_file:
                 singles.append(s)
             else:
-                matrices[midx].append(s)
+                group_key = s.get('matrix_dataset') or Path(s.get('path', '')).stem
+                matrices[group_key].append(s)
 
         # Draw matrix bounding boxes
-        pen_matrix = QtGui.QPen(self.spectro_marker_color_matrix, 1.5)
+        matrix_color = QtGui.QColor(self.spectro_marker_color_matrix)
+        pen_matrix = QtGui.QPen(matrix_color, 1.5)
         painter.setPen(pen_matrix)
-        painter.setBrush(QtCore.Qt.NoBrush)
-        for midx, m_specs in matrices.items():
+        fill_brush = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 40))
+        painter.setBrush(fill_brush)
+        for ds_key, m_specs in matrices.items():
             rect = self._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
             if rect:
                 painter.drawRect(rect)
-                marker_defs.append({'rect': rect, 'spec': m_specs[0], 'kind': 'matrix', 'label': f'M{midx}'})
+                label = Path(m_specs[0].get('path', '')).stem if m_specs else "matrix"
+                marker_defs.append({'rect': rect, 'spec': m_specs[0], 'kind': 'matrix', 'label': label})
 
         # Draw single points (dots)
         # Use a high-contrast style: bright fill with dark border
@@ -2895,11 +2933,17 @@ QLabel:hover {{
             return None
         xmin = min(xs); xmax = max(xs)
         ymin = min(ys); ymax = max(ys)
-        if xmax == xmin or ymax == ymin:
+        width = xmax - xmin
+        height = ymax - ymin
+        if width == 0 and height == 0:
             size = 18
             return QtCore.QRectF(xmin - size/2, ymin - size/2, size, size)
         pad = 6
-        return QtCore.QRectF(xmin - pad, ymin - pad, (xmax - xmin) + 2*pad, (ymax - ymin) + 2*pad)
+        size = max(width, height)
+        cx = (xmax + xmin) / 2.0
+        cy = (ymax + ymin) / 2.0
+        half = size / 2.0
+        return QtCore.QRectF(cx - half - pad, cy - half - pad, size + 2*pad, size + 2*pad)
 
     def _label_pos_to_pix_coords(self, label_widget, pos):
         pix = label_widget.pixmap()
@@ -2937,8 +2981,8 @@ QLabel:hover {{
                     self._toggle_multi_spec_selection(info.get('spec'))
                 else:
                     self._clear_multi_spec_selection()
-                    if info.get('kind') == 'matrix' and info.get('spec'):
-                        self._open_spectro_summary_for_file(file_key, show_mode="matrix")
+                    if info.get('kind') == 'matrix':
+                        self._open_matrix_explorer_for_file(file_key)
                     else:
                         self._open_spectroscopy_popup(info.get('spec'))
                 return True
@@ -3006,6 +3050,22 @@ QLabel:hover {{
         copy_svg_act = QtWidgets.QAction("Copy selected as SVG (current view)", menu)
         copy_svg_act.triggered.connect(lambda: self.copy_selected_as_svg(targets))
         menu.addAction(copy_svg_act)
+
+        export_png_act = QtWidgets.QAction("Export PNGs...", menu)
+        export_png_act.triggered.connect(self.on_export_pngs)
+        menu.addAction(export_png_act)
+        export_xyz_act = QtWidgets.QAction("Export XYZ...", menu)
+        export_xyz_act.triggered.connect(self.on_export_xyz_files)
+        menu.addAction(export_xyz_act)
+        adjust_act = QtWidgets.QAction("Adjust image...", menu)
+        adjust_act.triggered.connect(self.on_adjust_image)
+        menu.addAction(adjust_act)
+
+        if hasattr(self, '_clear_multi_spec_selection'):
+            menu.addSeparator()
+            clear_specs_act = QtWidgets.QAction("Clear spectroscopy selections", menu)
+            clear_specs_act.triggered.connect(self._clear_multi_spec_selection)
+            menu.addAction(clear_specs_act)
 
         menu.exec_(label_widget.mapToGlobal(pos))
 
@@ -3175,6 +3235,20 @@ QLabel:hover {{
             self.config['spectro_marker_color_matrix'] = col.name(QtGui.QColor.HexArgb)
             save_config(self.config)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def set_spectro_color_cycle(self, name: str):
+        cycle = name or DEFAULT_COLOR_CYCLE
+        if cycle == self.spectro_color_cycle:
+            return
+        self.spectro_color_cycle = cycle
+        self.config['spectro_color_cycle'] = cycle
+        save_config(self.config)
+        for dlg in getattr(self, '_multi_spectro_popups', []):
+            try:
+                if dlg and dlg.isVisible() and hasattr(dlg, 'set_palette_name'):
+                    dlg.set_palette_name(cycle)
+            except Exception:
+                continue
 
     def on_set_spectro_symbol(self, symbol):
         self.spectro_marker_symbol = symbol

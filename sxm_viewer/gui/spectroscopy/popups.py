@@ -34,6 +34,7 @@ from ..._shared import (
 )
 from ...data.spectroscopy import _matrix_base_name, find_last_image_for_spec
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog, MatrixSpectroViewer
+from ..palettes import DEFAULT_COLOR_CYCLE
 
 def _open_spectroscopy_popup(viewer, spec):
     if not spec:
@@ -58,62 +59,80 @@ def _open_multi_spectroscopy_popup(viewer):
     specs = list(viewer._multi_spec_selection)
     if len(specs) < 2:
         return
-    # close previous multi popups
-    for dlg in list(viewer._multi_spectro_popups):
+    dlg = viewer._multi_spectro_popups[0] if getattr(viewer, "_multi_spectro_popups", None) else None
+    palette_name = getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
+    if dlg is None or not dlg.isVisible():
+        if dlg is not None:
+            viewer._multi_spectro_popups = [dlg for dlg in viewer._multi_spectro_popups if dlg is not dlg]
+        dlg = SpectroscopyCompareDialog(specs, parent=viewer, palette_name=palette_name)
         try:
-            dlg.close()
+            dlg.move(viewer._next_popup_pos())
         except Exception:
             pass
-    viewer._multi_spectro_popups = []
-    dlg = SpectroscopyCompareDialog(specs, parent=viewer)
-    try:
-        dlg.move(viewer._next_popup_pos())
-    except Exception:
-        pass
-    dlg.show()
-    viewer._multi_spectro_popups.append(dlg)
-    dlg.finished.connect(lambda _: viewer._multi_spectro_popups.remove(dlg) if dlg in viewer._multi_spectro_popups else None)
+        dlg.show()
+        viewer._multi_spectro_popups.append(dlg)
+        dlg.finished.connect(lambda _: viewer._multi_spectro_popups.remove(dlg) if dlg in viewer._multi_spectro_popups else None)
+    else:
+        dlg.set_specs(specs)
+        dlg.set_palette_name(palette_name)
 
 
 def on_show_matrix_spectro_viewer(viewer):
-    matrix_files = defaultdict(list)
-    for spec in viewer.matrix_spectros:
-        matrix_files[str(spec.get('path'))].append(spec)
-    if not matrix_files:
-        QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No matrix spectroscopy files detected for this folder.")
+    datasets = getattr(viewer, "matrix_datasets", {})
+    if not datasets:
+        QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No matrix spectroscopy datasets detected for this folder.")
         return
-    choices = sorted(matrix_files.items(), key=lambda item: Path(item[0]).name.lower())
-    names = [Path(dat_path).name for dat_path, _ in choices]
-    item, ok = QtWidgets.QInputDialog.getItem(viewer, "Matrix spectroscopies", "Select matrix file:", names, 0, False)
+    bases = sorted(datasets.keys())
+    item, ok = QtWidgets.QInputDialog.getItem(viewer, "Matrix spectroscopies", "Select matrix dataset:", bases, 0, False)
     if not ok or not item:
         return
-    dat_key = None; target_specs = None
-    for k, specs in choices:
-        if Path(k).name == item:
-            dat_key = k
-            target_specs = specs
-            break
-    if not dat_key or not target_specs:
+    ds = datasets.get(item)
+    if not ds:
         return
+    specs = []
+    for ch in ds.channels:
+        specs.extend(_matrix_specs_for_file(viewer, ch['path']))
+    if not specs:
+        QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No spectra entries found for that dataset.")
+        return
+    anchor = _find_anchor_image_for_matrix(viewer, specs, ds.base)
+    if anchor is None:
+        QtWidgets.QMessageBox.warning(viewer, "Matrix spectra", "Could not find a preceding SXM image for this matrix dataset.")
+        return
+    entry = {'path': Path(anchor['path']), 'time': anchor.get('time')}
+    dlg = MatrixSpectroViewer(
+        viewer,
+        entry,
+        specs,
+        dataset=ds,
+        palette_name=getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
+    )
+    dlg.show()
+    viewer._popup_refs.append(dlg)
+    dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
+
+
+def _matrix_specs_for_file(viewer, dat_path):
+    dat_path = str(dat_path)
+    return [spec for spec in getattr(viewer, "matrix_spectros", []) if str(spec.get('path')) == dat_path]
+
+
+def _find_anchor_image_for_matrix(viewer, specs, base_name):
     images = getattr(viewer, 'image_meta', [])
     if not images:
-        QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No SXM images available to anchor matrix data.")
-        return
-    images = getattr(viewer, 'image_meta', [])
-    if not images:
-        QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No SXM images available to anchor matrix data.")
-        return
-    try:
-        matrix_time = datetime.fromtimestamp(Path(dat_key).stat().st_mtime)
-    except Exception:
-        matrix_time = None
-    if matrix_time is None:
-        for spec in target_specs:
-            if spec.get('time'):
-                matrix_time = spec.get('time')
-                break
-    base_name = _matrix_base_name(Path(dat_key).stem).lower()
+        return None
+    base_name = (_matrix_base_name(base_name) or base_name).lower()
     candidates = [img for img in images if _matrix_base_name(Path(img['path']).stem).lower() == base_name]
+    matrix_time = None
+    for spec in specs:
+        if spec.get('time'):
+            matrix_time = spec['time']
+            break
+    if matrix_time is None:
+        try:
+            matrix_time = datetime.fromtimestamp(Path(specs[0].get('path')).stat().st_mtime)
+        except Exception:
+            matrix_time = None
     match = None
     if candidates:
         earlier = [img for img in candidates if img.get('time') and matrix_time and img['time'] <= matrix_time]
@@ -125,14 +144,7 @@ def on_show_matrix_spectro_viewer(viewer):
             match = candidates[0]
     if not match:
         match = find_last_image_for_spec(matrix_time, images)
-    if not match:
-        QtWidgets.QMessageBox.warning(viewer, "Matrix spectra", "Could not find a preceding SXM image for this matrix file.")
-        return
-    entry = {'path': Path(match['path']), 'time': match.get('time')}
-    dlg = MatrixSpectroViewer(viewer, entry, target_specs)
-    dlg.show()
-    viewer._popup_refs.append(dlg)
-    dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
+    return match
 __all__ = [
     "_open_spectroscopy_popup",
     "_open_multi_spectroscopy_popup",

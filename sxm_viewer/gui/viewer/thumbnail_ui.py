@@ -302,12 +302,16 @@ def _handle_thumb_click(viewer, label_widget, event):
     viewer.on_thumbnail_clicked(fp, ch_idx)
     viewer.last_thumb_anchor = str(fp)
     try:
-        if viewer.show_spectra and viewer.spectros_by_image.get(str(fp)):
-            entries = viewer.spectros_by_image.get(str(fp), [])
-            has_matrix = any(s.get('matrix_index') is not None for s in entries)
-            has_single = any(s.get('matrix_index') is None for s in entries)
-            mode = "matrix" if has_matrix and not has_single else "single"
-            viewer._open_spectro_summary_for_file(fp, show_mode=mode)
+        if not viewer.show_spectra:
+            return
+        entries = viewer.spectros_by_image.get(str(fp), [])
+        if not entries:
+            return
+        matrix_specs = [s for s in entries if s.get('matrix_index') is not None and 'matrix' in Path(s.get('path','')).name.lower()]
+        if matrix_specs:
+            viewer._open_matrix_explorer_for_file(str(fp))
+            return
+        viewer._open_spectro_summary_for_file(fp, show_mode="single")
     except Exception:
         pass
 
