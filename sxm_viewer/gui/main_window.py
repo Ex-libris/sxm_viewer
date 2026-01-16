@@ -2637,49 +2637,7 @@ QLabel:hover {{
         return viewer_loader._scan_spectros(self, folder)
 
     def _assign_spectros_to_images(self):
-        """Assign spectroscopies to images based on file system modification time."""
-        self.spectros_by_image.clear()
-        if not self.spectros:
-            return
-
-        # Collect all images with file system timestamps
-        images = []
-        for key in self.files:
-            try:
-                ts = key.stat().st_mtime
-                skey = str(key)
-            except Exception:
-                continue
-            images.append((ts, skey))
-        
-        # Sort images by time
-        images.sort(key=lambda x: x[0])
-
-        # Assign each spec to the latest image that started before the spec
-        count = 0
-        for spec in self.spectros:
-            path = spec.get('path')
-            if not path:
-                continue
-            try:
-                spec_ts = Path(path).stat().st_mtime
-            except Exception:
-                continue
-
-            # Find last image where image_time <= spec_time
-            best_img = None
-            for img_ts, img_key in images:
-                if img_ts <= spec_ts:
-                    best_img = img_key
-                else:
-                    break
-            
-            if best_img:
-                self.spectros_by_image[best_img].append(spec)
-                spec['image_key'] = best_img
-                count += 1
-        
-        log_status(f"Assigned {count} spectroscopies to images based on file timestamps.")
+        spectro_controller._assign_spectros_to_images(self)
 
     def _choose_image_for_spec(self, spec, images, image_extents):
         return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)

@@ -35,6 +35,10 @@ After loading a folder (`Open folder`) the viewer parses every `.txt` header and
 
 Each preview also shows the acquisition date/time next to the file name and the channel name in the colorbar label, making it easy to understand what the palette represents. Combine these switches with the Sort/Filter drop-downs to focus on specific frames or tagging workflows.
 
+## Loading Nanonis data
+
+Folders that contain Nanonis `.sxm` scans can be opened directly. When the viewer finds such files it runs the bundled `nanonispy` reader (see `nanonis_implementation/`) and generates Omicron-style headers plus channel dumps under `<data folder>/.sxmviewer_nanonis/`. The GUI consumes those synthetic headers through the usual pipeline, so thumbnails, previews, and exports behave exactly like native Anfatec data. The cache refreshes automatically whenever the original Nanonis file changes.
+
 ## INSTALLATION : Choose **one** option below.
 
 ### Option A — Local self-contained Python (recommended)

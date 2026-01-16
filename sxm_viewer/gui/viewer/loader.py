@@ -82,6 +82,7 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
+from ...processing.nanonis_adapter import prepare_nanonis_folder, parse_nanonis_spectroscopy
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 def load_folder(viewer, folder:Path):
@@ -96,7 +97,11 @@ def load_folder(viewer, folder:Path):
     viewer._record_recent_dir(folder)
 
     txts = sorted(folder.glob("*.txt"))
-    log_status(f"Found {len(txts)} .txt files")
+    converted = prepare_nanonis_folder(folder)
+    if converted:
+        txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+        log_status(f"Converted {len(converted)} Nanonis scan(s)")
+    log_status(f"Found {len(txts)} header file(s)")
     viewer.files = txts
     viewer.headers.clear()
     viewer._invalidate_thumbnail_cache()
@@ -292,12 +297,17 @@ def _scan_spectros(viewer, folder:Path):
         if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
             spec_list = cached.get('data') or []
         else:
+            spec_list = None
             try:
                 spec_list = parse_spectroscopy_file(p)
             except Exception:
+                spec_list = None
+            if (not spec_list) and p.suffix.lower() == ".dat":
+                spec_list = parse_nanonis_spectroscopy(p)
+            if not spec_list:
                 stats['empty_files'] += 1
                 continue
-            
+
             # --- Fallback: Parse coordinates from header comments if missing (e.g. Nanonis .dat) ---
             if spec_list and ext == ".dat":
                 if any(s.get('x') is None or s.get('y') is None for s in spec_list):

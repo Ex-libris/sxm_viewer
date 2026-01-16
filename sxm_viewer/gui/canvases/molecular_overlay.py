@@ -124,12 +124,26 @@ class Molecule:
         try:
             with open(path, 'r') as f:
                 lines = f.readlines()
-            # Counts line is usually line 4 (index 3)
-            counts = lines[3].split()
-            natoms = int(counts[0])
-            for i in range(natoms):
-                line = lines[4+i]
+            counts_idx = None
+            counts = []
+            for idx, line in enumerate(lines):
                 parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        int(float(parts[0]))
+                        counts_idx = idx
+                        counts = parts
+                        break
+                    except Exception:
+                        continue
+            if counts_idx is None:
+                raise ValueError("Counts line not found")
+            natoms = int(float(counts[0]))
+            start = counts_idx + 1
+            for i in range(natoms):
+                if start + i >= len(lines):
+                    break
+                parts = lines[start + i].split()
                 if len(parts) >= 4:
                     x = float(parts[0])
                     y = float(parts[1])
