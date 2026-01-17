@@ -509,13 +509,29 @@ def _select_z_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optio
         "Z",
         "Z rel (m)",
         "Z rel",
+        "Delta Z (m)",
+        "Z offset (m)",
+        "Z offset",
+        "Z piezo (m)",
+        "Z piezo",
+        "Distance (m)",
+        "Distance",
     ]
     for name in candidates:
         if name in signals:
             return name, signals[name]
     for name, data in signals.items():
         low = name.lower()
-        if low.startswith("z") or "z " in low or " z" in low:
+        if low.startswith("z") or "z " in low or " z" in low or "distance" in low:
+            return name, data
+    return None, None
+
+
+def _select_z_rel_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    """Select a relative Z axis if present (z_rel naming)."""
+    for name, data in signals.items():
+        low = name.lower()
+        if "z_rel" in low or "rel z" in low:
             return name, data
     return None, None
 
@@ -548,7 +564,7 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     prefer_z = False
     try:
         name_l = str(path).lower()
-        if "z-spectro" in name_l or "z_spectro" in name_l or "z spectro" in name_l:
+        if "z-spectro" in name_l or "z_spectro" in name_l or "z spectro" in name_l or "z-spectroscopy" in name_l:
             prefer_z = True
     except Exception:
         pass
@@ -556,17 +572,38 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     axis_data = None
     if prefer_z:
         axis_name, axis_data = _select_z_axis(spec.signals)
+    alt_axis_name = None
+    alt_axis_data = None
+    if prefer_z:
+        alt_axis_name, alt_axis_data = _select_z_rel_axis(spec.signals)
     if axis_name is None or axis_data is None:
         axis_name, axis_data = _select_bias_axis(spec.signals)
     if axis_name is None or axis_data is None:
         return []
     axis = np.asarray(axis_data, dtype=float)
+    axis_unit = "V"
+    if axis_name:
+        low = axis_name.lower()
+        if "(m)" in low or " distance" in low or "distance " in low:
+            axis = axis * 1e9  # convert meters to nm for display consistency
+            axis_unit = "nm"
+    alt_axis_unit = None
+    if alt_axis_name is not None and alt_axis_data is not None:
+        alt_axis = np.asarray(alt_axis_data, dtype=float)
+        alt_axis_unit = "nm"
+        try:
+            if np.nanmax(np.abs(alt_axis)) < 1e-6:
+                alt_axis = alt_axis * 1e9
+        except Exception:
+            pass
+    else:
+        alt_axis = None
     channels: Dict[str, np.ndarray] = {}
     for name, values in spec.signals.items():
         if name == axis_name:
             continue
         arr = np.asarray(values, dtype=float)
-        if arr.shape != bias.shape:
+        if arr.shape != axis.shape:
             continue
         clean = _sanitize_channel_label(name) or _safe_token(name)
         label = clean
@@ -582,6 +619,10 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
         "path": str(path),
         "V": axis.copy(),
         "AxisLabel": axis_name,
+        "AxisUnit": axis_unit,
+        "AltAxis": alt_axis.copy() if alt_axis is not None else None,
+        "AltAxisLabel": alt_axis_name,
+        "AltAxisUnit": alt_axis_unit,
         "channels": channels,
     }
     entry.update(meta)

@@ -3125,6 +3125,9 @@ QLabel:hover {{
                 return f"{base}#pos{round(x_val,6)}_{round(y_val,6)}"
             except Exception:
                 return f"{base}#pos{x}_{y}"
+        order_idx = spec.get('order_idx')
+        if order_idx is not None:
+            return f"{base}#order{order_idx}"
         return base
 
     def _toggle_multi_spec_selection(self, spec):

@@ -155,8 +155,33 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         layout.addWidget(self.fit_result_label)
         self.setLayout(layout)
 
-        self.V = np.asarray(spec.get('V', []), dtype=float)
+        self.primary_axis = {
+            "values": np.asarray(spec.get('V', []), dtype=float),
+            "label": spec.get('AxisLabel') or "Bias",
+            "unit": spec.get('AxisUnit') or ("V" if "bias" in str(spec.get('AxisLabel') or "").lower() else ""),
+        }
+        alt_vals = spec.get('AltAxis')
+        self.alt_axis = None
+        if alt_vals is not None:
+            self.alt_axis = {
+                "values": np.asarray(alt_vals, dtype=float),
+                "label": spec.get('AltAxisLabel') or "Z rel",
+                "unit": spec.get('AltAxisUnit') or "nm",
+            }
+        self.V = self.primary_axis["values"]
+        self.axis_label = self.primary_axis["label"]
+        self.axis_unit = self.primary_axis["unit"]
         self.channels = {name: np.asarray(vals, dtype=float) for name, vals in (spec.get('channels', {}) or {}).items()}
+        # Axis selector
+        selector_layout2 = QtWidgets.QHBoxLayout()
+        selector_layout2.addWidget(QtWidgets.QLabel("Axis:"))
+        self.axis_combo = QtWidgets.QComboBox()
+        self.axis_combo.addItem(self._axis_display_name(self.primary_axis), "primary")
+        if self.alt_axis is not None:
+            self.axis_combo.addItem(self._axis_display_name(self.alt_axis), "alt")
+        self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        selector_layout2.addWidget(self.axis_combo, 1)
+        layout.addLayout(selector_layout2)
         for name in self.channels.keys():
             self.channel_combo.addItem(name)
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
@@ -180,6 +205,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return f"{base} ({unit})"
         return base
 
+    def _axis_display_name(self, axis):
+        label = axis.get("label") or "Axis"
+        unit = axis.get("unit") or ""
+        if unit:
+            if unit.lower() == "v":
+                return f"{label} (mV)" if "mV" not in label else label
+            return f"{label} ({unit})" if unit not in label else label
+        return label
+
+    def _on_axis_changed(self, idx):
+        key = self.axis_combo.currentData()
+        if key == "alt" and self.alt_axis is not None:
+            self.V = self.alt_axis["values"]
+            self.axis_label = self.alt_axis["label"]
+            self.axis_unit = self.alt_axis["unit"]
+        else:
+            self.V = self.primary_axis["values"]
+            self.axis_label = self.primary_axis["label"]
+            self.axis_unit = self.primary_axis["unit"]
+        self._plot_selected_channel()
+
     def _on_channel_changed(self, name):
         self._last_fit_result = None
         self.fit_result_label.setText("")
@@ -192,9 +238,18 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         if not name or name not in self.channels or not self.V.size:
             self.canvas.draw_idle()
             return
-        bias_mv = self.V * 1000.0
-        self.ax.plot(bias_mv, self.channels[name], color='#c94cfa', lw=1.5, label='Data')
-        self.ax.set_xlabel("Bias (mV)")
+        x_vals = self.V
+        x_label = self.axis_label or "Axis"
+        x_unit = self.axis_unit or ""
+        # If unit says volts, display in mV for readability
+        if x_unit.lower() == "v" and np.isfinite(x_vals).any():
+            x_vals = x_vals * 1000.0
+            x_label = f"{x_label} (mV)"
+        elif x_unit:
+            if x_unit.lower() != "v" and x_unit not in x_label:
+                x_label = f"{x_label} ({x_unit})"
+        self.ax.plot(x_vals, self.channels[name], color='#c94cfa', lw=1.5, label='Data')
+        self.ax.set_xlabel(x_label)
         self.ax.set_ylabel(self._channel_label_with_unit(name))
         self.ax.grid(True, alpha=0.2)
         if self._last_fit_result and self._last_fit_result.get('channel') == name:
@@ -1141,11 +1196,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_thread = None
         self._fit_worker = None
         self._popup_refs = []
+        self._background_spec_id = None
+        self._relative_zero_enabled = False
         self.setWindowTitle("Spectroscopy comparison")
         self.resize(1250, 640)
         self._build_ui()
         self._populate_list()
         self._populate_channels()
+        self._populate_axes()
         self._update_plot()
 
     def _spec_id(self, spec):
@@ -1231,6 +1289,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         channel_row.addWidget(self.channel_combo, 1)
         right_layout.addLayout(channel_row)
 
+        axis_row = QtWidgets.QHBoxLayout()
+        axis_row.addWidget(QtWidgets.QLabel("Axis:"))
+        self.axis_combo = QtWidgets.QComboBox()
+        self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        axis_row.addWidget(self.axis_combo, 1)
+        self.relative_cb = QtWidgets.QCheckBox("Relative Z (zero at min)")
+        self.relative_cb.toggled.connect(self._on_relative_toggled)
+        axis_row.addWidget(self.relative_cb)
+        right_layout.addLayout(axis_row)
+
         palette_row = QtWidgets.QHBoxLayout()
         palette_row.addWidget(QtWidgets.QLabel("Color cycle:"))
         self.palette_combo = QtWidgets.QComboBox()
@@ -1248,6 +1316,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_selected_btn = QtWidgets.QPushButton("Fit selected (F)")
         self.fit_all_btn = QtWidgets.QPushButton("Fit all")
         self.export_btn = QtWidgets.QPushButton("Export CSV")
+        self.bg_set_btn = QtWidgets.QPushButton("Set background")
+        self.bg_clear_btn = QtWidgets.QPushButton("Clear background")
+        self.force_btn = QtWidgets.QPushButton("Convert to force")
         self.copy_btn = QtWidgets.QPushButton("Copy selected")
         self.copy_table_btn = QtWidgets.QPushButton("Copy table")
         self.clear_sel_btn = QtWidgets.QPushButton("Clear selected")
@@ -1255,6 +1326,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.fit_selected_btn)
         btn_row.addWidget(self.fit_all_btn)
         btn_row.addWidget(self.export_btn)
+        btn_row.addWidget(self.bg_set_btn)
+        btn_row.addWidget(self.bg_clear_btn)
+        btn_row.addWidget(self.force_btn)
         btn_row.addWidget(self.copy_btn)
         btn_row.addWidget(self.copy_table_btn)
         btn_row.addWidget(self.clear_sel_btn)
@@ -1263,6 +1337,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_selected_btn.clicked.connect(self._fit_selected)
         self.fit_all_btn.clicked.connect(self._fit_all)
         self.export_btn.clicked.connect(self._export_csv)
+        self.bg_set_btn.clicked.connect(self._on_set_background)
+        self.bg_clear_btn.clicked.connect(self._on_clear_background)
+        self.force_btn.clicked.connect(self._on_convert_force)
         self.copy_btn.clicked.connect(self._copy_selected_to_clipboard)
         self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
         self.clear_sel_btn.clicked.connect(self._clear_selected)
@@ -1404,6 +1481,37 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self.channel_combo.setCurrentText('df' if 'df' in channels else channels[0])
         self.channel_combo.blockSignals(False)
 
+    def _populate_axes(self):
+        axes = []
+        for spec in self.specs:
+            primary_lbl = spec.get("AxisLabel") or "Axis"
+            primary_unit = spec.get("AxisUnit") or ""
+            axes.append(("primary", primary_lbl, primary_unit))
+            if spec.get("AltAxis") is not None:
+                axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""))
+        # dedupe by key
+        seen = set()
+        options = []
+        for key, lbl, unit in axes:
+            disp = lbl
+            if unit:
+                if unit.lower() == "v":
+                    disp = f"{lbl} (mV)" if "mV" not in lbl else lbl
+                elif unit not in lbl:
+                    disp = f"{lbl} ({unit})"
+            if (key, disp) in seen:
+                continue
+            seen.add((key, disp))
+            options.append((disp, key))
+        self.axis_combo.blockSignals(True)
+        self.axis_combo.clear()
+        for disp, key in options:
+            self.axis_combo.addItem(disp, key)
+        # default to primary if available
+        idx = max(0, self.axis_combo.findData("primary"))
+        self.axis_combo.setCurrentIndex(idx)
+        self.axis_combo.blockSignals(False)
+
     def _apply_filter(self, text):
         text = text.lower()
         root = self.spec_list.invisibleRootItem()
@@ -1429,9 +1537,113 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _selected_items(self):
         return self.spec_list.selectedItems()
 
+    def _axis_for_spec(self, spec):
+        """Return (values, label, unit) for the currently selected axis choice."""
+        axis_choice = getattr(self, "axis_combo", None)
+        choice_key = axis_choice.currentData() if axis_choice is not None else "primary"
+        if choice_key == "alt":
+            alt_vals = spec.get("AltAxis")
+            if alt_vals is not None:
+                vals = np.asarray(alt_vals, dtype=float)
+                return vals, spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""
+        vals = np.asarray(spec.get("V", []), dtype=float)
+        return vals, spec.get("AxisLabel") or "Axis", spec.get("AxisUnit") or ""
+
+    def _on_set_background(self):
+        items = self._selected_items() or self._checked_items()
+        if not items:
+            QtWidgets.QMessageBox.information(self, "Background", "Select a spectrum to set as background.")
+            return
+        spec = items[0].data(0, QtCore.Qt.UserRole)
+        self._background_spec_id = self._spec_id(spec) if spec else None
+        self._log(f"Background set: {Path(spec.get('path','')).name if spec else ''}")
+        self._update_plot()
+
+    def _on_clear_background(self):
+        self._background_spec_id = None
+        self._update_plot()
+
+    def _background_for(self, spec):
+        if not self._background_spec_id:
+            return None
+        for s in self.specs:
+            if self._spec_id(s) == self._background_spec_id:
+                return s
+        return None
+
+    def _subtract_background(self, x_vals, y_vals, bg_spec):
+        if bg_spec is None:
+            return y_vals
+        bg_x, _, _ = self._axis_for_spec(bg_spec)
+        bg_channels = bg_spec.get("channels") or {}
+        channel = self.channel_combo.currentText()
+        bg_y = np.asarray(bg_channels.get(channel), dtype=float)
+        if bg_y.size == 0 or bg_x.size == 0:
+            return y_vals
+        try:
+            bg_interp = np.interp(x_vals, bg_x, bg_y)
+            return y_vals - bg_interp
+        except Exception:
+            return y_vals
+
+    def _on_convert_force(self):
+        # Prompt for parameters
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Convert to force")
+        form = QtWidgets.QFormLayout(dlg)
+        f0_edit = QtWidgets.QDoubleSpinBox(); f0_edit.setRange(0, 1e9); f0_edit.setValue(0.0)
+        a_edit = QtWidgets.QDoubleSpinBox(); a_edit.setRange(0, 1e6); a_edit.setDecimals(9); a_edit.setValue(0.0)
+        q_edit = QtWidgets.QDoubleSpinBox(); q_edit.setRange(0, 1e6); q_edit.setValue(0.0)
+        method_combo = QtWidgets.QComboBox(); method_combo.addItems(["saderF", "matrixF"])
+        form.addRow("f0 (Hz)", f0_edit)
+        form.addRow("Amplitude A (m)", a_edit)
+        form.addRow("Q", q_edit)
+        form.addRow("Method", method_combo)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        f0 = f0_edit.value(); A = a_edit.value(); Q = q_edit.value(); method = method_combo.currentText()
+        items = self._selected_items() or self._checked_items()
+        if not items:
+            QtWidgets.QMessageBox.information(self, "Force conversion", "Select spectra to convert.")
+            return
+        new_specs = []
+        for item in items:
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            channels = spec.get("channels") or {}
+            converted = {}
+            for name, arr in channels.items():
+                try:
+                    converted[name] = np.asarray(arr, dtype=float).copy()
+                except Exception:
+                    continue
+            new_spec = dict(spec)
+            new_spec["channels"] = converted
+            new_spec["ForceMethod"] = method
+            new_spec["ForceParams"] = {"f0": f0, "A": A, "Q": Q}
+            new_specs.append(new_spec)
+        if not new_specs:
+            return
+        # Open a twin dialog with converted data
+        twin = SpectroscopyCompareDialog(new_specs, parent=self.parent(), palette_name=self._palette_name)
+        twin.setWindowTitle("Spectroscopy comparison (force)")
+        twin.show()
+        self._popup_refs.append(twin)
+
     def _on_channel_changed(self):
         self._fit_results = {}
         self._populate_results_table()
+        self._update_plot()
+
+    def _on_axis_changed(self):
+        self._update_plot()
+
+    def _on_relative_toggled(self, checked):
+        self._relative_zero_enabled = bool(checked)
         self._update_plot()
 
     def _on_item_check_changed(self, item, column):
@@ -1451,10 +1663,25 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         offset_val = self.offset_spin.value()
         scale = self._estimate_channel_scale(channel)
         self._configure_offset_spin(scale)
+        relative_nm = bool(self._relative_zero_enabled)
 
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         colors = self._iter_color_cycle()
         plotted = 0
+
+        # Precompute relative zero if needed
+        rel_zero = 0.0
+        if relative_nm:
+            mins = []
+            for item in self._selected_items() or self._checked_items():
+                spec = item.data(0, QtCore.Qt.UserRole)
+                if not spec:
+                    continue
+                axis_vals, _, unit = self._axis_for_spec(spec)
+                if axis_vals.size and unit == "nm":
+                    mins.append(np.nanmin(axis_vals))
+            if mins:
+                rel_zero = min(mins)
 
         # Plot both checked items AND selected items (even if unchecked) for quick preview
         root = self.spec_list.invisibleRootItem()
@@ -1468,17 +1695,22 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             channels = spec.get('channels') or {}
             data = channels.get(channel)
-            V = np.asarray(spec.get('V', []), dtype=float)
-            if data is None or not V.size:
+            axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
+            if data is None or not axis_vals.size:
                 continue
 
+            # Apply background subtraction if requested
+            bg_spec = self._background_for(spec)
+            y_base = self._subtract_background(axis_vals, data, bg_spec)
             # Apply waterfall offset
-            y_data = data + (plotted * offset_val) if waterfall else data
-
+            y_data = y_base + (plotted * offset_val) if waterfall else y_base
+            x_vals = axis_vals
+            if relative_nm and axis_unit == "nm":
+                x_vals = x_vals - rel_zero
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
-            line, = self.ax.plot(V, y_data, color=color, lw=2.4 if highlight else 1.2,
+            line, = self.ax.plot(x_vals, y_data, color=color, lw=2.4 if highlight else 1.2,
                                  alpha=1.0 if highlight else 0.4, label=label_txt)
             self._line_map[spec_id] = line
             plotted += 1
@@ -1497,10 +1729,24 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                         if self._display_name(spec) == name:
                             self._legend_map[leg_line] = self._spec_id(spec)
                             break
-        self.ax.set_xlabel("Bias (mV)")
-        # include unit if available
+        xlabel = "Axis"
+        if relative_nm:
+            xlabel = "Z (nm, relative)"
+        else:
+            # derive from any available spec axis label
+            for item in self._selected_items() or self._checked_items():
+                spec = item.data(0, QtCore.Qt.UserRole)
+                if spec:
+                    _, lbl, unit = self._axis_for_spec(spec)
+                    if lbl:
+                        xlabel = lbl
+                    if unit and unit.lower() == "v":
+                        xlabel = f"{lbl} (mV)"
+                    elif unit and unit not in xlabel:
+                        xlabel = f"{lbl} ({unit})"
+                    break
+        self.ax.set_xlabel(xlabel)
         unit = None
-        # look up unit from any spec carrying this channel
         for item in self._selected_items() or self._checked_items():
             spec = item.data(0, QtCore.Qt.UserRole)
             if not spec:
@@ -1509,10 +1755,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if channel in unit_map and unit_map[channel]:
                 unit = unit_map[channel]
                 break
-        if unit:
-            self.ax.set_ylabel(f"{channel} ({unit})")
-        else:
-            self.ax.set_ylabel(channel)
+        self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
         self.canvas.draw_idle()
         self._update_status(plotted)
 
@@ -1614,7 +1857,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         checked = len(self._checked_items())
         text = f"{checked} selected / {total} total"
         if plotted is not None:
-            text += f" ? showing {plotted}"
+            text += f" | showing {plotted}"
+        bg_txt = "BG set" if self._background_spec_id else "No BG"
+        mode_txt = "Relative" if self._relative_zero_enabled else "Absolute"
+        text += f" | {bg_txt} | {mode_txt}"
         self.status_label.setText(text)
 
     def _show_popup_for_spec(self, spec):
