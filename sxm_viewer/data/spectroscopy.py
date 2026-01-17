@@ -232,21 +232,51 @@ def _rows_to_spec(
     n_rows, n_cols = data.shape
     if n_cols == 0 or n_rows == 0:
         return None
-    if n_cols == 1:
-        bias = np.arange(n_rows, dtype=float)
-        channels = {"channel1": data[:, 0].copy()}
-    else:
-        bias = data[:, 0].copy()
-        channel_labels = _channel_labels(header_tokens, n_cols)
-        channels = {}
-        for idx, label in enumerate(channel_labels, start=1):
-            col = data[:, idx].copy()
-            channels[label] = col
+    # Primary axis defaults to first column (bias/time), optional Z in second.
+    bias = data[:, 0].copy()
+    z_axis = data[:, 1].copy() if n_cols >= 2 else None
+    channel_labels = _channel_labels(header_tokens, n_cols)
+    start_idx = 1 if n_cols == 1 else 2 if n_cols >= 3 else 1
+    channels = {}
+    for idx, label in enumerate(channel_labels, start=1):
+        if idx < start_idx:
+            continue
+        col = data[:, idx].copy()
+        channels[label] = col
     bias = _normalize_bias_axis(bias, header_tokens)
+
+    axis_label = "Bias"
+    axis_unit = "V"
+    alt_axis = None
+    alt_label = None
+    alt_unit = None
+    if header_tokens:
+        first_label = header_tokens[0].strip().lower()
+        if first_label == "mv" or first_label.endswith("(mv)"):
+            axis_unit = "V"
+        elif first_label.endswith("(v)"):
+            axis_unit = "V"
+        if len(header_tokens) > 1:
+            alt_label = header_tokens[1].strip() or "Z"
+    if z_axis is not None:
+        alt_label = alt_label or "Z"
+        alt_unit = "nm"
+        alt_axis = z_axis.copy()
+        try:
+            if np.nanmax(np.abs(alt_axis)) < 1e-6:
+                alt_axis = alt_axis * 1e9  # assume meters -> nm
+        except Exception:
+            pass
+
     entry = {
         "path": str(path),
         "V": bias,
         "channels": channels,
+        "AxisLabel": axis_label,
+        "AxisUnit": axis_unit,
+        "AltAxis": alt_axis,
+        "AltAxisLabel": alt_label,
+        "AltAxisUnit": alt_unit,
     }
     entry.update(_extract_meta(meta, path, block_idx))
     return entry
