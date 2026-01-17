@@ -61,11 +61,31 @@ def _assign_spectros_to_images(viewer):
 
     for spec in specs:
         match = viewer._choose_image_for_spec(spec, images, image_extents)
+        if not match and images:
+            # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
+            st = spec.get('time')
+            if st is not None:
+                try:
+                    match = min(images, key=lambda img: abs((img.get('time') or datetime.min) - st))
+                except Exception:
+                    match = images[0]
+            else:
+                match = images[0]
         if not match:
             continue
         image_key = str(match['path'])
         spec['image_key'] = image_key
-        viewer.spectros_by_image[image_key].append(spec)
+        specs_for_image = viewer.spectros_by_image[image_key]
+        spec['order_idx'] = len(specs_for_image) + 1  # stable order for fallback placement
+        specs_for_image.append(spec)
+    # If nothing got assigned (e.g., all matches failed), place all specs on the first image to ensure visibility.
+    if not viewer.spectros_by_image and images and specs:
+        primary = images[0]
+        image_key = str(primary['path'])
+        for idx, spec in enumerate(specs, 1):
+            spec['image_key'] = image_key
+            spec['order_idx'] = idx
+            viewer.spectros_by_image[image_key].append(spec)
     for k in list(viewer.spectros_by_image.keys()):
         viewer.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
 

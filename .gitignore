@@ -37,3 +37,6 @@ sxm_viewer/data/**/*$py.class
 # Logs & temporary files
 *.log
 *.tmp
+
+# Nanonis cache artifacts
+.sxmviewer_nanonis/

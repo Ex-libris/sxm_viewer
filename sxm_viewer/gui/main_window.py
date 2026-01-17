@@ -2656,9 +2656,14 @@ QLabel:hover {{
             x = float(spec.get('x'))
             y = float(spec.get('y'))
         except Exception:
-            return None
+            x = y = None
         if x is None or y is None:
-            return None
+            # fallback placement using a stable order index if present
+            try:
+                idx = int(spec.get('order_idx', 1))
+            except Exception:
+                idx = 1
+            return self._fallback_spec_coords(idx, xpix, ypix)
         try:
             extent = self._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
         except Exception:

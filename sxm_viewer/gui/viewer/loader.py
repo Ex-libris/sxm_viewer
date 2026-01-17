@@ -82,7 +82,7 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...processing.nanonis_adapter import prepare_nanonis_folder, parse_nanonis_spectroscopy
+from ...providers import convert_nanonis, parse_nanonis_spectroscopy
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 def load_folder(viewer, folder:Path):
@@ -97,7 +97,7 @@ def load_folder(viewer, folder:Path):
     viewer._record_recent_dir(folder)
 
     txts = sorted(folder.glob("*.txt"))
-    converted = prepare_nanonis_folder(folder)
+    converted = convert_nanonis(folder)
     if converted:
         txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
         log_status(f"Converted {len(converted)} Nanonis scan(s)")
@@ -298,12 +298,17 @@ def _scan_spectros(viewer, folder:Path):
             spec_list = cached.get('data') or []
         else:
             spec_list = None
-            try:
-                spec_list = parse_spectroscopy_file(p)
-            except Exception:
-                spec_list = None
-            if (not spec_list) and p.suffix.lower() == ".dat":
-                spec_list = parse_nanonis_spectroscopy(p)
+            if ext == ".dat":
+                # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
+                try:
+                    spec_list = parse_nanonis_spectroscopy(p)
+                except Exception:
+                    spec_list = None
+            if not spec_list:
+                try:
+                    spec_list = parse_spectroscopy_file(p)
+                except Exception:
+                    spec_list = None
             if not spec_list:
                 stats['empty_files'] += 1
                 continue
@@ -323,9 +328,11 @@ def _scan_spectros(viewer, folder:Path):
                                     if len(parts) == 2:
                                         try:
                                             x_val, y_val = float(parts[0]), float(parts[1])
+                                            x_nm = _coerce_pos_to_nm(x_val)
+                                            y_nm = _coerce_pos_to_nm(y_val)
                                             for s in spec_list:
-                                                if s.get('x') is None: s['x'] = x_val
-                                                if s.get('y') is None: s['y'] = y_val
+                                                if s.get('x') is None: s['x'] = x_nm
+                                                if s.get('y') is None: s['y'] = y_nm
                                         except ValueError: pass
                                     break
                     except Exception: pass
@@ -468,6 +475,23 @@ def _scan_spectros(viewer, folder:Path):
     except Exception:
         pass
     return specs, stats
+
+
+def _coerce_pos_to_nm(value: float) -> float:
+    """
+    Best-effort unit coercion for spectroscopy positions.
+
+    Heuristic:
+    - |v| < 1e-6 -> assume meters, convert to nm.
+    - Otherwise assume already in nm.
+    """
+    try:
+        v = float(value)
+    except Exception:
+        return value
+    if abs(v) < 1e-6:
+        return v * 1e9
+    return v
 __all__ = [
     "load_folder",
     "_parse_header_datetime",

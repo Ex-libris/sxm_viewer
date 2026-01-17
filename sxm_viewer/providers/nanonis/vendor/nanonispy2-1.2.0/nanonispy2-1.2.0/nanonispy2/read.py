@@ -3,6 +3,11 @@ import warnings
 
 import numpy as np
 
+if not hasattr(np, "float"):
+    np.float = float
+if not hasattr(np, "int"):
+    np.int = int
+
 from .constants import nanonis_format_dict, nanonis_end_tags
 
 
