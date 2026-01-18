@@ -66,7 +66,7 @@ def _ensure_spectro_dock(viewer):
     container = QtWidgets.QWidget(dock)
     v = QtWidgets.QVBoxLayout(container); v.setContentsMargins(6,6,6,6); v.setSpacing(6)
     viewer.spectro_search = QtWidgets.QLineEdit()
-    viewer.spectro_search.setPlaceholderText("Search spectros (file/pos)")
+    viewer.spectro_search.setPlaceholderText("Search spectra (file/pos)")
     v.addWidget(viewer.spectro_search)
     viewer.spectro_list = QListWidget()
     v.addWidget(viewer.spectro_list, 1)

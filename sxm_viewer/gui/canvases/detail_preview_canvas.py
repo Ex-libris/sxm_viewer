@@ -89,6 +89,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._detail_grid = False
         self._colorbars = []
         self._view_layout = "grid"
+        self._spectra_points = {}
+        self._spectra_click_cb = None
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by)
         self._angle_lines = []
@@ -139,6 +141,7 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 state = None
         self.views = views[:]
+        self._spectra_points = {}
         if not preserve_profiles:
             # whenever a new view set arrives, clear saved overlays so we don't mix files
             self._clear_saved_profile_artists(notify=False)
@@ -171,6 +174,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_views_callback(self, cb):
         self._views_callback = cb
 
+    def set_spectra_click_callback(self, cb):
+        """Register a callback for spectroscopy marker clicks (spec, event)."""
+        self._spectra_click_cb = cb
+
     def resizeEvent(self, event):
         size = event.size()
         safe_size = QtCore.QSize(max(1, size.width()), max(1, size.height()))
@@ -191,6 +198,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._scale_bar_artists = []
         self._colorbars = []
         self._molecule_artists = []
+        self._spectra_points = {}
         # Reset profile artists as figure was cleared
         self._profile_line = None
         self._profile_p0 = None
@@ -261,6 +269,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
             # Draw molecules on every view
             self._draw_molecules(ax)
+            self._draw_spectra(ax)
         try: self.fig.tight_layout()
         except Exception: pass
         self._apply_view_theme()
@@ -340,6 +349,96 @@ class MultiPreviewCanvas(FigureCanvas):
                 'scatter': sc,
                 'lines': lc
             })
+
+    def _draw_spectra(self, ax):
+        view = self._ax_view_map.get(ax, {})
+        specs = view.get('spectra') or []
+        if not specs:
+            self._spectra_points[ax] = []
+            return
+        raw_extent = view.get('extent_raw')
+        rel = bool(view.get('relative_axes'))
+        # Bounds for fallback placement when coordinates are missing
+        if raw_extent:
+            x0, x1, y1, y0 = raw_extent
+        else:
+            x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
+        def _to_rel(x, y):
+            if not rel or not raw_extent:
+                return x, y
+            try:
+                x_rel = x - float(x0)
+                y_min = min(float(y0), float(y1))
+                y_rel = y - y_min
+                return x_rel, y_rel
+            except Exception:
+                return x, y
+        xs = []
+        ys = []
+        points = []
+        missing_specs = []
+        for idx, s in enumerate(specs):
+            sx, sy = s.get('x'), s.get('y')
+            if sx is None or sy is None:
+                missing_specs.append(s)
+                continue
+            x, y = _to_rel(float(sx), float(sy))
+            xs.append(x); ys.append(y)
+            points.append((x, y, s))
+        # Fallback grid placement for entries without coordinates so markers still show up
+        m = len(missing_specs)
+        if m:
+            cols = int(math.ceil(math.sqrt(m)))
+            rows = int(math.ceil(m / float(max(cols, 1))))
+            dx = (x1 - x0) / float(max(cols, 1))
+            dy = (y1 - y0) / float(max(rows, 1))
+            for i in range(m):
+                r = i // cols
+                c = i % cols
+                fx = x0 + (c + 0.5) * dx
+                fy = y0 + (r + 0.5) * dy
+                fx, fy = _to_rel(fx, fy)
+                xs.append(fx); ys.append(fy)
+                points.append((fx, fy, missing_specs[i]))
+        if not xs:
+            self._spectra_points[ax] = []
+            return
+        try:
+            ax.scatter(xs, ys, s=28, marker='o', facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
+            self._spectra_points[ax] = points
+        except Exception:
+            self._spectra_points[ax] = []
+
+    def _hit_spectrum_point(self, event):
+        """Return the nearest spectrum under the cursor if within a small pixel radius."""
+        if event is None or event.inaxes is None:
+            return None
+        pts = self._spectra_points.get(event.inaxes) or []
+        if not pts:
+            return None
+        try:
+            ex, ey = float(event.x), float(event.y)
+        except Exception:
+            return None
+        best = None
+        best_d2 = None
+        for x, y, spec in pts:
+            try:
+                sx, sy = event.inaxes.transData.transform((x, y))
+            except Exception:
+                continue
+            dx = sx - ex
+            dy = sy - ey
+            d2 = dx * dx + dy * dy
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best = spec
+        if best is None:
+            return None
+        # 12px radius for reliable clicks
+        if best_d2 is not None and best_d2 <= 144.0:
+            return best
+        return None
 
     def _update_molecule_artists(self):
         """Update positions of existing molecule artists without full redraw."""
@@ -2492,6 +2591,14 @@ class MultiPreviewCanvas(FigureCanvas):
             return
 
         view = self._ax_view_map.get(ax)
+        if event.button == 1:
+            hit = self._hit_spectrum_point(event)
+            if hit is not None and callable(self._spectra_click_cb):
+                try:
+                    self._spectra_click_cb(hit, event)
+                except Exception:
+                    pass
+                return
         if self.profile_enabled and ax is self.main_ax:
             # avoid starting thumbnail drag/other actions while measuring profiles
             if event.button == 3:

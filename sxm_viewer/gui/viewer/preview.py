@@ -299,6 +299,15 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     if use_local_cmap:
         cmap_to_use = viewer.per_file_channel_cmap.get((file_key, channel_idx), cmap_to_use)
 
+    # Spectroscopy entries for this file (singles only for overlay)
+    spec_entries = viewer.spectros_by_image.get(str(header_path), []) if viewer.show_spectra else []
+    overlay_specs = []
+    if spec_entries and viewer.show_spectra:
+        if viewer.show_single_markers:
+            overlay_specs.extend([s for s in spec_entries if s.get('matrix_index') is None])
+        if viewer.show_matrix_markers:
+            overlay_specs.extend([s for s in spec_entries if s.get('matrix_index') is not None])
+
     # build views (main + dynamic extras based on current file)
     views = []
     caption = fd.get('Caption', fd.get('FileName', ''))
@@ -323,9 +332,19 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'channel': caption,
         'channel_index': int(channel_idx),
     }
-    main = {'arr': display_arr, 'extent': display_extent, 'cmap': cmap_to_use, 'unit': display_unit,
-            'title': title_text, 'colorbar_label': colorbar_label, 'axis_unit': axis_unit,
-            'relative_axes': bool(viewer.relative_axes), 'meta': meta}
+    main = {
+        'arr': display_arr,
+        'extent': display_extent,
+        'extent_raw': base_extent,
+        'cmap': cmap_to_use,
+        'unit': display_unit,
+        'title': title_text,
+        'colorbar_label': colorbar_label,
+        'axis_unit': axis_unit,
+        'relative_axes': bool(viewer.relative_axes),
+        'meta': meta,
+        'spectra': overlay_specs,
+    }
     views.append(main)
 
     # Rebuild extra views for the currently selected file using stored specifications

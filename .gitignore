@@ -40,3 +40,6 @@ sxm_viewer/data/**/*$py.class
 
 # Nanonis cache artifacts
 .sxmviewer_nanonis/
+
+# Local context notes (keep untracked)
+CONTEXT.md

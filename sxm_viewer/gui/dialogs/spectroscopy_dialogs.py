@@ -155,30 +155,17 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         layout.addWidget(self.fit_result_label)
         self.setLayout(layout)
 
-        self.primary_axis = {
-            "values": np.asarray(spec.get('V', []), dtype=float),
-            "label": spec.get('AxisLabel') or "Bias",
-            "unit": spec.get('AxisUnit') or ("V" if "bias" in str(spec.get('AxisLabel') or "").lower() else ""),
-        }
-        alt_vals = spec.get('AltAxis')
-        self.alt_axis = None
-        if alt_vals is not None:
-            self.alt_axis = {
-                "values": np.asarray(alt_vals, dtype=float),
-                "label": spec.get('AltAxisLabel') or "Z rel",
-                "unit": spec.get('AltAxisUnit') or "nm",
-            }
-        self.V = self.primary_axis["values"]
-        self.axis_label = self.primary_axis["label"]
-        self.axis_unit = self.primary_axis["unit"]
+        self.axes = self._collect_axes(spec)
+        self.V = np.asarray(self.axes[0]["values"], dtype=float) if self.axes else np.asarray([], dtype=float)
+        self.axis_label = self.axes[0].get("label") if self.axes else "Axis"
+        self.axis_unit = self.axes[0].get("unit") if self.axes else ""
         self.channels = {name: np.asarray(vals, dtype=float) for name, vals in (spec.get('channels', {}) or {}).items()}
         # Axis selector
         selector_layout2 = QtWidgets.QHBoxLayout()
         selector_layout2.addWidget(QtWidgets.QLabel("Axis:"))
         self.axis_combo = QtWidgets.QComboBox()
-        self.axis_combo.addItem(self._axis_display_name(self.primary_axis), "primary")
-        if self.alt_axis is not None:
-            self.axis_combo.addItem(self._axis_display_name(self.alt_axis), "alt")
+        for ax in self.axes:
+            self.axis_combo.addItem(self._axis_display_name(ax), ax.get("key"))
         self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
         selector_layout2.addWidget(self.axis_combo, 1)
         layout.addLayout(selector_layout2)
@@ -214,16 +201,52 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return f"{label} ({unit})" if unit not in label else label
         return label
 
+    def _collect_axes(self, spec):
+        axes = []
+        for ax in (spec.get("AxisChoices") or []):
+            vals = np.asarray(ax.get("values", []), dtype=float)
+            label = ax.get("label") or "Axis"
+            unit = ax.get("unit") or ""
+            key = ax.get("key") or label
+            axes.append({"key": key, "label": label, "unit": unit, "values": vals})
+        if axes:
+            return axes
+        primary = {
+            "key": "primary",
+            "label": spec.get('AxisLabel') or "Bias",
+            "unit": spec.get('AxisUnit') or ("V" if "bias" in str(spec.get('AxisLabel') or "").lower() else ""),
+            "values": np.asarray(spec.get('V', []), dtype=float),
+        }
+        axes.append(primary)
+        alt_vals = spec.get('AltAxis')
+        if alt_vals is not None:
+            axes.append(
+                {
+                    "key": "alt",
+                    "label": spec.get('AltAxisLabel') or "Z rel",
+                    "unit": spec.get('AltAxisUnit') or "nm",
+                    "values": np.asarray(alt_vals, dtype=float),
+                }
+            )
+        return axes
+
     def _on_axis_changed(self, idx):
         key = self.axis_combo.currentData()
-        if key == "alt" and self.alt_axis is not None:
-            self.V = self.alt_axis["values"]
-            self.axis_label = self.alt_axis["label"]
-            self.axis_unit = self.alt_axis["unit"]
-        else:
-            self.V = self.primary_axis["values"]
-            self.axis_label = self.primary_axis["label"]
-            self.axis_unit = self.primary_axis["unit"]
+        selected = None
+        for ax in self.axes:
+            if ax.get("key") == key:
+                selected = ax
+                break
+        if selected is None and self.axes:
+            selected = self.axes[0]
+        if selected is None:
+            self.V = np.asarray([])
+            self.axis_label = "Axis"
+            self.axis_unit = ""
+            return
+        self.V = np.asarray(selected.get("values", []), dtype=float)
+        self.axis_label = selected.get("label") or "Axis"
+        self.axis_unit = selected.get("unit") or ""
         self._plot_selected_channel()
 
     def _on_channel_changed(self, name):
@@ -1484,11 +1507,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _populate_axes(self):
         axes = []
         for spec in self.specs:
-            primary_lbl = spec.get("AxisLabel") or "Axis"
-            primary_unit = spec.get("AxisUnit") or ""
-            axes.append(("primary", primary_lbl, primary_unit))
-            if spec.get("AltAxis") is not None:
-                axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""))
+            if spec.get("AxisChoices"):
+                for ax in spec.get("AxisChoices"):
+                    axes.append((ax.get("key"), ax.get("label") or "Axis", ax.get("unit") or ""))
+            else:
+                primary_lbl = spec.get("AxisLabel") or "Axis"
+                primary_unit = spec.get("AxisUnit") or ""
+                axes.append(("primary", primary_lbl, primary_unit))
+                if spec.get("AltAxis") is not None:
+                    axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""))
         # dedupe by key
         seen = set()
         options = []
@@ -1541,6 +1568,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         """Return (values, label, unit) for the currently selected axis choice."""
         axis_choice = getattr(self, "axis_combo", None)
         choice_key = axis_choice.currentData() if axis_choice is not None else "primary"
+        for ax in spec.get("AxisChoices") or []:
+            if ax.get("key") == choice_key:
+                vals = np.asarray(ax.get("values", []), dtype=float)
+                return vals, ax.get("label") or "Axis", ax.get("unit") or ""
         if choice_key == "alt":
             alt_vals = spec.get("AltAxis")
             if alt_vals is not None:

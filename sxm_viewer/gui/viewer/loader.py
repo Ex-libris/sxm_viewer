@@ -231,8 +231,8 @@ def _scan_spectros(viewer, folder:Path):
     specs = []
     stats = {
         'display_count': 0,
-        'matrix_files': 0,
-        'matrix_specs': 0,
+        'matrix_files': 0,   # matrix-format files (true grids)
+        'matrix_specs': 0,   # spectra originating from matrix files
         'total_specs': 0,
         'matrix_samples': [],
         'dat_files': 0,
@@ -243,6 +243,16 @@ def _scan_spectros(viewer, folder:Path):
         'single_entries': 0,
         'deferred_files': 0,
     }
+    def _is_matrix_file(spec_list, path_obj: Path) -> bool:
+        if not spec_list:
+            return False
+        if any(s.get('matrix_dataset') for s in spec_list):
+            return True
+        if any((s.get('grid_cols') or 0) > 1 or (s.get('grid_rows') or 0) > 1 for s in spec_list):
+            return True
+        name = path_obj.name.lower()
+        return "matrix" in name and len(spec_list) > 1
+
     viewer.matrix_datasets = {}
     if not folder or not Path(folder).exists():
         return specs, stats
@@ -370,8 +380,8 @@ def _scan_spectros(viewer, folder:Path):
                         pass
             cache[norm_key] = {'mtime': mtime, 'data': spec_list}
         specs.extend(spec_list or [])
-        # counting logic: treat matrix files as a single entry for display purposes
-        is_matrix = any(s.get('matrix_index') is not None for s in (spec_list or []))
+        # counting logic: only treat files as matrix when flagged as such (dataset/grid or name hint)
+        is_matrix = _is_matrix_file(spec_list, p)
         if is_matrix:
             stats['matrix_files'] += 1
             stats['matrix_specs'] += len(spec_list)
@@ -424,16 +434,15 @@ def _scan_spectros(viewer, folder:Path):
                 grid_desc = f"~{side}x{side}" if side * side == n else f"{n} spectra"
             if len(stats['matrix_samples']) < 3:
                 stats['matrix_samples'].append(
-                    f"Matrix file {p.name}: {grid_desc} -> {len(spec_list)} spectra (counted as 1)."
+                    f"{p.name}: {grid_desc} ({len(spec_list)} spectra)"
                 )
         else:
-            if ext == ".dat":
-                if spec_list:
-                    stats['single_dat_files'] += 1
-                    stats['single_entries'] += len(spec_list)
-                else:
-                    stats['empty_files'] += 1
-            stats['display_count'] += len(spec_list)
+            if spec_list:
+                stats['single_dat_files'] += 1
+                stats['single_entries'] += len(spec_list)
+                stats['display_count'] += len(spec_list)
+            else:
+                stats['empty_files'] += 1
         if total and (idx % progress_step == 0 or idx == total):
             pct = idx / total * 100.0
             log_status(f"  - spectroscopy load {idx}/{total} ({pct:4.0f}%)")
@@ -444,13 +453,73 @@ def _scan_spectros(viewer, folder:Path):
     stats['total_specs'] = len(specs)
     # logging summary
     single_files = stats.get('single_dat_files', 0)
+    empty_files = stats.get('empty_files', 0)
     matrix_count = len(viewer.matrix_datasets)
     matrix_specs = stats.get('matrix_specs', 0)
+    single_entries = stats.get('single_entries', single_files)
+    log_status("Spectroscopy scan summary:")
     log_status(
-        f"SXMSpectro scan: folder={folder} files_scanned={total} spectra_total={stats['total_specs']} | "
-        f"single_files={single_files} -> {stats.get('single_entries', single_files)} | "
-        f"matrix_datasets={matrix_count} -> {matrix_specs} spectra"
+        f"  Files: {total} total  |  singles: {single_files}  |  matrices: {stats.get('matrix_files', matrix_count)}  |  empty/deferred: {empty_files}/{stats.get('deferred_files',0)}"
     )
+    log_status(
+        f"  Spectra: {stats['total_specs']} total  |  from singles: {single_entries} traces  |  from matrices: {matrix_specs} traces"
+    )
+    if viewer.matrix_datasets:
+        log_status("  Matrix datasets:")
+        for key, ds in sorted(viewer.matrix_datasets.items(), key=lambda kv: kv[0]):
+            chans = []
+            spectra_per_ch = []
+            points_per_trace = []
+            mtimes = []
+            for ch in ds.channels:
+                label = ch.get('label') or ch.get('channel_code') or Path(ch.get('filename', '')).stem
+                chans.append(label)
+                try:
+                    spectra_per_ch.append(int(ch.get('spectra_count', 0)))
+                except Exception:
+                    pass
+                try:
+                    # assume each channel in the dataset has the same trace length; store first nonzero
+                    cache_entry = cache.get(str(Path(ch.get('path')).resolve()).lower(), {})
+                    data = cache_entry.get('data') if isinstance(cache_entry, dict) else None
+                    if isinstance(data, list):
+                        trace = data[0] if data else None
+                    else:
+                        trace = None
+                    vals = None
+                    if isinstance(trace, dict):
+                        vals = trace.get('V')
+                        if vals is None and trace.get('channels'):
+                            vals = next(iter(trace['channels'].values()))
+                    if vals is not None:
+                        arr = np.asarray(vals)
+                        points_per_trace.append(int(arr.size))
+                except Exception:
+                    pass
+                try:
+                    mtimes.append(Path(ch.get('path')).stat().st_mtime)
+                except Exception:
+                    continue
+            chan_txt = ", ".join(chans) if chans else "1 channel"
+            spectra_txt = ""
+            if spectra_per_ch:
+                spectra_txt = f" | spectra/ch: {max(spectra_per_ch)}"
+            points_txt = ""
+            if points_per_trace:
+                points_txt = f" | points/trace: {max(points_per_trace)}"
+            acq_txt = ""
+            if mtimes:
+                try:
+                    acq_txt = f" | acquired: {datetime.fromtimestamp(min(mtimes)).strftime('%Y-%m-%d %H:%M')}"
+                except Exception:
+                    pass
+            label = key or ds.base or "matrix"
+            if ds.base and key and key.startswith(f"{ds.base}_"):
+                suffix = key[len(ds.base) + 1 :]
+                label = f"{ds.base}_{suffix}"
+            log_status(
+                f"    - {label}: {ds.cols}x{ds.rows} px | channels: {chan_txt}{spectra_txt}{points_txt}{acq_txt}"
+            )
     try:
         import json
         verbose = os.environ.get("SXM_VERBOSE")
@@ -459,9 +528,10 @@ def _scan_spectros(viewer, folder:Path):
             "files_scanned": total,
             "spectra_total": stats['total_specs'],
             "single_files": single_files,
-            "single_entries": stats.get('single_entries', single_files),
+            "single_entries": single_entries,
             "matrix_datasets": matrix_count,
             "matrix_spectra": matrix_specs,
+            "empty_files": empty_files,
         }
         log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
         if verbose:

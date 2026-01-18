@@ -232,9 +232,12 @@ def _rows_to_spec(
     n_rows, n_cols = data.shape
     if n_cols == 0 or n_rows == 0:
         return None
-    # Primary axis defaults to first column (bias/time), optional Z in second.
+    # Primary axis defaults to first column (bias), optional Z in second and
+    # optional time in the third column. Downstream UIs may choose among these
+    # as X-axis choices.
     bias = data[:, 0].copy()
     z_axis = data[:, 1].copy() if n_cols >= 2 else None
+    time_axis = data[:, 2].copy() if n_cols >= 3 else None
     channel_labels = _channel_labels(header_tokens, n_cols)
     start_idx = 1 if n_cols == 1 else 2 if n_cols >= 3 else 1
     channels = {}
@@ -243,30 +246,49 @@ def _rows_to_spec(
             continue
         col = data[:, idx].copy()
         channels[label] = col
-    bias = _normalize_bias_axis(bias, header_tokens)
+    bias, axis_label, axis_unit = _normalize_bias_axis(bias, header_tokens)
 
-    axis_label = "Bias"
-    axis_unit = "V"
+    axes_choices: List[Dict[str, object]] = [
+        {"key": "bias", "label": axis_label, "unit": axis_unit, "values": bias.copy()}
+    ]
+
     alt_axis = None
     alt_label = None
     alt_unit = None
-    if header_tokens:
-        first_label = header_tokens[0].strip().lower()
-        if first_label == "mv" or first_label.endswith("(mv)"):
-            axis_unit = "V"
-        elif first_label.endswith("(v)"):
-            axis_unit = "V"
-        if len(header_tokens) > 1:
-            alt_label = header_tokens[1].strip() or "Z"
+    if header_tokens and len(header_tokens) > 1:
+        alt_label = header_tokens[1].strip() or "Z"
     if z_axis is not None:
         alt_label = alt_label or "Z"
-        alt_unit = "nm"
+        alt_unit = alt_unit or "nm"
         alt_axis = z_axis.copy()
         try:
             if np.nanmax(np.abs(alt_axis)) < 1e-6:
                 alt_axis = alt_axis * 1e9  # assume meters -> nm
         except Exception:
             pass
+        axes_choices.append({"key": "z", "label": alt_label, "unit": alt_unit, "values": alt_axis})
+
+    # Third column is often time/dz in Omicron exports; expose it as an axis choice.
+    if time_axis is not None:
+        time_label = None
+        time_unit = "s"
+        if header_tokens and len(header_tokens) > 2:
+            time_label = header_tokens[2].strip() or None
+            low = time_label.lower() if time_label else ""
+            if "ms" in low:
+                time_unit = "ms"
+            elif "us" in low:
+                time_unit = "us"
+            elif "ns" in low:
+                time_unit = "ns"
+        axes_choices.append({"key": "time", "label": time_label or "Time", "unit": time_unit, "values": time_axis.copy()})
+
+    # Backward compatibility: expose the first alternate axis via AltAxis*
+    if len(axes_choices) > 1 and alt_axis is None:
+        alt = axes_choices[1]
+        alt_axis = np.asarray(alt["values"], dtype=float)
+        alt_label = alt.get("label")
+        alt_unit = alt.get("unit")
 
     entry = {
         "path": str(path),
@@ -274,10 +296,19 @@ def _rows_to_spec(
         "channels": channels,
         "AxisLabel": axis_label,
         "AxisUnit": axis_unit,
+        "AxisChoices": axes_choices,
         "AltAxis": alt_axis,
         "AltAxisLabel": alt_label,
         "AltAxisUnit": alt_unit,
     }
+
+    # Make axes plottable as Y channels too (e.g., bias vs time).
+    for axis in axes_choices:
+        ch_label = _clean_channel_label(axis.get("label") or axis.get("key") or "axis")
+        if ch_label.lower() in ("", "bias", "v"):
+            ch_label = "bias"
+        channels.setdefault(ch_label, np.asarray(axis.get("values"), dtype=float))
+
     entry.update(_extract_meta(meta, path, block_idx))
     return entry
 
@@ -300,10 +331,21 @@ def _clean_channel_label(label: str) -> str:
     return label.strip("_")
 
 
-def _normalize_bias_axis(bias: np.ndarray, header_tokens: Optional[List[str]]) -> np.ndarray:
+def _normalize_bias_axis(
+    bias: np.ndarray, header_tokens: Optional[List[str]]
+) -> tuple[np.ndarray, str, str]:
+    """
+    Normalize the primary axis (bias) to volts where possible.
+
+    We rely on header hints first, then fall back to a magnitude heuristic to
+    correct obvious mV axes that lack units.
+    """
     if not bias.size:
-        return bias
+        return bias, "Bias", "V"
+    label = "Bias"
+    unit = "V"
     scale = 1.0
+    unit_tokens: List[str] = []
     if header_tokens:
         unit_tokens = [
             str(tok).lower()
@@ -314,7 +356,13 @@ def _normalize_bias_axis(bias: np.ndarray, header_tokens: Optional[List[str]]) -
             scale = 1e3
         elif any("mv" in tok for tok in unit_tokens):
             scale = 1e-3
-    return bias * scale
+    finite_bias = bias[np.isfinite(bias)]
+    if scale == 1.0 and finite_bias.size:
+        max_abs = float(np.nanmax(np.abs(finite_bias)))
+        # Conservative heuristic: treat multi-thousand values as mV if no unit hints.
+        if 1e3 <= max_abs <= 1e5:
+            scale = 1e-3
+    return bias * scale, label, unit
 
 
 def _extract_meta(meta: Dict[str, object], path: Path, block_idx: int) -> Dict[str, object]:

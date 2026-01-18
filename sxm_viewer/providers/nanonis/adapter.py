@@ -559,7 +559,11 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     try:
         spec = reader.Spec(str(path))
     except Exception as exc:
-        log(f"[Nanonis] Failed to parse spectroscopy {path}: {exc}")
+        msg = str(exc)
+        if "Could not find the [DATA] end tag" in msg:
+            # Corrupt/incomplete file; skip quietly so Omicron parser can try.
+            return []
+        log(f"[Nanonis] Failed to parse spectroscopy {path}: {msg}")
         return []
     prefer_z = False
     try:

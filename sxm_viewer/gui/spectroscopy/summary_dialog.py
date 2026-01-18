@@ -55,7 +55,7 @@ from ..thumbnail_render import (
 )
 
 class SpectroSummaryDialog(QtWidgets.QDialog):
-    """Compact modal that lists spectros for a given file and offers quick actions."""
+    """Compact modal that lists spectra for a given file and offers quick actions."""
     def __init__(self, parent, file_key, header, fds, entries, nearest=None, show_mode="single"):
         super().__init__(parent)
         self.viewer = parent

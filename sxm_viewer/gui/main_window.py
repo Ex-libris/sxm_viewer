@@ -627,6 +627,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel_layout.addWidget(self.angle_value_label)
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
+        self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
@@ -2526,6 +2527,41 @@ QLabel:hover {{
     def _on_preview_value(self, value, x, y, view):
         return viewer_preview._on_preview_value(self, value, x, y, view)
 
+    def _is_matrix_spec(self, spec) -> bool:
+        try:
+            if not spec:
+                return False
+            if spec.get('matrix_dataset'):
+                return True
+            name = Path(str(spec.get('path', ''))).name.lower()
+            return bool(spec.get('matrix_index') is not None and "matrix" in name)
+        except Exception:
+            return False
+
+    def _on_preview_spec_click(self, spec, event=None):
+        if not spec or not self.show_spectra:
+            return
+        mods = QtCore.Qt.NoModifier
+        try:
+            if event is not None:
+                if hasattr(event, "modifiers"):
+                    mods = event.modifiers()
+                elif getattr(event, "guiEvent", None) is not None and hasattr(event.guiEvent, "modifiers"):
+                    mods = event.guiEvent.modifiers()
+        except Exception:
+            mods = QtCore.Qt.NoModifier
+        file_key = str(spec.get('image_key') or spec.get('path') or '')
+        if mods & QtCore.Qt.ShiftModifier:
+            self._toggle_multi_spec_selection(spec)
+            return
+        self._clear_multi_spec_selection()
+        force_matrix = bool(mods & QtCore.Qt.ControlModifier)
+        is_matrix = self._is_matrix_spec(spec) or (force_matrix and spec.get('matrix_index') is not None)
+        if is_matrix and file_key:
+            self._open_matrix_explorer_for_file(file_key)
+        else:
+            self._open_spectroscopy_popup(spec)
+
     def on_manual_tag(self, tag):
         if self.last_preview is None:
             QtWidgets.QMessageBox.information(self, "No file selected", "Please select a thumbnail first."); return
@@ -2608,19 +2644,7 @@ QLabel:hover {{
             single_entries = spec_stats.get('single_entries', single_files)
             matrix_files = spec_stats.get('matrix_dat_files', 0)
             matrix_entries = spec_stats.get('matrix_specs', 0)
-            log_status(
-                f"Spectroscopy summary: {total_entries} spectra entries total. "
-                f"Single-spectra files: {single_files} ({single_entries} entries). "
-                f"Matrix files: {matrix_files} ({matrix_entries} spectra, counted as {matrix_files} entries)."
-            )
-            log_status(
-                f"Files scanned: {spec_stats.get('dat_files')} .dat "
-                f"(matrix: {spec_stats.get('matrix_dat_files')}, single: {spec_stats.get('single_dat_files')}, "
-                f"empty/error: {spec_stats.get('empty_files')}, deferred: {spec_stats.get('deferred_files')})."
-            )
-            matrix_notes = spec_stats.get('matrix_samples') or []
-            for note in matrix_notes:
-                log_status(note)
+            # keep stats for UI but avoid duplicate terminal spam (loader already logged)
         else:
             log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
         self._assign_spectros_to_images()
@@ -2944,10 +2968,13 @@ QLabel:hover {{
                     self._toggle_multi_spec_selection(info.get('spec'))
                 else:
                     self._clear_multi_spec_selection()
-                    if info.get('kind') == 'matrix':
+                    spec = info.get('spec')
+                    force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
+                    is_matrix = info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
+                    if (is_matrix or force_matrix) and file_key:
                         self._open_matrix_explorer_for_file(file_key)
                     else:
-                        self._open_spectroscopy_popup(info.get('spec'))
+                        self._open_spectroscopy_popup(spec)
                 return True
         return False
 
@@ -3023,6 +3050,13 @@ QLabel:hover {{
         adjust_act = QtWidgets.QAction("Adjust image...", menu)
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
+
+        menu.addSeparator()
+        overlay_act = QtWidgets.QAction("Show spectroscopy overlays", menu)
+        overlay_act.setCheckable(True)
+        overlay_act.setChecked(self.show_spectra)
+        overlay_act.triggered.connect(self.on_show_spectra_toggled)
+        menu.addAction(overlay_act)
 
         if hasattr(self, '_clear_multi_spec_selection'):
             menu.addSeparator()
@@ -3291,6 +3325,18 @@ QLabel:hover {{
     def on_show_spectra_toggled(self, checked):
         self.show_spectra = bool(checked)
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
+        # Keep UI toggles in sync
+        try:
+            if hasattr(self, "show_spectra_cb"):
+                self.show_spectra_cb.blockSignals(True)
+                self.show_spectra_cb.setChecked(self.show_spectra)
+                self.show_spectra_cb.blockSignals(False)
+            if hasattr(self, "spectro_overlay_act"):
+                self.spectro_overlay_act.blockSignals(True)
+                self.spectro_overlay_act.setChecked(self.show_spectra)
+                self.spectro_overlay_act.blockSignals(False)
+        except Exception:
+            pass
         if self.show_spectra:
             if not self._spectros_loaded:
                 self._reload_spectros(refresh=False)
