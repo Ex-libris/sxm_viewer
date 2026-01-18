@@ -1327,6 +1327,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._lcpd_line_info = {}
         self._delta_selection = []
         self._delta_annotation_artists = []
+        self._delta_hint_text = (
+            "Hint: Shift+click two LCPD lines to show ΔLCPD annotations; "
+            "toggle Points and Lines to change what is visible."
+        )
+        self._lcpd_line_info = {}
+        self._delta_selection = []
+        self._delta_annotation_artists = []
         self.setWindowTitle("Spectroscopy comparison")
         self.resize(1400, 700)  # Increased size for better layout
         self._build_ui()
@@ -1401,6 +1408,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_compare_canvas_menu)
         self.canvas.mpl_connect("button_press_event", self._on_compare_canvas_click)
+        self.canvas.mpl_connect("motion_notify_event", self._on_compare_canvas_motion)
         self.canvas.mpl_connect("key_press_event", self._on_compare_canvas_keypress)
         self.canvas.setAccessibleName("Spectroscopy comparison plot")
         self.canvas.setAccessibleDescription("Interactive plot showing selected spectra")
@@ -1416,6 +1424,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.status_label = QtWidgets.QLabel("0 selected / 0 total")
         self.status_label.setAccessibleName("Status information")
         self.status_label.setAccessibleDescription("Shows current selection and plot status")
+        center_layout.addWidget(self.status_label)
+
+        self.hint_label = QtWidgets.QLabel(self._delta_hint_text)
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setAccessibleName("Plot interaction hint")
+        self.hint_label.setAccessibleDescription("Tips about interacting with the comparison plot")
+        center_layout.addWidget(self.hint_label)
 
         # Visualization controls (Waterfall)
         vis_group = QtWidgets.QGroupBox("Visualization")
@@ -1433,6 +1448,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.show_points_cb.toggled.connect(self._update_plot)
         vis_row.addWidget(self.show_points_cb)
 
+        self.lines_cb = QtWidgets.QCheckBox("Lines")
+        self.lines_cb.setToolTip("Show lines connecting the spectroscopy curves")
+        self.lines_cb.setAccessibleName("Lines toggle")
+        self.lines_cb.setAccessibleDescription("Show/hide the curves connecting the spectroscopy data")
+        self.lines_cb.setChecked(True)
+        self.lines_cb.toggled.connect(self._update_plot)
+        vis_row.addWidget(self.lines_cb)
+
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
         self.offset_spin.setDecimals(14) # High precision for small currents
@@ -1446,7 +1469,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         vis_row.addStretch(1)
         vis_layout.addLayout(vis_row)
         center_layout.addWidget(vis_group)
-        center_layout.addWidget(self.status_label)
         splitter.addWidget(center)
         splitter.setStretchFactor(1, 2)
         self.canvas.mpl_connect('pick_event', self._on_legend_pick)
@@ -2010,6 +2032,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         
         waterfall = self.waterfall_cb.isChecked()
         show_points = self.show_points_cb.isChecked()
+        show_lines = self.lines_cb.isChecked()
         offset_val = self.offset_spin.value()
         scale = self._estimate_channel_scale(channel)
         self._configure_offset_spin(scale)
@@ -2072,6 +2095,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 "alpha": 1.0 if highlight else 0.4,
                 "label": label_txt,
             }
+            line_kwargs["linestyle"] = "-" if show_lines else "None"
             if show_points:
                 line_kwargs.update({
                     "marker": "o",
@@ -2220,6 +2244,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 "axis_unit": axis_unit_clean,
                 "color": color,
                 "spec_id": spec_id,
+                "display_name": self._display_name(spec),
             }
 
     def _spec_id_by_name(self, name):
@@ -2426,6 +2451,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save plot", str(exc))
 
+    def _set_hint_text(self, text=None):
+        label = getattr(self, "hint_label", None)
+        if label:
+            label.setText(text or self._delta_hint_text)
+
     def _on_compare_canvas_click(self, event):
         if not event or event.button != MouseButton.LEFT or event.inaxes != self.ax:
             return
@@ -2445,13 +2475,40 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         spec_id, info = candidate
         if not self._delta_selection:
             self._delta_selection = [info]
+            self._set_hint_text("Shift+click a second LCPD line to annotate ΔLCPD.")
             return
         first = self._delta_selection[0]
         if info["spec_id"] == first["spec_id"]:
             self._delta_selection = [info]
+            self._set_hint_text("Pick a different LCPD line and Shift+click to measure ΔLCPD.")
             return
         self._create_delta_annotation(first, info)
         self._delta_selection = []
+
+    def _on_compare_canvas_motion(self, event):
+        hovered = None
+        if event and event.inaxes == self.ax and event.xdata is not None:
+            hovered = self._find_nearest_lcpd_line(event.xdata)
+        if self._delta_selection:
+            if hovered:
+                info = hovered[1]
+                self._set_hint_text(
+                    f"Shift+click {info.get('display_name', 'the line')} to finish ΔLCPD."
+                )
+                self.canvas.setCursor(QtCore.Qt.PointingHandCursor)
+            else:
+                self._set_hint_text("Shift+click a second LCPD line to annotate ΔLCPD.")
+                self.canvas.setCursor(QtCore.Qt.ArrowCursor)
+            return
+        if hovered:
+            info = hovered[1]
+            self._set_hint_text(
+                f"Shift+click {info.get('display_name', 'this LCPD')} to tag it for ΔLCPD."
+            )
+            self.canvas.setCursor(QtCore.Qt.PointingHandCursor)
+        else:
+            self._set_hint_text()
+            self.canvas.setCursor(QtCore.Qt.ArrowCursor)
 
     def _find_nearest_lcpd_line(self, x_val):
         if not self._lcpd_line_info:
@@ -2481,6 +2538,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _clear_delta_selection(self, redraw=True):
         self._delta_selection = []
         self._clear_delta_annotation(redraw=redraw)
+        self._set_hint_text()
 
     def _create_delta_annotation(self, first, second):
         self._clear_delta_annotation(redraw=False)
@@ -2525,6 +2583,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         )
         self._delta_annotation_artists = [annotation_line, text_artist]
         self.canvas.draw_idle()
+        self._set_hint_text()
 
     def _clear_selected(self):
         removed = False
@@ -2706,6 +2765,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         <li><b>Color Cycle:</b> Select color palette for multiple spectra</li>
         <li><b>Waterfall:</b> Stack spectra vertically with offset</li>
         <li><b>Offset:</b> Adjust vertical spacing in waterfall mode</li>
+        <li><b>Lines/Points:</b> Use the Lines toggle to hide the smooth curves and Points to show the raw markers.</li>
+        </ul>
+
+        <h3>Interactions</h3>
+        <ul>
+        <li><b>Shift+Click:</b> Click two LCPD guide lines while holding Shift to draw a ΔLCPD annotation between them.</li>
         </ul>
         
         <h3>Analysis</h3>
