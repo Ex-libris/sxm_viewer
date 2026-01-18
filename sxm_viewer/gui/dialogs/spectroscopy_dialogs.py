@@ -2728,15 +2728,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 gui_event.accept()
     def _copy_canvas_to_clipboard(self, fmt):
         buf = io.BytesIO()
-        if fmt == "png":
+        if fmt == "svg":
+            with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                self.fig.savefig(buf, format="svg", bbox_inches="tight")
+            mime = QtCore.QMimeData()
+            mime.setData("image/svg+xml", buf.getvalue())
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
+        else:
             self.fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
             image = QtGui.QImage.fromData(buf.getvalue(), "PNG")
             QtWidgets.QApplication.clipboard().setImage(image)
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as PNG", self)
-        else:
-            self.fig.savefig(buf, format="svg", bbox_inches="tight")
-            QtWidgets.QApplication.clipboard().setText(buf.getvalue().decode("utf-8"))
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
 
     def _save_canvas(self, fmt):
         if fmt == "png":
