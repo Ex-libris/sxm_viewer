@@ -1331,6 +1331,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             "Hint: Shift+click two LCPD lines to show ΔLCPD annotations; "
             "toggle Points and Lines to change what is visible."
         )
+        self._undo_stack = []
+        self._suppress_undo_push = True
         self._lcpd_line_info = {}
         self._delta_selection = []
         self._delta_annotation_artists = []
@@ -1341,6 +1343,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._populate_channels()
         self._populate_axes()
         self._update_plot()
+        self._suppress_undo_push = False
 
     def _get_icon(self, name):
         """Get a themed icon, falling back to empty icon if not available."""
@@ -1438,14 +1441,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         vis_row = QtWidgets.QHBoxLayout()
         self.waterfall_cb = QtWidgets.QCheckBox("Waterfall")
         self.waterfall_cb.setToolTip("Stack spectra vertically with offset for better visibility")
-        self.waterfall_cb.toggled.connect(self._update_plot)
+        self.waterfall_cb.toggled.connect(self._on_visual_toggle)
         self.waterfall_cb.setAccessibleName("Waterfall display")
         self.waterfall_cb.setAccessibleDescription("Enable waterfall stacking of spectra")
         vis_row.addWidget(self.waterfall_cb)
 
         self.show_points_cb = QtWidgets.QCheckBox("Points")
         self.show_points_cb.setToolTip("Show data points")
-        self.show_points_cb.toggled.connect(self._update_plot)
+        self.show_points_cb.toggled.connect(self._on_visual_toggle)
         vis_row.addWidget(self.show_points_cb)
 
         self.lines_cb = QtWidgets.QCheckBox("Lines")
@@ -1453,7 +1456,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.lines_cb.setAccessibleName("Lines toggle")
         self.lines_cb.setAccessibleDescription("Show/hide the curves connecting the spectroscopy data")
         self.lines_cb.setChecked(True)
-        self.lines_cb.toggled.connect(self._update_plot)
+        self.lines_cb.toggled.connect(self._on_visual_toggle)
         vis_row.addWidget(self.lines_cb)
 
         self.offset_spin = QtWidgets.QDoubleSpinBox()
@@ -1461,13 +1464,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.offset_spin.setDecimals(14) # High precision for small currents
         self.offset_spin.setSingleStep(0.1)
         self.offset_spin.setToolTip("Vertical offset between waterfall spectra")
-        self.offset_spin.valueChanged.connect(self._update_plot)
+        self.offset_spin.valueChanged.connect(self._on_offset_changed)
         self.offset_spin.setAccessibleName("Waterfall offset")
         self.offset_spin.setAccessibleDescription("Set the vertical spacing between stacked spectra")
         vis_row.addWidget(QtWidgets.QLabel("Offset:"))
         vis_row.addWidget(self.offset_spin)
         vis_row.addStretch(1)
         vis_layout.addLayout(vis_row)
+        undo_row = QtWidgets.QHBoxLayout()
+        self.undo_btn = QtWidgets.QPushButton("Undo")
+        self.undo_btn.setToolTip("Revert the most recent change to the comparison (Ctrl+Z)")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._undo_last_action)
+        undo_row.addWidget(self.undo_btn)
+        undo_row.addStretch(1)
+        vis_layout.addLayout(undo_row)
         center_layout.addWidget(vis_group)
         splitter.addWidget(center)
         splitter.setStretchFactor(1, 2)
@@ -1529,6 +1540,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.palette_combo.blockSignals(False)
         palette_row.addWidget(self.palette_combo, 1)
         viz_layout.addLayout(palette_row)
+
+        self.palette_swatches = QtWidgets.QWidget()
+        swatch_layout = QtWidgets.QHBoxLayout(self.palette_swatches)
+        swatch_layout.setSpacing(3)
+        swatch_layout.setContentsMargins(0, 4, 0, 4)
+        swatch_layout.setAlignment(QtCore.Qt.AlignLeft)
+        self.palette_swatches.setAccessibleName("Color cycle swatches")
+        self.palette_swatches.setAccessibleDescription("Shows the colors currently available in the selected color cycle")
+        viz_layout.addWidget(self.palette_swatches)
 
         right_layout.addWidget(viz_group)
 
@@ -1816,6 +1836,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._color_cycle = get_color_cycle(self._palette_name)
         self.palette_combo.blockSignals(False)
         self._update_plot()
+        self._update_color_swatches()
 
     def _populate_channels(self):
         channels = sorted({name for spec in self.specs for name in (spec.get('channels') or {}).keys()})
@@ -1861,6 +1882,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         idx = max(0, self.axis_combo.findData("primary"))
         self.axis_combo.setCurrentIndex(idx)
         self.axis_combo.blockSignals(False)
+        self._update_color_swatches()
 
     def _apply_filter(self, text):
         text = text.lower()
@@ -1907,6 +1929,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return vals, spec.get("AxisLabel") or "Axis", spec.get("AxisUnit") or ""
 
     def _on_set_background(self):
+        self._record_user_action("Set background")
         items = self._selected_items() or self._checked_items()
         if not items:
             QtWidgets.QMessageBox.information(self, "Background", "Select a spectrum to set as background.")
@@ -1917,6 +1940,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_plot()
 
     def _on_clear_background(self):
+        self._record_user_action("Clear background")
         self._background_spec_id = None
         self._update_plot()
 
@@ -2002,23 +2026,28 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return guess_channel_unit(channel_label)
 
     def _on_channel_changed(self):
+        self._record_user_action(f"Channel → {self.channel_combo.currentText()}")
         self._fit_results = {}
         self._populate_results_table()
         self._update_plot()
 
     def _on_axis_changed(self):
+        self._record_user_action(f"Axis → {self.axis_combo.currentText()}")
         self._fit_results = {}
         self.results_table.setRowCount(0)
         self._update_plot()
 
     def _on_relative_toggled(self, checked):
+        self._record_user_action(f"Relative Z → {'on' if checked else 'off'}")
         self._relative_zero_enabled = bool(checked)
         self._update_plot()
 
     def _on_item_check_changed(self, item, column):
+        self._record_user_action("Traffic: checked item changed")
         self._update_plot()
 
     def _on_list_selection_changed(self):
+        self._record_user_action("Selection changed")
         self._update_plot()
 
     def _update_plot(self):
@@ -2158,6 +2187,29 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             palette = get_color_cycle(DEFAULT_COLOR_CYCLE)
         return itertools.cycle(palette)
 
+    def _update_color_swatches(self):
+        container = getattr(self, "palette_swatches", None)
+        if container is None or container.layout() is None:
+            return
+        layout = container.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        if not self._color_cycle:
+            return
+        for color in self._color_cycle:
+            try:
+                color_hex = mcolors.to_hex(color)
+            except Exception:
+                color_hex = str(color)
+            swatch = QtWidgets.QLabel()
+            swatch.setFixedSize(20, 20)
+            swatch.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #888;")
+            layout.addWidget(swatch)
+        layout.addStretch(1)
+
     def _estimate_channel_scale(self, channel):
         spreads = []
         root = self.spec_list.invisibleRootItem()
@@ -2208,6 +2260,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         parent = self.parent()
         if parent and hasattr(parent, "set_spectro_color_cycle"):
             parent.set_spectro_color_cycle(self._palette_name)
+        self._update_color_swatches()
         self._update_plot()
 
     def _draw_fit_for_spec(self, spec_id, color, offset=0.0):
@@ -2417,9 +2470,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         key = (event.key or "").lower()
         if key in ("ctrl+z", "control+z"):
-            step = 0.05
-            self._font_scale = min(2.5, self._font_scale + step)
-            self._apply_font_scale()
+            self._undo_last_action()
             gui_event = getattr(event, "guiEvent", None)
             if gui_event:
                 gui_event.accept()
@@ -2585,7 +2636,124 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.draw_idle()
         self._set_hint_text()
 
+    def _on_visual_toggle(self, checked):
+        sender = self.sender()
+        label = sender.text() if sender else "Visual toggle"
+        self._record_user_action(f"{label} → {'on' if checked else 'off'}")
+        self._update_plot()
+
+    def _on_offset_changed(self, value):
+        self._record_user_action(f"Waterfall offset → {value:.3g}")
+        self._update_plot()
+
+    def _undo_last_action(self):
+        if not self._undo_stack:
+            return
+        desc, state = self._undo_stack.pop()
+        self._apply_state(state)
+        self._set_hint_text(f"Reverted: {desc}")
+        if hasattr(self, "undo_btn"):
+            self.undo_btn.setEnabled(bool(self._undo_stack))
+
+    def _record_user_action(self, desc):
+        if self._suppress_undo_push:
+            return
+        state = self._snapshot_state()
+        if not state:
+            return
+        if self._undo_stack and self._undo_stack[-1][1] == state:
+            return
+        self._undo_stack.append((desc, state))
+        if len(self._undo_stack) > 30:
+            self._undo_stack.pop(0)
+        if hasattr(self, "undo_btn"):
+            self.undo_btn.setEnabled(True)
+
+    def _snapshot_state(self):
+        checked = []
+        selected = []
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
+            if spec_id:
+                if item.checkState(0) == QtCore.Qt.Checked:
+                    checked.append(spec_id)
+                if item.isSelected():
+                    selected.append(spec_id)
+        return {
+            "channel": self.channel_combo.currentText(),
+            "axis_key": self.axis_combo.currentData(),
+            "waterfall": self.waterfall_cb.isChecked(),
+            "show_points": self.show_points_cb.isChecked(),
+            "show_lines": self.lines_cb.isChecked(),
+            "offset": float(self.offset_spin.value()),
+            "relative": self._relative_zero_enabled,
+            "background": self._background_spec_id,
+            "checked": checked,
+            "selected": selected,
+        }
+
+    def _apply_state(self, state):
+        if not state:
+            return
+        self._suppress_undo_push = True
+        try:
+            self.channel_combo.blockSignals(True)
+            target = state.get("channel") or ""
+            idx = self.channel_combo.findText(target)
+            if idx >= 0:
+                self.channel_combo.setCurrentIndex(idx)
+            self.channel_combo.blockSignals(False)
+
+            axis_target = state.get("axis_key")
+            idx = self.axis_combo.findData(axis_target)
+            if idx >= 0:
+                self.axis_combo.blockSignals(True)
+                self.axis_combo.setCurrentIndex(idx)
+                self.axis_combo.blockSignals(False)
+
+            for checkbox, key in (
+                (self.waterfall_cb, "waterfall"),
+                (self.show_points_cb, "show_points"),
+                (self.lines_cb, "show_lines"),
+                (self.relative_cb, "relative"),
+            ):
+                checkbox.blockSignals(True)
+                checkbox.setChecked(bool(state.get(key)))
+                checkbox.blockSignals(False)
+
+            self._relative_zero_enabled = bool(state.get("relative"))
+
+            self.offset_spin.blockSignals(True)
+            self.offset_spin.setValue(state.get("offset", 0.0))
+            self.offset_spin.blockSignals(False)
+
+            self._background_spec_id = state.get("background")
+
+            self._set_selection_state(state.get("checked", []), state.get("selected", []))
+
+            self._update_plot()
+        finally:
+            self._suppress_undo_push = False
+
+    def _set_selection_state(self, checked_ids, selected_ids):
+        root = self.spec_list.invisibleRootItem()
+        self.spec_list.blockSignals(True)
+        try:
+            checked_set = set(checked_ids)
+            selected_set = set(selected_ids)
+            for i in range(root.childCount()):
+                item = root.child(i)
+                spec_id = item.data(0, QtCore.Qt.UserRole + 1)
+                if spec_id:
+                    item.setCheckState(0, QtCore.Qt.Checked if spec_id in checked_set else QtCore.Qt.Unchecked)
+                    item.setSelected(spec_id in selected_set)
+        finally:
+            self.spec_list.blockSignals(False)
+
     def _clear_selected(self):
+        self._record_user_action("Clear selected spectra")
         removed = False
         for item in list(self._selected_items()):
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
@@ -2600,6 +2768,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._update_status()
 
     def _clear_all(self):
+        self._record_user_action("Clear all spectra")
         self.spec_list.clear()
         self._item_map = {}
         self._line_map.clear()
@@ -2619,6 +2788,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _select_all_visible(self):
         """Select all visible (non-filtered) spectra."""
+        self._record_user_action("Select all visible spectra")
         root = self.spec_list.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
@@ -2628,6 +2798,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _invert_selection(self):
         """Invert the checked state of all visible spectra."""
+        self._record_user_action("Invert selection")
         root = self.spec_list.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
