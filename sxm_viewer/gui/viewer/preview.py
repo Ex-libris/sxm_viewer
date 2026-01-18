@@ -389,11 +389,15 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     except Exception:
         preserve = False
     viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
+    suppress_profile_restart = getattr(viewer, '_suppress_profile_restart', False)
+    if suppress_profile_restart:
+        viewer._suppress_profile_restart = False
     if getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE:
         try:
             canvas = getattr(viewer, 'preview_canvas', None)
             angle_active = bool(canvas and getattr(canvas, 'angle_enabled', False))
-            if not angle_active:
+            profile_active = bool(canvas and getattr(canvas, 'profile_enabled', False))
+            if not suppress_profile_restart and not angle_active and not profile_active:
                 viewer._on_start_profile(force_enable=True)
         except Exception:
             pass
@@ -430,8 +434,11 @@ def _on_preview_value(viewer, value, x, y, view):
 # ---------- manual tagging (still available) ----------
 
 def on_preview_cmap_changed(viewer, idx):
+    viewer._suppress_profile_restart = False
     viewer.preview_cmap = viewer.preview_cmap_combo.currentText(); viewer.config['preview_cmap'] = viewer.preview_cmap; save_config(viewer.config)
-    if viewer.last_preview: viewer.show_file_channel(viewer.last_preview[0], viewer.last_preview[1])
+    if viewer.last_preview:
+        viewer._suppress_profile_restart = True
+        viewer.show_file_channel(viewer.last_preview[0], viewer.last_preview[1])
 __all__ = [
     "_build_metadata_html",
     "show_file_channel",
