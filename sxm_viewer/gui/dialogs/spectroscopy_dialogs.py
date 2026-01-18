@@ -160,10 +160,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.ax = self.fig.add_subplot(111)
         self._active_line_color = self.SCIENCE_PALETTE[0]
         self._swatch_buttons = []
+        self._curve_entries = []
+        self._selected_curve_index = 0
+        self._drag_start_pos = None
         self._font_scale = 1.0
+        self.setAcceptDrops(True)
+        self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self._palette_swatches)
+        self.curve_list = QtWidgets.QListWidget()
+        self.curve_list.setFixedHeight(72)
+        self.curve_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.curve_list.currentRowChanged.connect(self._on_curve_selection_changed)
+        layout.addWidget(self.curve_list)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_canvas_context_menu)
         self.canvas.mpl_connect("key_press_event", self._on_canvas_keypress)
@@ -188,12 +198,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         layout.addLayout(selector_layout2)
         for name in self.channels.keys():
             self.channel_combo.addItem(name)
+        if self.channel_combo.count():
+            self.channel_combo.setCurrentIndex(0)
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         self.fit_btn.clicked.connect(self._on_fit_clicked)
         self.copy_btn.clicked.connect(self._copy_channel_to_clipboard)
         self._last_fit_result = None
+        self._initialize_curve_entries()
         if self.channel_combo.count():
-            self.channel_combo.setCurrentIndex(0)
             self._plot_selected_channel()
         else:
             self.ax.text(0.5, 0.5, "No channels", ha='center', va='center', transform=self.ax.transAxes)
@@ -286,40 +298,66 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             except Exception:
                 pass
         self.axis_unit = unit or ""
+        self._update_primary_axis(axis_vals=self.V, axis_label=self.axis_label, axis_unit=self.axis_unit)
         self._plot_selected_channel()
         self._update_fit_button()
 
     def _on_channel_changed(self, name):
         self._last_fit_result = None
         self.fit_result_label.setText("")
+        if self._curve_entries:
+            channel = name or ""
+            values = np.asarray(self.channels.get(channel), dtype=float) if channel else np.asarray([], dtype=float)
+            entry = self._curve_entries[0]
+            entry["values"] = values
+            entry["channel"] = channel
+            entry["label"] = f"{Path(self.spec.get('path','')).name} ({channel})" if channel else Path(self.spec.get('path','')).name
+            self._update_curve_list()
         self._plot_selected_channel()
         self._update_fit_button()
 
+    def _update_primary_axis(self, axis_vals, axis_label, axis_unit):
+        if not self._curve_entries:
+            return
+        entry = self._curve_entries[0]
+        entry["axis_vals"] = np.asarray(axis_vals, dtype=float)
+        entry["axis_label"] = axis_label
+        entry["axis_unit"] = axis_unit
+
     def _plot_selected_channel(self):
         self.ax.clear()
-        name = self.channel_combo.currentText()
-        if not name or name not in self.channels or not self.V.size:
+        if not self._curve_entries:
             self.canvas.draw_idle()
             return
-        x_vals = self.V
-        x_label = self.axis_label or "Axis"
-        x_unit = (self.axis_unit or "").strip()
-        # keep raw values; only append unit text
-        self._axis_plot_scale = 1.0
-        self._axis_plot_unit = x_unit
-        if x_unit and x_unit not in x_label:
-            x_label = f"{x_label} ({x_unit})"
-        line_color = getattr(self, "_active_line_color", '#c94cfa')
-        self.ax.plot(x_vals, self.channels[name], color=line_color, lw=1.5, label='Data')
-        self.ax.set_xlabel(x_label)
+        axis_label = self.axis_label or "Axis"
+        axis_unit = (self.axis_unit or "").strip()
+        axis_plot_scale = 1.0
+        axis_plot_unit = axis_unit
+        if axis_unit.lower() == "v" and self.V.size:
+            axis_plot_scale = 1000.0
+            axis_plot_unit = "mV"
+        if axis_unit and axis_unit not in axis_label:
+            axis_label = f"{axis_label} ({axis_unit})"
+        plotted = False
+        for entry in self._curve_entries:
+            axis_vals = np.asarray(entry.get("axis_vals", []), dtype=float)
+            values = np.asarray(entry.get("values", []), dtype=float)
+            if axis_vals.size == 0 or values.size == 0:
+                continue
+            scaled_axis = axis_vals * axis_plot_scale
+            self.ax.plot(scaled_axis, values, color=entry.get("color", '#c94cfa'),
+                         lw=1.5, label=entry.get("label", "Data"))
+            plotted = True
+        self._axis_plot_scale = axis_plot_scale
+        self._axis_plot_unit = axis_plot_unit
+        self.ax.set_xlabel(axis_label)
+        name = self.channel_combo.currentText()
         self.ax.set_ylabel(self._channel_label_with_unit(name))
         self.ax.grid(True, alpha=0.2)
+        if plotted:
+            self.ax.legend()
         if self._last_fit_result and self._last_fit_result.get('channel') == name:
             self._draw_fit_overlay(self._last_fit_result)
-        else:
-            handles, labels = self.ax.get_legend_handles_labels()
-            if handles:
-                self.ax.legend()
         self._apply_font_scale()
         self.canvas.draw_idle()
 
@@ -362,6 +400,50 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Spectroscopy copied", self)
 
+    def _initialize_curve_entries(self):
+        channel = self.channel_combo.currentText()
+        axis_vals = np.asarray(self.axes[0]["values"], dtype=float) if self.axes else np.asarray([], dtype=float)
+        values = np.asarray(self.channels.get(channel), dtype=float) if channel else np.asarray([], dtype=float)
+        entry = {
+            "label": f"{Path(self.spec.get('path','')).name} ({channel})" if channel else Path(self.spec.get('path','')).name,
+            "axis_vals": axis_vals,
+            "values": values,
+            "color": self._active_line_color,
+            "spec_path": str(Path(self.spec.get('path',''))),
+            "channel": channel,
+            "axis_label": self.axis_label,
+            "axis_unit": self.axis_unit,
+        }
+        self._curve_entries = [entry]
+        self._selected_curve_index = 0
+        self._update_curve_list()
+
+    def _update_curve_list(self):
+        if not hasattr(self, "curve_list"):
+            return
+        current = max(0, min(self._selected_curve_index, len(self._curve_entries) - 1 if self._curve_entries else 0))
+        self.curve_list.blockSignals(True)
+        self.curve_list.clear()
+        for entry in self._curve_entries:
+            self.curve_list.addItem(entry.get("label", ""))
+        self.curve_list.blockSignals(False)
+        if self.curve_list.count():
+            self.curve_list.setCurrentRow(current)
+        self._selected_curve_index = current
+
+    def _on_curve_selection_changed(self, row):
+        if row < 0:
+            return
+        self._selected_curve_index = row
+
+    def _current_entry(self):
+        if not self._curve_entries:
+            return None
+        idx = self._selected_curve_index
+        if idx < 0 or idx >= len(self._curve_entries):
+            idx = 0
+        return self._curve_entries[idx]
+
     def _on_canvas_keypress(self, event):
         if not event or not hasattr(event, "key"):
             return
@@ -388,6 +470,78 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             font = widget.font()
             font.setPointSizeF(base * scale)
             widget.setFont(font)
+
+    def eventFilter(self, source, event):
+        if source == self.canvas:
+            if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+                self._drag_start_pos = event.pos()
+            elif event.type() == QtCore.QEvent.MouseMove and self._drag_start_pos is not None:
+                if (event.pos() - self._drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                    self._start_drag()
+                    self._drag_start_pos = None
+            elif event.type() == QtCore.QEvent.MouseButtonRelease:
+                self._drag_start_pos = None
+        return super().eventFilter(source, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat("application/x-sxm-spectroscopy"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        data = event.mimeData().data("application/x-sxm-spectroscopy")
+        try:
+            payload = json.loads(bytes(data).decode("utf-8"))
+        except Exception:
+            event.ignore()
+            return
+        self._add_entry_from_drop(payload)
+        event.acceptProposedAction()
+
+    def _add_entry_from_drop(self, payload):
+        axis_vals = np.asarray(payload.get("axis_vals") or [], dtype=float)
+        values = np.asarray(payload.get("values") or [], dtype=float)
+        color = payload.get("color") or self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)]
+        label = payload.get("label") or Path(payload.get("spec_path", "")).name
+        entry = {
+            "label": label,
+            "axis_vals": axis_vals,
+            "values": values,
+            "color": color,
+            "spec_path": payload.get("spec_path", ""),
+            "channel": payload.get("channel"),
+            "axis_label": payload.get("axis_label", self.axis_label),
+            "axis_unit": payload.get("axis_unit", self.axis_unit),
+        }
+        self._curve_entries.append(entry)
+        self._selected_curve_index = len(self._curve_entries) - 1
+        self._update_curve_list()
+        self._plot_selected_channel()
+
+    def _start_drag(self):
+        entry = self._current_entry()
+        if not entry:
+            return
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        payload = {
+            "label": entry.get("label"),
+            "spec_path": entry.get("spec_path"),
+            "axis_vals": entry.get("axis_vals").tolist() if isinstance(entry.get("axis_vals"), np.ndarray) else list(entry.get("axis_vals") or []),
+            "values": entry.get("values").tolist() if isinstance(entry.get("values"), np.ndarray) else list(entry.get("values") or []),
+            "color": entry.get("color"),
+            "channel": entry.get("channel"),
+            "axis_label": entry.get("axis_label"),
+            "axis_unit": entry.get("axis_unit"),
+        }
+        mime.setData("application/x-sxm-spectroscopy", json.dumps(payload).encode("utf-8"))
+        drag.setMimeData(mime)
+        pixmap = QtGui.QPixmap(32, 32)
+        pixmap.fill(QtGui.QColor(entry.get("color", "#000000")))
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QtCore.QPoint(16, 16))
+        drag.exec_(QtCore.Qt.CopyAction)
 
     def _create_palette_swatch_widget(self):
         swatch_widget = QtWidgets.QWidget()
@@ -436,6 +590,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _on_swatch_clicked(self, color, button):
         self._active_line_color = color
         self._set_active_swatch(button)
+        entry = self._current_entry()
+        if entry:
+            entry["color"] = color
         self._plot_selected_channel()
 
     def _draw_fit_overlay(self, res):
