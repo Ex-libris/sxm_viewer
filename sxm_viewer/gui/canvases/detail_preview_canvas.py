@@ -104,6 +104,8 @@ class MultiPreviewCanvas(FigureCanvas):
         ]
         self._angle_dragging = None
         self._angle_cids = []
+        self._angle_background = None
+        self._angle_blit_active = False
         self.angle_callback = None
         self.scale_bar_enabled = False
         self._scale_bar_pos = (0.94, 0.06)  # default lower right (axes coords)
@@ -1243,7 +1245,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 arrows[0].set_visible(style == 'arrows')
                 arrows[1].set_visible(style == 'arrows')
             self._update_frame_label(frame)
-        self.draw_idle()
+        if self._angle_blit_active and self._angle_background is not None:
+            self._blit_angle_frames()
+        else:
+            self.draw_idle()
 
     def _update_frame_label(self, frame):
         angle_info = self._compute_angle_info(frame=frame)
@@ -1353,6 +1358,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._angle_frames = []
         self._active_angle_frame_idx = -1
         self.angle_pts = None
+        self._reset_angle_blit()
 
     def _set_angle_pts(self, vx, vy, ax, ay, bx, by, frame=None):
         target = frame if frame is not None else self._get_active_angle_frame()
@@ -2603,6 +2609,59 @@ class MultiPreviewCanvas(FigureCanvas):
             if art is not None and art.get_visible():
                 self.main_ax.draw_artist(art)
 
+    def _prepare_angle_blit(self):
+        if self.main_ax is None:
+            self._angle_background = None
+            self._angle_blit_active = False
+            return
+        try:
+            self.draw()
+        except Exception:
+            pass
+        try:
+            self._angle_background = self.copy_from_bbox(self.main_ax.bbox)
+            self._angle_blit_active = self._angle_background is not None
+        except Exception:
+            self._angle_background = None
+            self._angle_blit_active = False
+
+    def _reset_angle_blit(self):
+        self._angle_background = None
+        self._angle_blit_active = False
+
+    def _draw_angle_frame_fast(self, frame):
+        if not frame or not self.main_ax:
+            return
+        artists = []
+        artists.extend(frame.get('lines', []))
+        artists.extend(frame.get('markers', []))
+        artists.extend(frame.get('arrows', []))
+        patch = frame.get('patch')
+        if patch is not None:
+            artists.append(patch)
+        label = frame.get('label')
+        if label is not None:
+            artists.append(label)
+        artists.extend(frame.get('len_labels', []))
+        for art in artists:
+            if art is not None and art.get_visible():
+                try:
+                    self.main_ax.draw_artist(art)
+                except Exception:
+                    pass
+
+    def _blit_angle_frames(self):
+        if not self.main_ax or self._angle_background is None:
+            self.draw_idle()
+            return
+        try:
+            self.restore_region(self._angle_background)
+            for frame in self._angle_frames:
+                self._draw_angle_frame_fast(frame)
+            self.blit(self.main_ax.bbox)
+        except Exception:
+            self.draw_idle()
+
     def _on_angle_press(self, event):
         if not self.angle_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
             return
@@ -2626,6 +2685,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if not hit:
             return
         self._angle_dragging = hit
+        self._prepare_angle_blit()
 
     def _on_angle_motion(self, event):
         if not self.angle_enabled or self._angle_dragging is None:
@@ -2655,6 +2715,9 @@ class MultiPreviewCanvas(FigureCanvas):
         if not self.angle_enabled:
             return
         self._angle_dragging = None
+        self._reset_angle_blit()
+        self._update_angle_artists()
+
     def _emit_profile(self):
         if not callable(self.profile_callback):
             self._emit_profile_state()
