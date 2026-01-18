@@ -130,6 +130,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_artists = []
         self._profile_background = None
         self._active_profile_original_color = None
+        self._profile_blit_active = False
 
     def draw(self):
         try:
@@ -1478,7 +1479,10 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception: pass
         self._update_profile_markers()
         self._update_profile_marker_artists()
-        self.draw_idle()
+        if self._profile_blit_active and self._profile_background is not None:
+            self._blit_profile_artists()
+        else:
+            self.draw_idle()
         self._emit_profile()
 
     def _update_profile_artists_fast(self, draw=True):
@@ -2374,6 +2378,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._set_profile_pts((x, y, x, y))
             self._ensure_profile_artists()
             self._dragging = 'p1'
+            self._line_drag_origin = None
+            self._set_profile_animated(True)
+            self._prepare_profile_blit()
             self._update_profile_artists()
             return
         x0, y0, x1, y1 = self.profile_pts
@@ -2384,16 +2391,22 @@ class MultiPreviewCanvas(FigureCanvas):
             if d0 <= thresh:
                 self._dragging = 'p0'
                 self._line_drag_origin = None
+                self._set_profile_animated(True)
+                self._prepare_profile_blit()
                 return
         if d1 <= thresh:
             self._dragging = 'p1'
             self._line_drag_origin = None
+            self._set_profile_animated(True)
+            self._prepare_profile_blit()
             return
         if self.profile_pts is not None:
             dist_line = self._distance_to_segment_pixels(x, y, self.profile_pts)
             if dist_line <= thresh:
                 self._dragging = 'line'
                 self._line_drag_origin = (x, y, self.profile_pts)
+                self._set_profile_animated(True)
+                self._prepare_profile_blit()
                 return
         # Increased threshold to 15.0 to prevent accidental "misses" causing profile loss
         overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
@@ -2429,10 +2442,10 @@ class MultiPreviewCanvas(FigureCanvas):
         
         # Prepare for blitting
         self._set_profile_animated(True)
-        self.draw()
-        self._profile_background = self.copy_from_bbox(self.main_ax.bbox)
-        self._draw_profile_animated()
-        self.blit(self.main_ax.bbox)
+        self._prepare_profile_blit()
+        if self._profile_blit_active:
+            self._draw_profile_animated()
+            self._blit_profile_artists()
         self._update_profile_artists()
 
     def _show_profile_context_menu(self, event, overlay_idx=None, active=False):
@@ -2564,11 +2577,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._set_profile_pts((pts[0] + dx, pts[1] + dy, pts[2] + dx, pts[3] + dy))
         
         # Use blitting for smooth drag
-        if self._profile_background:
-            self.restore_region(self._profile_background)
+        if self._profile_blit_active and self._profile_background is not None:
             self._update_profile_artists_fast(draw=False)
-            self._draw_profile_animated()
-            self.blit(self.main_ax.bbox)
+            self._blit_profile_artists()
         else:
             self._update_profile_artists_fast()
             
@@ -2579,7 +2590,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self._dragging = None
         self._set_profile_animated(False)
-        self._profile_background = None
+        self._reset_profile_blit()
         # Restore echo artists
         for entry in self._profile_echo_artists:
             for art in entry.values():
@@ -2608,6 +2619,41 @@ class MultiPreviewCanvas(FigureCanvas):
         for art in artists:
             if art is not None and art.get_visible():
                 self.main_ax.draw_artist(art)
+
+    def _prepare_profile_blit(self):
+        if self.main_ax is None:
+            self._profile_background = None
+            self._profile_blit_active = False
+            return
+        try:
+            self.draw()
+        except Exception:
+            pass
+        try:
+            self._profile_background = self.copy_from_bbox(self.main_ax.bbox)
+            self._profile_blit_active = self._profile_background is not None
+        except Exception:
+            self._profile_background = None
+            self._profile_blit_active = False
+
+    def _reset_profile_blit(self):
+        self._profile_background = None
+        self._profile_blit_active = False
+
+    def _blit_profile_artists(self):
+        if not self.main_ax or self._profile_background is None:
+            self.draw_idle()
+            return
+        try:
+            self.restore_region(self._profile_background)
+        except Exception:
+            self.draw_idle()
+            return
+        self._draw_profile_animated()
+        try:
+            self.blit(self.main_ax.bbox)
+        except Exception:
+            self.draw_idle()
 
     def _prepare_angle_blit(self):
         if self.main_ax is None:
