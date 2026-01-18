@@ -1,6 +1,7 @@
 """Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import math
@@ -123,6 +124,16 @@ from .matrix_fit import MatrixFitDialog
 
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
+    SCIENCE_PALETTE = [
+        "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c", "#98df8a",
+        "#d62728", "#ff9896", "#9467bd", "#c5b0d5", "#8c564b", "#c49c94",
+        "#e377c2", "#f7b6d2", "#7f7f7f", "#c7c7c7", "#bcbd22", "#dbdb8d",
+        "#17becf", "#9edae5", "#393b79", "#5254a3", "#6b6ecf", "#9c9ede",
+        "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#ffff33",
+        "#a65628", "#f781bf", "#999999", "#66c2a5", "#fc8d62", "#8da0cb",
+        "#e78ac3", "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3", "#8b9dc3",
+        "#f96855", "#56a3a6", "#9f5f9d", "#2d5d82", "#73c2ff", "#ffaec9"
+    ]
     def __init__(self, spec, parent=None):
         super().__init__(parent)
         self.spec = spec
@@ -147,9 +158,15 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.fig = Figure(figsize=(6,4))
         self.canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111)
+        self._active_line_color = self.SCIENCE_PALETTE[0]
+        self._swatch_buttons = []
+        self._font_scale = 1.0
+        self._palette_swatches = self._create_palette_swatch_widget()
         layout.addWidget(self.canvas, 1)
+        layout.addWidget(self._palette_swatches)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_canvas_context_menu)
+        self.canvas.mpl_connect("key_press_event", self._on_canvas_keypress)
         self.fit_result_label = QtWidgets.QLabel("")
         self.fit_result_label.setWordWrap(True)
         layout.addWidget(self.fit_result_label)
@@ -292,7 +309,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._axis_plot_unit = x_unit
         if x_unit and x_unit not in x_label:
             x_label = f"{x_label} ({x_unit})"
-        self.ax.plot(x_vals, self.channels[name], color='#c94cfa', lw=1.5, label='Data')
+        line_color = getattr(self, "_active_line_color", '#c94cfa')
+        self.ax.plot(x_vals, self.channels[name], color=line_color, lw=1.5, label='Data')
         self.ax.set_xlabel(x_label)
         self.ax.set_ylabel(self._channel_label_with_unit(name))
         self.ax.grid(True, alpha=0.2)
@@ -302,6 +320,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             handles, labels = self.ax.get_legend_handles_labels()
             if handles:
                 self.ax.legend()
+        self._apply_font_scale()
         self.canvas.draw_idle()
 
     def _on_canvas_context_menu(self, pos):
@@ -342,6 +361,82 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 lines.append(f"{v}\t{val}")
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Spectroscopy copied", self)
+
+    def _on_canvas_keypress(self, event):
+        if not event or not hasattr(event, "key"):
+            return
+        key = (event.key or "").lower()
+        if key in ("ctrl+z", "control+z"):
+            step = 0.05
+            self._font_scale = min(2.5, self._font_scale + step)
+            self._apply_font_scale()
+            self.canvas.draw_idle()
+            gui_event = getattr(event, "guiEvent", None)
+            if gui_event:
+                gui_event.accept()
+
+    def _apply_font_scale(self):
+        scale = getattr(self, "_font_scale", 1.0)
+        self.ax.tick_params(labelsize=8 * scale)
+        self.ax.xaxis.label.set_fontsize(10 * scale)
+        self.ax.yaxis.label.set_fontsize(10 * scale)
+        legend = self.ax.get_legend()
+        if legend:
+            for text in legend.get_texts():
+                text.set_fontsize(8 * scale)
+        for widget, base in ((self.meta_label, 9.0), (self.fit_result_label, 8.5)):
+            font = widget.font()
+            font.setPointSizeF(base * scale)
+            widget.setFont(font)
+
+    def _create_palette_swatch_widget(self):
+        swatch_widget = QtWidgets.QWidget()
+        outer_layout = QtWidgets.QHBoxLayout(swatch_widget)
+        outer_layout.setContentsMargins(0, 8, 0, 0)
+        outer_layout.setSpacing(6)
+        label = QtWidgets.QLabel("Color strip:")
+        label.setFixedWidth(90)
+        outer_layout.addWidget(label, alignment=QtCore.Qt.AlignTop)
+        grid_widget = QtWidgets.QWidget()
+        grid_layout = QtWidgets.QGridLayout(grid_widget)
+        grid_layout.setSpacing(3)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        rows = 2
+        swatches_per_row = (len(self.SCIENCE_PALETTE) + rows - 1) // rows
+        for idx, color in enumerate(self.SCIENCE_PALETTE):
+            row = idx // swatches_per_row
+            col = idx % swatches_per_row
+            button = QtWidgets.QPushButton()
+            button.setFixedSize(24, 24)
+            button.setFlat(True)
+            base_style = (
+                f"background-color:{color}; border:1px solid #aaa; border-radius:3px;"
+            )
+            button.setProperty("baseStyle", base_style)
+            button.setStyleSheet(base_style)
+            button.clicked.connect(functools.partial(self._on_swatch_clicked, color, button))
+            button.setAccessibleDescription(f"Select color {idx+1}")
+            grid_layout.addWidget(button, row, col)
+            self._swatch_buttons.append(button)
+        outer_layout.addWidget(grid_widget, 1)
+        swatch_widget.setAccessibleName("Color cycle swatches")
+        swatch_widget.setAccessibleDescription("Displays available colors for the single spectrum plot")
+        if self._swatch_buttons:
+            self._set_active_swatch(self._swatch_buttons[0])
+        return swatch_widget
+
+    def _set_active_swatch(self, button):
+        for btn in self._swatch_buttons:
+            base = btn.property("baseStyle") or ""
+            btn.setStyleSheet(base)
+        if button:
+            base = button.property("baseStyle") or ""
+            button.setStyleSheet(f"{base} border:2px solid #333;")
+
+    def _on_swatch_clicked(self, color, button):
+        self._active_line_color = color
+        self._set_active_swatch(button)
+        self._plot_selected_channel()
 
     def _draw_fit_overlay(self, res):
         if not self.V.size:
