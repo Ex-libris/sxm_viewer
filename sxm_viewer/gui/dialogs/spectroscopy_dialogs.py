@@ -186,6 +186,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _channel_label_with_unit(self, name):
         base = name or ""
         unit = self.spec.get('unit_map', {}).get(name)
+        if not unit:
+            unit = guess_channel_unit(name)
         if not unit and '(' in base and base.endswith(')'):
             return base
         if unit:
@@ -1321,6 +1323,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._popup_refs = []
         self._background_spec_id = None
         self._relative_zero_enabled = False
+        self._font_scale = 1.0
+        self._lcpd_line_info = {}
+        self._delta_selection = []
+        self._delta_annotation_artists = []
         self.setWindowTitle("Spectroscopy comparison")
         self.resize(1400, 700)  # Increased size for better layout
         self._build_ui()
@@ -1394,6 +1400,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         center_layout.addWidget(self.canvas, 1)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_compare_canvas_menu)
+        self.canvas.mpl_connect("button_press_event", self._on_compare_canvas_click)
+        self.canvas.mpl_connect("key_press_event", self._on_compare_canvas_keypress)
         self.canvas.setAccessibleName("Spectroscopy comparison plot")
         self.canvas.setAccessibleDescription("Interactive plot showing selected spectra")
 
@@ -1419,6 +1427,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.waterfall_cb.setAccessibleName("Waterfall display")
         self.waterfall_cb.setAccessibleDescription("Enable waterfall stacking of spectra")
         vis_row.addWidget(self.waterfall_cb)
+
+        self.show_points_cb = QtWidgets.QCheckBox("Points")
+        self.show_points_cb.setToolTip("Show data points")
+        self.show_points_cb.toggled.connect(self._update_plot)
+        vis_row.addWidget(self.show_points_cb)
 
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
@@ -1956,6 +1969,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         twin.show()
         self._popup_refs.append(twin)
 
+    def _channel_unit_for_spec(self, spec, channel_label):
+        unit_map = spec.get('unit_map') or {}
+        if channel_label and channel_label in unit_map and unit_map[channel_label]:
+            return unit_map[channel_label]
+        if unit_map:
+            for key, val in unit_map.items():
+                if val:
+                    return val
+        return guess_channel_unit(channel_label)
+
     def _on_channel_changed(self):
         self._fit_results = {}
         self._populate_results_table()
@@ -1980,10 +2003,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         channel = self.channel_combo.currentText()
         self.ax.clear()
         self.ax.grid(True, alpha=0.2)
+        self._lcpd_line_info.clear()
+        self._clear_delta_selection(redraw=False)
         self._line_map.clear()
         self._legend_map.clear()
         
         waterfall = self.waterfall_cb.isChecked()
+        show_points = self.show_points_cb.isChecked()
         offset_val = self.offset_spin.value()
         scale = self._estimate_channel_scale(channel)
         self._configure_offset_spin(scale)
@@ -2040,8 +2066,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
-            line, = self.ax.plot(x_vals, y_data, color=color, lw=2.4 if highlight else 1.2,
-                                 alpha=1.0 if highlight else 0.4, label=label_txt)
+            line_kwargs = {
+                "color": color,
+                "lw": 2.4 if highlight else 1.2,
+                "alpha": 1.0 if highlight else 0.4,
+                "label": label_txt,
+            }
+            if show_points:
+                line_kwargs.update({
+                    "marker": "o",
+                    "markersize": 2.6,
+                    "markerfacecolor": color,
+                    "markeredgecolor": color,
+                    "markeredgewidth": 0.6,
+                })
+            line, = self.ax.plot(x_vals, y_data, **line_kwargs)
             self._line_map[spec_id] = line
             plotted += 1
             if spec_id in self._fit_results:
@@ -2077,16 +2116,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     break
         self.ax.set_xlabel(xlabel)
         unit = None
-        for item in self._selected_items() or self._checked_items():
+        # Find a representative unit for the y-axis label
+        for item in self._checked_items() or self._selected_items():
             spec = item.data(0, QtCore.Qt.UserRole)
-            if not spec:
-                continue
-            unit_map = spec.get('unit_map') or {}
-            if channel in unit_map and unit_map[channel]:
-                unit = unit_map[channel]
+            if spec:
+                unit = self._channel_unit_for_spec(spec, channel)
+            if unit:
                 break
         self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
-        self.canvas.draw_idle()
+        self._apply_font_scale()
+        # canvas.draw_idle() is called in _apply_font_scale
         self._update_status(plotted)
 
     def _iter_color_cycle(self):
@@ -2162,9 +2201,26 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.plot(x_dense * scale, res['func'](x_dense) + offset, '--', color=color, lw=1.2)
         v0 = res.get('v0'); v0_err = res.get('v0_err')
         if v0 is not None and np.isfinite(v0):
+            x_plot = v0 * scale
+            y_plot = res['func'](v0) + offset
             xerr = v0_err * scale if v0_err is not None else None
-            self.ax.errorbar([v0 * scale], [res['func'](v0) + offset], xerr=[xerr] if xerr is not None else None,
-                             fmt='o', color=color, ecolor=color, capsize=3)
+            self.ax.axvline(x_plot, color=color, linestyle='--', alpha=0.85, lw=1.0, dashes=(4, 3))
+            self.ax.errorbar([x_plot], [y_plot], xerr=[xerr] if xerr is not None else None,
+                             fmt='o', color=color, ecolor=color, capsize=3,
+                             markeredgecolor='black', markeredgewidth=0.8, markersize=5, markerfacecolor=color)
+            axis_unit_clean = axis_unit or ""
+            display_unit = axis_unit_clean
+            if scale == 1000.0 and axis_unit_clean.lower() == "v":
+                display_unit = "mV"
+            elif not display_unit:
+                display_unit = "arb"
+            self._lcpd_line_info[spec_id] = {
+                "x": x_plot,
+                "display_unit": display_unit,
+                "axis_unit": axis_unit_clean,
+                "color": color,
+                "spec_id": spec_id,
+            }
 
     def _spec_id_by_name(self, name):
         for spec in self.specs:
@@ -2331,6 +2387,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         elif action == save_svg:
             self._save_canvas("svg")
 
+    def _on_compare_canvas_keypress(self, event):
+        if not event or not hasattr(event, "key"):
+            return
+        key = (event.key or "").lower()
+        if key in ("ctrl+z", "control+z"):
+            step = 0.05
+            self._font_scale = min(2.5, self._font_scale + step)
+            self._apply_font_scale()
+            gui_event = getattr(event, "guiEvent", None)
+            if gui_event:
+                gui_event.accept()
     def _copy_canvas_to_clipboard(self, fmt):
         buf = io.BytesIO()
         if fmt == "png":
@@ -2358,6 +2425,106 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved {Path(path).name}", self)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save plot", str(exc))
+
+    def _on_compare_canvas_click(self, event):
+        if not event or event.button != MouseButton.LEFT or event.inaxes != self.ax:
+            return
+        shift_pressed = False
+        gui_event = getattr(event, "guiEvent", None)
+        if gui_event is not None and hasattr(gui_event, "modifiers"):
+            shift_pressed = bool(gui_event.modifiers() & QtCore.Qt.ShiftModifier)
+        else:
+            key = getattr(event, "key", "")
+            if key and "shift" in str(key).lower():
+                shift_pressed = True
+        if not shift_pressed or event.xdata is None:
+            return
+        candidate = self._find_nearest_lcpd_line(event.xdata)
+        if not candidate:
+            return
+        spec_id, info = candidate
+        if not self._delta_selection:
+            self._delta_selection = [info]
+            return
+        first = self._delta_selection[0]
+        if info["spec_id"] == first["spec_id"]:
+            self._delta_selection = [info]
+            return
+        self._create_delta_annotation(first, info)
+        self._delta_selection = []
+
+    def _find_nearest_lcpd_line(self, x_val):
+        if not self._lcpd_line_info:
+            return None
+        xlim = self.ax.get_xlim()
+        if not all(np.isfinite(val) for val in xlim):
+            return None
+        span = abs(xlim[1] - xlim[0])
+        tol = max(span * 0.02, 1e-6)
+        best = None
+        for spec_id, info in self._lcpd_line_info.items():
+            dist = abs(info["x"] - x_val)
+            if dist <= tol and (best is None or dist < best[0]):
+                best = (dist, spec_id, info)
+        return (best[1], best[2]) if best else None
+
+    def _clear_delta_annotation(self, redraw=True):
+        for art in getattr(self, "_delta_annotation_artists", []):
+            try:
+                art.remove()
+            except Exception:
+                pass
+        self._delta_annotation_artists = []
+        if redraw:
+            self.canvas.draw_idle()
+
+    def _clear_delta_selection(self, redraw=True):
+        self._delta_selection = []
+        self._clear_delta_annotation(redraw=redraw)
+
+    def _create_delta_annotation(self, first, second):
+        self._clear_delta_annotation(redraw=False)
+        x1 = first["x"]
+        x2 = second["x"]
+        y_lower, y_upper = sorted(self.ax.get_ylim())
+        span = y_upper - y_lower
+        gap = max(0.04 * span if span else 1.0, 0.05)
+        height = y_upper - gap
+        min_height = y_lower + (0.02 * (span or 1.0))
+        if height < min_height:
+            height = min_height
+        text_offset = max(0.02 * (span or 1.0), 0.1)
+        text_y = height + text_offset
+        unit1 = (first.get("display_unit") or "").strip()
+        unit2 = (second.get("display_unit") or "").strip()
+        if unit1 == unit2:
+            unit_label = unit1 or "arb"
+        else:
+            unit_label = unit1 or unit2 or "arb"
+        delta = abs(x2 - x1)
+        delta_text = f"ΔLCPD = {delta:.3g} {unit_label}"
+        arrowprops = dict(arrowstyle="<->", color="black", linewidth=1.0, shrinkA=0, shrinkB=0)
+        annotation_line = self.ax.annotate(
+            "",
+            xy=(max(x1, x2), height),
+            xytext=(min(x1, x2), height),
+            arrowprops=arrowprops,
+            clip_on=False,
+            zorder=10,
+        )
+        text_artist = self.ax.text(
+            0.5 * (x1 + x2),
+            text_y,
+            delta_text,
+            ha="center",
+            va="bottom",
+            fontsize=8 * getattr(self, "_font_scale", 1.0),
+            bbox=dict(facecolor="white", edgecolor="black", linewidth=0.6, boxstyle="round,pad=0.3", alpha=0.9),
+            clip_on=False,
+            zorder=10,
+        )
+        self._delta_annotation_artists = [annotation_line, text_artist]
+        self.canvas.draw_idle()
 
     def _clear_selected(self):
         removed = False
@@ -2586,6 +2753,32 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
         
         dialog.exec_()
+
+    def wheelEvent(self, event):
+        try:
+            modifiers = event.modifiers()
+        except Exception:
+            modifiers = QtCore.Qt.NoModifier
+        if modifiers & QtCore.Qt.ControlModifier:
+            angle = event.angleDelta().y() if hasattr(event, 'angleDelta') else 0
+            if angle:
+                step = 0.05 * (1 if angle > 0 else -1)
+                self._font_scale = min(2.5, max(0.6, self._font_scale + step))
+                self._apply_font_scale()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def _apply_font_scale(self):
+        scale = getattr(self, '_font_scale', 1.0)
+        self.ax.tick_params(labelsize=8 * scale)
+        self.ax.xaxis.label.set_fontsize(10 * scale)
+        self.ax.yaxis.label.set_fontsize(10 * scale)
+        if self.ax.get_legend():
+            plt_legend = self.ax.get_legend()
+            for text in plt_legend.get_texts():
+                text.set_fontsize(8 * scale)
+        self.canvas.draw_idle()
 
     def _log(self, text):
         self.log.appendPlainText(text)
