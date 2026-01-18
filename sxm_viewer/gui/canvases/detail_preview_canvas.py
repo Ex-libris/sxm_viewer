@@ -1483,7 +1483,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._blit_profile_artists()
         else:
             self.draw_idle()
-        self._emit_profile()
+        if self._dragging is None:
+            self._emit_profile()
 
     def _update_profile_artists_fast(self, draw=True):
         if self._profile_line is None or self._profile_p0 is None or self._profile_p1 is None:
@@ -1506,6 +1507,9 @@ class MultiPreviewCanvas(FigureCanvas):
         if not self.profile_enabled:
             return
         if self.profile_pts is None:
+            return
+        if self._dragging is not None:
+            self._schedule_profile_update()
             return
         self._update_profile_markers()
         self._emit_profile()
