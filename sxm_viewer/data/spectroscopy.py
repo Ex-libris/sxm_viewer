@@ -232,21 +232,52 @@ def _rows_to_spec(
     n_rows, n_cols = data.shape
     if n_cols == 0 or n_rows == 0:
         return None
-    # Primary axis defaults to first column (bias), optional Z in second and
-    # optional time in the third column. Downstream UIs may choose among these
-    # as X-axis choices.
-    bias = data[:, 0].copy()
-    z_axis = data[:, 1].copy() if n_cols >= 2 else None
-    time_axis = data[:, 2].copy() if n_cols >= 3 else None
-    channel_labels = _channel_labels(header_tokens, n_cols)
-    start_idx = 1 if n_cols == 1 else 2 if n_cols >= 3 else 1
-    channels = {}
-    for idx, label in enumerate(channel_labels, start=1):
-        if idx < start_idx:
+    # Identify which column truly represents bias. Many Omicron single-spectrum
+    # exports use the order: time, dz, Bias, ... In that case we want the Bias
+    # column (index 2) as the primary axis, not the leading time column.
+    labels_raw = header_tokens or []
+    cleaned_labels = [_clean_channel_label(tok) for tok in labels_raw]
+    bias_col = 0
+    for idx, lbl in enumerate(cleaned_labels):
+        low = (lbl or "").lower()
+        if low == "bias" or low.startswith("bias"):
+            bias_col = idx
+            break
+    time_col = None
+    for idx, lbl in enumerate(cleaned_labels):
+        if idx == bias_col:
             continue
-        col = data[:, idx].copy()
-        channels[label] = col
+        low = (lbl or "").lower()
+        if "time" in low or low == "t":
+            time_col = idx
+            break
+    z_col = None
+    for idx, lbl in enumerate(cleaned_labels):
+        if idx in (bias_col, time_col):
+            continue
+        low = (lbl or "").lower()
+        if low in ("dz", "z", "z_rel", "zrel", "height"):
+            z_col = idx
+            break
+
+    bias = data[:, bias_col].copy()
+    z_axis = data[:, z_col].copy() if z_col is not None else None
+    time_axis = data[:, time_col].copy() if time_col is not None else None
+    channel_labels = cleaned_labels if cleaned_labels else ["" for _ in range(n_cols)]
+
+    channels = {}
+    for idx in range(n_cols):
+        if idx in (bias_col, z_col, time_col):
+            continue
+        label = channel_labels[idx] if idx < len(channel_labels) else ""
+        label = label or f"channel{idx}"
+        channels[label] = data[:, idx].copy()
+
     bias, axis_label, axis_unit = _normalize_bias_axis(bias, header_tokens)
+    if header_tokens and bias_col < len(header_tokens):
+        bias_label_raw = header_tokens[bias_col].strip() or None
+        if bias_label_raw:
+            axis_label = bias_label_raw
 
     axes_choices: List[Dict[str, object]] = [
         {"key": "bias", "label": axis_label, "unit": axis_unit, "values": bias.copy()}
@@ -255,9 +286,9 @@ def _rows_to_spec(
     alt_axis = None
     alt_label = None
     alt_unit = None
-    if header_tokens and len(header_tokens) > 1:
-        alt_label = header_tokens[1].strip() or "Z"
     if z_axis is not None:
+        if header_tokens and z_col is not None and z_col < len(header_tokens):
+            alt_label = header_tokens[z_col].strip() or None
         alt_label = alt_label or "Z"
         alt_unit = alt_unit or "nm"
         alt_axis = z_axis.copy()
@@ -268,12 +299,12 @@ def _rows_to_spec(
             pass
         axes_choices.append({"key": "z", "label": alt_label, "unit": alt_unit, "values": alt_axis})
 
-    # Third column is often time/dz in Omicron exports; expose it as an axis choice.
+    # Expose a time axis choice only when an explicit time-like column exists.
     if time_axis is not None:
         time_label = None
         time_unit = "s"
-        if header_tokens and len(header_tokens) > 2:
-            time_label = header_tokens[2].strip() or None
+        if header_tokens and time_col is not None and time_col < len(header_tokens):
+            time_label = header_tokens[time_col].strip() or None
             low = time_label.lower() if time_label else ""
             if "ms" in low:
                 time_unit = "ms"
@@ -335,17 +366,15 @@ def _normalize_bias_axis(
     bias: np.ndarray, header_tokens: Optional[List[str]]
 ) -> tuple[np.ndarray, str, str]:
     """
-    Normalize the primary axis (bias) to volts where possible.
-
-    We rely on header hints first, then fall back to a magnitude heuristic to
-    correct obvious mV axes that lack units.
+    Normalize primary axis and preserve unit hints.
+    For Omicron/Anfatec `.dat` inputs we treat the first column as Bias in mV
+    unless the header explicitly states otherwise. Values are kept as-is.
     """
     if not bias.size:
         return bias, "Bias", "V"
     label = "Bias"
-    unit = "V"
+    unit = "mV"  # default for Omicron/Anfatec .dat spectra
     scale = 1.0
-    unit_tokens: List[str] = []
     if header_tokens:
         unit_tokens = [
             str(tok).lower()
@@ -353,15 +382,14 @@ def _normalize_bias_axis(
             if tok
         ]
         if any("kv" in tok for tok in unit_tokens):
-            scale = 1e3
+            unit = "kV"
+            scale = 1.0
         elif any("mv" in tok for tok in unit_tokens):
-            scale = 1e-3
-    finite_bias = bias[np.isfinite(bias)]
-    if scale == 1.0 and finite_bias.size:
-        max_abs = float(np.nanmax(np.abs(finite_bias)))
-        # Conservative heuristic: treat multi-thousand values as mV if no unit hints.
-        if 1e3 <= max_abs <= 1e5:
-            scale = 1e-3
+            unit = "mV"
+            scale = 1.0
+        elif any("v" in tok for tok in unit_tokens):
+            unit = "V"
+            scale = 1.0
     return bias * scale, label, unit
 
 
@@ -542,13 +570,7 @@ def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
     if not rows:
         return None
     bias_axis = np.asarray([row[0] for row in rows], dtype=float)
-    unit_tokens = coord_tokens[:3]
-    if unit_tokens and len(unit_tokens) >= 3:
-        unit = unit_tokens[2].lower()
-        if "mv" in unit:
-            bias_axis *= 1e-3
-        elif "kv" in unit:
-            bias_axis *= 1e3
+    bias_axis, axis_label, axis_unit = _normalize_bias_axis(bias_axis, header_tokens)
     data = np.asarray([row[1] for row in rows], dtype=float)
     if data.shape[1] != len(xs):
         return None
@@ -563,10 +585,13 @@ def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
         channel_series = data[:, col].copy()
         unit = guess_channel_unit(channel_display)
         unit_map = {channel_display: unit} if unit else {}
+        channels = {channel_display: channel_series}
+        # Expose bias as a pseudo-channel for plotting if desired.
+        channels.setdefault("bias", bias_axis.copy())
         entry = {
             "path": str(path),
             "V": bias_axis.copy(),
-            "channels": {channel_display: channel_series},
+            "channels": channels,
             "data": (bias_axis.copy(), channel_series),
             "x": float(x_arr[col]),
             "y": float(y_arr[col]),
@@ -580,6 +605,12 @@ def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
             "channel_name": channel_display,
             "channel_code": channel_code,
             "unit_map": unit_map,
+            "AxisLabel": axis_label,
+            "AxisUnit": axis_unit,
+            "AxisChoices": [{"key": "bias", "label": axis_label, "unit": axis_unit, "values": bias_axis.copy()}],
+            "AltAxis": None,
+            "AltAxisLabel": None,
+            "AltAxisUnit": None,
         }
         if unit:
             entry["unit"] = unit

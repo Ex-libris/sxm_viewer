@@ -137,18 +137,44 @@ class MatrixFitWorker(QtCore.QObject):
                 'y_axis': None,
             })
             return
-        first_channels = specs[0].get('channels') or {}
-        channel_name = next(iter(first_channels.keys()), 'channel')
+        def _pick_df_channel(spec_list):
+            candidates = []
+            for spec in spec_list:
+                chans = (spec.get('channels') or {}).keys()
+                for ch in chans:
+                    candidates.append(str(ch))
+            if not candidates:
+                return None
+            def _score(name):
+                low = name.lower()
+                score = 0
+                if "df" in low or "deltaf" in low or "delf" in low:
+                    score += 10
+                if "kpfm" in low:
+                    score += 6
+                if "freq" in low or "frequency" in low:
+                    score += 2
+                return score
+            scored = sorted([( -_score(n), n) for n in set(candidates)])
+            best = scored[0][1] if scored else None
+            return best
+
+        channel_name = _pick_df_channel(specs) or 'channel'
+        axis_unit = specs[0].get('AxisUnit') or "V"
         col_candidates = [spec.get('grid_col') for spec in specs if spec.get('grid_col') is not None]
         row_candidates = [spec.get('grid_row') for spec in specs if spec.get('grid_row') is not None]
+        matrix_indices = [spec.get('matrix_index') for spec in specs if spec.get('matrix_index') is not None]
         grid_cols = grid_rows = None
         if col_candidates and row_candidates:
             grid_cols = max(col_candidates) + 1
             grid_rows = max(row_candidates) + 1
         else:
-            idx_candidates = [spec.get('matrix_index') for spec in specs if spec.get('matrix_index') is not None]
-            if idx_candidates:
-                max_idx = max(idx_candidates)
+            if matrix_indices:
+                min_idx = min(matrix_indices)
+                max_idx = max(matrix_indices)
+                # detect 1-based indexing and normalize for grid sizing
+                if min_idx >= 1:
+                    max_idx = max_idx - 1
                 side = int(round(math.sqrt(max_idx + 1)))
                 if side > 0:
                     grid_cols = grid_rows = side
@@ -156,6 +182,12 @@ class MatrixFitWorker(QtCore.QObject):
             total = len(specs)
             grid_cols = int(round(math.sqrt(total))) or 1
             grid_rows = int(math.ceil(total / grid_cols)) or 1
+        zero_based_indices = True
+        if matrix_indices:
+            min_idx = min(matrix_indices)
+            max_idx = max(matrix_indices)
+            if min_idx >= 1 and max_idx == grid_cols * grid_rows:
+                zero_based_indices = False
         maps = {
             'a': np.full((grid_rows, grid_cols), np.nan),
             'b': np.full((grid_rows, grid_cols), np.nan),
@@ -193,8 +225,11 @@ class MatrixFitWorker(QtCore.QObject):
             if row is None or col is None:
                 matrix_index = spec.get('matrix_index')
                 if matrix_index is not None:
-                    row = matrix_index // grid_cols
-                    col = matrix_index % grid_cols
+                    idx_val = int(matrix_index)
+                    if not zero_based_indices:
+                        idx_val -= 1
+                    row = idx_val // grid_cols
+                    col = idx_val % grid_cols
                 else:
                     row = idx // grid_cols
                     col = idx % grid_cols
@@ -202,15 +237,30 @@ class MatrixFitWorker(QtCore.QObject):
                 if row < 0 or row >= grid_rows or col < 0 or col >= grid_cols:
                     raise IndexError(f"Index {idx}: ({row}, {col}) outside grid {grid_rows}x{grid_cols}")
                 V = np.asarray(spec.get('V', []), dtype=float)
-                channel_data = (spec.get('channels') or {}).get(channel_name)
+                channels = spec.get('channels') or {}
+                if channel_name not in channels:
+                    raise ValueError(f"Channel '{channel_name}' missing; available: {', '.join(channels.keys()) or 'none'}")
+                channel_data = channels.get(channel_name)
                 if channel_data is None:
                     raise ValueError("Channel missing")
                 res = fit_parabola_bias(V, channel_data)
+                a = res.get('a'); b = res.get('b')
+                v0 = None; v0_err = None
+                try:
+                    if a is not None and b is not None and np.isfinite(a) and np.isfinite(b) and a != 0:
+                        v0 = -b / (2.0 * a)
+                        da = res.get('a_err', 0.0)
+                        db = res.get('b_err', 0.0)
+                        term1 = (db / (2.0 * a)) ** 2 if a != 0 else 0.0
+                        term2 = ((b * da) / (2.0 * (a ** 2))) ** 2 if a != 0 else 0.0
+                        v0_err = math.sqrt(max(term1 + term2, 0.0))
+                except Exception:
+                    v0 = None; v0_err = None
                 maps['a'][row, col] = res['a']
-                maps['b'][row, col] = res['b']
+                maps['b'][row, col] = v0 if v0 is not None else np.nan
                 maps['c'][row, col] = res['c']
                 maps['a_err'][row, col] = res['a_err']
-                maps['b_err'][row, col] = res['b_err']
+                maps['b_err'][row, col] = v0_err if v0_err is not None else np.nan
                 maps['c_err'][row, col] = res['c_err']
                 maps['rmse'][row, col] = res['rmse']
             except Exception as exc:
@@ -228,16 +278,17 @@ class MatrixFitWorker(QtCore.QObject):
             'channel_name': channel_name,
             'x_axis': _axis_from_specs('x', 'grid_col', grid_cols),
             'y_axis': _axis_from_specs('y', 'grid_row', grid_rows),
+            'axis_unit': axis_unit,
         }
         self.finished.emit(payload)
 
 class MatrixFitDialog(QtWidgets.QDialog):
     PARAM_INFO = {
         'a': {'label': 'a', 'unit': 'a.u.', 'cmap': 'viridis'},
-        'b': {'label': 'b (LCPD)', 'unit': 'mV', 'cmap': 'bwr'},
+        'b': {'label': 'LCPD', 'unit': 'mV', 'cmap': 'bwr'},
         'c': {'label': 'c', 'unit': 'Hz', 'cmap': 'gray'},
         'a_err': {'label': 'sa', 'unit': 'a.u.', 'cmap': 'magma'},
-        'b_err': {'label': 'sb', 'unit': 'mV', 'cmap': 'magma'},
+        'b_err': {'label': 'LCPD err', 'unit': 'mV', 'cmap': 'magma'},
         'c_err': {'label': 'sc', 'unit': 'Hz', 'cmap': 'magma'},
         'rmse': {'label': 'RMSE', 'unit': 'Hz', 'cmap': 'inferno'},
     }
@@ -251,7 +302,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
         self._worker_thread = None
         self._result_payload = None
         layout = QtWidgets.QVBoxLayout(self)
-        self.info_label = QtWidgets.QLabel("Fit df(V) parabolas for every point in the matrix.")
+        self.info_label = QtWidgets.QLabel("Fit KPFM df(V) parabolas for every point in the matrix (other channels are skipped).")
         layout.addWidget(self.info_label)
         ctrl = QtWidgets.QHBoxLayout()
         self.run_btn = QtWidgets.QPushButton("Run fits")
@@ -417,6 +468,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
         params = ['a','b','c','a_err','b_err','c_err','rmse']
         cols = 3
         rows = math.ceil(len(params)/cols)
+        axis_unit = (self._result_payload or {}).get('axis_unit') or self.PARAM_INFO.get('b', {}).get('unit') or ''
         for idx, key in enumerate(params, 1):
             ax = self.fig.add_subplot(rows, cols, idx)
             info = self.PARAM_INFO.get(key, {'label': key, 'unit': ''})
@@ -427,6 +479,8 @@ class MatrixFitDialog(QtWidgets.QDialog):
             im = ax.imshow(maps[key], origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
             cbar = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             unit = info.get('unit')
+            if key in ('b', 'b_err') and axis_unit:
+                unit = axis_unit
             if unit:
                 cbar.set_label(unit)
             if extent:

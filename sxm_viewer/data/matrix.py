@@ -9,15 +9,17 @@ class MatrixDataset:
         self.base = base
         self.rows = rows
         self.cols = cols
-        self.channels = []  # list of dicts: {'filename','channel_code','label','spectra_count','path'}
+        # list of dicts: {'filename','channel_code','label','spectra_count','path','points_per_trace'}
+        self.channels = []
 
-    def add_channel(self, filename, channel_code=None, label=None, spectra_count=0, path=None):
+    def add_channel(self, filename, channel_code=None, label=None, spectra_count=0, path=None, points_per_trace=None):
         self.channels.append({
             'filename': filename,
             'channel_code': channel_code,
             'label': label,
             'spectra_count': spectra_count,
             'path': str(path) if path else filename,
+            'points_per_trace': points_per_trace,
         })
 
     def summary(self):

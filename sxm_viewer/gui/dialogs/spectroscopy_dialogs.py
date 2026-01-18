@@ -209,8 +209,18 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             unit = ax.get("unit") or ""
             key = ax.get("key") or label
             axes.append({"key": key, "label": label, "unit": unit, "values": vals})
+        # Deduplicate identical axes (same values) to avoid duplicate Bias entries
         if axes:
-            return axes
+            deduped = []
+            seen_vals = []
+            for ax in axes:
+                vals = np.asarray(ax.get("values", []), dtype=float)
+                if any(np.array_equal(vals, sv) for sv in seen_vals):
+                    continue
+                seen_vals.append(vals)
+                deduped.append(ax)
+            if deduped:
+                return deduped
         primary = {
             "key": "primary",
             "label": spec.get('AxisLabel') or "Bias",
@@ -244,10 +254,21 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.axis_label = "Axis"
             self.axis_unit = ""
             return
+        self._last_fit_result = None
+        self.fit_result_label.setText("")
         self.V = np.asarray(selected.get("values", []), dtype=float)
         self.axis_label = selected.get("label") or "Axis"
-        self.axis_unit = selected.get("unit") or ""
+        unit = (selected.get("unit") or "").strip()
+        if unit.lower() == "v":
+            try:
+                max_abs = float(np.nanmax(np.abs(self.V))) if np.isfinite(self.V).any() else 0.0
+                if max_abs > 5.0:
+                    unit = "mV"  # mislabeled mV data; keep values as-is but relabel to avoid extra scaling
+            except Exception:
+                pass
+        self.axis_unit = unit or ""
         self._plot_selected_channel()
+        self._update_fit_button()
 
     def _on_channel_changed(self, name):
         self._last_fit_result = None
@@ -263,14 +284,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return
         x_vals = self.V
         x_label = self.axis_label or "Axis"
-        x_unit = self.axis_unit or ""
-        # If unit says volts, display in mV for readability
-        if x_unit.lower() == "v" and np.isfinite(x_vals).any():
-            x_vals = x_vals * 1000.0
-            x_label = f"{x_label} (mV)"
-        elif x_unit:
-            if x_unit.lower() != "v" and x_unit not in x_label:
-                x_label = f"{x_label} ({x_unit})"
+        x_unit = (self.axis_unit or "").strip()
+        # keep raw values; only append unit text
+        self._axis_plot_scale = 1.0
+        self._axis_plot_unit = x_unit
+        if x_unit and x_unit not in x_label:
+            x_label = f"{x_label} ({x_unit})"
         self.ax.plot(x_vals, self.channels[name], color='#c94cfa', lw=1.5, label='Data')
         self.ax.set_xlabel(x_label)
         self.ax.set_ylabel(self._channel_label_with_unit(name))
@@ -296,6 +315,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "Copy spectroscopy", "No spectroscopy data to copy.")
             return
         bias = self.V
+        scale = getattr(self, "_axis_plot_scale", 1.0) or 1.0
+        unit = getattr(self, "_axis_plot_unit", self.axis_unit) or ""
+        bias_vals = bias * scale
         values = self.channels[name]
         spec_path = Path(self.spec.get('path', ''))
         file_name = spec_path.name or 'unknown'
@@ -309,11 +331,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             f"Folder\t{folder_name}",
             f"Acquired\t{time_str}",
             "",
-            f"Bias (mV)\t{self._channel_label_with_unit(name)}"
+            f"Bias ({unit or 'arb'})\t{self._channel_label_with_unit(name)}"
         ]
-        for v, val in zip(bias, values):
+        for v, val in zip(bias_vals, values):
             try:
-                lines.append(f"{float(v) * 1000.0:.9g}\t{float(val):.9g}")
+                lines.append(f"{float(v):.9g}\t{float(val):.9g}")
             except Exception:
                 lines.append(f"{v}\t{val}")
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
@@ -322,16 +344,33 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _draw_fit_overlay(self, res):
         if not self.V.size:
             return
+        scale = getattr(self, "_axis_plot_scale", 1.0) or 1.0
         x_dense = np.linspace(np.nanmin(self.V), np.nanmax(self.V), 400)
         y_dense = res['func'](x_dense)
-        self.ax.plot(x_dense * 1000.0, y_dense, '--', color='#ff8c00', lw=1.5, label='Fit')
-        b = res['b']; c = res['c']; b_err = res.get('b_err', 0.0)
-        self.ax.errorbar([b * 1000.0], [c], xerr=[b_err * 1000.0], fmt='o', color='#004c99', ecolor='#004c99', capsize=4, label='LCPD')
+        self.ax.plot(x_dense * scale, y_dense, '--', color='#ff8c00', lw=1.5, label='Fit')
+        v0 = res.get('v0')
+        v0_err = res.get('v0_err')
+        if v0 is not None and np.isfinite(v0):
+            y0 = res['func'](v0)
+            x_plot = v0 * scale
+            xerr = v0_err * scale if v0_err is not None else None
+            self.ax.errorbar([x_plot], [y0], xerr=[xerr] if xerr is not None else None,
+                             fmt='o', color='#004c99', ecolor='#004c99', capsize=4, label='LCPD')
         self.ax.legend()
+        axis_unit = getattr(self, "_axis_plot_unit", self.axis_unit) or ""
+        v0_txt = ""
+        if v0 is not None and np.isfinite(v0):
+            v_disp = v0 * scale
+            v_err_disp = (res.get('v0_err') or 0.0) * scale
+            unit_txt = axis_unit or ("mV" if scale == 1000.0 else "V")
+            v0_txt = f"LCPD = {v_disp:.3g} {unit_txt}"
+            if v_err_disp:
+                v0_txt += f" +/- {v_err_disp:.3g}"
         text = (
             f"a = {res['a']:.4g} +/- {res['a_err']:.2g}\n"
-            f"b (LCPD) = {res['b']:.2f} +/- {res['b_err']:.2f} mV\n"
+            f"b = {res['b']:.4g} +/- {res['b_err']:.2g}\n"
             f"c = {res['c']:.4g} +/- {res['c_err']:.2g} Hz\n"
+            f"{v0_txt}\n"
             f"RMSE = {res['rmse']:.4g}"
         )
         self.fit_result_label.setText(text)
@@ -346,6 +385,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Fit failed", str(e))
             return
         res['channel'] = name
+        a = res.get('a'); b = res.get('b')
+        v0 = None; v0_err = None
+        try:
+            if a is not None and b is not None and np.isfinite(a) and np.isfinite(b) and a != 0:
+                v0 = -b / (2.0 * a)
+                da = res.get('a_err', 0.0)
+                db = res.get('b_err', 0.0)
+                term1 = (db / (2.0 * a)) ** 2 if a != 0 else 0.0
+                term2 = ((b * da) / (2.0 * (a ** 2))) ** 2 if a != 0 else 0.0
+                v0_err = math.sqrt(max(term1 + term2, 0.0))
+        except Exception:
+            v0 = None; v0_err = None
+        res['v0'] = v0
+        res['v0_err'] = v0_err
         self._last_fit_result = res
         self._plot_selected_channel()
 
@@ -407,6 +460,11 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self.palette_combo.addItem(name)
         palette_controls.addWidget(self.palette_combo, 1)
         left_layout.addLayout(palette_controls)
+
+        self.show_positions_cb = QtWidgets.QCheckBox("Show spectroscopy positions")
+        self.show_positions_cb.setChecked(True)
+        self.show_positions_cb.toggled.connect(self._draw_image_layer)
+        left_layout.addWidget(self.show_positions_cb)
 
         self.fit_matrix_btn = QtWidgets.QPushButton("Fit matrix parabolas...")
         left_layout.addWidget(self.fit_matrix_btn)
@@ -561,9 +619,10 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 xs = np.asarray(data[0], dtype=float)
                 ys = np.asarray(data[1], dtype=float)
                 unit = self._channel_unit_for_spec(spec, label)
-                return xs, ys, unit, label
+                x_unit = spec.get("AxisUnit") or ""
+                return xs, ys, unit, label, x_unit
             except Exception:
-                return None, None, None, label
+                return None, None, None, label, ""
         xs = np.asarray(spec.get('V', []), dtype=float)
         if xs.size == 0 or ys is None or ys.size == 0:
             data = spec.get('data')
@@ -572,11 +631,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     xs = np.asarray(data[0], dtype=float)
                     ys = np.asarray(data[1], dtype=float)
                 except Exception:
-                    return None, None, None, label
+                    return None, None, None, label, ""
         if xs.size == 0 or ys is None or ys.size == 0:
-            return None, None, None, label
+            return None, None, None, label, ""
         unit = self._channel_unit_for_spec(spec, label)
-        return xs, ys, unit, label
+        x_unit = spec.get("AxisUnit") or ""
+        return xs, ys, unit, label, x_unit
 
     def _remove_selection_entry(self, key):
         self._selection = [entry for entry in self._selection if entry.get("key") != key]
@@ -823,13 +883,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         ypix = int(header_map.get('yPixel', 128))
         xs = []
         ys = []
-        for spec in channel_specs:
-            coords = self.viewer._map_spec_to_pixels(spec, header_map, xpix, ypix, file_key=file_key)
-            if coords:
-                xs.append(coords[0])
-                ys.append(coords[1])
-        if xs and ys:
-            self.ax.scatter(xs, ys, s=20, c='white', edgecolors='black', linewidths=0.2, alpha=0.8)
+        if getattr(self.show_positions_cb, "isChecked", lambda: True)():
+            for spec in channel_specs:
+                coords = self.viewer._map_spec_to_pixels(spec, header_map, xpix, ypix, file_key=file_key)
+                if coords:
+                    xs.append(coords[0])
+                    ys.append(coords[1])
+            if xs and ys:
+                self.ax.scatter(xs, ys, s=28, c='white', edgecolors='black', linewidths=0.4, alpha=0.85)
         self._update_selection_markers(redraw=False)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
@@ -1052,18 +1113,21 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         legend_handles = []
         labels_seen = set()
         units_seen = []
+        xlabel = "Bias"
         for sel in entries:
             base_color = sel.get("color", "#4c78a8")
             is_focus = sel.get("key") == self._focused_key
             multi = sel.get("multi") or [(sel.get("label"), sel.get("spec"))]
             for idx, (label, spec) in enumerate(multi):
-                xs, ys, unit, resolved_label = self._extract_channel_data(spec, label)
+                xs, ys, unit, resolved_label, x_unit = self._extract_channel_data(spec, label)
                 if xs is None or ys is None:
                     continue
                 labels_seen.add(resolved_label or label)
                 if unit:
                     units_seen.append(unit)
-                bias_mv = xs * 1000.0
+                bias_vals = xs
+                if x_unit:
+                    xlabel = f"Bias ({x_unit})" if "bias" in xlabel.lower() else f"{xlabel} ({x_unit})"
                 color = base_color if idx == 0 else self._variant_color(base_color, 0.35 + idx * 0.15)
                 style = '-' if idx == 0 else '--'
                 lw = 2.4 if is_focus and idx == 0 else 1.4
@@ -1073,9 +1137,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     nm = sel.get("nm_coords") or (None, None)
                     if nm[0] is not None and nm[1] is not None:
                         legend_label = f"{legend_label} @ ({nm[0]:.1f}, {nm[1]:.1f} nm)"
-                line, = self.curve_ax.plot(bias_mv, ys, style, color=color, lw=lw, alpha=alpha, label=legend_label)
+                line, = self.curve_ax.plot(bias_vals, ys, style, color=color, lw=lw, alpha=alpha, label=legend_label)
                 legend_handles.append(line)
-        self.curve_ax.set_xlabel("Bias (mV)")
+        self.curve_ax.set_xlabel(xlabel)
         axis_label = "Signal"
         if not self._aggregate_mode:
             active = entries[0]
@@ -1144,22 +1208,23 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("channel,index,x_nm,y_nm,bias,value\n")
+            fh.write("channel,index,x_nm,y_nm,bias,bias_unit,value\n")
             for entry in self._selection:
                 spec = entry.get("spec")
                 nm_coords = entry.get("nm_coords")
                 if not spec:
                     continue
-                data = spec.get('data')
-                if not data:
+                bias_vals, _, bias_unit = self._axis_for_spec(spec)
+                channels = spec.get('channels') or {}
+                label = entry.get("label", Path(spec.get('path','')).name)
+                ys = channels.get(label) or (spec.get('data')[1] if spec.get('data') else None)
+                if bias_vals is None or ys is None:
                     continue
-                xs, ys = data[0], data[1]
                 x_nm = nm_coords[0] if nm_coords and nm_coords[0] is not None else float('nan')
                 y_nm = nm_coords[1] if nm_coords and nm_coords[1] is not None else float('nan')
-                label = entry.get("label", Path(spec.get('path','')).name)
                 idx = spec.get('matrix_index')
-                for xv, yv in zip(xs, ys):
-                    fh.write(f"{label},{idx},{x_nm},{y_nm},{xv},{yv}\n")
+                for xv, yv in zip(bias_vals, ys):
+                    fh.write(f"{label},{idx},{x_nm},{y_nm},{xv},{bias_unit},{yv}\n")
         QtWidgets.QMessageBox.information(self, "Export", f"Exported {len(self._selection)} selections to {Path(path).name}")
 
     def _on_canvas_hover(self, event):
@@ -1179,25 +1244,54 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 class _SpectroFitWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(list, list)
 
-    def __init__(self, specs, channel):
+    def __init__(self, specs, channel, axis_key):
         super().__init__()
         self.specs = list(specs)
         self.channel = channel
+        self.axis_key = axis_key or "primary"
+
+    @staticmethod
+    def _axis_for_spec_with_key(spec, key):
+        for ax in spec.get("AxisChoices") or []:
+            if ax.get("key") == key:
+                vals = np.asarray(ax.get("values", []), dtype=float)
+                return vals, ax.get("label") or "Axis", ax.get("unit") or ""
+        if key == "alt":
+            alt_vals = spec.get("AltAxis")
+            if alt_vals is not None:
+                vals = np.asarray(alt_vals, dtype=float)
+                return vals, spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""
+        vals = np.asarray(spec.get("V", []), dtype=float)
+        return vals, spec.get("AxisLabel") or "Axis", spec.get("AxisUnit") or ""
 
     def run(self):
         results = []
         logs = []
         for spec in self.specs:
             name = Path(spec['path']).name
-            V = np.asarray(spec.get('V', []), dtype=float)
+            V, axis_label, axis_unit = self._axis_for_spec_with_key(spec, self.axis_key)
             channels = spec.get('channels') or {}
             data = channels.get(self.channel)
             if data is None or not V.size:
-                logs.append(f"{name}: channel '{self.channel}' unavailable")
+                logs.append(f"{name}: channel '{self.channel}' unavailable for axis '{axis_label}'")
                 continue
             try:
                 res = fit_parabola_bias(V, data)
                 res['spec'] = spec
+                res['axis_key'] = self.axis_key
+                res['axis_label'] = axis_label
+                res['axis_unit'] = axis_unit
+                a = res.get('a'); b = res.get('b')
+                v0 = None; v0_err = None
+                if a is not None and b is not None and np.isfinite(a) and np.isfinite(b) and a != 0:
+                    v0 = -b / (2.0 * a)
+                    da = res.get('a_err', 0.0)
+                    db = res.get('b_err', 0.0)
+                    term1 = (db / (2.0 * a)) ** 2 if a != 0 else 0.0
+                    term2 = ((b * da) / (2.0 * (a ** 2))) ** 2 if a != 0 else 0.0
+                    v0_err = math.sqrt(max(term1 + term2, 0.0))
+                res['v0'] = v0
+                res['v0_err'] = v0_err
                 results.append(res)
                 logs.append(f"{name}: fit ok (RMSE {res['rmse']:.3g})")
             except Exception as e:
@@ -1395,7 +1489,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         right_layout.addWidget(self.options_body)
 
         self.results_table = QtWidgets.QTableWidget(0, 10)
-        self.results_table.setHorizontalHeaderLabels(["File","X (nm)","Y (nm)","a","?a","b (mV)","?b","c (Hz)","?c","RMSE"])
+        self.results_table.setHorizontalHeaderLabels(["File","X (nm)","Y (nm)","a","?a","LCPD","?LCPD","c (Hz)","?c","RMSE"])
         self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -1509,26 +1603,26 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         for spec in self.specs:
             if spec.get("AxisChoices"):
                 for ax in spec.get("AxisChoices"):
-                    axes.append((ax.get("key"), ax.get("label") or "Axis", ax.get("unit") or ""))
+                    axes.append((ax.get("key"), ax.get("label") or "Axis", ax.get("unit") or "", np.asarray(ax.get("values", []), dtype=float)))
             else:
                 primary_lbl = spec.get("AxisLabel") or "Axis"
                 primary_unit = spec.get("AxisUnit") or ""
-                axes.append(("primary", primary_lbl, primary_unit))
+                axes.append(("primary", primary_lbl, primary_unit, np.asarray(spec.get("V", []), dtype=float)))
                 if spec.get("AltAxis") is not None:
-                    axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or ""))
-        # dedupe by key
-        seen = set()
+                    axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or "", np.asarray(spec.get("AltAxis"), dtype=float)))
+        # dedupe by key+values to avoid duplicate bias axes
+        seen = []
         options = []
-        for key, lbl, unit in axes:
-            disp = lbl
-            if unit:
-                if unit.lower() == "v":
-                    disp = f"{lbl} (mV)" if "mV" not in lbl else lbl
-                elif unit not in lbl:
-                    disp = f"{lbl} ({unit})"
-            if (key, disp) in seen:
+        for key, lbl, unit, vals in axes:
+            duplicate = False
+            for s_key, s_vals in seen:
+                if key == s_key and np.array_equal(vals, s_vals):
+                    duplicate = True
+                    break
+            if duplicate:
                 continue
-            seen.add((key, disp))
+            seen.append((key, vals))
+            disp = lbl if not unit else (f"{lbl} ({unit})" if unit not in lbl else lbl)
             options.append((disp, key))
         self.axis_combo.blockSignals(True)
         self.axis_combo.clear()
@@ -1568,6 +1662,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         """Return (values, label, unit) for the currently selected axis choice."""
         axis_choice = getattr(self, "axis_combo", None)
         choice_key = axis_choice.currentData() if axis_choice is not None else "primary"
+        return self._axis_for_spec_with_key(spec, choice_key)
+
+    def _axis_for_spec_with_key(self, spec, choice_key):
         for ax in spec.get("AxisChoices") or []:
             if ax.get("key") == choice_key:
                 vals = np.asarray(ax.get("values", []), dtype=float)
@@ -1671,6 +1768,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_plot()
 
     def _on_axis_changed(self):
+        self._fit_results = {}
+        self.results_table.setRowCount(0)
         self._update_plot()
 
     def _on_relative_toggled(self, checked):
@@ -1738,6 +1837,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             x_vals = axis_vals
             if relative_nm and axis_unit == "nm":
                 x_vals = x_vals - rel_zero
+            axis_plot_scale = 1.0
+            axis_unit_plot = axis_unit
+            if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
+                axis_plot_scale = 1000.0
+                axis_unit_plot = "mV"
+                x_vals = x_vals * axis_plot_scale
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
@@ -1853,13 +1958,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if not res:
             return
         spec = res.get('spec')
-        V = np.asarray(spec.get('V', []), dtype=float)
+        axis_key = res.get('axis_key', "primary")
+        axis_vals, _, axis_unit = self._axis_for_spec(spec) if axis_key is None else self._axis_for_spec_with_key(spec, axis_key)
+        V = np.asarray(axis_vals, dtype=float)
         if not V.size:
             return
+        scale = 1000.0 if (axis_unit or "").lower() == "v" else 1.0
         x_dense = np.linspace(np.nanmin(V), np.nanmax(V), 400)
-        self.ax.plot(x_dense, res['func'](x_dense) + offset, '--', color=color, lw=1.2)
-        b = res['b']; c = res['c'] + offset; be = res.get('b_err', 0.0)
-        self.ax.errorbar([b], [c], xerr=[be], fmt='o', color=color, ecolor=color, capsize=3)
+        self.ax.plot(x_dense * scale, res['func'](x_dense) + offset, '--', color=color, lw=1.2)
+        v0 = res.get('v0'); v0_err = res.get('v0_err')
+        if v0 is not None and np.isfinite(v0):
+            xerr = v0_err * scale if v0_err is not None else None
+            self.ax.errorbar([v0 * scale], [res['func'](v0) + offset], xerr=[xerr] if xerr is not None else None,
+                             fmt='o', color=color, ecolor=color, capsize=3)
 
     def _spec_id_by_name(self, name):
         for spec in self.specs:
@@ -1968,17 +2079,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec = it.data(0, QtCore.Qt.UserRole)
             if not spec:
                 continue
-            V = np.asarray(spec.get('V', []), dtype=float)
+            axis_vals, _, axis_unit = self._axis_for_spec(spec)
             ch = np.asarray((spec.get('channels') or {}).get(channel, []), dtype=float)
-            if V.size == 0 or ch.size == 0:
+            if axis_vals.size == 0 or ch.size == 0:
                 continue
             unit_map = spec.get('unit_map') or {}
             unit = unit_map.get(channel, "")
             header_unit = f" ({unit})" if unit else ""
+            axis_label = axis_unit or "arb"
             block = []
             block.append(f"# {Path(spec.get('path','')).name}  ({spec.get('x','?')}/{spec.get('y','?')} nm)")
-            block.append(f"Bias (mV)\t{channel}{header_unit}")
-            for v, val in zip(V * 1000.0, ch):
+            block.append(f"Bias ({axis_label})\t{channel}{header_unit}")
+            for v, val in zip(axis_vals, ch):
                 try:
                     block.append(f"{float(v):.9g}\t{float(val):.9g}")
                 except Exception:
@@ -1996,7 +2108,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _copy_table_to_clipboard(self):
         rows = []
-        headers = ["File","X (nm)","Y (nm)","a","da","b (mV)","db","c (Hz)","dc","RMSE"]
+        headers = ["File","X (nm)","Y (nm)","a","da","LCPD","dLCPD","c (Hz)","dc","RMSE"]
         rows.append("\t".join(headers))
         for r in range(self.results_table.rowCount()):
             vals = []
@@ -2099,7 +2211,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         channel = self.channel_combo.currentText()
         self._set_busy(True, f"Fitting {len(specs)} spectra...")
-        self._fit_worker = _SpectroFitWorker(specs, channel)
+        axis_key = self.axis_combo.currentData()
+        self._fit_worker = _SpectroFitWorker(specs, channel, axis_key)
         self._fit_thread = QtCore.QThread(self)
         self._fit_worker.moveToThread(self._fit_thread)
         self._fit_thread.started.connect(self._fit_worker.run)
@@ -2132,11 +2245,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 continue
             xs = spec.get('x')
             ys = spec.get('y')
+            axis_unit = res.get('axis_unit') or ''
+            scale = 1000.0 if axis_unit.lower() == "v" else 1.0
+            v0 = res.get('v0')
+            v0_err = res.get('v0_err')
+            v0_disp = "n/a"
+            v0_err_disp = "n/a"
+            if v0 is not None and np.isfinite(v0):
+                v0_disp = f"{v0 * scale:.4g}"
+                if v0_err is not None and np.isfinite(v0_err):
+                    v0_err_disp = f"{v0_err * scale:.3g}"
             rows.append((spec_id, self._display_name(spec),
                          "n/a" if xs is None else f"{xs:.1f}",
                          "n/a" if ys is None else f"{ys:.1f}",
                          f"{res['a']:.4g}", f"{res['a_err']:.2g}",
-                         f"{res['b']:.2f}", f"{res['b_err']:.2f}",
+                         v0_disp, v0_err_disp,
                          f"{res['c']:.4g}", f"{res['c_err']:.2g}",
                          f"{res['rmse']:.4g}"))
         self.results_table.setRowCount(len(rows))

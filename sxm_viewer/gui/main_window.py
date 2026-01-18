@@ -169,6 +169,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_single_markers = bool(self.config.get("show_single_markers", True))
         self.compact_markers = bool(self.config.get("compact_markers", True))
         self.use_density_markers = bool(self.config.get("use_density_markers", True))
+        self.spectro_single_grid_as_matrix = bool(self.config.get("spectro_single_grid_as_matrix", False))
+        self.spectro_force_single_mode = bool(self.config.get("spectro_force_single_mode", False))
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
@@ -753,6 +755,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
         self.show_spectra_cb.toggled.connect(self.on_show_spectra_toggled)
+        if hasattr(self, "grid_as_matrix_cb"):
+            self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
+        if hasattr(self, "force_single_cb"):
+            self.force_single_cb.toggled.connect(self.on_spectro_force_single_toggled)
         self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.export_selected_btn.clicked.connect(self.on_export_selected_same_view)
@@ -3349,6 +3355,18 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_spectro_grid_as_matrix_toggled(self, checked: bool):
+        self.spectro_single_grid_as_matrix = bool(checked)
+        self.config["spectro_single_grid_as_matrix"] = self.spectro_single_grid_as_matrix
+        save_config(self.config)
+        self._reload_spectros(refresh=True)
+
+    def on_spectro_force_single_toggled(self, checked: bool):
+        self.spectro_force_single_mode = bool(checked)
+        self.config["spectro_force_single_mode"] = self.spectro_force_single_mode
+        save_config(self.config)
+        self._reload_spectros(refresh=True)
 
     def on_show_matrix_markers_toggled(self, checked: bool):
         self.show_matrix_markers = bool(checked)

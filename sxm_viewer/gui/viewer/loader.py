@@ -85,6 +85,7 @@ from ...processing.detection import (
 from ...providers import convert_nanonis, parse_nanonis_spectroscopy
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
+
 def load_folder(viewer, folder:Path):
     folder = Path(folder)
     log_status(f"Loading folder: {folder}")
@@ -243,15 +244,133 @@ def _scan_spectros(viewer, folder:Path):
         'single_entries': 0,
         'deferred_files': 0,
     }
-    def _is_matrix_file(spec_list, path_obj: Path) -> bool:
+    prefer_grid_as_matrix = bool(getattr(viewer, "spectro_single_grid_as_matrix", False))
+    force_single_mode = bool(getattr(viewer, "spectro_force_single_mode", False))
+
+    def _points_per_trace_for_list(spec_list):
+        for spec in spec_list:
+            vals = spec.get("V")
+            if vals is not None:
+                try:
+                    arr = np.asarray(vals)
+                    if arr.size:
+                        return int(arr.size)
+                except Exception:
+                    pass
+            ch = (spec.get("channels") or {})
+            if ch:
+                try:
+                    first = next(iter(ch.values()))
+                    arr = np.asarray(first)
+                    if arr.size:
+                        return int(arr.size)
+                except Exception:
+                    continue
+        return None
+
+    def _derive_grid_from_specs(spec_list):
+        col_candidates = [spec.get('grid_col') for spec in spec_list if spec.get('grid_col') is not None]
+        row_candidates = [spec.get('grid_row') for spec in spec_list if spec.get('grid_row') is not None]
+        matrix_indices = [spec.get('matrix_index') for spec in spec_list if spec.get('matrix_index') is not None]
+        grid_cols = grid_rows = None
+        zero_based = True
+        if col_candidates and row_candidates:
+            grid_cols = max(col_candidates) + 1
+            grid_rows = max(row_candidates) + 1
+        elif matrix_indices:
+            min_idx = min(matrix_indices)
+            max_idx = max(matrix_indices)
+            # detect 1-based indexing
+            if min_idx >= 1:
+                zero_based = False
+                max_idx -= 1
+            side = int(round(math.sqrt(max_idx + 1)))
+            if side > 0:
+                grid_cols = grid_rows = side
+        if not grid_cols or not grid_rows:
+            total = len(spec_list)
+            grid_cols = int(round(math.sqrt(total))) or 1
+            grid_rows = int(math.ceil(total / grid_cols)) or 1
+        return grid_rows, grid_cols, zero_based
+
+    def _ensure_grid_indices(spec_list, grid_rows, grid_cols, zero_based=True):
+        for idx, spec in enumerate(spec_list):
+            row = spec.get('grid_row')
+            col = spec.get('grid_col')
+            if row is None or col is None:
+                matrix_index = spec.get('matrix_index')
+                if matrix_index is not None:
+                    try:
+                        val = int(matrix_index)
+                        if not zero_based:
+                            val -= 1
+                        row = val // grid_cols
+                        col = val % grid_cols
+                    except Exception:
+                        row = col = None
+                if row is None or col is None:
+                    row = idx // grid_cols
+                    col = idx % grid_cols
+            spec['grid_row'] = int(row)
+            spec['grid_col'] = int(col)
+            spec['matrix_index'] = int(row * grid_cols + col)
+
+    def _classify_file(spec_list, path_obj: Path):
+        info = {
+            "is_matrix": False,
+            "dataset_key": None,
+            "channel_code": None,
+            "channel_label": None,
+            "grid_rows": None,
+            "grid_cols": None,
+            "zero_based": True,
+            "points_per_trace": None,
+        }
         if not spec_list:
-            return False
-        if any(s.get('matrix_dataset') for s in spec_list):
-            return True
-        if any((s.get('grid_cols') or 0) > 1 or (s.get('grid_rows') or 0) > 1 for s in spec_list):
-            return True
-        name = path_obj.name.lower()
-        return "matrix" in name and len(spec_list) > 1
+            return info
+        grid_rows, grid_cols, zero_based = _derive_grid_from_specs(spec_list)
+        points_per_trace = _points_per_trace_for_list(spec_list)
+        base, channel_code, ch_label = parse_matrix_filename(path_obj.name)
+        dataset_key, display_label = matrix_dataset_key(base, channel_code)
+        stem_base = _matrix_base_name(path_obj.stem)
+        has_grid = grid_rows and grid_cols and (grid_rows * grid_cols == len(spec_list))
+        has_matrix_meta = any(
+            (s.get('matrix_dataset') or (s.get('grid_cols') and s.get('grid_rows')))
+            for s in spec_list
+        )
+        is_named_matrix = "matrix" in path_obj.name.lower()
+        if force_single_mode:
+            is_matrix = False
+        elif has_matrix_meta:
+            is_matrix = True
+        elif prefer_grid_as_matrix and has_grid and len(spec_list) > 1:
+            is_matrix = True
+        elif is_named_matrix and (has_grid or len(spec_list) > 1):
+            is_matrix = True
+        else:
+            is_matrix = False
+        ds_key = None
+        if is_matrix:
+            ds_key = (
+                spec_list[0].get('matrix_dataset')
+                or dataset_key
+                or (f"{base}_{channel_code}" if base and channel_code else None)
+                or stem_base
+                or path_obj.stem
+            )
+        info.update(
+            {
+                "is_matrix": is_matrix,
+                "dataset_key": ds_key,
+                "channel_code": channel_code,
+                "channel_label": display_label or ch_label or channel_code,
+                "grid_rows": grid_rows,
+                "grid_cols": grid_cols,
+                "zero_based": zero_based,
+                "points_per_trace": points_per_trace,
+            }
+        )
+        return info
 
     viewer.matrix_datasets = {}
     if not folder or not Path(folder).exists():
@@ -380,62 +499,43 @@ def _scan_spectros(viewer, folder:Path):
                         pass
             cache[norm_key] = {'mtime': mtime, 'data': spec_list}
         specs.extend(spec_list or [])
-        # counting logic: only treat files as matrix when flagged as such (dataset/grid or name hint)
-        is_matrix = _is_matrix_file(spec_list, p)
-        if is_matrix:
+        info = _classify_file(spec_list, p)
+        if info.get("is_matrix"):
+            grid_rows = info.get("grid_rows") or 1
+            grid_cols = info.get("grid_cols") or 1
+            _ensure_grid_indices(spec_list, grid_rows, grid_cols, zero_based=info.get("zero_based", True))
             stats['matrix_files'] += 1
             stats['matrix_specs'] += len(spec_list)
             stats['display_count'] += 1
             if ext == ".dat":
                 stats['matrix_dat_files'] += 1
-            # build/augment MatrixDataset
-            base, channel_code, ch_label = parse_matrix_filename(p.name)
-            dataset_key, display_label = matrix_dataset_key(base, channel_code)
-            label = display_label or ch_label or channel_code or Path(p).stem
-            # infer grid
-            grid_cols = None
-            grid_rows = None
-            for s in spec_list:
-                grid_cols = grid_cols or s.get('grid_cols')
-                grid_rows = grid_rows or s.get('grid_rows')
-                if grid_cols and grid_rows:
-                    break
-            if not grid_cols or not grid_rows:
-                n = max(1, len(spec_list))
-                side = int(round(n ** 0.5))
-                grid_cols = grid_cols or side
-                grid_rows = grid_rows or side
-            ds_key = dataset_key or base or Path(p).stem
+            ds_key = info.get("dataset_key") or Path(p).stem
             ds = viewer.matrix_datasets.get(ds_key)
             if ds is None:
                 ds = MatrixDataset(ds_key, grid_rows, grid_cols)
                 viewer.matrix_datasets[ds_key] = ds
-            ds.add_channel(p.name, channel_code=channel_code, label=label, spectra_count=len(spec_list), path=p)
+            label = info.get("channel_label") or info.get("channel_code") or Path(p).stem
+            ds.add_channel(
+                p.name,
+                channel_code=info.get("channel_code"),
+                label=label,
+                spectra_count=len(spec_list),
+                path=p,
+                points_per_trace=info.get("points_per_trace"),
+            )
             for spec in spec_list or []:
                 spec.setdefault('matrix_dataset', ds_key)
                 if label:
                     spec.setdefault('channel_name', label)
-                if channel_code:
-                    spec.setdefault('channel_code', channel_code)
-            # describe grid if available
-            grid_cols = None
-            grid_rows = None
-            for s in spec_list:
-                grid_cols = grid_cols or s.get('grid_cols')
-                grid_rows = grid_rows or s.get('grid_rows')
-                if grid_cols and grid_rows:
-                    break
-            if grid_cols and grid_rows:
-                grid_desc = f"{grid_cols}x{grid_rows}"
-            else:
-                # fallback: infer from count if square
-                n = len(spec_list)
-                side = int(round(n ** 0.5))
-                grid_desc = f"~{side}x{side}" if side * side == n else f"{n} spectra"
+                if info.get("channel_code"):
+                    spec.setdefault('channel_code', info.get("channel_code"))
+                spec.setdefault('grid_rows', grid_rows)
+                spec.setdefault('grid_cols', grid_cols)
             if len(stats['matrix_samples']) < 3:
-                stats['matrix_samples'].append(
-                    f"{p.name}: {grid_desc} ({len(spec_list)} spectra)"
-                )
+                grid_desc = f"{grid_cols}x{grid_rows}"
+                pts = info.get("points_per_trace")
+                pts_txt = f", {pts} pts/trace" if pts else ""
+                stats['matrix_samples'].append(f"{p.name}: {grid_desc} ({len(spec_list)} spectra{pts_txt})")
         else:
             if spec_list:
                 stats['single_dat_files'] += 1
@@ -478,24 +578,12 @@ def _scan_spectros(viewer, folder:Path):
                     spectra_per_ch.append(int(ch.get('spectra_count', 0)))
                 except Exception:
                     pass
-                try:
-                    # assume each channel in the dataset has the same trace length; store first nonzero
-                    cache_entry = cache.get(str(Path(ch.get('path')).resolve()).lower(), {})
-                    data = cache_entry.get('data') if isinstance(cache_entry, dict) else None
-                    if isinstance(data, list):
-                        trace = data[0] if data else None
-                    else:
-                        trace = None
-                    vals = None
-                    if isinstance(trace, dict):
-                        vals = trace.get('V')
-                        if vals is None and trace.get('channels'):
-                            vals = next(iter(trace['channels'].values()))
-                    if vals is not None:
-                        arr = np.asarray(vals)
-                        points_per_trace.append(int(arr.size))
-                except Exception:
-                    pass
+                pts = ch.get('points_per_trace')
+                if pts:
+                    try:
+                        points_per_trace.append(int(pts))
+                    except Exception:
+                        pass
                 try:
                     mtimes.append(Path(ch.get('path')).stat().st_mtime)
                 except Exception:
