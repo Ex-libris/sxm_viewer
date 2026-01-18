@@ -391,7 +391,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
     if getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE:
         try:
-            viewer._on_start_profile(force_enable=True)
+            canvas = getattr(viewer, 'preview_canvas', None)
+            angle_active = bool(canvas and getattr(canvas, 'angle_enabled', False))
+            if not angle_active:
+                viewer._on_start_profile(force_enable=True)
         except Exception:
             pass
     elif getattr(viewer, '_pending_profile_enable', False):

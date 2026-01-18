@@ -348,7 +348,12 @@ def _on_angle_updated(viewer, info):
     if not info:
         viewer.angle_value_label.setText("Angle: --")
         return
-    angle_text = f"Angle: {info.get('angle_deg', 0.0):.2f}"
+    frame_index = info.get('frame_index')
+    total_frames = info.get('total_frames')
+    angle_text = "Angle"
+    if frame_index is not None and total_frames:
+        angle_text += f" ({frame_index + 1}/{total_frames})"
+    angle_text += f": {info.get('angle_deg', 0.0):.2f}"
     unit = info.get('unit')
     if unit:
         angle_text += f" | L1={info.get('len_a', 0.0):.3f} {unit} L2={info.get('len_b', 0.0):.3f} {unit}"

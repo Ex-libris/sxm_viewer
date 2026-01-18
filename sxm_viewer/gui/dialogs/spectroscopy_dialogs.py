@@ -176,7 +176,6 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         layout.addWidget(self.curve_list)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_canvas_context_menu)
-        self.canvas.mpl_connect("key_press_event", self._on_canvas_keypress)
         self.fit_result_label = QtWidgets.QLabel("")
         self.fit_result_label.setWordWrap(True)
         layout.addWidget(self.fit_result_label)
@@ -443,19 +442,6 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         if idx < 0 or idx >= len(self._curve_entries):
             idx = 0
         return self._curve_entries[idx]
-
-    def _on_canvas_keypress(self, event):
-        if not event or not hasattr(event, "key"):
-            return
-        key = (event.key or "").lower()
-        if key in ("ctrl+z", "control+z"):
-            step = 0.05
-            self._font_scale = min(2.5, self._font_scale + step)
-            self._apply_font_scale()
-            self.canvas.draw_idle()
-            gui_event = getattr(event, "guiEvent", None)
-            if gui_event:
-                gui_event.accept()
 
     def _apply_font_scale(self):
         scale = getattr(self, "_font_scale", 1.0)
