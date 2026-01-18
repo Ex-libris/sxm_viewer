@@ -1243,6 +1243,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
 class _SpectroFitWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(list, list)
+    progress = QtCore.pyqtSignal(int, str)
 
     def __init__(self, specs, channel, axis_key):
         super().__init__()
@@ -1267,8 +1268,12 @@ class _SpectroFitWorker(QtCore.QObject):
     def run(self):
         results = []
         logs = []
-        for spec in self.specs:
+        total_specs = len(self.specs)
+        for i, spec in enumerate(self.specs):
             name = Path(spec['path']).name
+            progress_msg = f"Fitting {name} ({i+1}/{total_specs})"
+            self.progress.emit(int((i / total_specs) * 100), progress_msg)
+
             V, axis_label, axis_unit = self._axis_for_spec_with_key(spec, self.axis_key)
             channels = spec.get('channels') or {}
             data = channels.get(self.channel)
@@ -1296,6 +1301,7 @@ class _SpectroFitWorker(QtCore.QObject):
                 logs.append(f"{name}: fit ok (RMSE {res['rmse']:.3g})")
             except Exception as e:
                 logs.append(f"{name}: {e}")
+        self.progress.emit(100, "Fit complete")
         self.finished.emit(results, logs)
 
 class SpectroscopyCompareDialog(QtWidgets.QDialog):
@@ -1316,22 +1322,32 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._background_spec_id = None
         self._relative_zero_enabled = False
         self.setWindowTitle("Spectroscopy comparison")
-        self.resize(1250, 640)
+        self.resize(1400, 700)  # Increased size for better layout
         self._build_ui()
         self._populate_list()
         self._populate_channels()
         self._populate_axes()
         self._update_plot()
 
-    def _spec_id(self, spec):
-        base = str(Path(spec.get('path', '')))
-        idx = spec.get('matrix_index')
-        return f"{base}#m{idx}" if idx is not None else base
+    def _get_icon(self, name):
+        """Get a themed icon, falling back to empty icon if not available."""
+        icon = QIcon.fromTheme(name)
+        return icon if icon and not icon.isNull() else QIcon()
 
     def _display_name(self, spec):
         name = Path(spec.get('path', '')).name
         idx = spec.get('matrix_index')
         return f"{name} [m{idx}]" if idx is not None else name
+
+    def _spec_id(self, spec):
+        base = str(Path(spec.get('path', '')))
+        idx = spec.get('matrix_index')
+        return f"{base}#m{idx}" if idx is not None else base
+
+    def _get_icon(self, name):
+        """Get a themed icon, falling back to empty icon if not available."""
+        icon = QIcon.fromTheme(name)
+        return icon if icon and not icon.isNull() else QIcon()
 
     def _build_ui(self):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -1345,7 +1361,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         left_layout.setContentsMargins(4,4,4,4)
         self.filter_edit = QtWidgets.QLineEdit()
         self.filter_edit.setPlaceholderText("Filter spectra...")
+        self.filter_edit.setToolTip("Filter spectra by filename, type, position, or channels")
         self.filter_edit.textChanged.connect(self._apply_filter)
+        self.filter_edit.setAccessibleName("Spectrum filter")
+        self.filter_edit.setAccessibleDescription("Enter text to filter the list of spectra")
         self.spec_list = QtWidgets.QTreeWidget()
         self.spec_list.setHeaderLabels(["File", "Type", "Pos (nm)", "Time", "Chans"])
         self.spec_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -1357,6 +1376,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.spec_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.spec_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.spec_list.customContextMenuRequested.connect(self._on_list_context_menu)
+        self.spec_list.setAccessibleName("Spectra list")
+        self.spec_list.setAccessibleDescription("List of available spectra. Check boxes to include in plot, select for additional operations")
         left_layout.addWidget(self.filter_edit)
         left_layout.addWidget(self.spec_list, 1)
         splitter.addWidget(left)
@@ -1373,23 +1394,45 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         center_layout.addWidget(self.canvas, 1)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_compare_canvas_menu)
+        self.canvas.setAccessibleName("Spectroscopy comparison plot")
+        self.canvas.setAccessibleDescription("Interactive plot showing selected spectra")
+
+        # Progress bar for fitting operations
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setAccessibleName("Fitting progress")
+        self.progress_bar.setAccessibleDescription("Shows progress of spectrum fitting operations")
+        center_layout.addWidget(self.progress_bar)
+
         self.status_label = QtWidgets.QLabel("0 selected / 0 total")
-        
+        self.status_label.setAccessibleName("Status information")
+        self.status_label.setAccessibleDescription("Shows current selection and plot status")
+
         # Visualization controls (Waterfall)
+        vis_group = QtWidgets.QGroupBox("Visualization")
+        vis_layout = QtWidgets.QVBoxLayout(vis_group)
         vis_row = QtWidgets.QHBoxLayout()
         self.waterfall_cb = QtWidgets.QCheckBox("Waterfall")
+        self.waterfall_cb.setToolTip("Stack spectra vertically with offset for better visibility")
         self.waterfall_cb.toggled.connect(self._update_plot)
+        self.waterfall_cb.setAccessibleName("Waterfall display")
+        self.waterfall_cb.setAccessibleDescription("Enable waterfall stacking of spectra")
         vis_row.addWidget(self.waterfall_cb)
-        
+
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
         self.offset_spin.setDecimals(14) # High precision for small currents
         self.offset_spin.setSingleStep(0.1)
+        self.offset_spin.setToolTip("Vertical offset between waterfall spectra")
         self.offset_spin.valueChanged.connect(self._update_plot)
+        self.offset_spin.setAccessibleName("Waterfall offset")
+        self.offset_spin.setAccessibleDescription("Set the vertical spacing between stacked spectra")
         vis_row.addWidget(QtWidgets.QLabel("Offset:"))
         vis_row.addWidget(self.offset_spin)
         vis_row.addStretch(1)
-        center_layout.addLayout(vis_row)
+        vis_layout.addLayout(vis_row)
+        center_layout.addWidget(vis_group)
         center_layout.addWidget(self.status_label)
         splitter.addWidget(center)
         splitter.setStretchFactor(1, 2)
@@ -1399,58 +1442,146 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         right = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(6,6,6,6)
+
+        # Data Selection Group
+        data_group = QtWidgets.QGroupBox("Data Selection")
+        data_layout = QtWidgets.QVBoxLayout(data_group)
+
         channel_row = QtWidgets.QHBoxLayout()
         channel_row.addWidget(QtWidgets.QLabel("Channel:"))
         self.channel_combo = QtWidgets.QComboBox()
+        self.channel_combo.setToolTip("Select which channel to plot and analyze")
         self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
+        self.channel_combo.setAccessibleName("Channel selection")
+        self.channel_combo.setAccessibleDescription("Choose which data channel to display")
         channel_row.addWidget(self.channel_combo, 1)
-        right_layout.addLayout(channel_row)
+        data_layout.addLayout(channel_row)
 
         axis_row = QtWidgets.QHBoxLayout()
         axis_row.addWidget(QtWidgets.QLabel("Axis:"))
         self.axis_combo = QtWidgets.QComboBox()
+        self.axis_combo.setToolTip("Select X-axis for plotting (bias voltage or Z position)")
         self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        self.axis_combo.setAccessibleName("Axis selection")
+        self.axis_combo.setAccessibleDescription("Choose the X-axis variable for the plot")
         axis_row.addWidget(self.axis_combo, 1)
         self.relative_cb = QtWidgets.QCheckBox("Relative Z (zero at min)")
+        self.relative_cb.setToolTip("Shift Z-axis to start from zero at minimum value")
         self.relative_cb.toggled.connect(self._on_relative_toggled)
+        self.relative_cb.setAccessibleName("Relative Z mode")
+        self.relative_cb.setAccessibleDescription("Enable relative Z-axis scaling")
         axis_row.addWidget(self.relative_cb)
-        right_layout.addLayout(axis_row)
+        data_layout.addLayout(axis_row)
+
+        right_layout.addWidget(data_group)
+
+        # Visualization Group
+        viz_group = QtWidgets.QGroupBox("Appearance")
+        viz_layout = QtWidgets.QVBoxLayout(viz_group)
 
         palette_row = QtWidgets.QHBoxLayout()
         palette_row.addWidget(QtWidgets.QLabel("Color cycle:"))
         self.palette_combo = QtWidgets.QComboBox()
         for name in list_color_cycles():
             self.palette_combo.addItem(name)
+        self.palette_combo.setToolTip("Select color palette for spectrum lines")
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed_compare)
+        self.palette_combo.setAccessibleName("Color palette")
+        self.palette_combo.setAccessibleDescription("Choose color scheme for plotting multiple spectra")
         self.palette_combo.blockSignals(True)
         default_idx = max(0, self.palette_combo.findText(self._palette_name))
         self.palette_combo.setCurrentIndex(default_idx)
         self.palette_combo.blockSignals(False)
         palette_row.addWidget(self.palette_combo, 1)
-        right_layout.addLayout(palette_row)
+        viz_layout.addLayout(palette_row)
 
-        btn_row = QtWidgets.QHBoxLayout()
-        self.fit_selected_btn = QtWidgets.QPushButton("Fit selected (F)")
-        self.fit_all_btn = QtWidgets.QPushButton("Fit all")
-        self.export_btn = QtWidgets.QPushButton("Export CSV")
-        self.bg_set_btn = QtWidgets.QPushButton("Set background")
-        self.bg_clear_btn = QtWidgets.QPushButton("Clear background")
-        self.force_btn = QtWidgets.QPushButton("Convert to force")
-        self.copy_btn = QtWidgets.QPushButton("Copy selected")
-        self.copy_table_btn = QtWidgets.QPushButton("Copy table")
-        self.clear_sel_btn = QtWidgets.QPushButton("Clear selected")
-        self.clear_all_btn = QtWidgets.QPushButton("Clear all")
-        btn_row.addWidget(self.fit_selected_btn)
-        btn_row.addWidget(self.fit_all_btn)
-        btn_row.addWidget(self.export_btn)
-        btn_row.addWidget(self.bg_set_btn)
-        btn_row.addWidget(self.bg_clear_btn)
-        btn_row.addWidget(self.force_btn)
-        btn_row.addWidget(self.copy_btn)
-        btn_row.addWidget(self.copy_table_btn)
-        btn_row.addWidget(self.clear_sel_btn)
-        btn_row.addWidget(self.clear_all_btn)
-        right_layout.addLayout(btn_row)
+        right_layout.addWidget(viz_group)
+
+        # Analysis Group
+        analysis_group = QtWidgets.QGroupBox("Analysis")
+        analysis_layout = QtWidgets.QVBoxLayout(analysis_group)
+
+        # KPFM subsection
+        kpfm_group = QtWidgets.QGroupBox("KPFM")
+        kpfm_layout = QtWidgets.QVBoxLayout(kpfm_group)
+
+        fit_row = QtWidgets.QHBoxLayout()
+        self.fit_selected_btn = QtWidgets.QPushButton(self._get_icon("system-run"), "Fit selected (F)")
+        self.fit_selected_btn.setToolTip("Fit parabola to selected spectra")
+        self.fit_all_btn = QtWidgets.QPushButton(self._get_icon("edit-select-all"), "Fit all")
+        self.fit_all_btn.setToolTip("Fit parabola to all checked spectra")
+        fit_row.addWidget(self.fit_selected_btn)
+        fit_row.addWidget(self.fit_all_btn)
+        kpfm_layout.addLayout(fit_row)
+
+        export_row = QtWidgets.QHBoxLayout()
+        self.export_btn = QtWidgets.QPushButton(self._get_icon("document-save"), "Export CSV")
+        self.export_btn.setToolTip("Export fit results to CSV file")
+        export_row.addWidget(self.export_btn)
+        export_row.addStretch(1)
+        kpfm_layout.addLayout(export_row)
+
+        analysis_layout.addWidget(kpfm_group)
+
+        # Forces/Background subsection
+        forces_group = QtWidgets.QGroupBox("Forces/Background")
+        forces_layout = QtWidgets.QVBoxLayout(forces_group)
+
+        bg_row = QtWidgets.QHBoxLayout()
+        self.bg_set_btn = QtWidgets.QPushButton(self._get_icon("list-add"), "Set background")
+        self.bg_set_btn.setToolTip("Set selected spectrum as background for subtraction")
+        self.bg_clear_btn = QtWidgets.QPushButton(self._get_icon("list-remove"), "Clear background")
+        self.bg_clear_btn.setToolTip("Remove background subtraction")
+        bg_row.addWidget(self.bg_set_btn)
+        bg_row.addWidget(self.bg_clear_btn)
+        forces_layout.addLayout(bg_row)
+
+        force_row = QtWidgets.QHBoxLayout()
+        self.force_btn = QtWidgets.QPushButton(self._get_icon("transform-scale"), "Convert to force")
+        self.force_btn.setToolTip("Convert spectra to force curves (experimental)")
+        force_row.addWidget(self.force_btn)
+        force_row.addStretch(1)
+        forces_layout.addLayout(force_row)
+
+        analysis_layout.addWidget(forces_group)
+
+        right_layout.addWidget(analysis_group)
+
+        # Actions Group
+        actions_group = QtWidgets.QGroupBox("Actions")
+        actions_layout = QtWidgets.QVBoxLayout(actions_group)
+
+        copy_row = QtWidgets.QHBoxLayout()
+        self.copy_btn = QtWidgets.QPushButton(self._get_icon("edit-copy"), "Copy selected")
+        self.copy_btn.setToolTip("Copy selected spectra data to clipboard")
+        self.copy_table_btn = QtWidgets.QPushButton(self._get_icon("edit-copy"), "Copy table")
+        self.copy_table_btn.setToolTip("Copy fit results table to clipboard")
+        copy_row.addWidget(self.copy_btn)
+        copy_row.addWidget(self.copy_table_btn)
+        actions_layout.addLayout(copy_row)
+
+        clear_row = QtWidgets.QHBoxLayout()
+        self.clear_sel_btn = QtWidgets.QPushButton(self._get_icon("edit-clear"), "Clear selected")
+        self.clear_sel_btn.setToolTip("Remove selected spectra from list")
+        self.clear_all_btn = QtWidgets.QPushButton(self._get_icon("edit-clear-all"), "Clear all")
+        self.clear_all_btn.setToolTip("Clear all spectra from list")
+        clear_row.addWidget(self.clear_sel_btn)
+        clear_row.addWidget(self.clear_all_btn)
+        actions_layout.addLayout(clear_row)
+
+        help_row = QtWidgets.QHBoxLayout()
+        self.help_btn = QtWidgets.QPushButton(self._get_icon("help-about"), "Help")
+        self.help_btn.setToolTip("Show help for spectroscopy comparison")
+        self.help_btn.setAccessibleName("Help")
+        self.help_btn.setAccessibleDescription("Open help documentation for spectroscopy comparison features")
+        self.help_btn.clicked.connect(self._show_help)
+        help_row.addWidget(self.help_btn)
+        help_row.addStretch(1)
+        actions_layout.addLayout(help_row)
+
+        right_layout.addWidget(actions_group)
+
+        # Connect button signals
         self.fit_selected_btn.clicked.connect(self._fit_selected)
         self.fit_all_btn.clicked.connect(self._fit_all)
         self.export_btn.clicked.connect(self._export_csv)
@@ -1462,16 +1593,47 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.clear_sel_btn.clicked.connect(self._clear_selected)
         self.clear_all_btn.clicked.connect(self._clear_all)
 
+        # Set accessibility for buttons
+        self.fit_selected_btn.setAccessibleName("Fit selected spectra")
+        self.fit_selected_btn.setAccessibleDescription("Perform parabolic fit on selected spectra")
+        self.fit_all_btn.setAccessibleName("Fit all spectra")
+        self.fit_all_btn.setAccessibleDescription("Perform parabolic fit on all checked spectra")
+        self.export_btn.setAccessibleName("Export results")
+        self.export_btn.setAccessibleDescription("Save fit results to CSV file")
+        self.bg_set_btn.setAccessibleName("Set background")
+        self.bg_set_btn.setAccessibleDescription("Use selected spectrum as background for subtraction")
+        self.bg_clear_btn.setAccessibleName("Clear background")
+        self.bg_clear_btn.setAccessibleDescription("Remove background subtraction")
+        self.force_btn.setAccessibleName("Convert to force")
+        self.force_btn.setAccessibleDescription("Convert spectra to force curves")
+        self.copy_btn.setAccessibleName("Copy spectra")
+        self.copy_btn.setAccessibleDescription("Copy selected spectra data to clipboard")
+        self.copy_table_btn.setAccessibleName("Copy table")
+        self.copy_table_btn.setAccessibleDescription("Copy fit results table to clipboard")
+        self.clear_sel_btn.setAccessibleName("Clear selected")
+        self.clear_sel_btn.setAccessibleDescription("Remove selected spectra from the list")
+        self.clear_all_btn.setAccessibleName("Clear all")
+        self.clear_all_btn.setAccessibleDescription("Remove all spectra from the list")
+
+        # Keyboard shortcuts
         QtWidgets.QShortcut(QtGui.QKeySequence("F"), self, activated=self._fit_selected)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+E"), self, activated=self._export_csv)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+A"), self, activated=self._select_all_visible)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+A"), self, activated=self._invert_selection)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Delete"), self, activated=self._clear_selected)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Delete"), self, activated=self._clear_all)
 
+        # Fit options collapsible section
         self.options_toggle = QtWidgets.QToolButton()
         self.options_toggle.setText("Fit options")
+        self.options_toggle.setToolTip("Show/hide advanced fitting options")
         self.options_toggle.setCheckable(True)
         self.options_toggle.setChecked(False)
         self.options_toggle.setArrowType(QtCore.Qt.RightArrow)
         self.options_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         self.options_toggle.toggled.connect(self._on_options_toggled)
+        self.options_toggle.setAccessibleName("Fit options toggle")
+        self.options_toggle.setAccessibleDescription("Expand to show advanced fitting parameters")
         right_layout.addWidget(self.options_toggle)
 
         self.options_body = QtWidgets.QWidget()
@@ -1480,28 +1642,60 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.degree_spin.setRange(2, 2)
         self.degree_spin.setValue(2)
         self.degree_spin.setEnabled(False)
+        self.degree_spin.setToolTip("Polynomial degree for fitting (fixed at 2)")
         form.addRow("Degree", self.degree_spin)
-        self.mask_min = QtWidgets.QDoubleSpinBox(); self.mask_min.setRange(-1e6, 1e6); self.mask_min.setSuffix(" V")
-        self.mask_max = QtWidgets.QDoubleSpinBox(); self.mask_max.setRange(-1e6, 1e6); self.mask_max.setSuffix(" V")
+        self.mask_min = QtWidgets.QDoubleSpinBox()
+        self.mask_min.setRange(-1e6, 1e6)
+        self.mask_min.setSuffix(" V")
+        self.mask_min.setToolTip("Minimum bias voltage to include in fit")
+        self.mask_min.setAccessibleName("Fit mask minimum")
+        self.mask_min.setAccessibleDescription("Exclude data below this bias voltage from fitting")
+        self.mask_max = QtWidgets.QDoubleSpinBox()
+        self.mask_max.setRange(-1e6, 1e6)
+        self.mask_max.setSuffix(" V")
+        self.mask_max.setToolTip("Maximum bias voltage to include in fit")
+        self.mask_max.setAccessibleName("Fit mask maximum")
+        self.mask_max.setAccessibleDescription("Exclude data above this bias voltage from fitting")
         form.addRow("Mask min", self.mask_min)
         form.addRow("Mask max", self.mask_max)
         self.options_body.setVisible(False)
         right_layout.addWidget(self.options_body)
 
+        # Separator
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        right_layout.addWidget(separator)
+
+        # Results table
+        table_label = QtWidgets.QLabel("Fit Results")
+        table_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(table_label)
+
         self.results_table = QtWidgets.QTableWidget(0, 10)
-        self.results_table.setHorizontalHeaderLabels(["File","X (nm)","Y (nm)","a","?a","LCPD","?LCPD","c (Hz)","?c","RMSE"])
+        self.results_table.setHorizontalHeaderLabels(["File","X (nm)","Y (nm)","a","δa","LCPD","δLCPD","c (Hz)","δc","RMSE"])
         self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.results_table.setSortingEnabled(True)  # Enable sorting
         self.results_table.itemSelectionChanged.connect(self._on_table_selection)
         self.results_table.itemDoubleClicked.connect(self._on_table_double_clicked)
         self.results_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.results_table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self.results_table.setAccessibleName("Fit results table")
+        self.results_table.setAccessibleDescription("Table showing results of parabolic fits to spectra")
         right_layout.addWidget(self.results_table, 1)
+
+        # Log
+        log_label = QtWidgets.QLabel("Log")
+        log_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(log_label)
 
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumHeight(100)
+        self.log.setAccessibleName("Operation log")
+        self.log.setAccessibleDescription("Shows messages from fitting and other operations")
         right_layout.addWidget(self.log)
 
         splitter.addWidget(right)
@@ -2197,6 +2391,26 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
+    def _select_all_visible(self):
+        """Select all visible (non-filtered) spectra."""
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if not item.isHidden():
+                item.setCheckState(0, QtCore.Qt.Checked)
+        self._update_plot()
+
+    def _invert_selection(self):
+        """Invert the checked state of all visible spectra."""
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if not item.isHidden():
+                current_state = item.checkState(0)
+                new_state = QtCore.Qt.Unchecked if current_state == QtCore.Qt.Checked else QtCore.Qt.Checked
+                item.setCheckState(0, new_state)
+        self._update_plot()
+
     def _fit_selected(self):
         items = self._selected_items() or self._checked_items()
         self._start_fit([item.data(0, QtCore.Qt.UserRole) for item in items])
@@ -2217,6 +2431,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_worker.moveToThread(self._fit_thread)
         self._fit_thread.started.connect(self._fit_worker.run)
         self._fit_worker.finished.connect(self._on_fit_finished)
+        self._fit_worker.progress.connect(self._on_fit_progress)
         self._fit_worker.finished.connect(self._fit_thread.quit)
         self._fit_thread.finished.connect(self._cleanup_fit_thread)
         self._fit_thread.start()
@@ -2236,6 +2451,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self._fit_results[self._spec_id(spec)] = res
         self._populate_results_table()
         self._update_plot()
+
+    def _on_fit_progress(self, percentage, message):
+        self.progress_bar.setValue(percentage)
+        self.status_label.setText(message)
 
     def _populate_results_table(self):
         rows = []
@@ -2289,12 +2508,84 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_selected_btn.setEnabled(not busy)
         self.fit_all_btn.setEnabled(not busy)
         self.export_btn.setEnabled(not busy)
+        self.progress_bar.setVisible(busy)
         if busy:
             self.status_label.setText(message)
+            self.progress_bar.setValue(0)
+        else:
+            self.progress_bar.setVisible(False)
 
     def _on_options_toggled(self, checked):
         self.options_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
         self.options_body.setVisible(checked)
+
+    def _show_help(self):
+        """Show help dialog for spectroscopy comparison features."""
+        help_text = """
+        <h2>Spectroscopy Comparison Help</h2>
+        
+        <h3>Getting Started</h3>
+        <p>Use the spectrum list on the left to select which spectra to compare. Check the boxes to include spectra in the plot, or select items for additional operations.</p>
+        
+        <h3>Data Selection</h3>
+        <ul>
+        <li><b>Channel:</b> Choose which data channel to plot and analyze</li>
+        <li><b>Axis:</b> Select the X-axis (bias voltage or Z position)</li>
+        <li><b>Relative Z:</b> Shift Z-axis to start from zero at minimum value</li>
+        </ul>
+        
+        <h3>Visualization</h3>
+        <ul>
+        <li><b>Color Cycle:</b> Select color palette for multiple spectra</li>
+        <li><b>Waterfall:</b> Stack spectra vertically with offset</li>
+        <li><b>Offset:</b> Adjust vertical spacing in waterfall mode</li>
+        </ul>
+        
+        <h3>Analysis</h3>
+        <h4>KPFM</h4>
+        <ul>
+        <li><b>Fit Selected/All:</b> Perform parabolic fits on spectra</li>
+        <li><b>Export CSV:</b> Save fit results to CSV file</li>
+        </ul>
+        <h4>Forces/Background</h4>
+        <ul>
+        <li><b>Set/Clear Background:</b> Subtract background spectrum</li>
+        <li><b>Convert to Force:</b> Experimental force curve conversion</li>
+        </ul>
+        
+        <h3>Actions</h3>
+        <ul>
+        <li><b>Copy:</b> Copy data to clipboard</li>
+        <li><b>Export:</b> Save results to CSV</li>
+        <li><b>Clear:</b> Remove spectra from list</li>
+        </ul>
+        
+        <h3>Keyboard Shortcuts</h3>
+        <ul>
+        <li><b>F:</b> Fit selected spectra</li>
+        <li><b>Ctrl+E:</b> Export to CSV</li>
+        <li><b>Ctrl+A:</b> Select all visible spectra</li>
+        <li><b>Ctrl+Shift+A:</b> Invert selection</li>
+        <li><b>Delete:</b> Clear selected spectra</li>
+        <li><b>Ctrl+Delete:</b> Clear all spectra</li>
+        </ul>
+        """
+        
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Spectroscopy Comparison Help")
+        dialog.resize(600, 500)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        text_edit = QtWidgets.QTextEdit()
+        text_edit.setHtml(help_text)
+        text_edit.setReadOnly(True)
+        layout.addWidget(text_edit)
+        
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        
+        dialog.exec_()
 
     def _log(self, text):
         self.log.appendPlainText(text)
