@@ -647,6 +647,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.fit_btn.setEnabled(enable)
 
 class MatrixSpectroViewer(QtWidgets.QDialog):
+    MARKER_STYLE_OPTIONS = [
+        ("Circle", "o"),
+        ("Square", "s"),
+        ("Diamond", "D"),
+        ("Triangle", "^"),
+        ("Cross", "X"),
+    ]
+    MARKER_SIZE_PRESETS = [16, 28, 42]
     def __init__(self, parent, image_entry, specs, dataset=None, palette_name=None):
         super().__init__(parent)
         self.image_entry = image_entry
@@ -701,7 +709,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         palette_controls.addWidget(self.palette_combo, 1)
         left_layout.addLayout(palette_controls)
 
-        self.show_positions_cb = QtWidgets.QCheckBox("Show spectroscopy positions")
+        self.show_positions_cb = QtWidgets.QCheckBox("Show all spectroscopy positions")
         self.show_positions_cb.setChecked(True)
         self.show_positions_cb.toggled.connect(self._draw_image_layer)
         left_layout.addWidget(self.show_positions_cb)
@@ -753,6 +761,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._selection = []
         self._selection_keys = set()
         self._selection_artists = []
+        self._position_marker_config = {
+            "marker": "o",
+            "size": 28,
+            "facecolor": "#ffffff",
+            "edgecolor": "#101010",
+            "linewidth": 0.4,
+            "alpha": 0.85,
+        }
         self._aggregate_mode = False
         self._focused_key = None
         self.palette_name = palette_name or getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
@@ -1071,6 +1087,35 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
+
+        style_menu = menu.addMenu("Marker style")
+        style_group = QtWidgets.QActionGroup(menu)
+        current_marker = self._position_marker_config.get("marker", "o")
+        for label, marker in self.MARKER_STYLE_OPTIONS:
+            act = style_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(current_marker == marker)
+            act.triggered.connect(functools.partial(self._set_position_marker_style, marker))
+            style_group.addAction(act)
+
+        size_menu = menu.addMenu("Marker size")
+        size_group = QtWidgets.QActionGroup(menu)
+        current_size = self._position_marker_config.get("size", 28)
+        for size in self.MARKER_SIZE_PRESETS:
+            act = size_menu.addAction(f"{size} pt")
+            act.setCheckable(True)
+            act.setChecked(current_size == size)
+            act.triggered.connect(functools.partial(self._set_position_marker_size, size))
+            size_group.addAction(act)
+        custom_size = size_menu.addAction("Custom...")
+        custom_size.triggered.connect(self._choose_custom_marker_size)
+
+        fill_act = menu.addAction("Marker fill color...")
+        fill_act.triggered.connect(functools.partial(self._choose_position_marker_color, "facecolor"))
+        edge_act = menu.addAction("Marker edge color...")
+        edge_act.triggered.connect(functools.partial(self._choose_position_marker_color, "edgecolor"))
+
+        menu.addSeparator()
         clear_act = menu.addAction("Clear selections")
         reset_act = menu.addAction("Reset view")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
@@ -1078,6 +1123,38 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._clear_selection()
         elif action == reset_act:
             self._reset_matrix_view()
+
+    def _set_position_marker_style(self, marker):
+        if not marker:
+            return
+        if self._position_marker_config.get("marker") == marker:
+            return
+        self._position_marker_config["marker"] = marker
+        self._draw_image_layer()
+
+    def _set_position_marker_size(self, size):
+        if size <= 0:
+            return
+        if self._position_marker_config.get("size") == size:
+            return
+        self._position_marker_config["size"] = size
+        self._draw_image_layer()
+
+    def _choose_custom_marker_size(self):
+        current = int(self._position_marker_config.get("size", 28))
+        size, ok = QtWidgets.QInputDialog.getInt(
+            self, "Marker size", "Marker size (pts):", current, 6, 200, 1
+        )
+        if ok:
+            self._set_position_marker_size(size)
+
+    def _choose_position_marker_color(self, role):
+        current = self._position_marker_config.get(role, "#ffffff")
+        color = QtWidgets.QColorDialog.getColor(QtGui.QColor(current), self, "Select marker color")
+        if not color.isValid():
+            return
+        self._position_marker_config[role] = color.name()
+        self._draw_image_layer()
 
     def _draw_image_layer(self):
         anchor = self.anchor_path or self.image_entry.get('path')
@@ -1124,13 +1201,28 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         xs = []
         ys = []
         if getattr(self.show_positions_cb, "isChecked", lambda: True)():
-            for spec in channel_specs:
+            overlay_specs = self.specs
+        else:
+            overlay_specs = channel_specs
+        if overlay_specs:
+            for spec in overlay_specs:
                 coords = self.viewer._map_spec_to_pixels(spec, header_map, xpix, ypix, file_key=file_key)
                 if coords:
                     xs.append(coords[0])
                     ys.append(coords[1])
             if xs and ys:
-                self.ax.scatter(xs, ys, s=28, c='white', edgecolors='black', linewidths=0.4, alpha=0.85)
+                cfg = self._position_marker_config
+                self.ax.scatter(
+                    xs,
+                    ys,
+                    s=cfg.get("size", 28),
+                    marker=cfg.get("marker", "o"),
+                    facecolors=cfg.get("facecolor", "#ffffff"),
+                    edgecolors=cfg.get("edgecolor", "#101010"),
+                    linewidths=cfg.get("linewidth", 0.4),
+                    alpha=cfg.get("alpha", 0.85),
+                    zorder=2,
+                )
         self._update_selection_markers(redraw=False)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
