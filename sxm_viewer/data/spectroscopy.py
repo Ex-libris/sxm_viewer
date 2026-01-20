@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 import math
 import re
 
 import numpy as np
 
-from .matrix import parse_matrix_filename, matrix_dataset_key
+from .matrix import MatrixDataCube, parse_matrix_filename, matrix_dataset_key
 from .channel_units import guess_channel_unit
 
 
@@ -41,8 +41,12 @@ def parse_spectroscopy_file(path: Path | str) -> List[Dict[str, object]]:
       when known, grid indices, and optional matrix index.
     """
     path = Path(path)
-    matrix_specs = _parse_matrix_dat(path)
-    if matrix_specs is not None:
+    matrix_payload = _parse_matrix_dat(path)
+    if matrix_payload is not None:
+        matrix_specs, matrix_cube = matrix_payload
+        if matrix_cube is not None:
+            for entry in matrix_specs:
+                entry['matrix_cube'] = matrix_cube
         return matrix_specs
     text = _read_text(path)
     lines = text.replace("\r", "\n").split("\n")
@@ -226,23 +230,37 @@ def _rows_to_spec(
     meta: Dict[str, object],
     block_idx: int,
 ) -> Optional[Dict[str, object]]:
+    if not header_tokens:
+        raise SpectroscopyParseError(path, "Missing header row with column labels.")
+    if not rows:
+        raise SpectroscopyParseError(path, "No numeric data rows found.")
+    expected_len = len(rows[0])
+    if expected_len < 2:
+        raise SpectroscopyParseError(path, "Expected at least two columns (bias + channel).")
+    for idx, row in enumerate(rows, 1):
+        if len(row) != expected_len:
+            raise SpectroscopyParseError(
+                path, f"Inconsistent column count: row {idx} has {len(row)}, expected {expected_len}."
+            )
     data = np.asarray(rows, dtype=float)
     if data.ndim == 1:
         data = data.reshape(-1, 1)
     n_rows, n_cols = data.shape
     if n_cols == 0 or n_rows == 0:
         return None
-    # Identify which column truly represents bias. Many Omicron single-spectrum
-    # exports use the order: time, dz, Bias, ... In that case we want the Bias
-    # column (index 2) as the primary axis, not the leading time column.
     labels_raw = header_tokens or []
     cleaned_labels = [_clean_channel_label(tok) for tok in labels_raw]
-    bias_col = 0
+    if len(cleaned_labels) < n_cols:
+        cleaned_labels.extend([""] * (n_cols - len(cleaned_labels)))
+    # Identify which column truly represents bias by header label.
+    bias_col = None
     for idx, lbl in enumerate(cleaned_labels):
         low = (lbl or "").lower()
         if low == "bias" or low.startswith("bias"):
             bias_col = idx
             break
+    if bias_col is None or bias_col >= n_cols:
+        raise SpectroscopyParseError(path, "Unable to locate Bias column in header.")
     time_col = None
     for idx, lbl in enumerate(cleaned_labels):
         if idx == bias_col:
@@ -395,10 +413,12 @@ def _normalize_bias_axis(
 
 def _extract_meta(meta: Dict[str, object], path: Path, block_idx: int) -> Dict[str, object]:
     info: Dict[str, object] = {}
+    file_mtime = _mtime(path)
+    info["file_mtime"] = file_mtime
     info["time"] = (
         _parse_datetime(meta.get("datetime"))
         or _parse_date_and_time(meta.get("date"), meta.get("time"))
-        or _mtime(path)
+        or file_mtime
     )
     info["x"] = _maybe_float(meta.get("x"))
     info["y"] = _maybe_float(meta.get("y"))
@@ -533,53 +553,103 @@ def _maybe_int(value) -> Optional[int]:
         return None
 
 
-def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
-    """Return spectra for Omicron/Anfatec matrix ``.dat`` files."""
+def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], MatrixDataCube]]:
+    """Return spectra and structured dataset for Omicron/Anfatec matrix ``.dat`` files."""
     name = path.name.lower()
     if not name.endswith(".dat") or "matrix" not in name:
         return None
     text = _read_text(path).replace("\r", "\n")
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     if len(lines) < 4:
-        return None
+        raise MatrixDatError(path, "Matrix .dat file must include header, coordinate, and data rows.")
     header_tokens = lines[0].split("\t")
     coord_tokens = lines[1].split("\t") if len(lines) > 1 else []
     if len(header_tokens) < 4 or len(coord_tokens) < 4:
-        return None
+        raise MatrixDatError(path, "Matrix header rows must contain time/dz/bias and >=1 coordinate entry.")
     try:
         xs = [float(tok) for tok in header_tokens[3:]]
         ys = [float(tok) for tok in coord_tokens[3:]]
     except Exception:
-        return None
-    if not xs or not ys or len(xs) != len(ys):
-        return None
+        raise MatrixDatError(path, "Non-numeric X/Y coordinate entries.")
+    if not xs or not ys:
+        raise MatrixDatError(path, "Missing spatial coordinates.")
+    if len(xs) != len(ys):
+        raise MatrixDatError(path, "X/Y coordinate lengths differ.")
     base, channel_code, channel_label = parse_matrix_filename(path.name)
     dataset_key, display_label = matrix_dataset_key(base, channel_code)
     channel_display = display_label or channel_label or Path(path).stem
     rows: List[tuple[float, List[float]]] = []
-    for line in lines[2:]:
+    for idx, line in enumerate(lines[2:], start=3):
         tokens = line.split("\t")
         if len(tokens) < 3 + len(xs):
-            continue
+            raise MatrixDatError(path, f"Row {idx} has insufficient columns for {len(xs)} pixels.")
         try:
             bias = float(tokens[2])
             values = [float(tok) for tok in tokens[3 : 3 + len(xs)]]
         except Exception:
-            continue
+            raise MatrixDatError(path, f"Non-numeric data encountered in row {idx}.")
         rows.append((bias, values))
     if not rows:
-        return None
+        raise MatrixDatError(path, "Matrix file contains no bias rows.")
     bias_axis = np.asarray([row[0] for row in rows], dtype=float)
     bias_axis, axis_label, axis_unit = _normalize_bias_axis(bias_axis, header_tokens)
     data = np.asarray([row[1] for row in rows], dtype=float)
     if data.shape[1] != len(xs):
-        return None
+        raise MatrixDatError(path, "Data rows do not match declared coordinate count.")
     x_arr = np.asarray(xs, dtype=float)
     y_arr = np.asarray(ys, dtype=float)
-    x_unique, x_inverse = np.unique(np.round(x_arr, 6), return_inverse=True)
-    y_unique, y_inverse = np.unique(np.round(y_arr, 6), return_inverse=True)
-    grid_cols = int(x_unique.size) or data.shape[1]
-    grid_rows = int(y_unique.size) or 1
+
+    def _deduplicate_indices(x_vals, y_vals, decimals=9):
+        seen = set()
+        keep = []
+        for idx, (xv, yv) in enumerate(zip(x_vals, y_vals)):
+            key = (round(float(xv), decimals), round(float(yv), decimals))
+            if key in seen:
+                continue
+            seen.add(key)
+            keep.append(idx)
+        if len(keep) == len(x_vals):
+            return None
+        return np.asarray(keep, dtype=int)
+
+    dedup_idx = _deduplicate_indices(x_arr, y_arr)
+    if dedup_idx is not None:
+        x_arr = x_arr[dedup_idx]
+        y_arr = y_arr[dedup_idx]
+        data = data[:, dedup_idx]
+
+    if data.shape[1] != len(x_arr):
+        raise MatrixDatError(path, "Deduplicated coordinate count mismatches data columns.")
+
+    x_quant = np.round(x_arr, 6)
+    y_quant = np.round(y_arr, 6)
+    x_unique, x_inverse = np.unique(x_quant, return_inverse=True)
+    y_unique, y_inverse = np.unique(y_quant, return_inverse=True)
+    grid_cols = int(x_unique.size)
+    grid_rows = int(y_unique.size)
+    if grid_cols <= 0 or grid_rows <= 0:
+        raise MatrixDatError(path, "Unable to reconstruct grid dimensions from coordinates.")
+    if grid_cols * grid_rows != x_arr.size:
+        raise MatrixDatError(path, "X/Y coordinates do not form a rectangular grid.")
+
+    def _axis_values(values, quantized, uniques):
+        first_idx: Dict[float, int] = {}
+        for idx, key in enumerate(quantized):
+            fk = float(key)
+            if fk not in first_idx:
+                first_idx[fk] = idx
+        return np.asarray([values[first_idx[float(key)]] for key in uniques], dtype=float)
+
+    x_axis = _axis_values(x_arr, x_quant, x_unique)
+    y_axis = _axis_values(y_arr, y_quant, y_unique)
+
+    cube = np.empty((bias_axis.size, grid_rows, grid_cols), dtype=float)
+    cube.fill(np.nan)
+    for col in range(data.shape[1]):
+        cube[:, y_inverse[col], x_inverse[col]] = data[:, col]
+    if np.isnan(cube).any():
+        raise MatrixDatError(path, "Incomplete data grid (NaNs present after cube reconstruction).")
+
     specs: List[Dict[str, object]] = []
     for col in range(data.shape[1]):
         channel_series = data[:, col].copy()
@@ -604,6 +674,7 @@ def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
             "matrix_dataset": dataset_key or base or Path(path).stem,
             "channel_name": channel_display,
             "channel_code": channel_code,
+            "matrix_file": True,
             "unit_map": unit_map,
             "AxisLabel": axis_label,
             "AxisUnit": axis_unit,
@@ -615,7 +686,38 @@ def _parse_matrix_dat(path: Path) -> Optional[List[Dict[str, object]]]:
         if unit:
             entry["unit"] = unit
         specs.append(entry)
-    return specs
+    cube_metadata = {
+        "channel_code": channel_code,
+        "axis_label": axis_label,
+        "axis_unit": axis_unit,
+        "time": _mtime(path),
+    }
+    matrix_cube = MatrixDataCube(
+        path=str(path),
+        dataset_key=dataset_key or base or Path(path).stem,
+        channel=channel_display,
+        bias=bias_axis.copy(),
+        x=x_axis,
+        y=y_axis,
+        data=cube,
+        metadata=cube_metadata,
+    )
+    return specs, matrix_cube
+
+
+def is_matrix_file_entry(entry: Optional[Dict[str, object]]) -> bool:
+    """Return True when ``entry`` originates from an Omicron/Anfatec matrix .dat file."""
+    if not entry:
+        return False
+    try:
+        if entry.get("matrix_file"):
+            return True
+        path = entry.get("path")
+        if not path:
+            return False
+        return "matrix" in Path(str(path)).name.lower()
+    except Exception:
+        return False
 
 
 def _parse_datetime(value) -> Optional[datetime]:
@@ -669,7 +771,23 @@ __all__ = [
     "fit_parabola_bias",
     "find_last_image_for_spec",
     "_matrix_base_name",
+    "is_matrix_file_entry",
+    "SpectroscopyParseError",
+    "MatrixDatError",
 ]
 
 
 
+class SpectroscopyParseError(Exception):
+    """Raised when an Omicron/Anfatec spectroscopy file is malformed."""
+
+    def __init__(self, path: Path | str, message: str):
+        self.path = str(path)
+        super().__init__(f"{self.path}: {message}")
+
+
+class MatrixDatError(SpectroscopyParseError):
+    """Raised when a Matrix .dat file violates the required structure."""
+
+    def __init__(self, path: Path | str, message: str):
+        super().__init__(path, message)

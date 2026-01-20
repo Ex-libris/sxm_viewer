@@ -30,6 +30,7 @@ from ..config import (
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
+from ..data.spectroscopy import is_matrix_file_entry
 from ..processing.filters import (
     flatten_remove_median,
     subtract_best_fit_plane,
@@ -1460,15 +1461,7 @@ QLabel:hover {{
                 xpix = int(header.get('xPixel', 128))
                 ypix = int(header.get('yPixel', xpix))
                 
-                matrix_as_points = False
-                entries = self.spectros_by_image.get(str(file_key), [])
-                for s in entries:
-                    if s.get('matrix_index') is not None:
-                        p = Path(s.get('path', ''))
-                        if "matrix" not in p.name.lower():
-                            matrix_as_points = True
-                            break
-                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix, matrix_as_points=matrix_as_points)
+                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix)
             except Exception:
                 marker_defs = []
         return marker_defs
@@ -1824,6 +1817,40 @@ QLabel:hover {{
 
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
+
+    def _refresh_thumbnail_markers(self):
+        labels = getattr(self, '_thumb_labels', {}) or {}
+        if not labels:
+            return
+        try:
+            cmap_name = self.thumb_cmap_combo.currentText()
+        except Exception:
+            cmap_name = None
+        if not cmap_name:
+            cmap_name = getattr(self, 'thumb_cmap', 'viridis')
+        for file_key, label in labels.items():
+            if label is None:
+                continue
+            try:
+                thumb_dims = label.property("thumb_dims") or (0, 0)
+                channel_idx = int(label.property("channel_index") or 0)
+            except Exception:
+                continue
+            if not thumb_dims or thumb_dims[0] <= 0 or thumb_dims[1] <= 0:
+                continue
+            base_pix = viewer_thumb_ui._thumbnail_pixmap_for_file(
+                self, file_key, channel_idx, thumb_dims[0], thumb_dims[1], cmap_name
+            )
+            if base_pix is None:
+                continue
+            pix = base_pix.copy()
+            header, fds = self.headers.get(str(file_key), (None, None))
+            try:
+                markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds)
+            except Exception:
+                markers = []
+            label.setPixmap(pix)
+            label.setProperty("spec_markers", markers)
 
     def _make_thumb_press_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_press_handler(self, label_widget)
@@ -2539,8 +2566,9 @@ QLabel:hover {{
                 return False
             if spec.get('matrix_dataset'):
                 return True
-            name = Path(str(spec.get('path', ''))).name.lower()
-            return bool(spec.get('matrix_index') is not None and "matrix" in name)
+            if spec.get('matrix_index') is None:
+                return False
+            return is_matrix_file_entry(spec)
         except Exception:
             return False
 
@@ -2678,8 +2706,8 @@ QLabel:hover {{
     def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05):
         return spectro_controller._spec_within_extent(self, sx, sy, extent, margin_frac=margin_frac)
 
-    def _match_spec_to_image_by_hint(self, spec, images):
-        return spectro_controller._match_spec_to_image_by_hint(self, spec, images)
+    def _match_spec_to_image_by_hint(self, spec, images, with_score=False):
+        return spectro_controller._match_spec_to_image_by_hint(self, spec, images, with_score=with_score)
 
     def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
         try:
@@ -2793,92 +2821,20 @@ QLabel:hover {{
 
     def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
         """Render spectroscopy markers directly on the thumbnail pixmap."""
-        specs = entries_override if entries_override is not None else self.spectros_by_image.get(str(file_key), [])
-        if not specs:
+        if not self.show_spectra and not reveal_points_override:
             return []
-
-        painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        
-        w_scale = pixmap.width() / max(1, xpix)
-        h_scale = pixmap.height() / max(1, ypix)
-        
-        marker_defs = []
-        singles = []
-        matrices = defaultdict(list)
-
-        for s in specs:
-            midx = s.get('matrix_index')
-            # Treat as single point if it's not a matrix, OR if we force matrix_as_points,
-            # OR if the filename doesn't contain "matrix" (user preference)
-            is_matrix_file = "matrix" in Path(s.get('path', '')).name.lower()
-            if midx is None or matrix_as_points or not is_matrix_file:
-                singles.append(s)
-            else:
-                group_key = s.get('matrix_dataset') or Path(s.get('path', '')).stem
-                matrices[group_key].append(s)
-
-        # Draw matrix bounding boxes
-        matrix_color = QtGui.QColor(self.spectro_marker_color_matrix)
-        pen_matrix = QtGui.QPen(matrix_color, 1.5)
-        painter.setPen(pen_matrix)
-        fill_brush = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 40))
-        painter.setBrush(fill_brush)
-        for ds_key, m_specs in matrices.items():
-            rect = self._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
-            if rect:
-                painter.drawRect(rect)
-                label = Path(m_specs[0].get('path', '')).stem if m_specs else "matrix"
-                marker_defs.append({'rect': rect, 'spec': m_specs[0], 'kind': 'matrix', 'label': label})
-
-        # Draw single points (dots)
-        # Use a high-contrast style: bright fill with dark border
-        dot_brush = QtGui.QBrush(self.spectro_marker_color_single)
-        dot_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 240), 1.5) # White border
-        painter.setBrush(dot_brush)
-        painter.setPen(dot_pen)
-        
-        symbol = getattr(self, 'spectro_marker_symbol', 'circle')
-        radius = getattr(self, 'spectro_marker_size', 5.0)
-
-        for s in singles:
-            coords = self._map_spec_to_pixels(s, header, xpix, ypix, file_key)
-            if coords:
-                cx, cy = coords
-                px = cx * w_scale
-                py = cy * h_scale
-                
-                if symbol == 'square':
-                    painter.drawRect(QtCore.QRectF(px - radius, py - radius, radius*2, radius*2))
-                elif symbol == 'triangle':
-                    poly = QtGui.QPolygonF([
-                        QtCore.QPointF(px, py - radius),
-                        QtCore.QPointF(px + radius, py + radius),
-                        QtCore.QPointF(px - radius, py + radius)
-                    ])
-                    painter.drawPolygon(poly)
-                elif symbol == 'diamond':
-                    poly = QtGui.QPolygonF([
-                        QtCore.QPointF(px, py - radius),
-                        QtCore.QPointF(px + radius, py),
-                        QtCore.QPointF(px, py + radius),
-                        QtCore.QPointF(px - radius, py)
-                    ])
-                    painter.drawPolygon(poly)
-                else:
-                    painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
-                
-                # Hit target slightly larger than visual dot
-                hit_radius = radius + 3.0
-                hit_rect = QtCore.QRectF(px - hit_radius, py - hit_radius, hit_radius * 2, hit_radius * 2)
-                marker_defs.append({
-                    'rect': hit_rect,
-                    'spec': s,
-                    'label': 'point'
-                })
-        
-        painter.end()
-        return marker_defs
+        return spectro_overlays._render_spectroscopy_overlays(
+            self,
+            pixmap,
+            header,
+            file_key,
+            xpix,
+            ypix,
+            reveal_points_override=reveal_points_override,
+            selected_spec=selected_spec,
+            entries_override=entries_override,
+            matrix_as_points=matrix_as_points,
+        )
 
     def _use_density_for(self, count, pix_w, pix_h):
         """Decide if density overlay should be used based on count and thumb size."""
@@ -3233,6 +3189,9 @@ QLabel:hover {{
             self.config['spectro_marker_color_single'] = col.name(QtGui.QColor.HexArgb)
             save_config(self.config)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            if self.last_preview:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            self._refresh_thumbnail_markers()
 
     def on_pick_spectro_matrix_color(self):
         col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_matrix, self, "Select Matrix Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
@@ -3240,6 +3199,10 @@ QLabel:hover {{
             self.spectro_marker_color_matrix = col
             self.config['spectro_marker_color_matrix'] = col.name(QtGui.QColor.HexArgb)
             save_config(self.config)
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            if self.last_preview:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            self._refresh_thumbnail_markers()
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def set_spectro_color_cycle(self, name: str):
@@ -3263,6 +3226,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
 
     def on_set_spectro_size(self, size):
         self.spectro_marker_size = float(size)
@@ -3271,6 +3235,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
 
     def on_meta_font_changed(self, val:int):
         try:
@@ -3355,6 +3320,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
 
     def on_spectro_grid_as_matrix_toggled(self, checked: bool):
         self.spectro_single_grid_as_matrix = bool(checked)
@@ -3374,6 +3340,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
         act = getattr(self, 'matrix_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -3386,6 +3353,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
         act = getattr(self, 'single_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -3398,6 +3366,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
         act = getattr(self, 'compact_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -3410,6 +3379,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._refresh_thumbnail_markers()
         act = getattr(self, 'density_markers_act', None)
         if act is not None:
             act.blockSignals(True)

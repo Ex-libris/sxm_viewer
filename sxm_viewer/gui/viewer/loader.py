@@ -50,6 +50,7 @@ from ...data.io import (
 from ...config import save_config
 from ...data.spectroscopy import (
     parse_spectroscopy_file,
+    SpectroscopyParseError,
     fit_parabola_bias,
     find_last_image_for_spec,
     _matrix_base_name,
@@ -243,6 +244,7 @@ def _scan_spectros(viewer, folder:Path):
         'empty_files': 0,
         'single_entries': 0,
         'deferred_files': 0,
+        'invalid_files': 0,
     }
     prefer_grid_as_matrix = bool(getattr(viewer, "spectro_single_grid_as_matrix", False))
     force_single_mode = bool(getattr(viewer, "spectro_force_single_mode", False))
@@ -427,6 +429,7 @@ def _scan_spectros(viewer, folder:Path):
             spec_list = cached.get('data') or []
         else:
             spec_list = None
+            parse_error = None
             if ext == ".dat":
                 # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
                 try:
@@ -436,8 +439,18 @@ def _scan_spectros(viewer, folder:Path):
             if not spec_list:
                 try:
                     spec_list = parse_spectroscopy_file(p)
+                except SpectroscopyParseError as exc:
+                    parse_error = exc
+                    spec_list = None
                 except Exception:
                     spec_list = None
+            if parse_error is not None:
+                stats['invalid_files'] += 1
+                try:
+                    log_status(f"Spectroscopy parse rejected: {parse_error}")
+                except Exception:
+                    pass
+                continue
             if not spec_list:
                 stats['empty_files'] += 1
                 continue
@@ -554,12 +567,13 @@ def _scan_spectros(viewer, folder:Path):
     # logging summary
     single_files = stats.get('single_dat_files', 0)
     empty_files = stats.get('empty_files', 0)
+    invalid_files = stats.get('invalid_files', 0)
     matrix_count = len(viewer.matrix_datasets)
     matrix_specs = stats.get('matrix_specs', 0)
     single_entries = stats.get('single_entries', single_files)
     log_status("Spectroscopy scan summary:")
     log_status(
-        f"  Files: {total} total  |  singles: {single_files}  |  matrices: {stats.get('matrix_files', matrix_count)}  |  empty/deferred: {empty_files}/{stats.get('deferred_files',0)}"
+        f"  Files: {total} total  |  singles: {single_files}  |  matrices: {stats.get('matrix_files', matrix_count)}  |  empty/deferred: {empty_files}/{stats.get('deferred_files',0)}  |  invalid: {invalid_files}"
     )
     log_status(
         f"  Spectra: {stats['total_specs']} total  |  from singles: {single_entries} traces  |  from matrices: {matrix_specs} traces"
@@ -620,6 +634,7 @@ def _scan_spectros(viewer, folder:Path):
             "matrix_datasets": matrix_count,
             "matrix_spectra": matrix_specs,
             "empty_files": empty_files,
+            "invalid_files": invalid_files,
         }
         log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
         if verbose:

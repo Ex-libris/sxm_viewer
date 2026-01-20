@@ -33,6 +33,7 @@ from ..._shared import (
     matplotlib,
 )
 from ...config import save_config
+from ...data.spectroscopy import is_matrix_file_entry
 
 def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel_idx:int,
                          unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
@@ -304,9 +305,15 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     overlay_specs = []
     if spec_entries and viewer.show_spectra:
         if viewer.show_single_markers:
-            overlay_specs.extend([s for s in spec_entries if s.get('matrix_index') is None])
+            overlay_specs.extend([
+                s for s in spec_entries
+                if s.get('matrix_index') is None or not is_matrix_file_entry(s)
+            ])
         if viewer.show_matrix_markers:
-            overlay_specs.extend([s for s in spec_entries if s.get('matrix_index') is not None])
+            overlay_specs.extend([
+                s for s in spec_entries
+                if s.get('matrix_index') is not None and is_matrix_file_entry(s)
+            ])
 
     # build views (main + dynamic extras based on current file)
     views = []

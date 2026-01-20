@@ -131,6 +131,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
+        self._profile_animation_enabled = False
+        self._profile_blit_allowed = True
 
     def draw(self):
         try:
@@ -1849,6 +1851,9 @@ class MultiPreviewCanvas(FigureCanvas):
                                         ms=5, mec='white', mew=0.7, zorder=13)
             self._profile_marker_artists.append(marker)
         self.draw_idle()
+        if self._profile_animation_enabled:
+            # Ensure newly created marker artists join the blit cycle.
+            self._set_profile_animated(True)
         self._update_profile_hud()
 
     def _update_profile_marker_artists_fast(self):
@@ -2606,26 +2611,62 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_state_deferred = False
             self._flush_profile_state()
 
+    def _profile_animation_artists(self):
+        artists = [
+            self._profile_line,
+            self._profile_p0,
+            self._profile_p1,
+            self._profile_label,
+            self._profile_ticks,
+            self._profile_info_text,
+        ]
+        artists.extend(self._profile_endpoint_labels)
+        artists.extend(self._profile_marker_artists)
+        return [art for art in artists if art is not None]
+
     def _set_profile_animated(self, animated):
         """Set animated state for active profile artists to enable/disable blitting."""
-        artists = [self._profile_line, self._profile_p0, self._profile_p1, 
-                   self._profile_label, self._profile_ticks, self._profile_info_text]
-        artists.extend(self._profile_endpoint_labels)
-        for art in artists:
-            if art is not None:
+        self._profile_animation_enabled = bool(animated)
+        for art in self._profile_animation_artists():
+            try:
                 art.set_animated(animated)
+            except Exception:
+                pass
+        if not animated:
+            self._reset_profile_blit()
+
+    def set_profile_blit_enabled(self, enabled: bool):
+        """
+        Toggle whether profile interactions should use blitting. When disabled,
+        the canvas falls back to full redraws to ensure external updates (e.g.
+        from the profile dialog) remain visible.
+        """
+        new_state = bool(enabled)
+        if new_state == getattr(self, "_profile_blit_allowed", True):
+            return
+        self._profile_blit_allowed = new_state
+        if not new_state:
+            self._reset_profile_blit()
 
     def _draw_profile_animated(self):
         """Draw only the active profile artists (for blitting)."""
-        artists = [self._profile_line, self._profile_p0, self._profile_p1, 
-                   self._profile_label, self._profile_ticks, self._profile_info_text]
-        artists.extend(self._profile_endpoint_labels)
-        for art in artists:
-            if art is not None and art.get_visible():
-                self.main_ax.draw_artist(art)
+        for art in self._profile_animation_artists():
+            try:
+                visible = art.get_visible()
+            except Exception:
+                visible = True
+            if visible:
+                try:
+                    self.main_ax.draw_artist(art)
+                except Exception:
+                    pass
 
     def _prepare_profile_blit(self):
         if self.main_ax is None:
+            self._profile_background = None
+            self._profile_blit_active = False
+            return
+        if not getattr(self, "_profile_blit_allowed", True):
             self._profile_background = None
             self._profile_blit_active = False
             return

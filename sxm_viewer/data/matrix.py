@@ -1,10 +1,17 @@
-﻿"""Matrix dataset helpers."""
+"""Matrix dataset helpers."""
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict
+
+import numpy as np
+
+
 class MatrixDataset:
     """Lightweight container describing a matrix dataset and its channel files."""
+
     def __init__(self, base, rows, cols):
         self.base = base
         self.rows = rows
@@ -23,7 +30,21 @@ class MatrixDataset:
         })
 
     def summary(self):
-        return f"{self.base}: {len(self.channels)} channel(s) GÇö {self.rows}+ù{self.cols} each"
+        return f"{self.base}: {len(self.channels)} channel(s) — {self.rows}×{self.cols} each"
+
+
+@dataclass
+class MatrixDataCube:
+    """Structured dataset produced from a matrix .dat file."""
+
+    path: str
+    dataset_key: str
+    channel: str
+    bias: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    data: np.ndarray  # shape: (bias, rows, cols)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def parse_matrix_filename(fname: str):
@@ -81,9 +102,7 @@ def matrix_dataset_key(base: str | None, channel_code: str | None):
 
 __all__ = [
     "MatrixDataset",
+    "MatrixDataCube",
     "parse_matrix_filename",
     "matrix_dataset_key",
 ]
-
-
-

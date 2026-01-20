@@ -55,7 +55,7 @@ def _assign_spectros_to_images(viewer):
     except Exception:
         pass
     try:
-        specs.sort(key=lambda s: s.get('time') or datetime.min)
+        specs.sort(key=lambda s: _spec_time_for_assignment(s) or datetime.min)
     except Exception:
         pass
 
@@ -63,7 +63,7 @@ def _assign_spectros_to_images(viewer):
         match = viewer._choose_image_for_spec(spec, images, image_extents)
         if not match and images:
             # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
-            st = spec.get('time')
+            st = _spec_time_for_assignment(spec)
             if st is not None:
                 try:
                     match = min(images, key=lambda img: abs((img.get('time') or datetime.min) - st))
@@ -90,10 +90,39 @@ def _assign_spectros_to_images(viewer):
         viewer.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
 
 
+def _is_dat_spec(spec):
+    try:
+        path = spec.get('path') or ''
+        return Path(path).suffix.lower() == '.dat'
+    except Exception:
+        return False
+
+
+def _spec_time_for_assignment(spec):
+    if _is_dat_spec(spec):
+        return spec.get('file_mtime') or spec.get('time')
+    return spec.get('time')
+
+
 def _choose_image_for_spec(viewer, spec, images, image_extents):
     """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
-    st = spec.get('time')
+    st = _spec_time_for_assignment(spec)
     sx = spec.get('x'); sy = spec.get('y')
+    if _is_dat_spec(spec):
+        hint_match = None
+        hint_score = -1
+        try:
+            hint_match, hint_score = viewer._match_spec_to_image_by_hint(spec, images, with_score=True)  # type: ignore[arg-type]
+        except TypeError:
+            # Backward compatibility if viewer overrides without new arg
+            hint_match = viewer._match_spec_to_image_by_hint(spec, images)
+        time_match = _image_before_spec_time(images, st)
+        if hint_match is not None and hint_score is not None and hint_score >= 60:
+            return hint_match
+        if time_match is not None:
+            return time_match
+        if hint_match is not None:
+            return hint_match
     candidates = []
     # First pass: images whose extents contain the point (with a small margin)
     if sx is not None and sy is not None:
@@ -140,6 +169,24 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
     return viewer._match_spec_to_image_by_hint(spec, images)
 
 
+def _image_before_spec_time(images, spec_time):
+    if not images or spec_time is None:
+        return None
+    last_before = None
+    for img in images:
+        img_time = img.get('time') or datetime.min
+        if img_time <= spec_time:
+            last_before = img
+        else:
+            break
+    if last_before is not None:
+        return last_before
+    try:
+        return min(images, key=lambda img: abs((img.get('time') or datetime.min) - spec_time))
+    except Exception:
+        return images[0] if images else None
+
+
 def _extent_center(viewer, extent):
     try:
         x0, x1, y1, y0 = extent
@@ -163,7 +210,7 @@ def _spec_within_extent(viewer, sx, sy, extent, margin_frac=0.05):
         return False
 
 
-def _match_spec_to_image_by_hint(viewer, spec, images):
+def _match_spec_to_image_by_hint(viewer, spec, images, *, with_score=False):
     def normalize(stem):
         stem = stem.lower().strip()
         stem = re.sub(r'(?:_matrix|-matrix).*$', '', stem)
@@ -171,7 +218,7 @@ def _match_spec_to_image_by_hint(viewer, spec, images):
         return stem
     spec_stem = normalize(Path(spec.get('path', '')).stem)
     if not spec_stem:
-        return None
+        return (None, -1) if with_score else None
     spec_tokens = [tok for tok in spec_stem.split('_') if tok]
     best = None
     best_score = -1
@@ -196,6 +243,8 @@ def _match_spec_to_image_by_hint(viewer, spec, images):
         if score > best_score:
             best_score = score
             best = img
+    if with_score:
+        return best, best_score
     return best
 __all__ = [
     "_assign_spectros_to_images",
@@ -203,6 +252,9 @@ __all__ = [
     "_extent_center",
     "_spec_within_extent",
     "_match_spec_to_image_by_hint",
+    "_image_before_spec_time",
+    "_is_dat_spec",
+    "_spec_time_for_assignment",
 ]
 
 

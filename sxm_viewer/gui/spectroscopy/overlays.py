@@ -32,6 +32,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ...data.spectroscopy import is_matrix_file_entry
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
     """
     Map a click in thumbnail pixel coordinates to spectroscopy list ordered by distance.
@@ -79,43 +80,59 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
     else:
         reveal_points = bool(reveal_points_override)
 
-    singles = [s for s in specs if s.get('matrix_index') is None]
-    matrices = {}
+    singles = []
+    matrices = defaultdict(list)
     for s in specs:
-        if s.get('matrix_index') is None:
-            continue
-        key = str(s.get('path'))
-        matrices.setdefault(key, []).append(s)
+        midx = s.get('matrix_index')
+        is_matrix_file = is_matrix_file_entry(s)
+        force_points = matrix_as_points or not is_matrix_file
+        if midx is None or force_points:
+            singles.append(s)
+        else:
+            key = s.get('matrix_dataset') or str(s.get('path'))
+            matrices[key].append(s)
 
     # When requested (e.g., matrix preview dialog), render matrix entries as points too.
     if matrix_as_points and matrices:
-        flat_matrix_entries = []
         for ms in matrices.values():
-            flat_matrix_entries.extend(ms)
-        singles = singles + flat_matrix_entries
+            singles.extend(ms)
 
     # Matrix footprints (skip when explicitly rendering matrix entries as individual points)
     if viewer.show_matrix_markers and matrices and not matrix_as_points:
+        matrix_color = QtGui.QColor(getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200)))
         for m_specs in matrices.values():
             rect = viewer._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
             if rect is None:
                 continue
-            fill = QtGui.QColor(0, 205, 255, 90)
-            pen = QtGui.QPen(QtGui.QColor(0, 180, 230))
-            pen.setWidth(3)
+            painter.save()
+            border = QtGui.QColor(matrix_color)
+            border.setAlpha(255)
+            fill = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 90))
+            fill.setStyle(QtCore.Qt.Dense4Pattern)
             painter.setBrush(fill)
+            pen = QtGui.QPen(border, 3.0)
+            pen.setJoinStyle(QtCore.Qt.RoundJoin)
             painter.setPen(pen)
-            painter.drawRect(rect)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
             try:
                 grid_cols = m_specs[0].get('grid_cols')
                 grid_rows = m_specs[0].get('grid_rows')
-                label = f"{grid_cols}x{grid_rows}" if grid_cols and grid_rows else f"{len(m_specs)}"
+                dims = f"{grid_cols}x{grid_rows}" if grid_cols and grid_rows else None
             except Exception:
-                label = "M"
-            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255)))
-            painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
-            painter.drawText(rect, QtCore.Qt.AlignCenter, label)
-            markers.append({'rect': rect, 'spec': m_specs[0], 'label': label, 'kind': 'matrix'})
+                dims = None
+            chip_text = dims or "MATRIX"
+            chip_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
+            painter.setFont(chip_font)
+            metrics = painter.fontMetrics()
+            chip_w = max(min(metrics.horizontalAdvance(chip_text) + 12, rect.width() - 8), 28)
+            chip_h = max(metrics.height() + 6, 14)
+            chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
+            painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 220))
+            painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.2))
+            painter.drawRoundedRect(chip_rect, 6, 6)
+            painter.drawText(chip_rect, QtCore.Qt.AlignCenter, chip_text)
+            painter.restore()
+            markers.append({'rect': rect, 'spec': m_specs[0], 'label': chip_text, 'kind': 'matrix'})
 
     color_single = getattr(viewer, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
     color_matrix = getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
