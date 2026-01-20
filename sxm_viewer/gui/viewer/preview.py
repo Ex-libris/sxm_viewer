@@ -44,6 +44,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         except Exception:
             return ''
     dark = bool(getattr(viewer, 'dark_mode', False))
+    show_preview_specs = bool(getattr(viewer, 'show_preview_spectra', getattr(viewer, 'show_spectra', True)))
     text_color = '#e0e0e0' if dark else '#222'
     label_color = '#a0a0a0' if dark else '#555'
     accent_border = '#6fa8ff' if dark else '#4a7edb'
@@ -122,7 +123,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
 
     spec_section = ''
     spec_entries = viewer.spectros_by_image.get(str(header_path), [])
-    if viewer.show_spectra and spec_entries:
+    if show_preview_specs and spec_entries:
         rows = []
         for idx, spec in enumerate(spec_entries[:6], 1):
             name = Path(spec['path']).name
@@ -301,9 +302,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         cmap_to_use = viewer.per_file_channel_cmap.get((file_key, channel_idx), cmap_to_use)
 
     # Spectroscopy entries for this file (singles only for overlay)
-    spec_entries = viewer.spectros_by_image.get(str(header_path), []) if viewer.show_spectra else []
+    show_preview_specs = bool(getattr(viewer, 'show_preview_spectra', getattr(viewer, 'show_spectra', True)))
+    spec_entries = viewer.spectros_by_image.get(str(header_path), []) if show_preview_specs else []
     overlay_specs = []
-    if spec_entries and viewer.show_spectra:
+    if spec_entries and show_preview_specs:
         if viewer.show_single_markers:
             overlay_specs.extend([
                 s for s in spec_entries

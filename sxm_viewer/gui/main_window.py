@@ -153,6 +153,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             save_config(self.config)
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
+        preview_cfg = self.config.get("show_preview_spectra")
+        if preview_cfg is None:
+            preview_cfg = self.show_spectra
+        self.show_preview_spectra = bool(preview_cfg)
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
         self.thumb_grid_columns = 1
         self.display_units_si = bool(self.config.get("display_units_si", False))
@@ -769,14 +773,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
-        self.show_spectra_cb.toggled.connect(self.on_show_spectra_toggled)
+        self.show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
         if hasattr(self, "grid_as_matrix_cb"):
             self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
         if hasattr(self, "force_single_cb"):
             self.force_single_cb.toggled.connect(self.on_spectro_force_single_toggled)
-        self.show_matrix_spectra_btn.clicked.connect(self.on_show_matrix_spectro_viewer)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
-        self.export_selected_btn.clicked.connect(self.on_export_selected_same_view)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
@@ -3174,6 +3176,8 @@ QLabel:hover {{
         overlay_act.setChecked(self.show_spectra)
         overlay_act.triggered.connect(self.on_show_spectra_toggled)
         menu.addAction(overlay_act)
+        marker_menu = menu.addMenu("Marker style")
+        self._populate_marker_style_menu(marker_menu)
 
         if hasattr(self, '_clear_multi_spec_selection'):
             menu.addSeparator()
@@ -3392,6 +3396,32 @@ QLabel:hover {{
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._refresh_thumbnail_markers()
 
+    def _populate_marker_style_menu(self, menu):
+        col_single = menu.addAction("Single marker color...")
+        col_single.triggered.connect(self.on_pick_spectro_single_color)
+        col_matrix = menu.addAction("Matrix marker color...")
+        col_matrix.triggered.connect(self.on_pick_spectro_matrix_color)
+        menu.addSeparator()
+        sym_grp = QtWidgets.QActionGroup(menu)
+        current_symbol = getattr(self, 'spectro_marker_symbol', 'circle')
+        for sym in ['circle', 'square', 'triangle', 'diamond']:
+            act = QtWidgets.QAction(sym.capitalize(), menu)
+            act.setCheckable(True)
+            act.setChecked(current_symbol == sym)
+            act.triggered.connect(lambda checked, s=sym: self.on_set_spectro_symbol(s))
+            sym_grp.addAction(act)
+        menu.addSeparator()
+        size_menu = menu.addMenu("Marker Size")
+        size_grp = QtWidgets.QActionGroup(menu)
+        current_size = getattr(self, 'spectro_marker_size', 5.0)
+        for label, val in [("Tiny", 2.0), ("Small", 3.5), ("Medium", 5.0), ("Large", 7.0), ("Huge", 10.0)]:
+            act = size_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(abs(current_size - val) < 0.1)
+            act.triggered.connect(lambda checked, v=val: self.on_set_spectro_size(v))
+            size_grp.addAction(act)
+        return menu
+
     def on_meta_font_changed(self, val:int):
         try:
             font = self.meta_box.font()
@@ -3453,10 +3483,6 @@ QLabel:hover {{
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         # Keep UI toggles in sync
         try:
-            if hasattr(self, "show_spectra_cb"):
-                self.show_spectra_cb.blockSignals(True)
-                self.show_spectra_cb.setChecked(self.show_spectra)
-                self.show_spectra_cb.blockSignals(False)
             if hasattr(self, "spectro_overlay_act"):
                 self.spectro_overlay_act.blockSignals(True)
                 self.spectro_overlay_act.setChecked(self.show_spectra)
@@ -3476,6 +3502,19 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._refresh_thumbnail_markers()
+
+    def on_show_preview_spectra_toggled(self, checked: bool):
+        self.show_preview_spectra = bool(checked)
+        self.config['show_preview_spectra'] = self.show_preview_spectra; save_config(self.config)
+        try:
+            if hasattr(self, "show_spectra_cb"):
+                self.show_spectra_cb.blockSignals(True)
+                self.show_spectra_cb.setChecked(self.show_preview_spectra)
+                self.show_spectra_cb.blockSignals(False)
+        except Exception:
+            pass
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def on_spectro_grid_as_matrix_toggled(self, checked: bool):
         self.spectro_single_grid_as_matrix = bool(checked)
