@@ -77,6 +77,10 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     viewer._thumb_generation += 1
     generation = viewer._thumb_generation
     files_iter = list(viewer.files)
+    try:
+        viewer.thumb_grid_columns = max_cols
+    except Exception:
+        viewer.thumb_grid_columns = 1
 
     filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
     if filt and filt != 'All':

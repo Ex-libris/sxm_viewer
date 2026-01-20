@@ -154,6 +154,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
+        self.thumb_grid_columns = 1
         self.display_units_si = bool(self.config.get("display_units_si", False))
         self.display_units_relative = bool(self.config.get("display_units_relative", False))
         self.relative_axes = bool(self.config.get("relative_axes", False))
@@ -1152,10 +1153,14 @@ QLabel:hover {{
         super().dropEvent(event)
 
     def eventFilter(self, obj, event):
+        thumb_objects = (
+            getattr(self, '_thumb_viewport', None),
+            getattr(self, 'thumb_container', None),
+            getattr(self, 'scroll', None),
+        )
+
         # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
-        if obj in (getattr(self, '_thumb_viewport', None),
-                   getattr(self, 'thumb_container', None),
-                   getattr(self, 'scroll', None)) and event.type() == QtCore.QEvent.Wheel:
+        if obj in thumb_objects and event.type() == QtCore.QEvent.Wheel:
             if event.modifiers() & QtCore.Qt.ControlModifier:
                 delta = event.angleDelta().y() or event.pixelDelta().y()
                 if delta != 0:
@@ -1163,7 +1168,22 @@ QLabel:hover {{
                     self._resize_thumbnail_scale(step)
                 event.accept()
                 return True
-        
+
+        # Arrow navigation when the scroll area / container has focus
+        if obj in thumb_objects and event.type() == QtCore.QEvent.KeyPress:
+            key = event.key()
+            if key in (
+                QtCore.Qt.Key_Left,
+                QtCore.Qt.Key_Right,
+                QtCore.Qt.Key_Up,
+                QtCore.Qt.Key_Down,
+            ):
+                focus_widget = QtWidgets.QApplication.focusWidget()
+                if not self._focus_widget_blocks_thumb_nav(focus_widget):
+                    if self._handle_thumbnail_navigation(key, event.modifiers()):
+                        event.accept()
+                        return True
+
         # Rubber band selection on thumb_container
         if obj is getattr(self, 'thumb_container', None):
             if event.type() == QtCore.QEvent.MouseButtonPress:
@@ -1207,6 +1227,35 @@ QLabel:hover {{
             # allow normal resize processing to continue
             return False
         return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (
+            QtCore.Qt.Key_Left,
+            QtCore.Qt.Key_Right,
+            QtCore.Qt.Key_Up,
+            QtCore.Qt.Key_Down,
+        ):
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if not self._focus_widget_blocks_thumb_nav(focus_widget):
+                if self._handle_thumbnail_navigation(key, event.modifiers()):
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
+    def _focus_widget_blocks_thumb_nav(self, widget):
+        if widget is None:
+            return False
+        blocking_types = (
+            QtWidgets.QLineEdit,
+            QtWidgets.QTextEdit,
+            QtWidgets.QPlainTextEdit,
+            QtWidgets.QSpinBox,
+            QtWidgets.QDoubleSpinBox,
+            QtWidgets.QAbstractSpinBox,
+            QtWidgets.QComboBox,
+        )
+        return isinstance(widget, blocking_types)
 
     def _update_rubber_band_selection(self, rect, modifiers):
         in_rect = set()
@@ -2922,6 +2971,65 @@ QLabel:hover {{
                     bar.setValue(widget.y())
             except Exception:
                 pass
+
+    def _handle_thumbnail_navigation(self, key, modifiers=QtCore.Qt.NoModifier):
+        files = list(getattr(self, 'current_thumb_files', []) or [])
+        if not files:
+            return False
+        cols = max(1, int(getattr(self, 'thumb_grid_columns', 1) or 1))
+        selected = str(getattr(self, 'selected_file_for_thumbs', '') or '')
+        try:
+            current_idx = files.index(selected)
+        except ValueError:
+            current_idx = -1
+
+        if current_idx < 0:
+            new_idx = 0
+        else:
+            new_idx = current_idx
+            if key == QtCore.Qt.Key_Left:
+                if new_idx > 0:
+                    new_idx -= 1
+            elif key == QtCore.Qt.Key_Right:
+                if new_idx < len(files) - 1:
+                    new_idx += 1
+            elif key == QtCore.Qt.Key_Up:
+                if new_idx - cols >= 0:
+                    new_idx -= cols
+                else:
+                    new_idx = 0
+            elif key == QtCore.Qt.Key_Down:
+                if new_idx + cols < len(files):
+                    new_idx += cols
+                else:
+                    new_idx = len(files) - 1
+            else:
+                return False
+        if new_idx == current_idx:
+            # If nothing selected yet, ensure first entry is highlighted.
+            if current_idx == -1:
+                return self._activate_thumbnail_by_index(0)
+            return False
+        return self._activate_thumbnail_by_index(new_idx)
+
+    def _activate_thumbnail_by_index(self, index):
+        files = list(getattr(self, 'current_thumb_files', []) or [])
+        if not files or not (0 <= index < len(files)):
+            return False
+        file_key = files[index]
+        self._clear_thumb_multi_selection(update_styles=False)
+        label = getattr(self, '_thumb_labels', {}).get(file_key)
+        if label is not None:
+            try:
+                channel_idx = int(label.property("channel_index") or 0)
+            except Exception:
+                channel_idx = self.channel_dropdown.currentIndex()
+        else:
+            channel_idx = self.channel_dropdown.currentIndex()
+        self.on_thumbnail_clicked(file_key, channel_idx)
+        self.last_thumb_anchor = str(file_key)
+        self._scroll_to_thumbnail(file_key)
+        return True
 
     def _focus_first_matrix_dataset(self):
         matrix_files = list(getattr(self, 'files_with_matrix', set()) or [])

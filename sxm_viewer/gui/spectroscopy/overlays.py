@@ -228,7 +228,8 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
                     highlight = True
             except Exception:
                 highlight = False
-            base_color = color_matrix if spec.get('matrix_index') is not None else color_single
+            is_matrix_spec = is_matrix_file_entry(spec)
+            base_color = color_matrix if is_matrix_spec else color_single
             rect = _draw_marker_symbol(painter, x, y, marker_symbol, marker_size, base_color, highlight=highlight)
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
     # summary badge (S/M counts and matrix grid if available)
