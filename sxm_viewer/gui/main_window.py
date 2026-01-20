@@ -227,6 +227,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.last_preview = None
         self.spectros = []
         self.matrix_spectros = []
+        self.files_with_matrix = set()
         self.spectros_by_image = defaultdict(list)
         self._spectros_loaded = False
         self._spectro_cache = {}
@@ -555,9 +556,23 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_toolbar.addSpacing(8)
         thumbs_toolbar.addWidget(QtWidgets.QLabel('Filter:'))
         self.thumb_filter_combo = QtWidgets.QComboBox()
-        self.thumb_filter_combo.addItems(['Name (A-Z)', 'Date (new-old)', 'Date (old-new)', 'Tag (CH-CC-U)'])
+        self.thumb_filter_combo.addItems(['All', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
         thumbs_toolbar.addWidget(self.thumb_filter_combo)
         thumbs_toolbar.addSpacing(8)
+        self.matrix_summary_label = QtWidgets.QLabel("")
+        self.matrix_summary_label.setObjectName("matrixSummaryLabel")
+        self.matrix_summary_label.setVisible(False)
+        self.matrix_summary_label.setCursor(QtCore.Qt.PointingHandCursor)
+        self.matrix_summary_label.setStyleSheet(
+            "#matrixSummaryLabel {"
+            " padding: 2px 10px; border-radius: 12px; "
+            " background-color: rgba(100, 180, 255, 0.18); color: #e6f2ff; "
+            " border: 1px solid rgba(120, 200, 255, 0.65); font-weight: 600;"
+            "}"
+        )
+        self.matrix_summary_label.mousePressEvent = lambda event: self._focus_first_matrix_dataset()
+        thumbs_toolbar.addWidget(self.matrix_summary_label)
+        thumbs_toolbar.addStretch(1)
         self.unit_display_cb = QtWidgets.QCheckBox("Show SI units")
         self.unit_display_cb.setChecked(self.display_units_si)
         self.unit_relative_cb = QtWidgets.QCheckBox("Relative zero")
@@ -2686,6 +2701,7 @@ QLabel:hover {{
         self._clear_multi_spec_selection()
         self._update_spectro_stats_label(spec_stats)
         self._spectros_loaded = True
+        self._update_matrix_summary_banner()
         if refresh:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
@@ -2696,6 +2712,14 @@ QLabel:hover {{
 
     def _assign_spectros_to_images(self):
         spectro_controller._assign_spectros_to_images(self)
+        try:
+            self.files_with_matrix = {
+                key for key, entries in (self.spectros_by_image or {}).items()
+                if any(spec.get('matrix_index') is not None for spec in entries)
+            }
+        except Exception:
+            self.files_with_matrix = set()
+        self._update_matrix_summary_banner()
 
     def _choose_image_for_spec(self, spec, images, image_extents):
         return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)
@@ -2882,17 +2906,29 @@ QLabel:hover {{
             return None
         xmin = min(xs); xmax = max(xs)
         ymin = min(ys); ymax = max(ys)
-        width = xmax - xmin
-        height = ymax - ymin
+        width = max(xmax - xmin, 0.0)
+        height = max(ymax - ymin, 0.0)
+        max_w = max(1.0, (max(xpix - 1, 1)) * w_scale)
+        max_h = max(1.0, (max(ypix - 1, 1)) * h_scale)
         if width == 0 and height == 0:
-            size = 18
-            return QtCore.QRectF(xmin - size/2, ymin - size/2, size, size)
-        pad = 6
-        size = max(width, height)
+            base = min(max_w, max_h) * 0.2
+            base = max(base, 18.0)
+            return QtCore.QRectF(xmin - base / 2.0, ymin - base / 2.0, base, base)
+        min_span = min(max_w, max_h) * 0.12
+        width = max(width, min_span)
+        height = max(height, min_span)
+        pad = max(4.0, min(14.0, min(max_w, max_h) * 0.05))
         cx = (xmax + xmin) / 2.0
         cy = (ymax + ymin) / 2.0
-        half = size / 2.0
-        return QtCore.QRectF(cx - half - pad, cy - half - pad, size + 2*pad, size + 2*pad)
+        rect = QtCore.QRectF(
+            cx - width / 2.0 - pad,
+            cy - height / 2.0 - pad,
+            width + 2 * pad,
+            height + 2 * pad,
+        )
+        scene_rect = QtCore.QRectF(0.0, 0.0, max_w, max_h)
+        rect = rect.intersected(scene_rect)
+        return rect
 
     def _label_pos_to_pix_coords(self, label_widget, pos):
         pix = label_widget.pixmap()
@@ -2905,6 +2941,50 @@ QLabel:hover {{
         if x < 0 or y < 0 or x > pix.width() or y > pix.height():
             return None
         return x, y
+
+    def _scroll_to_thumbnail(self, file_key):
+        if not file_key:
+            return
+        widget = self.thumb_widgets.get(str(file_key))
+        if widget is None:
+            return
+        try:
+            self.scroll.ensureWidgetVisible(widget)
+        except Exception:
+            try:
+                bar = self.scroll.verticalScrollBar()
+                if bar is not None:
+                    bar.setValue(widget.y())
+            except Exception:
+                pass
+
+    def _focus_first_matrix_dataset(self):
+        matrix_files = list(getattr(self, 'files_with_matrix', set()) or [])
+        if not matrix_files:
+            return
+        target = None
+        for path in getattr(self, 'current_thumb_files', []):
+            if path in matrix_files:
+                target = path
+                break
+        if target is None:
+            target = matrix_files[0]
+        self._scroll_to_thumbnail(target)
+        self.selected_file_for_thumbs = target
+        self._refresh_thumb_selection_styles()
+
+    def _update_matrix_summary_banner(self):
+        label = getattr(self, 'matrix_summary_label', None)
+        if label is None:
+            return
+        matrix_count = len(getattr(self, 'matrix_datasets', {}) or {})
+        if matrix_count <= 0:
+            label.hide()
+            return
+        noun = "Matrix dataset" if matrix_count == 1 else "Matrix datasets"
+        label.setText(f"{noun}: {matrix_count} · click to focus")
+        label.setToolTip("Click to jump to the first thumbnail containing a matrix spectroscopy grid.")
+        label.show()
 
     def _handle_spec_marker_click(self, label_widget, event):
         if getattr(event, 'button', None) and event.button() != QtCore.Qt.LeftButton:
@@ -2960,13 +3040,15 @@ QLabel:hover {{
                     QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), "Spectroscopy summary")
                     return True
                 spec = info.get('spec') or {}
-                tooltip = Path(spec.get('path', '')).name
-                idx = spec.get('matrix_index')
-                if idx is not None:
-                    tooltip = f"{tooltip} [{idx}]"
-                xs = spec.get('x'); ys = spec.get('y')
-                if xs is not None and ys is not None:
-                    tooltip = f"{tooltip}\n({xs:.1f}, {ys:.1f}) nm"
+                tooltip = info.get('tooltip')
+                if not tooltip:
+                    tooltip = Path(spec.get('path', '')).name
+                    idx = spec.get('matrix_index')
+                    if idx is not None:
+                        tooltip = f"{tooltip} [{idx}]"
+                    xs = spec.get('x'); ys = spec.get('y')
+                    if xs is not None and ys is not None:
+                        tooltip = f"{tooltip}\n({xs:.1f}, {ys:.1f}) nm"
                 QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
                 return True
         QtWidgets.QToolTip.hideText()

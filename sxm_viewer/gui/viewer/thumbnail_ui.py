@@ -79,15 +79,18 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     files_iter = list(viewer.files)
 
     filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
-    if filt != 'All':
+    if filt and filt != 'All':
+        matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
         def include(path_str):
             tag = (viewer.tags.get(path_str, {}) or {}).get('tag', None)
-            if filt == 'CH only':
+            if filt == 'Constant height':
                 return tag == 'constant-height'
-            if filt == 'CC only':
+            if filt == 'Constant current':
                 return tag == 'constant-current'
             if filt == 'Untagged':
                 return tag is None
+            if filt == 'Matrix datasets':
+                return path_str in matrix_set
             return True
         files_iter = [t for t in files_iter if include(str(t))]
 

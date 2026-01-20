@@ -106,14 +106,14 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
                 continue
             painter.save()
             border = QtGui.QColor(matrix_color)
-            border.setAlpha(255)
-            fill = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 90))
-            fill.setStyle(QtCore.Qt.Dense4Pattern)
+            border.setAlpha(235)
+            shadow = QtGui.QColor(10, 10, 20, 80)
+            painter.setPen(QtGui.QPen(shadow, 1.5))
+            painter.drawRoundedRect(rect.translated(2, 2), 8, 8)
+            painter.setPen(QtGui.QPen(border, 2.4))
+            fill = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 70))
             painter.setBrush(fill)
-            pen = QtGui.QPen(border, 3.0)
-            pen.setJoinStyle(QtCore.Qt.RoundJoin)
-            painter.setPen(pen)
-            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
+            painter.drawRoundedRect(rect, 8, 8)
             try:
                 grid_cols = m_specs[0].get('grid_cols')
                 grid_rows = m_specs[0].get('grid_rows')
@@ -125,14 +125,17 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
             painter.setFont(chip_font)
             metrics = painter.fontMetrics()
             chip_w = max(min(metrics.horizontalAdvance(chip_text) + 12, rect.width() - 8), 28)
-            chip_h = max(metrics.height() + 6, 14)
+            chip_h = max(metrics.height() + 6, 16)
             chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
             painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 220))
             painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.2))
             painter.drawRoundedRect(chip_rect, 6, 6)
             painter.drawText(chip_rect, QtCore.Qt.AlignCenter, chip_text)
             painter.restore()
-            markers.append({'rect': rect, 'spec': m_specs[0], 'label': chip_text, 'kind': 'matrix'})
+            tooltip = Path(m_specs[0].get('path', '')).name
+            if dims:
+                tooltip = f"{tooltip}\nGrid: {dims}"
+            markers.append({'rect': rect, 'spec': m_specs[0], 'label': chip_text, 'kind': 'matrix', 'tooltip': tooltip})
 
     color_single = getattr(viewer, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
     color_matrix = getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
