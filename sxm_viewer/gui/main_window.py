@@ -169,7 +169,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         # default to showing single markers so spectroscopies are visible by default
         self.show_single_markers = bool(self.config.get("show_single_markers", True))
         self.compact_markers = bool(self.config.get("compact_markers", True))
-        self.use_density_markers = bool(self.config.get("use_density_markers", True))
         self.spectro_single_grid_as_matrix = bool(self.config.get("spectro_single_grid_as_matrix", False))
         self.spectro_force_single_mode = bool(self.config.get("spectro_force_single_mode", False))
         self.dark_mode = bool(self.config.get('dark_mode', False))
@@ -179,7 +178,6 @@ class SXMGridViewer(QtWidgets.QWidget):
             'show_matrix_markers': True,
             'show_single_markers': True,
             'compact_markers': True,
-            'use_density_markers': True,
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
         }
@@ -994,7 +992,6 @@ QLabel:hover {{
             (getattr(self, 'matrix_markers_act', None), defaults.get('show_matrix_markers', True)),
             (getattr(self, 'single_markers_act', None), defaults.get('show_single_markers', True)),
             (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
-            (getattr(self, 'density_markers_act', None), defaults.get('use_density_markers', True)),
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
         ]
@@ -2860,38 +2857,6 @@ QLabel:hover {{
             matrix_as_points=matrix_as_points,
         )
 
-    def _use_density_for(self, count, pix_w, pix_h):
-        """Decide if density overlay should be used based on count and thumb size."""
-        if count <= 0:
-            return False
-        size_factor = max(1, min(pix_w, pix_h))
-        threshold = 50 if size_factor > 180 else 30
-        threshold = max(30, min(120, threshold))
-        return count > threshold
-
-    def _draw_density_overlay(self, painter, coords_xy, pix_w, pix_h):
-        if coords_xy.size == 0:
-            return
-        bins = max(16, min(64, min(pix_w, pix_h) // 4 or 16))
-        x = np.clip(coords_xy[:,0], 0, pix_w-1)
-        y = np.clip(coords_xy[:,1], 0, pix_h-1)
-        hist, xedges, yedges = np.histogram2d(x, y, bins=(bins, bins), range=[[0, pix_w], [0, pix_h]])
-        if hist.max() <= 0:
-            return
-        hist = hist.T  # align y first index
-        norm = hist / hist.max()
-        for iy in range(hist.shape[0]):
-            for ix in range(hist.shape[1]):
-                val = norm[iy, ix]
-                if val <= 0:
-                    continue
-                alpha = int(60 + 140 * val)
-                color = QtGui.QColor(255, 200, 40, alpha)
-                painter.setBrush(color)
-                painter.setPen(QtCore.Qt.NoPen)
-                rect = QtCore.QRectF(xedges[ix], yedges[iy], xedges[ix+1]-xedges[ix], yedges[iy+1]-yedges[iy])
-                painter.drawRect(rect)
-
     def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None):
         xs = []
         ys = []
@@ -3453,19 +3418,6 @@ QLabel:hover {{
         if act is not None:
             act.blockSignals(True)
             act.setChecked(self.compact_markers)
-            act.blockSignals(False)
-
-    def on_density_markers_toggled(self, checked: bool):
-        self.use_density_markers = bool(checked)
-        self.config['use_density_markers'] = self.use_density_markers; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
-        act = getattr(self, 'density_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.use_density_markers)
             act.blockSignals(False)
 
     def on_detail_dark_toggled(self, checked: bool):

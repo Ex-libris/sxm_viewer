@@ -129,11 +129,6 @@ def _disable_profile_mode(viewer):
             viewer._profile_dialog = None
     except Exception:
         pass
-    try:
-        if hasattr(canvas, 'set_profile_blit_enabled'):
-            canvas.set_profile_blit_enabled(True)
-    except Exception:
-        pass
     viewer._disable_angle_mode()
 
 
@@ -226,12 +221,6 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
             ref_unit = saved_profiles[0].get('unit')
         activate_cb = None
         canvas = getattr(viewer, 'preview_canvas', None)
-        if canvas is not None and hasattr(canvas, 'set_profile_blit_enabled'):
-            if getattr(viewer, '_profile_dialog', None):
-                try:
-                    canvas.set_profile_blit_enabled(False)
-                except Exception:
-                    pass
         if canvas is not None and hasattr(canvas, 'activate_saved_profile'):
             def _activate(idx):
                 try:
@@ -303,27 +292,10 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                                                   marker_select_callback=marker_select_cb,
                                                   add_overlay_callback=add_overlay_cb,
                                                   dark_mode=dark_pref)
-            if canvas is not None and hasattr(canvas, 'set_profile_blit_enabled'):
-                try:
-                    canvas.set_profile_blit_enabled(False)
-                except Exception:
-                    pass
             if hasattr(viewer._profile_dialog, 'set_preserve_profiles_callback'):
                 viewer._profile_dialog.set_preserve_profiles_callback(
                     _set_preserve, enabled=getattr(viewer, 'preserve_profiles_on_channel_change', True)
                 )
-            def _restore_blit():
-                c = getattr(viewer, 'preview_canvas', None)
-                if c is not None and hasattr(c, 'set_profile_blit_enabled'):
-                    try:
-                        c.set_profile_blit_enabled(True)
-                    except Exception:
-                        pass
-            try:
-                viewer._profile_dialog.finished.connect(lambda *_: _restore_blit())
-                viewer._profile_dialog.destroyed.connect(lambda *_: _restore_blit())
-            except Exception:
-                pass
             try:
                 viewer._profile_dialog.move(viewer._next_popup_pos(offset=30))
             except Exception:

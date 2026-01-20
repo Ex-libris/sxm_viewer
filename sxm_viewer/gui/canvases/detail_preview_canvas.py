@@ -132,7 +132,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._active_profile_original_color = None
         self._profile_blit_active = False
         self._profile_animation_enabled = False
-        self._profile_blit_allowed = True
 
     def draw(self):
         try:
@@ -2635,19 +2634,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if not animated:
             self._reset_profile_blit()
 
-    def set_profile_blit_enabled(self, enabled: bool):
-        """
-        Toggle whether profile interactions should use blitting. When disabled,
-        the canvas falls back to full redraws to ensure external updates (e.g.
-        from the profile dialog) remain visible.
-        """
-        new_state = bool(enabled)
-        if new_state == getattr(self, "_profile_blit_allowed", True):
-            return
-        self._profile_blit_allowed = new_state
-        if not new_state:
-            self._reset_profile_blit()
-
     def _draw_profile_animated(self):
         """Draw only the active profile artists (for blitting)."""
         for art in self._profile_animation_artists():
@@ -2663,10 +2649,6 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _prepare_profile_blit(self):
         if self.main_ax is None:
-            self._profile_background = None
-            self._profile_blit_active = False
-            return
-        if not getattr(self, "_profile_blit_allowed", True):
             self._profile_background = None
             self._profile_blit_active = False
             return
