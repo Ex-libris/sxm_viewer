@@ -79,7 +79,7 @@ def _marker_path(symbol: str, center: QtCore.QPointF, size: float) -> QtGui.QPai
     return path
 
 
-def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False):
+def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False, pulse=1.0):
     center = QtCore.QPointF(x, y)
     path = _marker_path(symbol, center, size)
     stroke_color = QtGui.QColor(base_color)
@@ -94,10 +94,25 @@ def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False
     painter.setPen(pen)
     painter.drawPath(path)
     if highlight:
-        hi_pen = QtGui.QPen(QtGui.QColor(0, 230, 255), max(1.4, size * 0.4))
-        hi_pen.setJoinStyle(QtCore.Qt.RoundJoin)
-        painter.setPen(hi_pen)
+        glow_scale = 2.15 + 0.65 * pulse
+        halo_size = size * glow_scale
+        gradient = QtGui.QRadialGradient(center, halo_size)
+        peak_alpha = min(255, int(170 * (0.8 + 0.4 * pulse)))
+        gradient.setColorAt(0.0, QtGui.QColor(255, 248, 255, peak_alpha))
+        gradient.setColorAt(0.4, QtGui.QColor(255, 190, 230, int(110 * pulse)))
+        gradient.setColorAt(1.0, QtGui.QColor(255, 140, 210, 0))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QBrush(gradient))
+        painter.drawEllipse(center, halo_size, halo_size)
+        halo = QtGui.QPen(QtGui.QColor(255, 90, 180, 200), max(2.0, size * 0.4 * pulse))
+        halo.setJoinStyle(QtCore.Qt.RoundJoin)
         painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(halo)
+        painter.drawEllipse(center, halo_size * 0.85, halo_size * 0.85)
+        hi_pen = QtGui.QPen(QtGui.QColor(255, 245, 255, 190), max(1.6, size * 0.35))
+        hi_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(hi_pen)
         painter.drawPath(path)
     return path.boundingRect().adjusted(-1.5, -1.5, 1.5, 1.5)
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
@@ -221,6 +236,7 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
         crowded = count > 200 or bool(getattr(viewer, "compact_markers", False))
         marker_symbol = _normalized_symbol(viewer)
         marker_size = _effective_marker_size(viewer, crowded, reveal_points)
+        pulse = float(getattr(viewer, "_highlight_pulse_strength", 1.0) or 1.0)
         for x, y, spec in coords:
             highlight = False
             try:
@@ -230,7 +246,16 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
                 highlight = False
             is_matrix_spec = is_matrix_file_entry(spec)
             base_color = color_matrix if is_matrix_spec else color_single
-            rect = _draw_marker_symbol(painter, x, y, marker_symbol, marker_size, base_color, highlight=highlight)
+            rect = _draw_marker_symbol(
+                painter,
+                x,
+                y,
+                marker_symbol,
+                marker_size,
+                base_color,
+                highlight=highlight,
+                pulse=pulse if highlight else 1.0,
+            )
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
     # summary badge (S/M counts and matrix grid if available)
     try:

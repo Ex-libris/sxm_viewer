@@ -543,7 +543,13 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                 if url.isLocalFile():
                     paths.append(url.toLocalFile())
         if payloads or paths:
-            parent.handle_drop(payloads, paths)
+            try:
+                parent.handle_drop(payloads, paths)
+            except Exception as exc:
+                try:
+                    QtWidgets.QMessageBox.critical(self, "Canvas drop", f"Unable to add selection: {exc}")
+                except Exception:
+                    pass
             event.acceptProposedAction()
             return
         super().dropEvent(event)

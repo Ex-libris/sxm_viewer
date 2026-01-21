@@ -88,6 +88,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
+        self._highlight_pulse_strength = 1.0
         self._view_layout = "grid"
         self._spectra_points = {}
         self._spectra_click_cb = None
@@ -389,18 +390,25 @@ class MultiPreviewCanvas(FigureCanvas):
                 return x_rel, y_rel
             except Exception:
                 return x, y
-        xs = []
-        ys = []
+        normal_xs = []
+        normal_ys = []
+        highlight_xs = []
+        highlight_ys = []
         points = []
         missing_specs = []
+        highlight_spec = view.get('highlight_spec')
+        pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
         for idx, s in enumerate(specs):
             sx, sy = s.get('x'), s.get('y')
             if sx is None or sy is None:
                 missing_specs.append(s)
                 continue
             x, y = _to_rel(float(sx), float(sy))
-            xs.append(x); ys.append(y)
             points.append((x, y, s))
+            if highlight_spec is not None and s is highlight_spec:
+                highlight_xs.append(x); highlight_ys.append(y)
+            else:
+                normal_xs.append(x); normal_ys.append(y)
         # Fallback grid placement for entries without coordinates so markers still show up
         m = len(missing_specs)
         if m:
@@ -408,22 +416,35 @@ class MultiPreviewCanvas(FigureCanvas):
             rows = int(math.ceil(m / float(max(cols, 1))))
             dx = (x1 - x0) / float(max(cols, 1))
             dy = (y1 - y0) / float(max(rows, 1))
-            for i in range(m):
+            for i, spec in enumerate(missing_specs):
                 r = i // cols
                 c = i % cols
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
                 fx, fy = _to_rel(fx, fy)
-                xs.append(fx); ys.append(fy)
-                points.append((fx, fy, missing_specs[i]))
-        if not xs:
+                points.append((fx, fy, spec))
+                if highlight_spec is not None and spec is highlight_spec:
+                    highlight_xs.append(fx); highlight_ys.append(fy)
+                else:
+                    normal_xs.append(fx); normal_ys.append(fy)
+        if not (normal_xs or highlight_xs):
             self._spectra_points[ax] = []
             return
         try:
-            ax.scatter(xs, ys, s=28, marker='o', facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
+            if normal_xs:
+                ax.scatter(normal_xs, normal_ys, s=28, marker='o', facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
+            if highlight_xs:
+                outer = 260 * (0.9 + 0.3 * pulse)
+                core = 140 * (0.7 + 0.3 * pulse)
+                ax.scatter(highlight_xs, highlight_ys, s=outer, marker='o', facecolor='#ffe8fb', edgecolor='none', alpha=0.22, zorder=36)
+                ax.scatter(highlight_xs, highlight_ys, s=core, marker='o', facecolor='none', edgecolor='#ff5fb7', linewidths=2.4, alpha=0.9, zorder=37)
             self._spectra_points[ax] = points
         except Exception:
             self._spectra_points[ax] = []
+
+    def update_highlight_pulse(self, strength: float):
+        self._highlight_pulse_strength = float(strength) if strength else 1.0
+        self.draw_idle()
 
     def _hit_spectrum_point(self, event):
         """Return the nearest spectrum under the cursor if within a small pixel radius."""

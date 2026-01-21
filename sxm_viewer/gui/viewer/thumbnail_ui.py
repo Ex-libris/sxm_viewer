@@ -1,6 +1,8 @@
 """Thumbnail UI helpers for SXMGridViewer."""
 from __future__ import annotations
 
+import sip
+
 from ..._shared import (
     QtCore,
     QtGui,
@@ -33,6 +35,14 @@ from ..._shared import (
     matplotlib,
 )
 from ...config import save_config
+
+
+def _safe_set_property(widget, name, value):
+    try:
+        widget.setProperty(name, value)
+        return True
+    except RuntimeError:
+        return False
 
 def _thumb_dimensions(viewer):
     """Return (width, height) for thumbnails preserving 4:3 aspect ratio."""
@@ -271,6 +281,11 @@ def _handle_thumb_click(viewer, label_widget, event):
         return
     if viewer._handle_spec_marker_click(label_widget, event):
         return
+    if getattr(viewer, '_highlighted_spec', None):
+        try:
+            viewer._highlight_spectrum_entry(None)
+        except Exception:
+            pass
     fp = label_widget.property("file_path")
     ch_idx = int(label_widget.property("channel_index"))
     mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
@@ -318,7 +333,7 @@ def _handle_thumb_click(viewer, label_widget, event):
         if matrix_specs:
             viewer._open_matrix_explorer_for_file(str(fp))
             return
-        viewer._open_spectro_summary_for_file(fp, show_mode="single")
+        viewer._open_spectro_summary_for_file(fp, show_mode="single", quiet=True)
     except Exception:
         pass
 
@@ -327,17 +342,21 @@ def _make_thumb_press_handler(viewer, label_widget):
     def handler(event):
         if event.button() != QtCore.Qt.LeftButton:
             return
-        label_widget.setProperty("drag_start", event.pos())
-        label_widget.setProperty("dragging", False)
+        if not _safe_set_property(label_widget, "drag_start", event.pos()):
+            return
+        _safe_set_property(label_widget, "dragging", False)
         QtWidgets.QLabel.mousePressEvent(label_widget, event)
     return handler
 
 
 def _make_thumb_release_handler(viewer, label_widget):
     def handler(event):
+        if sip.isdeleted(label_widget):
+            return
         dragging = bool(label_widget.property("dragging"))
-        label_widget.setProperty("drag_start", None)
-        label_widget.setProperty("dragging", False)
+        if not _safe_set_property(label_widget, "drag_start", None):
+            return
+        _safe_set_property(label_widget, "dragging", False)
         if dragging:
             return
         _handle_thumb_click(viewer, label_widget, event)
@@ -346,6 +365,8 @@ def _make_thumb_release_handler(viewer, label_widget):
 
 def _make_thumb_move_handler(viewer, label_widget):
     def handler(event):
+        if sip.isdeleted(label_widget):
+            return
         dragging = bool(label_widget.property("dragging"))
         start = label_widget.property("drag_start")
         if start is not None and event.buttons() & QtCore.Qt.LeftButton and not dragging:
@@ -368,7 +389,15 @@ def _make_thumb_move_handler(viewer, label_widget):
                     }
                 if hasattr(viewer, "_ensure_canvas_for_drag"):
                     viewer._ensure_canvas_for_drag()
-                drag = QtGui.QDrag(label_widget)
+                drag_parent = label_widget
+                try:
+                    if isinstance(viewer, QtWidgets.QWidget):
+                        drag_parent = viewer
+                except Exception:
+                    pass
+                if sip.isdeleted(drag_parent):
+                    drag_parent = label_widget
+                drag = QtGui.QDrag(drag_parent)
                 mime = QtCore.QMimeData()
                 try:
                     mime.setData("application/x-sxm-view", json.dumps(payload).encode("utf-8"))
@@ -379,8 +408,11 @@ def _make_thumb_move_handler(viewer, label_widget):
                     mime.setImageData(pix.toImage())
                     drag.setPixmap(pix)
                 drag.setMimeData(mime)
+                if not _safe_set_property(label_widget, "dragging", True):
+                    return
                 drag.exec_(QtCore.Qt.CopyAction)
-                label_widget.setProperty("dragging", True)
+                _safe_set_property(label_widget, "dragging", False)
+                _safe_set_property(label_widget, "drag_start", None)
                 return
         if not viewer._handle_spec_hover(label_widget, event):
             QtWidgets.QLabel.mouseMoveEvent(label_widget, event)

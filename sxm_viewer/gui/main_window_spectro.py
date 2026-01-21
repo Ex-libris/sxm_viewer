@@ -92,16 +92,17 @@ def open_single_spectro_popup(viewer, spectro):
         pass
 
 
-def open_spectro_summary_for_file(viewer, file_key, show_mode="single"):
+def open_spectro_summary_for_file(viewer, file_key, show_mode="single", quiet=False):
     entries = viewer.spectros_by_image.get(str(file_key), []) or []
     if show_mode == "single":
         entries = [s for s in entries if s.get("matrix_index") is None]
     elif show_mode == "matrix":
         entries = [s for s in entries if s.get("matrix_index") is not None]
     if not entries:
-        QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this file.")
+        if not quiet:
+            QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this file.")
         return
-    
+
     # Use the modern SpectroscopyCompareDialog (table view) instead of the old summary
     from .detail_panels import SpectroscopyCompareDialog
     dlg = SpectroscopyCompareDialog(entries, parent=viewer)

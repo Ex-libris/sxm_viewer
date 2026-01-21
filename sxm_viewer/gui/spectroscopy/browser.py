@@ -115,9 +115,13 @@ def _filter_spectro_browser(viewer):
 
 def _on_spectro_browser_selection(viewer, current, _prev):
     if not current:
+        if hasattr(viewer, '_highlight_spectrum_entry'):
+            viewer._highlight_spectrum_entry(None)
         return
     spec = current.data(QtCore.Qt.UserRole)
     if spec is None:
+        if hasattr(viewer, '_highlight_spectrum_entry'):
+            viewer._highlight_spectrum_entry(None)
         return
     try:
         x = spec.get('x'); y = spec.get('y')
@@ -129,6 +133,11 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         if image_key and image_key in viewer._thumb_labels:
             viewer.selected_file_for_thumbs = image_key
             viewer._refresh_thumb_selection_styles()
+    except Exception:
+        pass
+    try:
+        if hasattr(viewer, '_highlight_spectrum_entry'):
+            viewer._highlight_spectrum_entry(spec)
     except Exception:
         pass
     try:

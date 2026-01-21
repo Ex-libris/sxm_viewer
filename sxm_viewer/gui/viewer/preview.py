@@ -305,6 +305,15 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     show_preview_specs = bool(getattr(viewer, 'show_preview_spectra', getattr(viewer, 'show_spectra', True)))
     spec_entries = viewer.spectros_by_image.get(str(header_path), []) if show_preview_specs else []
     overlay_specs = []
+    highlight_spec = None
+    highlight_candidate = getattr(viewer, '_highlighted_spec', None)
+    if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
+        try:
+            highlight_path = str(highlight_candidate.get('image_key') or highlight_candidate.get('path') or '')
+        except Exception:
+            highlight_path = ''
+        if highlight_path and highlight_path == str(header_path):
+            highlight_spec = highlight_candidate
     if spec_entries and show_preview_specs:
         if viewer.show_single_markers:
             overlay_specs.extend([
@@ -353,6 +362,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'relative_axes': bool(viewer.relative_axes),
         'meta': meta,
         'spectra': overlay_specs,
+        'highlight_spec': highlight_spec,
     }
     views.append(main)
 

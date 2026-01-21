@@ -167,6 +167,11 @@ def _ensure_display_menu(viewer):
     markers_menu = viewer.display_menu.addMenu("Marker Style")
     if hasattr(viewer, "_populate_marker_style_menu"):
         viewer._populate_marker_style_menu(markers_menu)
+    viewer.highlight_glow_act = viewer.display_menu.addAction("Spectro highlight glow")
+    viewer.highlight_glow_act.setCheckable(True)
+    viewer.highlight_glow_act.setChecked(getattr(viewer, "spectro_highlight_glow", True))
+    viewer.highlight_glow_act.setToolTip("Pulse the selected spectroscopy marker in thumbnails and preview")
+    viewer.highlight_glow_act.toggled.connect(viewer.on_toggle_highlight_glow)
 
     viewer.display_menu.addSeparator()
     viewer.detail_dark_act = viewer.display_menu.addAction("Detail dark background")

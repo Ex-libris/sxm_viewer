@@ -516,6 +516,16 @@ def _row_is_numeric(tokens: List[str]) -> bool:
     return True
 
 
+def _axis_values(values: np.ndarray, quantized: np.ndarray, uniques: np.ndarray) -> np.ndarray:
+    """Return canonical axis values using the first occurrence of each quantized bin."""
+    first_idx: Dict[float, int] = {}
+    for idx, key in enumerate(quantized):
+        fk = float(key)
+        if fk not in first_idx:
+            first_idx[fk] = idx
+    return np.asarray([values[first_idx[float(key)]] for key in uniques], dtype=float)
+
+
 def _normalize_meta_key(key: str) -> str:
     key = key.strip().lower()
     key = re.sub(r"[^a-z0-9]+", "_", key)
@@ -621,24 +631,30 @@ def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], Mat
     if data.shape[1] != len(x_arr):
         raise MatrixDatError(path, "Deduplicated coordinate count mismatches data columns.")
 
-    x_quant = np.round(x_arr, 6)
-    y_quant = np.round(y_arr, 6)
-    x_unique, x_inverse = np.unique(x_quant, return_inverse=True)
-    y_unique, y_inverse = np.unique(y_quant, return_inverse=True)
-    grid_cols = int(x_unique.size)
-    grid_rows = int(y_unique.size)
-    if grid_cols <= 0 or grid_rows <= 0:
+    x_quant = None
+    y_quant = None
+    x_unique = y_unique = None
+    x_inverse = y_inverse = None
+    grid_cols = grid_rows = 0
+    for decimals in range(6, -3, -1):
+        x_q = np.round(x_arr, decimals)
+        y_q = np.round(y_arr, decimals)
+        x_u, x_inv = np.unique(x_q, return_inverse=True)
+        y_u, y_inv = np.unique(y_q, return_inverse=True)
+        cols = int(x_u.size)
+        rows = int(y_u.size)
+        if cols <= 0 or rows <= 0:
+            continue
+        if cols * rows == x_arr.size:
+            x_quant, y_quant = x_q, y_q
+            x_unique, y_unique = x_u, y_u
+            x_inverse, y_inverse = x_inv, y_inv
+            grid_cols, grid_rows = cols, rows
+            break
+    if grid_cols <= 0 or grid_rows <= 0 or x_unique is None or y_unique is None:
         raise MatrixDatError(path, "Unable to reconstruct grid dimensions from coordinates.")
     if grid_cols * grid_rows != x_arr.size:
         raise MatrixDatError(path, "X/Y coordinates do not form a rectangular grid.")
-
-    def _axis_values(values, quantized, uniques):
-        first_idx: Dict[float, int] = {}
-        for idx, key in enumerate(quantized):
-            fk = float(key)
-            if fk not in first_idx:
-                first_idx[fk] = idx
-        return np.asarray([values[first_idx[float(key)]] for key in uniques], dtype=float)
 
     x_axis = _axis_values(x_arr, x_quant, x_unique)
     y_axis = _axis_values(y_arr, y_quant, y_unique)

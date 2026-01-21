@@ -448,26 +448,39 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         return base
 
     def handle_drop(self, payloads: list[dict], paths: list[str]):
-        groups = []
-        for payload in payloads:
-            file_path = payload.get("file_path")
-            cmap = payload.get("cmap")
-            if file_path:
+        try:
+            groups = []
+            for payload in payloads:
+                file_path = payload.get("file_path")
+                cmap = payload.get("cmap")
+                channel_idx = payload.get("channel_index")
+                if not file_path:
+                    continue
                 try:
                     group = self._add_kind_views_for_header(Path(file_path), cmap_override=cmap)
                     if group:
                         groups.append(group)
+                        continue
+                    if channel_idx is not None:
+                        try:
+                            idx = int(channel_idx)
+                        except Exception:
+                            idx = None
+                        if idx is not None:
+                            self._add_view_from_header(Path(file_path), idx, cmap_override=cmap, place=True)
                 except Exception as exc:
                     QtWidgets.QMessageBox.warning(self, "Canvas drop", f"Unable to load view: {exc}")
-        for path in paths:
-            try:
-                file_groups = self._add_views_from_file(Path(path))
-                if file_groups:
-                    groups.extend(file_groups)
-            except Exception as exc:
-                QtWidgets.QMessageBox.warning(self, "Canvas drop", f"Unable to load {path}: {exc}")
-        if groups:
-            self._arrange_by_kind(groups)
+            for path in paths:
+                try:
+                    file_groups = self._add_views_from_file(Path(path))
+                    if file_groups:
+                        groups.extend(file_groups)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.warning(self, "Canvas drop", f"Unable to load {path}: {exc}")
+            if groups:
+                self._arrange_by_kind(groups)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Canvas drop", f"Unexpected error: {exc}")
 
     def _add_views_from_file(self, path: Path):
         if not path.exists():
@@ -539,8 +552,14 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 header, fds = parse_header(header_path)
             except Exception:
                 return None
-        if channel_idx < 0 or channel_idx >= len(fds):
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            channel_idx = 0
+        if not fds:
             return None
+        if channel_idx < 0 or channel_idx >= len(fds):
+            channel_idx = max(0, min(len(fds) - 1, channel_idx))
         fd = fds[channel_idx]
         base_extent = self.viewer._header_extent(header)
         unit_norm, arr_base = self.viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)

@@ -12,6 +12,7 @@ import numpy as np
 from matplotlib import colormaps
 from matplotlib.figure import Figure
 from PyQt5 import QtCore, QtGui, QtWidgets
+import sip
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
 
@@ -153,6 +154,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             save_config(self.config)
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
+        self.spectro_highlight_glow = bool(self.config.get("spectro_highlight_glow", True))
         preview_cfg = self.config.get("show_preview_spectra")
         if preview_cfg is None:
             preview_cfg = self.show_spectra
@@ -204,6 +206,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._temp_reveal = set()
         self.spectro_dock = None
         self._spectro_browser_entries = []
+        self._highlight_phase = 0.0
+        self._highlight_pulse_strength = 1.0
+        self._highlight_timer = QtCore.QTimer(self)
+        self._highlight_timer.setInterval(350)
+        self._highlight_timer.timeout.connect(self._on_highlight_tick)
+        self._highlighted_spec = None
 
         self.files = []
         self.headers = {}
@@ -1055,8 +1063,8 @@ QLabel:hover {{
     def _open_single_spectro_popup(self, spectro):
         return main_window_spectro.open_single_spectro_popup(self, spectro)
 
-    def _open_spectro_summary_for_file(self, file_key, show_mode="single"):
-        return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode)
+    def _open_spectro_summary_for_file(self, file_key, show_mode="single", quiet=False):
+        return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode, quiet=quiet)
 
     def _open_matrix_explorer_for_file(self, file_key):
         image_specs = [s for s in self.spectros_by_image.get(str(file_key), []) if s.get('matrix_index') is not None]
@@ -1519,12 +1527,25 @@ QLabel:hover {{
             painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
             painter.drawText(QtCore.QRect(pix.width() - 24, 6, 18, 18), QtCore.Qt.AlignCenter, "F")
             painter.end()
+        highlight_spec = None
+        if getattr(self, '_highlighted_spec', None):
+            highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
+            if highlight_key == str(file_key):
+                highlight_spec = self._highlighted_spec
+        if not getattr(self, "spectro_highlight_glow", True):
+            highlight_spec = None
         if header and fds and 0 <= channel_idx < len(fds):
             try:
                 xpix = int(header.get('xPixel', 128))
                 ypix = int(header.get('yPixel', xpix))
-                
-                marker_defs = self._render_spectroscopy_overlays(pix, header, str(file_key), xpix, ypix)
+                marker_defs = self._render_spectroscopy_overlays(
+                    pix,
+                    header,
+                    str(file_key),
+                    xpix,
+                    ypix,
+                    selected_spec=highlight_spec,
+                )
             except Exception:
                 marker_defs = []
         return marker_defs
@@ -1924,19 +1945,43 @@ QLabel:hover {{
     def _make_thumb_move_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_move_handler(self, label_widget)
 
+    def _canvas_window_ref(self):
+        win = getattr(self, "_canvas_window", None)
+        if win is None:
+            return None
+        try:
+            if sip.isdeleted(win):
+                self._canvas_window = None
+                return None
+        except Exception:
+            self._canvas_window = None
+            return None
+        return win
+
     def _on_open_canvas(self):
-        if self._canvas_window is None or not self._canvas_window.isVisible():
-            self._canvas_window = ExperimentalCanvasWindow(self, self)
-        self._canvas_window.show()
-        self._canvas_window.raise_()
-        self._canvas_window.activateWindow()
+        win = self._canvas_window_ref()
+        if win is None or not win.isVisible():
+            win = ExperimentalCanvasWindow(self, self)
+            self._canvas_window = win
+        win.show()
+        win.raise_()
+        try:
+            win.activateWindow()
+        except Exception:
+            pass
 
     def _ensure_canvas_for_drag(self):
         """Open the canvas window as a drop target during thumbnail drags."""
-        if self._canvas_window is None or not self._canvas_window.isVisible():
-            self._canvas_window = ExperimentalCanvasWindow(self, self)
-        self._canvas_window.show()
-        self._canvas_window.raise_()
+        win = self._canvas_window_ref()
+        if win is None or not win.isVisible():
+            win = ExperimentalCanvasWindow(self, self)
+            self._canvas_window = win
+        win.show()
+        win.raise_()
+        try:
+            win.activateWindow()
+        except Exception:
+            pass
 
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
         """
@@ -1967,6 +2012,14 @@ QLabel:hover {{
 
     # ---------- preview + metadata ---------- 
     def show_file_channel(self, header_path_str, channel_idx:int, use_local_cmap=False):
+        highlight = getattr(self, '_highlighted_spec', None)
+        if highlight:
+            try:
+                highlight_path = str(highlight.get('image_key') or highlight.get('path') or '')
+            except Exception:
+                highlight_path = ''
+            if highlight_path and highlight_path != str(header_path_str):
+                self._highlight_spectrum_entry(None)
         return viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
 
     def get_current_detail_config(self):
@@ -3019,6 +3072,14 @@ QLabel:hover {{
         if not files or not (0 <= index < len(files)):
             return False
         file_key = files[index]
+        current_highlight = getattr(self, '_highlighted_spec', None)
+        if current_highlight:
+            try:
+                highlight_path = str(current_highlight.get('image_key') or current_highlight.get('path') or '')
+            except Exception:
+                highlight_path = ''
+            if highlight_path and highlight_path != file_key:
+                self._highlight_spectrum_entry(None)
         self._clear_thumb_multi_selection(update_styles=False)
         label = getattr(self, '_thumb_labels', {}).get(file_key)
         if label is not None:
@@ -3092,6 +3153,10 @@ QLabel:hover {{
                         self._open_matrix_explorer_for_file(file_key)
                     else:
                         self._open_spectroscopy_popup(spec)
+                    try:
+                        self._highlight_spectrum_entry(spec)
+                    except Exception:
+                        pass
                 return True
         return False
 
@@ -3132,6 +3197,69 @@ QLabel:hover {{
     def _open_spectroscopy_popup(self, spec):
         return spectro_popups._open_spectroscopy_popup(self, spec)
 
+    def _highlight_spectrum_entry(self, spec):
+        if not getattr(self, "spectro_highlight_glow", True):
+            # ensure timer stopped and preview restored
+            if self._highlight_timer.isActive():
+                self._highlight_timer.stop()
+            self._highlighted_spec = None
+            self._highlight_phase = 0.0
+            self._highlight_pulse_strength = 1.0
+            self._refresh_thumbnail_markers()
+            if hasattr(self, 'preview_canvas') and self.preview_canvas:
+                try:
+                    self.preview_canvas.update_highlight_pulse(1.0)
+                except Exception:
+                    pass
+            return
+        previous_spec = getattr(self, '_highlighted_spec', None)
+        self._highlighted_spec = spec
+        if spec:
+            self._highlight_phase = 0.0
+            if not self._highlight_timer.isActive():
+                self._highlight_timer.start()
+            try:
+                target_key = str(spec.get('image_key') or spec.get('path') or '')
+            except Exception:
+                target_key = ''
+            if self.last_preview and target_key and str(self.last_preview[0]) == target_key:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            self._on_highlight_tick(force=True)
+        else:
+            if self._highlight_timer.isActive():
+                self._highlight_timer.stop()
+            self._highlight_phase = 0.0
+            self._highlight_pulse_strength = 1.0
+            self._refresh_thumbnail_markers()
+            if hasattr(self, 'preview_canvas') and self.preview_canvas:
+                try:
+                    self.preview_canvas.update_highlight_pulse(1.0)
+                except Exception:
+                    pass
+            prev_key = None
+            if previous_spec:
+                try:
+                    prev_key = str(previous_spec.get('image_key') or previous_spec.get('path') or '')
+                except Exception:
+                    prev_key = None
+            if prev_key and self.last_preview and str(self.last_preview[0]) == prev_key:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def _on_highlight_tick(self, force=False):
+        if not self._highlighted_spec or not getattr(self, "spectro_highlight_glow", True):
+            if self._highlight_timer.isActive():
+                self._highlight_timer.stop()
+            return
+        if not force:
+            self._highlight_phase = (self._highlight_phase + 0.35) % (2 * math.pi)
+        pulse = 0.9 + 0.4 * (0.5 * (1.0 + math.sin(self._highlight_phase)))
+        self._highlight_pulse_strength = pulse
+        self._refresh_thumbnail_markers()
+        try:
+            if hasattr(self, 'preview_canvas') and self.preview_canvas:
+                self.preview_canvas.update_highlight_pulse(pulse)
+        except Exception:
+            pass
     def _on_thumb_context_menu(self, label_widget, pos):
         fp = str(label_widget.property("file_path"))
         targets = list(self.thumb_multi_select) if self.thumb_multi_select and fp in self.thumb_multi_select else [fp]
@@ -3176,6 +3304,11 @@ QLabel:hover {{
         overlay_act.setChecked(self.show_spectra)
         overlay_act.triggered.connect(self.on_show_spectra_toggled)
         menu.addAction(overlay_act)
+        glow_act = QtWidgets.QAction("Spectro highlight glow", menu)
+        glow_act.setCheckable(True)
+        glow_act.setChecked(getattr(self, "spectro_highlight_glow", True))
+        glow_act.triggered.connect(self.on_toggle_highlight_glow)
+        menu.addAction(glow_act)
         marker_menu = menu.addMenu("Marker style")
         self._populate_marker_style_menu(marker_menu)
 
@@ -3515,6 +3648,24 @@ QLabel:hover {{
             pass
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_toggle_highlight_glow(self, checked: bool):
+        self.spectro_highlight_glow = bool(checked)
+        self.config['spectro_highlight_glow'] = self.spectro_highlight_glow; save_config(self.config)
+        act = getattr(self, 'highlight_glow_act', None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_highlight_glow)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if not self.spectro_highlight_glow:
+            self._highlight_spectrum_entry(None)
+        else:
+            self._refresh_thumbnail_markers()
+            if self.last_preview:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def on_spectro_grid_as_matrix_toggled(self, checked: bool):
         self.spectro_single_grid_as_matrix = bool(checked)
