@@ -164,6 +164,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._selected_curve_index = 0
         self._drag_start_pos = None
         self._font_scale = 1.0
+        self._grid_enabled = True
+        self._legend_enabled = True
+        self._show_markers = False
+        self._x_log = False
+        self._y_log = False
+        self._line_width = 1.5
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
@@ -338,22 +344,33 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         if axis_unit and axis_unit not in axis_label:
             axis_label = f"{axis_label} ({axis_unit})"
         plotted = False
+        plotted_values: list[np.ndarray] = []
         for entry in self._curve_entries:
             axis_vals = np.asarray(entry.get("axis_vals", []), dtype=float)
             values = np.asarray(entry.get("values", []), dtype=float)
             if axis_vals.size == 0 or values.size == 0:
                 continue
             scaled_axis = axis_vals * axis_plot_scale
-            self.ax.plot(scaled_axis, values, color=entry.get("color", '#c94cfa'),
-                         lw=1.5, label=entry.get("label", "Data"))
+            marker = 'o' if self._show_markers else None
+            self.ax.plot(
+                scaled_axis,
+                values,
+                color=entry.get("color", '#c94cfa'),
+                lw=self._line_width,
+                marker=marker,
+                markersize=4 if marker else None,
+                label=entry.get("label", "Data"),
+            )
             plotted = True
+            plotted_values.append(values)
         self._axis_plot_scale = axis_plot_scale
         self._axis_plot_unit = axis_plot_unit
+        self._apply_axis_scaling()
         self.ax.set_xlabel(axis_label)
         name = self.channel_combo.currentText()
         self.ax.set_ylabel(self._channel_label_with_unit(name))
-        self.ax.grid(True, alpha=0.2)
-        if plotted:
+        self.ax.grid(self._grid_enabled, alpha=0.25)
+        if plotted and self._legend_enabled:
             self.ax.legend()
         if self._last_fit_result and self._last_fit_result.get('channel') == name:
             self._draw_fit_overlay(self._last_fit_result)
@@ -362,10 +379,58 @@ class SpectroscopyPopup(QtWidgets.QDialog):
 
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
-        copy_act = menu.addAction("Copy channel data")
+        copy_data_act = menu.addAction("Copy channel data")
+        copy_png_act = menu.addAction("Copy plot as PNG")
+        copy_svg_act = menu.addAction("Copy plot as SVG")
+        style_menu = menu.addMenu("Plot style")
+        grid_act = style_menu.addAction("Show grid")
+        grid_act.setCheckable(True)
+        grid_act.setChecked(self._grid_enabled)
+        legend_act = style_menu.addAction("Show legend")
+        legend_act.setCheckable(True)
+        legend_act.setChecked(self._legend_enabled)
+        marker_act = style_menu.addAction("Show markers")
+        marker_act.setCheckable(True)
+        marker_act.setChecked(self._show_markers)
+        style_menu.addSeparator()
+        xlog_act = style_menu.addAction("Log X axis")
+        xlog_act.setCheckable(True)
+        xlog_act.setChecked(self._x_log)
+        ylog_act = style_menu.addAction("Log Y axis")
+        ylog_act.setCheckable(True)
+        ylog_act.setChecked(self._y_log)
+        style_menu.addSeparator()
+        width_menu = style_menu.addMenu("Line width")
+        width_inc_act = width_menu.addAction("Increase")
+        width_dec_act = width_menu.addAction("Decrease")
+        style_menu.addSeparator()
+        reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if action == copy_act:
+        if action == copy_data_act:
             self._copy_channel_to_clipboard()
+        elif action == copy_png_act:
+            self._copy_plot_as_png()
+        elif action == copy_svg_act:
+            self._copy_plot_as_svg()
+        elif action == grid_act:
+            self._grid_enabled = grid_act.isChecked()
+            self._plot_selected_channel()
+        elif action == legend_act:
+            self._legend_enabled = legend_act.isChecked()
+            self._plot_selected_channel()
+        elif action == marker_act:
+            self._show_markers = marker_act.isChecked()
+            self._plot_selected_channel()
+        elif action == xlog_act:
+            self._set_axis_log("x", xlog_act.isChecked())
+        elif action == ylog_act:
+            self._set_axis_log("y", ylog_act.isChecked())
+        elif action == width_inc_act:
+            self._adjust_line_width(+0.4)
+        elif action == width_dec_act:
+            self._adjust_line_width(-0.4)
+        elif action == reset_act:
+            self._reset_plot_style()
 
     def _copy_channel_to_clipboard(self):
         name = self.channel_combo.currentText()
@@ -398,6 +463,39 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 lines.append(f"{v}\t{val}")
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Spectroscopy copied", self)
+
+    def _copy_plot_as_png(self):
+        try:
+            pix = self.canvas.grab()
+            buffer = QtCore.QBuffer()
+            buffer.open(QtCore.QIODevice.WriteOnly)
+            pix.save(buffer, "PNG")
+            mime = QtCore.QMimeData()
+            mime.setData("image/png", buffer.data())
+            mime.setImageData(pix.toImage())
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as PNG", self)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy PNG: {exc}")
+
+    def _copy_plot_as_svg(self):
+        try:
+            buf = io.BytesIO()
+            self.fig.savefig(buf, format="svg", bbox_inches="tight")
+            svg_bytes = buf.getvalue()
+            mime = QtCore.QMimeData()
+            try:
+                mime.setData("image/svg+xml", svg_bytes)
+            except Exception:
+                pass
+            try:
+                mime.setText(svg_bytes.decode("utf-8"))
+            except Exception:
+                pass
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy SVG: {exc}")
 
     def _initialize_curve_entries(self):
         channel = self.channel_combo.currentText()
@@ -457,6 +555,55 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             font.setPointSizeF(base * scale)
             widget.setFont(font)
 
+    def _entries_support_log_axis(self, axis: str) -> bool:
+        sequences = []
+        key = "axis_vals" if axis == "x" else "values"
+        for entry in self._curve_entries:
+            data = np.asarray(entry.get(key) or [], dtype=float)
+            if data.size:
+                sequences.append(data)
+        if not sequences:
+            return False
+        return all(np.all(seq > 0) for seq in sequences)
+
+    def _set_axis_log(self, axis: str, checked: bool):
+        if checked:
+            if not self._entries_support_log_axis(axis):
+                self._show_plot_warning(
+                    "Cannot enable log {} axis: data contains non-positive values.".format(axis.upper())
+                )
+                checked = False
+        if axis == "x":
+            self._x_log = checked
+        else:
+            self._y_log = checked
+        self._plot_selected_channel()
+
+    def _adjust_line_width(self, delta: float):
+        self._line_width = max(0.4, min(5.0, self._line_width + delta))
+        self._plot_selected_channel()
+
+    def _reset_plot_style(self):
+        self._grid_enabled = True
+        self._legend_enabled = True
+        self._show_markers = False
+        self._x_log = False
+        self._y_log = False
+        self._line_width = 1.5
+        self._plot_selected_channel()
+
+    def _show_plot_warning(self, message: str):
+        center = self.canvas.mapToGlobal(self.canvas.rect().center())
+        QtWidgets.QToolTip.showText(center, message, self.canvas)
+
+    def _apply_axis_scaling(self):
+        if self._x_log and not self._entries_support_log_axis("x"):
+            self._x_log = False
+        if self._y_log and not self._entries_support_log_axis("y"):
+            self._y_log = False
+        self.ax.set_xscale("log" if self._x_log else "linear")
+        self.ax.set_yscale("log" if self._y_log else "linear")
+
     def eventFilter(self, source, event):
         if source == self.canvas:
             if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
@@ -467,6 +614,17 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                     self._drag_start_pos = None
             elif event.type() == QtCore.QEvent.MouseButtonRelease:
                 self._drag_start_pos = None
+            elif event.type() == QtCore.QEvent.Wheel and event.modifiers() & QtCore.Qt.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta:
+                    step = 0.12 if delta > 0 else -0.12
+                    new_scale = max(0.6, min(2.4, self._font_scale + step))
+                    if not math.isclose(new_scale, self._font_scale, rel_tol=1e-3, abs_tol=1e-3):
+                        self._font_scale = new_scale
+                        self._apply_font_scale()
+                        self.canvas.draw_idle()
+                event.accept()
+                return True
         return super().eventFilter(source, event)
 
     def dragEnterEvent(self, event):
@@ -490,13 +648,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         values = np.asarray(payload.get("values") or [], dtype=float)
         color = payload.get("color") or self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)]
         label = payload.get("label") or Path(payload.get("spec_path", "")).name
+        spec_path = payload.get("spec_path", "")
+        channel = payload.get("channel")
+        # Avoid duplicating the curve when a drag/drop occurs onto the same popup.
+        for entry in self._curve_entries:
+            if spec_path and spec_path == entry.get("spec_path") and (channel or "") == (entry.get("channel") or ""):
+                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Curve already present", self)
+                return
         entry = {
             "label": label,
             "axis_vals": axis_vals,
             "values": values,
             "color": color,
-            "spec_path": payload.get("spec_path", ""),
-            "channel": payload.get("channel"),
+            "spec_path": spec_path,
+            "channel": channel,
             "axis_label": payload.get("axis_label", self.axis_label),
             "axis_unit": payload.get("axis_unit", self.axis_unit),
         }

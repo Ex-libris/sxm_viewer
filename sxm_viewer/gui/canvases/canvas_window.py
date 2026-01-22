@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+import math
 
 from ..._shared import QtCore, QtGui, QtWidgets, np
 from ..constants import (
@@ -718,6 +719,37 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
     def _arrange_by_kind(self, groups: list[dict]):
         return canvas_window_actions.arrange_by_kind(self, groups)
 
+    def _reflow_items_in_grid(self, items, target_width=None):
+        tiles = [i for i in items if isinstance(i, CanvasImageItem)]
+        if not tiles:
+            return
+        if target_width is None:
+            widths = [float(i.boundingRect().width()) for i in tiles if i.boundingRect().width() > 0]
+            if widths:
+                target_width = float(np.median(widths))
+            else:
+                target_width = 280.0
+        cols = max(1, int(round(math.sqrt(len(tiles)))))
+        rows = int(math.ceil(len(tiles) / cols))
+        ordered = sorted(tiles, key=lambda it: (round(it.pos().y(), 2), round(it.pos().x(), 2)))
+        margin = CANVAS_ALIGN_MARGIN
+        gap_x = CANVAS_ALIGN_GAP
+        gap_y = CANVAS_ALIGN_GAP
+        index = 0
+        y = margin
+        for _ in range(rows):
+            row_items = ordered[index : index + cols]
+            index += cols
+            if not row_items:
+                continue
+            row_height = max(float(item.boundingRect().height()) for item in row_items)
+            x = margin
+            for item in row_items:
+                item.setPos(x, y)
+                width = float(item.boundingRect().width()) or target_width
+                x += width + gap_x
+            y += row_height + gap_y
+
     def _on_align_selected(self):
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
         if len(selected) < 2:
@@ -765,7 +797,39 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 continue
             groups.setdefault(item.file_path, {})[kind] = item
         if not groups:
+            self._reflow_items_in_grid(items, target_width)
+        self.status_label.setText(
+            f"\U0001f512 Grid locked at {target_width:.0f}px width - click Reset alignment to unlock"
+        )
+        self._push_undo_state()
+
+    def _on_polish_layout(self):
+        items = [i for i in self.scene.items() if isinstance(i, CanvasImageItem)]
+        if not items:
             return
+        target_width = self._last_aligned_width
+        if target_width is None:
+            widths = [float(i.boundingRect().width()) for i in items if i.boundingRect().width() > 0]
+            target_width = float(np.median(widths)) if widths else 300.0
+        for item in items:
+            try:
+                item.set_canvas_width(target_width)
+                item.set_show_colorbar(self._global_show_colorbar)
+                item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
+                item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
+                item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item._fixed_text_scale_value = self._global_text_scale
+                item._use_fixed_text_scale = True
+                item.set_locked_text_scale(None)
+                item._update_rendered_pixmap()
+            except Exception:
+                continue
+        self._last_aligned_width = target_width
+        self._grid_locked = True
+        self._reflow_items_in_grid(items, target_width)
+        self.status_label.setText("Polished layout: normalized tile sizes and annotations")
+        self._push_undo_state()
+        return
         kinds = ["topo", "current", "df"]
         columns = []
         for file_path, group in groups.items():

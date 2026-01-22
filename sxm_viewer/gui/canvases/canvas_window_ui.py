@@ -190,10 +190,13 @@ def build_toolbar(window):
     window.align_btn.setToolTip(CANVAS_TOOLTIPS["align_selected"])
     window.align_channels_btn = QtWidgets.QPushButton(CANVAS_BUTTON_TEXT["align_by_channel"])
     window.align_channels_btn.setToolTip(CANVAS_TOOLTIPS["align_by_channel"])
+    window.polish_btn = QtWidgets.QPushButton(CANVAS_BUTTON_TEXT["polish_layout"])
+    window.polish_btn.setToolTip(CANVAS_TOOLTIPS["polish_layout"])
     window.reset_alignment_btn = QtWidgets.QPushButton(CANVAS_BUTTON_TEXT["reset_alignment"])
     window.reset_alignment_btn.setToolTip(CANVAS_TOOLTIPS["reset_alignment"])
     align_layout.addWidget(window.align_btn)
     align_layout.addWidget(window.align_channels_btn)
+    align_layout.addWidget(window.polish_btn)
     align_layout.addWidget(window.reset_alignment_btn)
     row2.addWidget(align_group)
 
@@ -217,6 +220,7 @@ def build_toolbar(window):
     window.canvas_color_btn.clicked.connect(window._on_canvas_color_clicked)
     window.align_btn.clicked.connect(window._on_align_selected)
     window.align_channels_btn.clicked.connect(window._on_align_by_channels)
+    window.polish_btn.clicked.connect(window._on_polish_layout)
     window.reset_alignment_btn.clicked.connect(window._reset_locked_alignment)
 
     window._on_overlay_info_toggled(window.overlay_info_check.isChecked())
