@@ -1,0 +1,10 @@
+[tool.poetry]
+name = "nanonispy2"
+version = "1.1.0"
+description = "Read Nanonis data files. Forked from https://github.com/underchemist/nanonispy"
+authors = ["Julian Ceddia <jdceddia@gmail.com>"]
+license = "MIT"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

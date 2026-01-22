@@ -86,6 +86,15 @@ def parse_header(path: Path | str) -> Tuple[Dict[str, object], List[Dict[str, ob
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        lower = stripped.lower()
+        if lower in {"filedescbegin", "filedescend"}:
+            # ANFATEC headers wrap channel blocks with FileDescBegin/End markers.
+            if lower == "filedescbegin":
+                _flush_current()
+                current = ChannelInfo()
+            else:
+                _flush_current()
+            continue
         if stripped.startswith("[") and stripped.endswith("]"):
             # Section markers typically separate channels; start a new record.
             _flush_current()
@@ -426,3 +435,6 @@ __all__ = [
     "read_channel_file",
     "normalize_unit_and_data",
 ]
+
+
+

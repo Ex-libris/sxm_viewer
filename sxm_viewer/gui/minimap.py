@@ -1,7 +1,7 @@
 """Mini-map widget showing SXM frames relative positions."""
 from __future__ import annotations
 
-from .._shared import *
+from .._shared import QtCore, QtGui, QtWidgets, QPainter, QPen, QBrush, Path, np
 
 
 class FrameMiniMap(QtWidgets.QWidget):
@@ -306,4 +306,7 @@ class FrameMiniMap(QtWidgets.QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+
+
 

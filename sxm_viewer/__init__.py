@@ -6,3 +6,6 @@ from .gui.main_window import SXMGridViewer
 
 __all__ = ["main", "SXMGridViewer"]
 __version__ = "0.1.0"
+
+
+
