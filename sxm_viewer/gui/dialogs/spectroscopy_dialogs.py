@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes, InsetPosition
 
 from ..._shared import (
     QtCore,
@@ -137,6 +137,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def __init__(self, spec, parent=None):
         super().__init__(parent)
         self.spec = spec
+        self.viewer = parent
         self.setWindowTitle(f"Spectroscopy: {Path(spec['path']).name}")
         self.resize(720, 520)
         layout = QtWidgets.QVBoxLayout()
@@ -167,9 +168,19 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._grid_enabled = True
         self._legend_enabled = True
         self._show_markers = False
+        self._show_line = True
         self._x_log = False
         self._y_log = False
         self._line_width = 1.5
+        self._show_position_inset = True
+        self._position_inset_ax = None
+        self._inset_bbox = None
+        self._inset_drag_cids = []
+        self._inset_dragging = False
+        self._inset_drag_offset = (0.0, 0.0)
+        self._show_position_inset = True
+        self._position_inset_ax = None
+        self.viewer = parent if isinstance(parent, QtWidgets.QWidget) else None
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
@@ -344,37 +355,42 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         if axis_unit and axis_unit not in axis_label:
             axis_label = f"{axis_label} ({axis_unit})"
         plotted = False
-        plotted_values: list[np.ndarray] = []
+        active_marker = 'o' if self._show_markers else None
+        if not self._show_line and active_marker is None:
+            active_marker = 'o'
         for entry in self._curve_entries:
             axis_vals = np.asarray(entry.get("axis_vals", []), dtype=float)
             values = np.asarray(entry.get("values", []), dtype=float)
             if axis_vals.size == 0 or values.size == 0:
                 continue
             scaled_axis = axis_vals * axis_plot_scale
-            marker = 'o' if self._show_markers else None
             self.ax.plot(
                 scaled_axis,
                 values,
                 color=entry.get("color", '#c94cfa'),
-                lw=self._line_width,
-                marker=marker,
-                markersize=4 if marker else None,
+                lw=self._line_width if self._show_line else 0.0,
+                linestyle='-' if self._show_line else 'None',
+                marker=active_marker,
+                markersize=4 if active_marker else None,
                 label=entry.get("label", "Data"),
             )
             plotted = True
-            plotted_values.append(values)
         self._axis_plot_scale = axis_plot_scale
         self._axis_plot_unit = axis_plot_unit
         self._apply_axis_scaling()
         self.ax.set_xlabel(axis_label)
         name = self.channel_combo.currentText()
         self.ax.set_ylabel(self._channel_label_with_unit(name))
-        self.ax.grid(self._grid_enabled, alpha=0.25)
+        if self._grid_enabled:
+            self.ax.grid(True, alpha=0.25)
+        else:
+            self.ax.grid(False)
         if plotted and self._legend_enabled:
             self.ax.legend()
         if self._last_fit_result and self._last_fit_result.get('channel') == name:
             self._draw_fit_overlay(self._last_fit_result)
         self._apply_font_scale()
+        self._update_position_inset()
         self.canvas.draw_idle()
 
     def _on_canvas_context_menu(self, pos):
@@ -392,6 +408,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         marker_act = style_menu.addAction("Show markers")
         marker_act.setCheckable(True)
         marker_act.setChecked(self._show_markers)
+        lines_act = style_menu.addAction("Show lines")
+        lines_act.setCheckable(True)
+        lines_act.setChecked(self._show_line)
         style_menu.addSeparator()
         xlog_act = style_menu.addAction("Log X axis")
         xlog_act.setCheckable(True)
@@ -401,9 +420,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         ylog_act.setChecked(self._y_log)
         style_menu.addSeparator()
         width_menu = style_menu.addMenu("Line width")
+        width_actions = []
+        width_presets = [
+            ("Ultra thin (0.6 px)", 0.6),
+            ("Thin (1.0 px)", 1.0),
+            ("Medium (1.6 px)", 1.6),
+            ("Bold (2.4 px)", 2.4),
+            ("Heavy (3.5 px)", 3.5),
+        ]
+        for label, value in width_presets:
+            act = width_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(abs(self._line_width - value) < 0.25)
+            act.setData(("line_width", value))
+            width_actions.append(act)
+        width_menu.addSeparator()
         width_inc_act = width_menu.addAction("Increase")
         width_dec_act = width_menu.addAction("Decrease")
         style_menu.addSeparator()
+        position_act = style_menu.addAction("Show position inset")
+        position_act.setCheckable(True)
+        position_act.setChecked(self._show_position_inset)
         reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action == copy_data_act:
@@ -421,14 +458,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         elif action == marker_act:
             self._show_markers = marker_act.isChecked()
             self._plot_selected_channel()
+        elif action == lines_act:
+            self._show_line = lines_act.isChecked()
+            self._plot_selected_channel()
         elif action == xlog_act:
             self._set_axis_log("x", xlog_act.isChecked())
         elif action == ylog_act:
             self._set_axis_log("y", ylog_act.isChecked())
+        elif action in width_actions:
+            data = action.data()
+            if isinstance(data, tuple):
+                self._line_width = float(data[1])
+                if self._line_width <= 0 and not self._show_markers:
+                    self._show_markers = True
+            self._plot_selected_channel()
         elif action == width_inc_act:
             self._adjust_line_width(+0.4)
         elif action == width_dec_act:
             self._adjust_line_width(-0.4)
+        elif action == position_act:
+            self._show_position_inset = position_act.isChecked()
+            self._plot_selected_channel()
         elif action == reset_act:
             self._reset_plot_style()
 
@@ -497,6 +547,39 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy SVG: {exc}")
 
+    def _attach_spec_metadata(self, entry):
+        spec = entry.get("spec")
+        if spec is None:
+            spec = self._resolve_spec_from_viewer(entry)
+            if spec:
+                entry["spec"] = spec
+        if spec:
+            entry.setdefault("matrix_index", spec.get("matrix_index"))
+            entry.setdefault("image_key", str(spec.get("image_key") or ""))
+            entry.setdefault("nm_coords", (spec.get("x"), spec.get("y")))
+            coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"))
+            if coords:
+                entry["coords"] = coords
+        return entry
+
+    def _resolve_spec_from_viewer(self, entry):
+        viewer = getattr(self, "viewer", None)
+        if not viewer:
+            return None
+        path = entry.get("spec_path")
+        if not path:
+            return None
+        matrix_index = entry.get("matrix_index")
+        image_key = entry.get("image_key")
+        candidates = [spec for spec in getattr(viewer, "spectros", []) if str(spec.get("path")) == str(path)]
+        if image_key:
+            candidates = [spec for spec in candidates if str(spec.get("image_key")) == str(image_key)]
+        if matrix_index is not None:
+            for spec in candidates:
+                if spec.get("matrix_index") == matrix_index:
+                    return spec
+        return candidates[0] if candidates else None
+
     def _initialize_curve_entries(self):
         channel = self.channel_combo.currentText()
         axis_vals = np.asarray(self.axes[0]["values"], dtype=float) if self.axes else np.asarray([], dtype=float)
@@ -510,7 +593,13 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "channel": channel,
             "axis_label": self.axis_label,
             "axis_unit": self.axis_unit,
+            "spec": self.spec,
+            "matrix_index": self.spec.get("matrix_index"),
+            "image_key": str(self.spec.get("image_key") or ""),
+            "coords": None,
+            "nm_coords": (self.spec.get("x"), self.spec.get("y")),
         }
+        self._attach_spec_metadata(entry)
         self._curve_entries = [entry]
         self._selected_curve_index = 0
         self._update_curve_list()
@@ -559,7 +648,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         sequences = []
         key = "axis_vals" if axis == "x" else "values"
         for entry in self._curve_entries:
-            data = np.asarray(entry.get(key) or [], dtype=float)
+            raw = entry.get(key)
+            if raw is None:
+                continue
+            data = np.asarray(raw, dtype=float)
             if data.size:
                 sequences.append(data)
         if not sequences:
@@ -587,9 +679,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._grid_enabled = True
         self._legend_enabled = True
         self._show_markers = False
+        self._show_line = True
         self._x_log = False
         self._y_log = False
         self._line_width = 1.5
+        self._show_position_inset = True
         self._plot_selected_channel()
 
     def _show_plot_warning(self, message: str):
@@ -603,6 +697,190 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self._y_log = False
         self.ax.set_xscale("log" if self._x_log else "linear")
         self.ax.set_yscale("log" if self._y_log else "linear")
+
+    def _load_thumbnail_array(self, file_key=None):
+        viewer = getattr(self, "viewer", None)
+        file_key = file_key or str(self.spec.get("image_key") or "")
+        if not viewer or not file_key:
+            return None
+        thumb = None
+        label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
+        if label is not None and label.pixmap():
+            thumb = label.pixmap()
+        if thumb is None:
+            try:
+                width = int(getattr(viewer, "thumb_size_px", 160))
+                height = max(48, int(round(width * 0.75)))
+                cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
+                cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
+                channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
+                thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
+            except Exception:
+                return None
+        if thumb is None:
+            return None
+        qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
+        ptr = qimg.bits()
+        ptr.setsize(qimg.byteCount())
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((qimg.height(), qimg.width(), 4))
+        arr = arr[..., :3] / 255.0
+        gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
+        tinted = np.stack([gray, gray, gray], axis=-1)
+        return tinted
+
+    def _spec_thumbnail_coords(self, spec=None, file_key=None):
+        viewer = getattr(self, "viewer", None)
+        spec = spec or self.spec
+        file_key = file_key or str(spec.get("image_key") or "")
+        if not viewer or not file_key or spec is None:
+            return None
+        header, _ = viewer.headers.get(file_key, (None, None))
+        if header is None:
+            return None
+        width = int(getattr(viewer, "thumb_size_px", 160))
+        height = max(48, int(round(width * 0.75)))
+        try:
+            coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=file_key)
+        except Exception:
+            coords = None
+        return coords
+
+    def _update_position_inset(self):
+        if self._position_inset_ax is not None:
+            try:
+                self._position_inset_ax.remove()
+            except Exception:
+                pass
+            self._position_inset_ax = None
+        if not self._show_position_inset:
+            self._remove_inset_drag_handlers()
+            return
+        base_entry = self._curve_entries[0] if self._curve_entries else None
+        base_key = base_entry.get("image_key") if base_entry else str(self.spec.get("image_key") or "")
+        image = self._load_thumbnail_array(base_key)
+        markers = self._collect_inset_markers(base_key)
+        if image is None or not markers:
+            self._remove_inset_drag_handlers()
+            return
+        if self._inset_bbox is None:
+            self._inset_bbox = [0.04, 0.04, 0.32, 0.32]
+        self._position_inset_ax = inset_axes(self.ax, width="28%", height="28%", loc="lower left", borderpad=0.8)
+        self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+        self._position_inset_ax.imshow(image, origin="upper")
+        self._position_inset_ax.set_xticks([])
+        self._position_inset_ax.set_yticks([])
+        self._position_inset_ax.set_title("Position", fontsize=7.5 * self._font_scale)
+        for color, coords in markers:
+            try:
+                self._position_inset_ax.scatter(
+                    coords[0],
+                    coords[1],
+                    s=52,
+                    facecolors="none",
+                    edgecolors=color,
+                    linewidths=1.7,
+                )
+            except Exception:
+                continue
+        self._install_inset_drag_handlers()
+
+    def _install_inset_drag_handlers(self):
+        """Install matplotlib callbacks so the inset can be dragged."""
+        self._remove_inset_drag_handlers()
+        if not self.canvas:
+            return
+
+        def on_press(event):
+            if event.button != MouseButton.LEFT:
+                return
+            if self._position_inset_ax is None or not self._show_position_inset:
+                return
+            bbox = self._position_inset_ax.bbox
+            if bbox is None:
+                return
+            if bbox.contains(event.x, event.y):
+                self._inset_dragging = True
+                self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
+
+        def on_motion(event):
+            if not self._inset_dragging or self._position_inset_ax is None:
+                return
+            if event.x is None or event.y is None:
+                return
+            bbox = self._position_inset_ax.bbox
+            if bbox is None:
+                return
+            new_x = event.x - self._inset_drag_offset[0]
+            new_y = event.y - self._inset_drag_offset[1]
+            try:
+                inv = self.ax.transAxes.inverted()
+            except Exception:
+                return
+            ax_coords = inv.transform((new_x, new_y))
+            width = self._inset_bbox[2] if self._inset_bbox is not None else 0.28
+            height = self._inset_bbox[3] if self._inset_bbox is not None else 0.28
+            x0 = min(max(ax_coords[0], 0.0), 1.0 - width)
+            y0 = min(max(ax_coords[1], 0.0), 1.0 - height)
+            if self._inset_bbox is None:
+                self._inset_bbox = [x0, y0, width, height]
+            else:
+                self._inset_bbox[0] = x0
+                self._inset_bbox[1] = y0
+            self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+            self.canvas.draw_idle()
+
+        def on_release(event):
+            if event.button != MouseButton.LEFT:
+                return
+            self._inset_dragging = False
+
+        self._inset_drag_cids = [
+            self.canvas.mpl_connect("button_press_event", on_press),
+            self.canvas.mpl_connect("motion_notify_event", on_motion),
+            self.canvas.mpl_connect("button_release_event", on_release),
+        ]
+
+    def _remove_inset_drag_handlers(self):
+        cids = getattr(self, "_inset_drag_cids", None) or []
+        if self.canvas:
+            for cid in cids:
+                try:
+                    self.canvas.mpl_disconnect(cid)
+                except Exception:
+                    pass
+        self._inset_drag_cids = []
+        self._inset_dragging = False
+        self._inset_drag_offset = (0.0, 0.0)
+
+    def _collect_inset_markers(self, image_key):
+        markers = []
+        if not self._curve_entries:
+            coords = self._spec_thumbnail_coords()
+            if coords is not None:
+                markers.append(("#ff3b6a", coords))
+            return markers
+        for entry in self._curve_entries:
+            if image_key and entry.get("image_key") and entry.get("image_key") != image_key:
+                continue
+            color = entry.get("color", "#ff3b6a")
+            coords = entry.get("coords")
+            if coords is None:
+                spec = entry.get("spec")
+                if spec is None:
+                    spec = self._resolve_spec_from_viewer(entry)
+                    if spec:
+                        entry["spec"] = spec
+                if spec:
+                    coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"))
+                    if coords:
+                        entry["coords"] = coords
+            if coords is not None:
+                markers.append((color, coords))
+        if not markers:
+            coords = self._spec_thumbnail_coords()
+            if coords is not None:
+                markers.append(("#ff3b6a", coords))
+        return markers
 
     def eventFilter(self, source, event):
         if source == self.canvas:
@@ -664,7 +942,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "channel": channel,
             "axis_label": payload.get("axis_label", self.axis_label),
             "axis_unit": payload.get("axis_unit", self.axis_unit),
+            "matrix_index": payload.get("matrix_index"),
+            "image_key": payload.get("image_key"),
+            "coords": tuple(payload.get("coords")) if payload.get("coords") else None,
+            "nm_coords": tuple(payload.get("nm_coords")) if payload.get("nm_coords") else None,
         }
+        self._attach_spec_metadata(entry)
         self._curve_entries.append(entry)
         self._selected_curve_index = len(self._curve_entries) - 1
         self._update_curve_list()
@@ -685,6 +968,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "channel": entry.get("channel"),
             "axis_label": entry.get("axis_label"),
             "axis_unit": entry.get("axis_unit"),
+            "matrix_index": entry.get("matrix_index"),
+            "image_key": entry.get("image_key"),
+            "coords": entry.get("coords"),
+            "nm_coords": entry.get("nm_coords"),
         }
         mime.setData("application/x-sxm-spectroscopy", json.dumps(payload).encode("utf-8"))
         drag.setMimeData(mime)

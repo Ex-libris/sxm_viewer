@@ -317,6 +317,21 @@ def _scan_spectros(viewer, folder:Path):
             spec['grid_col'] = int(col)
             spec['matrix_index'] = int(row * grid_cols + col)
 
+    def _clone_spec_entry(spec):
+        clone = dict(spec)
+        channels = spec.get("channels")
+        if isinstance(channels, dict):
+            clone["channels"] = dict(channels)
+        axis_choices = spec.get("AxisChoices")
+        if isinstance(axis_choices, (list, tuple)):
+            clone["AxisChoices"] = [dict(ax) for ax in axis_choices]
+        return clone
+
+    def _reset_spec_classification(spec):
+        for key in ("matrix_dataset", "grid_rows", "grid_cols", "matrix_index", "grid_row", "grid_col", "channel_name", "channel_code"):
+            if key in spec:
+                spec.pop(key, None)
+
     def _classify_file(spec_list, path_obj: Path):
         info = {
             "is_matrix": False,
@@ -426,7 +441,8 @@ def _scan_spectros(viewer, folder:Path):
             continue
 
         if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
-            spec_list = cached.get('data') or []
+            raw_list = cached.get('data') or []
+            spec_list = [_clone_spec_entry(entry) for entry in raw_list]
         else:
             spec_list = None
             parse_error = None
@@ -510,7 +526,9 @@ def _scan_spectros(viewer, folder:Path):
                         s['time'] = datetime.fromtimestamp(mtime)
                     except Exception:
                         pass
-            cache[norm_key] = {'mtime': mtime, 'data': spec_list}
+            cache[norm_key] = {'mtime': mtime, 'data': [_clone_spec_entry(spec) for spec in spec_list]}
+        for spec in spec_list or []:
+            _reset_spec_classification(spec)
         specs.extend(spec_list or [])
         info = _classify_file(spec_list, p)
         if info.get("is_matrix"):
