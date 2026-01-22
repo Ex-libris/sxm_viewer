@@ -178,8 +178,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_drag_cids = []
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
-        self._show_position_inset = True
-        self._position_inset_ax = None
+        self._suppress_drag_until_release = False
         self.viewer = parent if isinstance(parent, QtWidgets.QWidget) else None
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
@@ -286,6 +285,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 }
             )
         return axes
+
+    def _axis_values_for_spec(self, spec, axis_key):
+        """Return axis values/label/unit for a given spec and axis key."""
+        if spec is None:
+            return np.asarray([]), "Axis", ""
+        axis_key = axis_key or "primary"
+        choices = spec.get("AxisChoices") or []
+        for choice in choices:
+            key = choice.get("key") or choice.get("label")
+            if key == axis_key:
+                vals = np.asarray(choice.get("values", []), dtype=float)
+                return vals, choice.get("label") or "Axis", choice.get("unit") or ""
+        if axis_key == "alt":
+            alt_vals = spec.get("AltAxis")
+            if alt_vals is not None:
+                vals = np.asarray(alt_vals, dtype=float)
+                return vals, spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or "nm"
+        vals = np.asarray(spec.get("V", []), dtype=float)
+        label = spec.get("AxisLabel") or "Axis"
+        unit = spec.get("AxisUnit") or ""
+        return vals, label, unit
 
     def _on_axis_changed(self, idx):
         key = self.axis_combo.currentData()
@@ -851,6 +871,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_drag_cids = []
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
+        self._suppress_drag_until_release = False
 
     def _collect_inset_markers(self, image_key):
         markers = []
@@ -882,16 +903,50 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 markers.append(("#ff3b6a", coords))
         return markers
 
+    def _qt_pos_hits_inset(self, pos):
+        if self._position_inset_ax is None or pos is None:
+            return False
+        try:
+            bbox = self._position_inset_ax.get_window_extent()
+        except Exception:
+            return False
+        if bbox is None:
+            return False
+        try:
+            dpr = float(self.canvas.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        try:
+            height = self.canvas.height() * dpr
+        except Exception:
+            height = self.canvas.height()
+        x = float(pos.x()) * dpr
+        y = float(height - (pos.y() * dpr))
+        try:
+            return bool(bbox.contains(x, y))
+        except Exception:
+            return False
+
     def eventFilter(self, source, event):
         if source == self.canvas:
             if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
-                self._drag_start_pos = event.pos()
-            elif event.type() == QtCore.QEvent.MouseMove and self._drag_start_pos is not None:
+                if self._qt_pos_hits_inset(event.pos()):
+                    self._drag_start_pos = None
+                    self._suppress_drag_until_release = True
+                else:
+                    self._drag_start_pos = event.pos()
+                    self._suppress_drag_until_release = False
+            elif (
+                event.type() == QtCore.QEvent.MouseMove
+                and self._drag_start_pos is not None
+                and not self._suppress_drag_until_release
+            ):
                 if (event.pos() - self._drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
                     self._start_drag()
                     self._drag_start_pos = None
             elif event.type() == QtCore.QEvent.MouseButtonRelease:
                 self._drag_start_pos = None
+                self._suppress_drag_until_release = False
             elif event.type() == QtCore.QEvent.Wheel and event.modifiers() & QtCore.Qt.ControlModifier:
                 delta = event.angleDelta().y()
                 if delta:
@@ -946,12 +1001,58 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "image_key": payload.get("image_key"),
             "coords": tuple(payload.get("coords")) if payload.get("coords") else None,
             "nm_coords": tuple(payload.get("nm_coords")) if payload.get("nm_coords") else None,
+            "spec": payload.get("spec"),
         }
         self._attach_spec_metadata(entry)
         self._curve_entries.append(entry)
         self._selected_curve_index = len(self._curve_entries) - 1
         self._update_curve_list()
         self._plot_selected_channel()
+
+    def add_external_spectrum(self, spec, channel=None, axis_key=None):
+        """Append another spectroscopy entry into this popup."""
+        if spec is None:
+            return False
+        channels = spec.get("channels") or {}
+        channel_name = channel or self.channel_combo.currentText()
+        data = np.asarray(channels.get(channel_name) or [], dtype=float)
+        if data.size == 0:
+            for name, values in channels.items():
+                arr = np.asarray(values, dtype=float)
+                if arr.size:
+                    channel_name = name
+                    data = arr
+                    break
+        if data.size == 0:
+            return False
+        axis_key = axis_key or self.axis_combo.currentData()
+        axis_vals, axis_label, axis_unit = self._axis_values_for_spec(spec, axis_key)
+        axis_vals = np.asarray(axis_vals, dtype=float)
+        if axis_vals.size == 0:
+            return False
+        n = min(len(axis_vals), len(data))
+        if n <= 0:
+            return False
+        if len(axis_vals) != len(data):
+            axis_vals = axis_vals[:n]
+            data = data[:n]
+        payload = {
+            "label": f"{Path(spec.get('path', '')).name} ({channel_name})",
+            "axis_vals": axis_vals,
+            "values": data,
+            "color": self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)],
+            "spec_path": str(Path(spec.get("path", ""))),
+            "channel": channel_name,
+            "axis_label": axis_label,
+            "axis_unit": axis_unit,
+            "matrix_index": spec.get("matrix_index"),
+            "image_key": str(spec.get("image_key") or ""),
+            "coords": None,
+            "nm_coords": (spec.get("x"), spec.get("y")),
+            "spec": spec,
+        }
+        self._add_entry_from_drop(payload)
+        return True
 
     def _start_drag(self):
         entry = self._current_entry()
@@ -2120,6 +2221,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._delta_annotation_artists = []
         self.setWindowTitle("Spectroscopy comparison")
         self.resize(1400, 700)  # Increased size for better layout
+        self._plot_grid_enabled = True
+        self._plot_legend_enabled = True
+        self._plot_x_log = False
+        self._plot_y_log = False
+        self._plot_line_width = 1.6
         self._build_ui()
         self._populate_list()
         self._populate_channels()
@@ -2811,12 +2917,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._record_user_action(f"Channel → {self.channel_combo.currentText()}")
         self._fit_results = {}
         self._populate_results_table()
+        self._validate_log_axes()
         self._update_plot()
 
     def _on_axis_changed(self):
         self._record_user_action(f"Axis → {self.axis_combo.currentText()}")
         self._fit_results = {}
         self.results_table.setRowCount(0)
+        self._validate_log_axes()
         self._update_plot()
 
     def _on_relative_toggled(self, checked):
@@ -2835,7 +2943,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _update_plot(self):
         channel = self.channel_combo.currentText()
         self.ax.clear()
-        self.ax.grid(True, alpha=0.2)
+        self.ax.grid(self._plot_grid_enabled, alpha=0.25 if self._plot_grid_enabled else 0.0)
         self._lcpd_line_info.clear()
         self._clear_delta_selection(redraw=False)
         self._line_map.clear()
@@ -2900,9 +3008,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
+            base_width = self._plot_line_width
             line_kwargs = {
                 "color": color,
-                "lw": 2.4 if highlight else 1.2,
+                "lw": base_width * (1.35 if highlight else 0.85),
                 "alpha": 1.0 if highlight else 0.4,
                 "label": label_txt,
             }
@@ -2922,7 +3031,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
         if plotted == 0:
             self.ax.text(0.5,0.5,"No data for selected items", ha='center', va='center', transform=self.ax.transAxes)
-        else:
+        elif self._plot_legend_enabled:
             legend = self.ax.legend(loc='best', fontsize=8)
             if legend:
                 legend.set_draggable(True)
@@ -2959,9 +3068,82 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if unit:
                 break
         self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
+        self.ax.set_xscale("log" if self._plot_x_log else "linear")
+        self.ax.set_yscale("log" if self._plot_y_log else "linear")
         self._apply_font_scale()
         # canvas.draw_idle() is called in _apply_font_scale
         self._update_status(plotted)
+
+    def _validate_log_axes(self):
+        if not getattr(self, "_plot_x_log", False) and not getattr(self, "_plot_y_log", False):
+            return
+        invalid = False
+        if self._plot_x_log and not self._entries_support_log_axis("x"):
+            self._plot_x_log = False
+            invalid = True
+        if self._plot_y_log and not self._entries_support_log_axis("y"):
+            self._plot_y_log = False
+            invalid = True
+        if invalid:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Log axis disabled (non-positive values)", self)
+
+    def _entries_support_log_axis(self, axis: str) -> bool:
+        axis = (axis or "x").lower()
+        items = self._checked_items() or self._selected_items()
+        if not items:
+            return False
+        channel = self.channel_combo.currentText()
+        for item in items:
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            x_vals, _, _ = self._axis_for_spec(spec)
+            channels = spec.get("channels") or {}
+            y_vals = channels.get(channel)
+            arr = x_vals if axis == "x" else y_vals
+            if arr is None:
+                return False
+            vec = np.asarray(arr, dtype=float)
+            vec = vec[np.isfinite(vec)]
+            if not vec.size:
+                return False
+            if np.nanmin(vec) <= 0.0:
+                return False
+        return True
+
+    def _set_plot_axis_log(self, axis: str, enabled: bool):
+        axis = (axis or "x").lower()
+        attr = "_plot_x_log" if axis == "x" else "_plot_y_log"
+        if enabled:
+            if not self._entries_support_log_axis(axis):
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Log axis unavailable",
+                    f"Cannot enable log scale on the {axis.upper()} axis because the plotted data contains zero or negative values.",
+                )
+                return
+        setattr(self, attr, bool(enabled))
+        self._update_plot()
+
+    def _reset_plot_style(self):
+        self._plot_grid_enabled = True
+        self._plot_legend_enabled = True
+        self._plot_x_log = False
+        self._plot_y_log = False
+        self._plot_line_width = 1.6
+        self._set_visual_checkbox(self.show_points_cb, False)
+        self._set_visual_checkbox(self.lines_cb, True)
+        self._update_plot()
+
+    def _set_visual_checkbox(self, checkbox, state):
+        checkbox.blockSignals(True)
+        checkbox.setChecked(bool(state))
+        checkbox.blockSignals(False)
+        self._on_visual_toggle(bool(state))
+
+    def _bump_line_width(self, delta):
+        self._plot_line_width = float(min(4.5, max(0.4, self._plot_line_width + delta)))
+        self._update_plot()
 
     def _iter_color_cycle(self):
         palette = self._color_cycle or get_color_cycle(DEFAULT_COLOR_CYCLE)
@@ -3237,6 +3419,47 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         menu.addSeparator()
         save_png = menu.addAction("Save PNG...")
         save_svg = menu.addAction("Save SVG...")
+        menu.addSeparator()
+        style_menu = menu.addMenu("Plot style")
+        grid_act = style_menu.addAction("Show grid")
+        grid_act.setCheckable(True)
+        grid_act.setChecked(self._plot_grid_enabled)
+        legend_act = style_menu.addAction("Show legend")
+        legend_act.setCheckable(True)
+        legend_act.setChecked(self._plot_legend_enabled)
+        points_act = style_menu.addAction("Show points")
+        points_act.setCheckable(True)
+        points_act.setChecked(self.show_points_cb.isChecked())
+        lines_act = style_menu.addAction("Show lines")
+        lines_act.setCheckable(True)
+        lines_act.setChecked(self.lines_cb.isChecked())
+        style_menu.addSeparator()
+        xlog_act = style_menu.addAction("Log X axis")
+        xlog_act.setCheckable(True)
+        xlog_act.setChecked(self._plot_x_log)
+        ylog_act = style_menu.addAction("Log Y axis")
+        ylog_act.setCheckable(True)
+        ylog_act.setChecked(self._plot_y_log)
+        style_menu.addSeparator()
+        width_menu = style_menu.addMenu("Line width")
+        width_actions = []
+        width_presets = [
+            ("Ultra thin (0.6 px)", 0.6),
+            ("Thin (1.0 px)", 1.0),
+            ("Medium (1.6 px)", 1.6),
+            ("Bold (2.4 px)", 2.4),
+            ("Heavy (3.5 px)", 3.5),
+        ]
+        for label, value in width_presets:
+            act = width_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(abs(self._plot_line_width - value) < 0.21)
+            act.setData(value)
+            width_actions.append(act)
+        width_menu.addSeparator()
+        width_inc_act = width_menu.addAction("Increase")
+        width_dec_act = width_menu.addAction("Decrease")
+        reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action == copy_png:
             self._copy_canvas_to_clipboard("png")
@@ -3246,6 +3469,33 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._save_canvas("png")
         elif action == save_svg:
             self._save_canvas("svg")
+        elif action == grid_act:
+            self._plot_grid_enabled = grid_act.isChecked()
+            self._update_plot()
+        elif action == legend_act:
+            self._plot_legend_enabled = legend_act.isChecked()
+            self._update_plot()
+        elif action == points_act:
+            self._set_visual_checkbox(self.show_points_cb, points_act.isChecked())
+        elif action == lines_act:
+            self._set_visual_checkbox(self.lines_cb, lines_act.isChecked())
+        elif action == xlog_act:
+            self._set_plot_axis_log("x", xlog_act.isChecked())
+        elif action == ylog_act:
+            self._set_plot_axis_log("y", ylog_act.isChecked())
+        elif action in width_actions:
+            val = action.data()
+            try:
+                self._plot_line_width = float(val)
+                self._update_plot()
+            except Exception:
+                pass
+        elif action == width_inc_act:
+            self._bump_line_width(+0.4)
+        elif action == width_dec_act:
+            self._bump_line_width(-0.4)
+        elif action == reset_act:
+            self._reset_plot_style()
 
     def _on_compare_canvas_keypress(self, event):
         if not event or not hasattr(event, "key"):
@@ -3423,7 +3673,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _on_visual_toggle(self, checked):
         sender = self.sender()
-        label = sender.text() if sender else "Visual toggle"
+        label = "Visual toggle"
+        if sender:
+            text_attr = getattr(sender, "text", None)
+            if callable(text_attr):
+                try:
+                    label = text_attr() or label
+                except Exception:
+                    pass
         self._record_user_action(f"{label} → {'on' if checked else 'off'}")
         self._update_plot()
 

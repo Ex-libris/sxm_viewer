@@ -38,7 +38,7 @@ from ..palettes import DEFAULT_COLOR_CYCLE
 
 def _open_spectroscopy_popup(viewer, spec):
     if not spec:
-        return
+        return None
     try:
         dlg = SpectroscopyPopup(spec, parent=viewer)
         try:
@@ -51,8 +51,10 @@ def _open_spectroscopy_popup(viewer, spec):
         dlg.show()
         viewer._spectro_popups.append(dlg)
         dlg.finished.connect(lambda _: viewer._spectro_popups.remove(dlg) if dlg in viewer._spectro_popups else None)
+        return dlg
     except Exception as e:
         QtWidgets.QMessageBox.warning(viewer, "Spectroscopy", str(e))
+        return None
 
 
 def _open_multi_spectroscopy_popup(viewer):

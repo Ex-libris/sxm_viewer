@@ -250,6 +250,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_popups = []
         self._popup_refs = []
         self._multi_spectro_popups = []
+        self._multi_single_popup_anchor = None
         self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
@@ -1034,7 +1035,7 @@ QLabel:hover {{
         """Return a cascading popup position within the available screen."""
         screen = QtWidgets.QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1600, 900)
-        base = self.frameGeometry().topLeft() if self.isVisible() else QtGui.QCursor.pos()
+        base = self._popup_spawn_origin()
         # incrementing counter avoids stacking even if dialogs close quickly
         self._popup_counter = (self._popup_counter + 1) % 12
         idx = self._popup_counter
@@ -1042,6 +1043,26 @@ QLabel:hover {{
         # clamp to screen
         x = max(avail.left(), min(pos.x(), avail.right() - 200))
         y = max(avail.top(), min(pos.y(), avail.bottom() - 150))
+        return QtCore.QPoint(x, y)
+
+    def _popup_spawn_origin(self):
+        """Choose a popup origin that stays out of the center of the preview area."""
+        if not self.isVisible():
+            return QtGui.QCursor.pos()
+        try:
+            frame = self.frameGeometry()
+        except Exception:
+            frame = QtCore.QRect()
+        if not frame.isValid():
+            return QtGui.QCursor.pos()
+        # Bias toward the right/top portion of the main window so thumbnails remain unobstructed
+        x = frame.left() + int(frame.width() * 0.65)
+        y = frame.top() + int(frame.height() * 0.15)
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            x = min(max(avail.left(), x), avail.right() - 240)
+            y = min(max(avail.top(), y), avail.bottom() - 200)
         return QtCore.QPoint(x, y)
 
     def reveal_points_for_file(self, file_key):
@@ -2702,7 +2723,18 @@ QLabel:hover {{
             mods = QtCore.Qt.NoModifier
         file_key = str(spec.get('image_key') or spec.get('path') or '')
         if mods & QtCore.Qt.ShiftModifier:
+            key = self._spec_identity_key(spec) if spec else None
+            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
             self._toggle_multi_spec_selection(spec)
+            added = bool(
+                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
+            )
+            if added:
+                self._append_spec_to_single_popup(spec)
+                try:
+                    self._highlight_spectrum_entry(spec)
+                except Exception:
+                    pass
             return
         self._clear_multi_spec_selection()
         force_matrix = bool(mods & QtCore.Qt.ControlModifier)
@@ -3135,30 +3167,68 @@ QLabel:hover {{
             return False
         x, y = coords
         file_key = str(label_widget.property("file_path"))
+        hit_info = None
+        fallback = None
+        best_d2 = None
+        tol_px = 14.0
+        tol2 = tol_px * tol_px
         for info in markers:
             rect = info.get('rect')
-            if rect and rect.contains(x, y):
-                if info.get('label') == 'badge':
-                    self._open_spectro_summary_for_file(file_key)
-                    return True
-                mods = event.modifiers() if event is not None else QtCore.Qt.NoModifier
-                if mods & QtCore.Qt.ShiftModifier:
-                    self._toggle_multi_spec_selection(info.get('spec'))
-                else:
-                    self._clear_multi_spec_selection()
-                    spec = info.get('spec')
-                    force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
-                    is_matrix = info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
-                    if (is_matrix or force_matrix) and file_key:
-                        self._open_matrix_explorer_for_file(file_key)
-                    else:
-                        self._open_spectroscopy_popup(spec)
-                    try:
-                        self._highlight_spectrum_entry(spec)
-                    except Exception:
-                        pass
-                return True
-        return False
+            if rect is None:
+                continue
+            if rect.contains(x, y):
+                hit_info = info
+                break
+            center = rect.center()
+            try:
+                dx = float(x - center.x())
+                dy = float(y - center.y())
+            except Exception:
+                continue
+            d2 = dx * dx + dy * dy
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                fallback = info
+        if hit_info is None and fallback is not None and best_d2 is not None and best_d2 <= tol2:
+            hit_info = fallback
+        if hit_info is None:
+            return False
+        if hit_info.get('label') == 'badge':
+            self._open_spectro_summary_for_file(file_key)
+            return True
+        mods = QtCore.Qt.NoModifier
+        if event is not None:
+            try:
+                mods = event.modifiers()
+            except Exception:
+                mods = QtCore.Qt.NoModifier
+        spec = hit_info.get('spec')
+        if mods & QtCore.Qt.ShiftModifier:
+            key = self._spec_identity_key(spec) if spec else None
+            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
+            self._toggle_multi_spec_selection(spec)
+            added = bool(
+                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
+            )
+            if added:
+                self._append_spec_to_single_popup(spec)
+                try:
+                    self._highlight_spectrum_entry(spec)
+                except Exception:
+                    pass
+            return True
+        self._clear_multi_spec_selection()
+        force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
+        is_matrix = hit_info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
+        if (is_matrix or force_matrix) and file_key:
+            self._open_matrix_explorer_for_file(file_key)
+        else:
+            self._open_spectroscopy_popup(spec)
+        try:
+            self._highlight_spectrum_entry(spec)
+        except Exception:
+            pass
+        return True
 
     def _handle_spec_hover(self, label_widget, event):
         if not self.show_spectra:
@@ -3196,6 +3266,68 @@ QLabel:hover {{
 
     def _open_spectroscopy_popup(self, spec):
         return spectro_popups._open_spectroscopy_popup(self, spec)
+
+    def _ensure_single_spectro_popup(self, spec):
+        """Raise an existing single spectroscopy popup or open a new one."""
+        if not spec:
+            return None
+        key = self._spec_identity_key(spec)
+        if key and getattr(self, "_spectro_popups", None):
+            for dlg in list(self._spectro_popups):
+                dlg_spec = getattr(dlg, "spec", None)
+                if dlg_spec and self._spec_identity_key(dlg_spec) == key:
+                    try:
+                        dlg.raise_()
+                        dlg.activateWindow()
+                    except Exception:
+                        pass
+                    return dlg
+        return self._open_spectroscopy_popup(spec)
+
+    def _single_popup_for_key(self, key):
+        if not key or not getattr(self, "_spectro_popups", None):
+            return None
+        for dlg in list(self._spectro_popups):
+            dlg_spec = getattr(dlg, "spec", None)
+            if dlg_spec and self._spec_identity_key(dlg_spec) == key:
+                if getattr(dlg, "isVisible", None):
+                    try:
+                        if dlg.isVisible():
+                            return dlg
+                    except Exception:
+                        continue
+                else:
+                    return dlg
+        return None
+
+    def _active_single_popup(self):
+        anchor = getattr(self, "_multi_single_popup_anchor", None)
+        if not anchor:
+            return None
+        dlg = self._single_popup_for_key(anchor)
+        if dlg is None:
+            self._multi_single_popup_anchor = None
+        return dlg
+
+    def _append_spec_to_single_popup(self, spec):
+        if not spec:
+            return
+        key = self._spec_identity_key(spec)
+        if not key:
+            return
+        dlg = self._active_single_popup()
+        if dlg is None:
+            dlg = self._ensure_single_spectro_popup(spec)
+            if dlg:
+                self._multi_single_popup_anchor = key
+            return
+        if key == self._multi_single_popup_anchor:
+            return
+        if hasattr(dlg, "add_external_spectrum"):
+            try:
+                dlg.add_external_spectrum(spec)
+            except Exception:
+                pass
 
     def _highlight_spectrum_entry(self, spec):
         if not getattr(self, "spectro_highlight_glow", True):
@@ -3429,6 +3561,8 @@ QLabel:hover {{
             self._multi_spec_selection.append(spec)
             self._multi_spec_selection_keys.add(key)
         self._update_spec_selection_label()
+        if not self._multi_spec_selection:
+            self._multi_single_popup_anchor = None
         if len(self._multi_spec_selection) >= 2:
             self._open_multi_spectroscopy_popup()
 
@@ -3440,6 +3574,7 @@ QLabel:hover {{
     def _clear_multi_spec_selection(self):
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
+        self._multi_single_popup_anchor = None
         for dlg in list(self._multi_spectro_popups):
             try:
                 dlg.close()
