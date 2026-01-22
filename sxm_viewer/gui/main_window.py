@@ -251,6 +251,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._popup_refs = []
         self._multi_spectro_popups = []
         self._multi_single_popup_anchor = None
+        self._last_clicked_spec = None
         self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
@@ -2723,6 +2724,7 @@ QLabel:hover {{
             mods = QtCore.Qt.NoModifier
         file_key = str(spec.get('image_key') or spec.get('path') or '')
         if mods & QtCore.Qt.ShiftModifier:
+            self._prime_multi_selection_anchor(spec)
             key = self._spec_identity_key(spec) if spec else None
             already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
             self._toggle_multi_spec_selection(spec)
@@ -2737,6 +2739,7 @@ QLabel:hover {{
                     pass
             return
         self._clear_multi_spec_selection()
+        self._last_clicked_spec = spec
         force_matrix = bool(mods & QtCore.Qt.ControlModifier)
         is_matrix = self._is_matrix_spec(spec) or (force_matrix and spec.get('matrix_index') is not None)
         if is_matrix and file_key:
@@ -3204,6 +3207,7 @@ QLabel:hover {{
                 mods = QtCore.Qt.NoModifier
         spec = hit_info.get('spec')
         if mods & QtCore.Qt.ShiftModifier:
+            self._prime_multi_selection_anchor(spec)
             key = self._spec_identity_key(spec) if spec else None
             already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
             self._toggle_multi_spec_selection(spec)
@@ -3218,6 +3222,7 @@ QLabel:hover {{
                     pass
             return True
         self._clear_multi_spec_selection()
+        self._last_clicked_spec = spec
         force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
         is_matrix = hit_info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
         if (is_matrix or force_matrix) and file_key:
@@ -3328,6 +3333,24 @@ QLabel:hover {{
                 dlg.add_external_spectrum(spec)
             except Exception:
                 pass
+
+    def _prime_multi_selection_anchor(self, current_spec):
+        """If user previously clicked a spec without Shift, use it as the first multi selection."""
+        if self._multi_spec_selection or not getattr(self, "_last_clicked_spec", None):
+            return
+        candidate = self._last_clicked_spec
+        if candidate is None:
+            return
+        if current_spec and self._spec_identity_key(candidate) == self._spec_identity_key(current_spec):
+            return
+        key = self._spec_identity_key(candidate)
+        if not key or key in getattr(self, "_multi_spec_selection_keys", set()):
+            self._last_clicked_spec = None
+            return
+        self._multi_spec_selection.append(candidate)
+        self._multi_spec_selection_keys.add(key)
+        self._update_spec_selection_label()
+        self._last_clicked_spec = None
 
     def _highlight_spectrum_entry(self, spec):
         if not getattr(self, "spectro_highlight_glow", True):
@@ -3575,6 +3598,7 @@ QLabel:hover {{
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
         self._multi_single_popup_anchor = None
+        self._last_clicked_spec = None
         for dlg in list(self._multi_spectro_popups):
             try:
                 dlg.close()

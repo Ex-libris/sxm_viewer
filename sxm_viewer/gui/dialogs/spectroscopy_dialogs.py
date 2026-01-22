@@ -341,16 +341,46 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _on_channel_changed(self, name):
         self._last_fit_result = None
         self.fit_result_label.setText("")
-        if self._curve_entries:
-            channel = name or ""
-            values = np.asarray(self.channels.get(channel), dtype=float) if channel else np.asarray([], dtype=float)
-            entry = self._curve_entries[0]
-            entry["values"] = values
-            entry["channel"] = channel
-            entry["label"] = f"{Path(self.spec.get('path','')).name} ({channel})" if channel else Path(self.spec.get('path','')).name
-            self._update_curve_list()
+        self._apply_channel_to_entries(name or "")
         self._plot_selected_channel()
         self._update_fit_button()
+
+    def _apply_channel_to_entries(self, channel):
+        """Force every curve entry to use the specified channel if available."""
+        changed = False
+        missing = []
+        target = (channel or "").strip()
+        for entry in self._curve_entries or []:
+            spec = entry.get("spec")
+            if spec is None:
+                spec = self._resolve_spec_from_viewer(entry)
+                if spec:
+                    entry["spec"] = spec
+            if not spec:
+                continue
+            channels = spec.get("channels") or {}
+            if target and target in channels:
+                try:
+                    values = np.asarray(channels[target], dtype=float)
+                except Exception:
+                    continue
+                entry["values"] = values
+                entry["channel"] = target
+                entry["label"] = f"{Path(spec.get('path','')).name} ({target})"
+                changed = True
+            else:
+                if target:
+                    missing.append(Path(spec.get('path','')).name)
+        if changed:
+            self._update_curve_list()
+        if missing:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                f"Channel '{target}' missing for: {', '.join(missing[:4])}"
+                + ("…" if len(missing) > 4 else ""),
+                self,
+            )
+        return changed
 
     def _update_primary_axis(self, axis_vals, axis_label, axis_unit):
         if not self._curve_entries:
@@ -748,7 +778,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         tinted = np.stack([gray, gray, gray], axis=-1)
         return tinted
 
-    def _spec_thumbnail_coords(self, spec=None, file_key=None):
+    def _spec_thumbnail_coords(self, spec=None, file_key=None, dims=None):
         viewer = getattr(self, "viewer", None)
         spec = spec or self.spec
         file_key = file_key or str(spec.get("image_key") or "")
@@ -757,8 +787,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         header, _ = viewer.headers.get(file_key, (None, None))
         if header is None:
             return None
-        width = int(getattr(viewer, "thumb_size_px", 160))
-        height = max(48, int(round(width * 0.75)))
+        if dims and len(dims) == 2:
+            width = max(2, int(dims[0]))
+            height = max(2, int(dims[1]))
+        else:
+            width = int(getattr(viewer, "thumb_size_px", 160))
+            height = max(48, int(round(width * 0.75)))
         try:
             coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=file_key)
         except Exception:
@@ -778,7 +812,13 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         base_entry = self._curve_entries[0] if self._curve_entries else None
         base_key = base_entry.get("image_key") if base_entry else str(self.spec.get("image_key") or "")
         image = self._load_thumbnail_array(base_key)
-        markers = self._collect_inset_markers(base_key)
+        image_dims = None
+        if image is not None:
+            try:
+                image_dims = (int(image.shape[1]), int(image.shape[0]))
+            except Exception:
+                image_dims = None
+        markers = self._collect_inset_markers(base_key, image_dims=image_dims)
         if image is None or not markers:
             self._remove_inset_drag_handlers()
             return
@@ -873,10 +913,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_drag_offset = (0.0, 0.0)
         self._suppress_drag_until_release = False
 
-    def _collect_inset_markers(self, image_key):
+    def _collect_inset_markers(self, image_key, image_dims=None):
         markers = []
         if not self._curve_entries:
-            coords = self._spec_thumbnail_coords()
+            coords = self._spec_thumbnail_coords(dims=image_dims)
             if coords is not None:
                 markers.append(("#ff3b6a", coords))
             return markers
@@ -892,13 +932,13 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                     if spec:
                         entry["spec"] = spec
                 if spec:
-                    coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"))
+                    coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"), dims=image_dims)
                     if coords:
                         entry["coords"] = coords
             if coords is not None:
                 markers.append((color, coords))
         if not markers:
-            coords = self._spec_thumbnail_coords()
+            coords = self._spec_thumbnail_coords(dims=image_dims)
             if coords is not None:
                 markers.append(("#ff3b6a", coords))
         return markers
