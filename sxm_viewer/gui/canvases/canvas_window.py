@@ -125,7 +125,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _apply_styles(self):
         """Apply scientific GUI styling - high contrast, clear organization."""
-        return canvas_window_ui.apply_styles(self)
+        dark = bool(getattr(self.viewer, "dark_mode", False))
+        return canvas_window_ui.apply_styles(self, dark=dark)
 
     def _build_inspector(self):
         return canvas_window_ui.build_inspector(self)
@@ -752,7 +753,11 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _on_align_selected(self):
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
-        if len(selected) < 2:
+        if not selected:
+            return
+        if len(selected) == 1:
+            # Treat single selection as "match all to this size"
+            self._apply_size_from_reference(selected[0], items=None, reflow=True)
             return
         min_x = min(item.pos().x() for item in selected)
         for item in selected:
@@ -798,9 +803,98 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             groups.setdefault(item.file_path, {})[kind] = item
         if not groups:
             self._reflow_items_in_grid(items, target_width)
+            self.status_label.setText(
+                f"\U0001f512 Grid locked at {target_width:.0f}px width - click Reset alignment to unlock"
+            )
+            self._push_undo_state()
+            return
+        # Determine ordering: keep existing x-position ordering if available, else by file name
+        columns = []
+        for file_path, group in groups.items():
+            min_x = min((item.pos().x() for item in group.values()), default=0.0)
+            columns.append((min_x, str(file_path), group))
+        columns.sort(key=lambda entry: (round(entry[0], 3), entry[1]))
+        # Build kind order using a priority list, then alphabetical fallback
+        all_kinds = set()
+        for _, _, group in columns:
+            all_kinds.update(group.keys())
+        priority = ["topo", "topography", "z", "current", "it", "df", "freq", "phase"]
+        def _kind_key(k):
+            k_low = str(k).lower()
+            if k_low in priority:
+                return (0, priority.index(k_low))
+            return (1, k_low)
+        kinds = sorted(all_kinds, key=_kind_key)
+        margin = CANVAS_ALIGN_MARGIN
+        gap_x = CANVAS_ALIGN_GAP
+        gap_y = CANVAS_ALIGN_GAP
+        col_widths = []
+        for _, _, group in columns:
+            width = max((item.boundingRect().width() for item in group.values()), default=target_width or 200.0)
+            col_widths.append(max(width, 200.0))
+        row_heights = []
+        for kind in kinds:
+            height = 0.0
+            for _, _, group in columns:
+                item = group.get(kind)
+                if item is not None:
+                    height = max(height, item.boundingRect().height())
+            row_heights.append(max(height, 0.0))
+        for col_idx, (_, _, group) in enumerate(columns):
+            x = margin + sum(col_widths[:col_idx]) + gap_x * col_idx
+            for row_idx, kind in enumerate(kinds):
+                item = group.get(kind)
+                if item is None:
+                    continue
+                y = margin + sum(row_heights[:row_idx]) + gap_y * row_idx
+                item.setPos(x, y)
         self.status_label.setText(
             f"\U0001f512 Grid locked at {target_width:.0f}px width - click Reset alignment to unlock"
         )
+        self._push_undo_state()
+
+    def _apply_size_from_reference(self, ref_item: CanvasImageItem, items=None, reflow: bool = True):
+        if items is None:
+            items = [i for i in self.scene.items() if isinstance(i, CanvasImageItem)]
+        target_width = ref_item.get_canvas_width()
+        target_scale = ref_item._effective_text_scale()
+        for item in items:
+            item.set_canvas_width(target_width)
+            item.set_locked_text_scale(target_scale)
+        if reflow:
+            self._reflow_items_in_grid(items, target_width)
+        self._last_aligned_width = target_width
+        self._grid_locked = True
+        self.status_label.setText(
+            f"\U0001f512 Matched size to reference ({target_width:.0f}px) - click Reset alignment to unlock"
+        )
+        self._push_undo_state()
+
+    def _propagate_resize(self, source: CanvasImageItem, new_width: float, text_scale: float | None = None):
+        selected = []
+        try:
+            selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
+        except Exception:
+            selected = []
+        if len(selected) <= 1:
+            return
+        for item in selected:
+            if item is source:
+                continue
+            item.set_canvas_width(new_width)
+            if text_scale is not None:
+                item.set_locked_text_scale(text_scale)
+
+    def _finalize_resize_group(self, source: CanvasImageItem):
+        selected = []
+        try:
+            selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
+        except Exception:
+            selected = []
+        if len(selected) <= 1:
+            return
+        target_width = source.get_canvas_width()
+        self._reflow_items_in_grid(selected, target_width)
         self._push_undo_state()
 
     def _on_polish_layout(self):

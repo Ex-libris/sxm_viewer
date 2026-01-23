@@ -5,6 +5,7 @@ import functools
 import itertools
 import json
 import math
+import re
 
 import numpy as np
 from matplotlib import patches
@@ -179,7 +180,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
         self._suppress_drag_until_release = False
-        self.viewer = parent if isinstance(parent, QtWidgets.QWidget) else None
+        # Resolve the real viewer so thumbnail/header lookups work even when
+        # this popup is spawned from a comparison dialog.
+        self.viewer = None
+        if isinstance(parent, QtWidgets.QWidget):
+            if hasattr(parent, "viewer") and getattr(parent, "viewer", None) is not None:
+                self.viewer = parent.viewer
+            else:
+                self.viewer = parent
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
@@ -2234,6 +2242,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def __init__(self, specs, parent=None, palette_name=None):
         super().__init__(parent)
         self.specs = list(specs)
+        self.viewer = parent if hasattr(parent, "headers") else getattr(parent, "viewer", None)
+        self.headers = getattr(self.viewer, "headers", {}) if self.viewer is not None else {}
         self._palette_name = palette_name or DEFAULT_COLOR_CYCLE
         self._color_cycle = get_color_cycle(self._palette_name)
         if not self._color_cycle:
@@ -2895,47 +2905,164 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         except Exception:
             return y_vals
 
+    @staticmethod
+    def _axis_to_meters(axis_vals: np.ndarray, axis_unit: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Return (axis_m, axis_nm) or (None, None) if unit unsupported."""
+        if axis_vals is None:
+            return None, None
+        unit = (axis_unit or "").strip().lower()
+        scale = None
+        if unit in ("m", "meter", "meters"):
+            scale = 1.0
+        elif unit in ("nm",):
+            scale = 1e-9
+        elif unit in ("pm",):
+            scale = 1e-12
+        elif unit in ("um",):
+            scale = 1e-6
+        if scale is None:
+            return None, None
+        axis_m = np.asarray(axis_vals, dtype=float) * scale
+        axis_nm = axis_m * 1e9
+        return axis_m, axis_nm
+
+    @staticmethod
+    def _force_from_freq_shift(z_m: np.ndarray, df_hz: np.ndarray, f0: float, k: float, amp_m: float) -> Optional[np.ndarray]:
+        """Sader-Jarvis style force reconstruction (numeric trapz)."""
+        if f0 <= 0 or k <= 0 or amp_m <= 0:
+            return None
+        z = np.asarray(z_m, dtype=float)
+        df = np.asarray(df_hz, dtype=float)
+        if z.size < 2 or df.size != z.size:
+            return None
+        order = np.argsort(z)
+        z_sorted = z[order]
+        df_sorted = df[order]
+        F_sorted = np.zeros_like(df_sorted)
+        n = len(z_sorted)
+        for i in range(n - 1):
+            u = z_sorted[i + 1 :] - z_sorted[i]
+            if u.size == 0:
+                continue
+            integrand = (df_sorted[i + 1 :] / f0) * np.sin(u / amp_m)
+            F_sorted[i] = 2.0 * k * amp_m * np.trapz(integrand, u)
+        if n > 1:
+            F_sorted[-1] = F_sorted[-2]
+        F = np.empty_like(F_sorted)
+        F[order] = F_sorted
+        return F
+
     def _on_convert_force(self):
         # Prompt for parameters
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Convert to force")
         form = QtWidgets.QFormLayout(dlg)
-        f0_edit = QtWidgets.QDoubleSpinBox(); f0_edit.setRange(0, 1e9); f0_edit.setValue(0.0)
-        a_edit = QtWidgets.QDoubleSpinBox(); a_edit.setRange(0, 1e6); a_edit.setDecimals(9); a_edit.setValue(0.0)
-        q_edit = QtWidgets.QDoubleSpinBox(); q_edit.setRange(0, 1e6); q_edit.setValue(0.0)
+        f0_edit = QtWidgets.QDoubleSpinBox(); f0_edit.setRange(0, 1e9); f0_edit.setDecimals(3); f0_edit.setValue(0.0)
+        k_edit = QtWidgets.QDoubleSpinBox(); k_edit.setRange(0, 1e6); k_edit.setDecimals(3); k_edit.setValue(0.0)
+        a_edit = QtWidgets.QDoubleSpinBox(); a_edit.setRange(0, 1e-3); a_edit.setDecimals(11); a_edit.setSingleStep(1e-11); a_edit.setValue(50e-12)
+        q_edit = QtWidgets.QDoubleSpinBox(); q_edit.setRange(0, 1e6); q_edit.setDecimals(2); q_edit.setValue(0.0)
         method_combo = QtWidgets.QComboBox(); method_combo.addItems(["saderF", "matrixF"])
         form.addRow("f0 (Hz)", f0_edit)
+        form.addRow("Spring constant k (N/m)", k_edit)
         form.addRow("Amplitude A (m)", a_edit)
         form.addRow("Q", q_edit)
         form.addRow("Method", method_combo)
+        # load persisted params if available
+        cfg = load_config()
+        last_force = cfg.get("force_params", {})
+        try:
+            f0_edit.setValue(float(last_force.get("f0", f0_edit.value())))
+        except Exception:
+            pass
+        try:
+            k_edit.setValue(float(last_force.get("k", k_edit.value())))
+        except Exception:
+            pass
+        try:
+            a_edit.setValue(float(last_force.get("A", a_edit.value())))
+        except Exception:
+            pass
+        try:
+            q_edit.setValue(float(last_force.get("Q", q_edit.value())))
+        except Exception:
+            pass
+        mth = str(last_force.get("method") or "")
+        if mth in [method_combo.itemText(i) for i in range(method_combo.count())]:
+            method_combo.setCurrentText(mth)
+        buttons_row = QtWidgets.QHBoxLayout()
+        remember_btn = QtWidgets.QPushButton("Remember")
+        clear_btn = QtWidgets.QPushButton("Clear saved")
+        buttons_row.addWidget(remember_btn)
+        buttons_row.addWidget(clear_btn)
+        buttons_row.addStretch(1)
+        form.addRow(buttons_row)
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         form.addRow(btns)
         btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        def _remember():
+            params = {
+                "f0": f0_edit.value(),
+                "k": k_edit.value(),
+                "A": a_edit.value(),
+                "Q": q_edit.value(),
+                "method": method_combo.currentText(),
+            }
+            cfg = load_config()
+            cfg["force_params"] = params
+            save_config(cfg)
+        def _clear():
+            cfg = load_config()
+            if "force_params" in cfg:
+                cfg.pop("force_params", None)
+                save_config(cfg)
+        remember_btn.clicked.connect(_remember)
+        clear_btn.clicked.connect(_clear)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
-        f0 = f0_edit.value(); A = a_edit.value(); Q = q_edit.value(); method = method_combo.currentText()
+        f0 = f0_edit.value(); k = k_edit.value(); A = a_edit.value(); Q = q_edit.value(); method = method_combo.currentText()
+        if f0 <= 0 or k <= 0 or A <= 0:
+            QtWidgets.QMessageBox.information(self, "Force conversion", "Enter positive values for f0, k, and A.")
+            return
         items = self._selected_items() or self._checked_items()
         if not items:
             QtWidgets.QMessageBox.information(self, "Force conversion", "Select spectra to convert.")
             return
         new_specs = []
+        failed = 0
+        channel = self.channel_combo.currentText()
         for item in items:
             spec = item.data(0, QtCore.Qt.UserRole)
             if not spec:
                 continue
+            axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
+            axis_m, axis_nm = self._axis_to_meters(axis_vals, axis_unit)
+            if axis_m is None or axis_nm is None:
+                failed += 1
+                continue
             channels = spec.get("channels") or {}
-            converted = {}
-            for name, arr in channels.items():
-                try:
-                    converted[name] = np.asarray(arr, dtype=float).copy()
-                except Exception:
-                    continue
+            if channel not in channels:
+                failed += 1
+                continue
+            y_vals = np.asarray(channels.get(channel), dtype=float)
+            bg = self._background_for(spec)
+            y_vals = self._subtract_background(axis_vals, y_vals, bg)
+            force_curve = self._force_from_freq_shift(axis_m, y_vals, f0=f0, k=k, amp_m=A)
+            if force_curve is None:
+                failed += 1
+                continue
+            force_label = f"Force_{channel}"
             new_spec = dict(spec)
-            new_spec["channels"] = converted
+            new_spec["channels"] = {force_label: force_curve}
+            new_spec["unit_map"] = {force_label: "N"}
+            new_spec["AxisLabel"] = "Z"
+            new_spec["AxisUnit"] = "nm"
+            new_spec["V"] = axis_nm
+            new_spec["AxisChoices"] = [{"key": "primary", "label": "Z", "unit": "nm", "values": axis_nm}]
             new_spec["ForceMethod"] = method
-            new_spec["ForceParams"] = {"f0": f0, "A": A, "Q": Q}
+            new_spec["ForceParams"] = {"f0": f0, "A": A, "Q": Q, "k": k}
             new_specs.append(new_spec)
         if not new_specs:
+            QtWidgets.QMessageBox.information(self, "Force conversion", "Could not convert the selected spectra (check that the axis is Z/distance and parameters are valid).")
             return
         # Open a twin dialog with converted data
         twin = SpectroscopyCompareDialog(new_specs, parent=self.parent(), palette_name=self._palette_name)

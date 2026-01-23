@@ -427,9 +427,41 @@ def build_inspector(window):
     return scroll
 
 
-def apply_styles(window):
+def apply_styles(window, dark: bool = False):
     """Apply scientific GUI styling - high contrast, clear organization."""
-    window.setStyleSheet(CANVAS_DIALOG_STYLE)
+    if dark:
+        bg = "#1b1d23"
+        fg = "#f0f0f0"
+        panel = "#21242b"
+        border = "#2e333d"
+    else:
+        bg = "#f7f7f7"
+        fg = "#1b1b1b"
+        panel = "#ffffff"
+        border = "#c4c4c4"
+    window.setStyleSheet(
+        CANVAS_DIALOG_STYLE
+        + f"""
+QDialog {{
+    background-color: {bg};
+    color: {fg};
+}}
+QWidget#inspectorPanel {{
+    background-color: {panel};
+    border-left: 1px solid {border};
+}}
+QGroupBox {{
+    border: 1px solid {border};
+    margin-top: 6px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px 0 4px;
+    background: transparent;
+}}
+"""
+    )
 
 
 def apply_status_style(window):

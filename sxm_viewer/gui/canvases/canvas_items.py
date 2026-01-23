@@ -394,6 +394,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             start_width = self._resize_start_canvas_width or self._canvas_width
             new_width = max(60.0, start_width + delta_amount)
             self.set_canvas_width(new_width)
+            if self._parent_window is not None:
+                self._parent_window._propagate_resize(self, new_width, text_scale=self._effective_text_scale())
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -412,6 +414,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             # Only break alignment lock if user actually changed size
             if self._parent_window is not None:
                 self._parent_window._break_alignment_for_item(self)
+                self._parent_window._finalize_resize_group(self)
                 self._parent_window._push_undo_state()
             return
         super().mouseReleaseEvent(event)

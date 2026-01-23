@@ -3296,6 +3296,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 unit = view.get('axis_unit') or 'nm'
             
             size, label = self._calculate_best_scale_bar(width, unit)
+            # Hide unit text if blank to avoid default "nm" showing up when unset
+            label = label if label and label.strip() else None
             font_scale = getattr(self, '_view_font_scale', 1.0)
             
             dark = bool(self._detail_dark)
