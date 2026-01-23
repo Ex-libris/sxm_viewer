@@ -24,6 +24,7 @@ if not hasattr(np, "int"):
     np.int = int  # type: ignore[attr-defined]
 
 from ...utils.logging import log
+from ...data.channel_units import guess_channel_unit
 
 try:
     from importlib import import_module
@@ -595,11 +596,15 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
         return []
     axis = np.asarray(axis_data, dtype=float)
     axis_unit = "V"
+    axis_label = axis_name or "Axis"
     if axis_name:
         low = axis_name.lower()
+        axis_label = re.sub(r"\s*\(.*?\)", "", axis_name).strip() or axis_label
         if "(m)" in low or " distance" in low or "distance " in low:
             axis = axis * 1e9  # convert meters to nm for display consistency
             axis_unit = "nm"
+            if "z" in axis_label.lower():
+                axis_label = "Z"
     alt_axis_unit = None
     if alt_axis_name is not None and alt_axis_data is not None:
         alt_axis = np.asarray(alt_axis_data, dtype=float)
@@ -612,6 +617,7 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     else:
         alt_axis = None
     channels: Dict[str, np.ndarray] = {}
+    unit_map: Dict[str, str] = {}
     for name, values in spec.signals.items():
         if name == axis_name:
             continue
@@ -625,18 +631,22 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
             label = f"{clean}_{counter}"
             counter += 1
         channels[label] = arr.copy()
+        unit_guess = guess_channel_unit(name)
+        if unit_guess:
+            unit_map[label] = unit_guess
     if not channels:
         return []
     meta = _nanonis_spec_metadata(spec.header or {}, Path(path))
     entry = {
         "path": str(path),
         "V": axis.copy(),
-        "AxisLabel": axis_name,
+        "AxisLabel": axis_label,
         "AxisUnit": axis_unit,
         "AltAxis": alt_axis.copy() if alt_axis is not None else None,
-        "AltAxisLabel": alt_axis_name,
+        "AltAxisLabel": re.sub(r"\s*\(.*?\)", "", alt_axis_name).strip() if alt_axis_name else None,
         "AltAxisUnit": alt_axis_unit,
         "channels": channels,
+        "unit_map": unit_map or None,
     }
     entry.update(meta)
     _flatten_nanonis_fields(entry, spec.header or {}, prefix="NanonisSpec:")

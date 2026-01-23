@@ -1,37 +1,44 @@
-# Refactored SXM Viewer
+# SXM Viewer package (internals)
 
-This directory contains a modular rewrite of `sxm_grid_viewer.py`.  The goal is to split
-GUI, data-access, and processing logic into focused modules that are easier to test and
-maintain.  The layout is intentionally simple so incremental migration from the legacy
-script can happen feature-by-feature.
+This package is what `python -m sxm_viewer` loads. The old `sxm_grid_viewer.py`
+remains only as a shim and delegates into this package.
 
+## Package map
 ```
-refactored_viewer/
-+-- __init__.py
-+-- __main__.py          # `python -m refactored_viewer` entry point
-+-- data/
-¦   +-- io.py            # Parsing of Omicron .txt headers and binary channels
-+-- processing/
-¦   +-- dataset.py       # Folder loader, tag detection, derived metadata
-+-- gui/
-¦   +-- main_window.py   # Qt widgets and interaction logic
-+-- utils/
-    +-- logging.py       # Thin helpers for progress + status reporting
+sxm_viewer/
+  __init__.py
+  config.py                 # user config, cache limits, defaults
+  palettes.py               # color cycles and colormap helpers
+  data/
+    io.py                   # Omicron/Anfatec header + channel parsing
+    spectroscopy.py         # .dat metadata, axis helpers, matrix detection
+    matrix.py               # matrix dataset representations
+  providers/
+    nanonis/
+      adapter.py            # Nanonis .sxm -> Omicron-style cache generator
+      vendor/               # vendored nanonispy reader
+  gui/
+    main_window.py          # top-level Qt widget and app state
+    main_window_layout.py   # layout helpers and shortcuts panel
+    main_window_toolbar.py  # toolbar actions and dark-mode toggle
+    main_window_spectro.py  # spectro dock and browser wiring
+    viewer/                 # thumbnail load/render, preview, loader, measurement
+    spectroscopy/           # overlays, controller, popups for spectroscopies
+    dialogs/                # spectroscopy dialogs, profile dialog, exports
+    canvases/               # canvas workspace window and tiles
+  utils/                    # small helpers (units, logging, thumbnails)
 ```
 
-Only a subset of the legacy features is implemented here (folder load, thumbnail list,
-preview pane).  However, each module exposes small, composable classes so remaining
-features (spectroscopy markers, filters, exports, etc.) can be migrated one at a time
-without turning the GUI into another monolithic file.
+## Running from source
+- After installing dependencies (see top-level README), launch with:
+  ```bash
+  python -m sxm_viewer
+  ```
+- For legacy compatibility, `python sxm_grid_viewer.py` still forwards to the
+  package entry point.
 
-## Migration strategy
-1. **Data layer first** – keep header/binary parsing inside `data.io`.
-2. **Processing/services** – move folder-level state (current files, tags, cached arrays)
-   into plain Python classes inside `processing.dataset`.
-3. **GUI** – connect widgets to the services via clean signals/slots.  Avoid having the
-   widgets themselves manipulate files directly.
-
-Running the refactored viewer:
-```
-python -m refactored_viewer --folder <path-to-sxm-folder>
-```
+## Migration status
+- Core image browsing, spectroscopy overlays, matrix explorer, and canvas live
+  here.
+- Remaining legacy utilities are isolated under `scripts/` or kept as thin
+  shims; new features should target the modules above.
