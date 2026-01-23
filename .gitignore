@@ -43,3 +43,8 @@ sxm_viewer/data/**/*$py.class
 
 # Local context notes (keep untracked)
 CONTEXT.md
+
+# local test data and temporary caches
+*.sxm
+*.dat
+**/.nanonis_*
