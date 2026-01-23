@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - python <3.5 not supported, safeguard o
 
 
 NANONIS_CACHE_DIRNAME = ".sxmviewer_nanonis"
+NANONIS_CACHE_VERSION = 2
 _NANONIS_READ = None
 _IMPORT_ERROR = None
 
@@ -104,6 +105,7 @@ def _convert_scan_file(reader, scan_path: Path, cache_root: Path) -> Optional[Pa
         "generated": datetime.utcnow().isoformat(timespec="seconds"),
         "channels": len(channels),
         "header_name": header_path.name,
+        "version": NANONIS_CACHE_VERSION,
     }
     meta_path.write_text(json.dumps(meta, indent=2))
     return header_path
@@ -175,6 +177,10 @@ def _extract_scan_channels(scan, cache_dir: Path) -> List[ChannelExport]:
     offsets = list(header_info.get("Offset", []))
     total = min(len(names), len(units), len(directions), len(calibrations), len(offsets))
     exports: List[ChannelExport] = []
+    # Nanonis `.sxm` data is typically stored as float32 values that already
+    # include calibration/offset. Integer formats require manual scaling.
+    data_dtype = np.dtype(getattr(scan, "data_format", np.float32))
+    needs_calibration = data_dtype.kind in ("i", "u")
     for idx in range(total):
         name = str(names[idx]).strip()
         unit = str(units[idx]).strip()
@@ -192,7 +198,8 @@ def _extract_scan_channels(scan, cache_dir: Path) -> List[ChannelExport]:
             arr = np.asarray(arr, dtype=float)
             if np.isnan(arr).all():
                 continue
-            arr = arr * scale + offset
+            if needs_calibration:
+                arr = arr * scale + offset
             safe_channel = _safe_token(name)
             suffix = "fwd" if dir_key == "forward" else "bwd"
             data_name = f"{scan.basename}_{safe_channel}_{suffix}.dat"
@@ -295,6 +302,8 @@ def _needs_rebuild(meta_path: Path, mtime: float, size: int) -> bool:
     try:
         meta = json.loads(meta_path.read_text())
     except Exception:
+        return True
+    if int(meta.get("version", -1)) != int(NANONIS_CACHE_VERSION):
         return True
     if abs(meta.get("mtime", 0.0) - mtime) > 1e-6:
         return True
