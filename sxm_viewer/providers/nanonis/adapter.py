@@ -653,6 +653,175 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     return [entry]
 
 
+def parse_nanonis_3ds(path: Path | str) -> List[Dict[str, object]]:
+    """Parse Nanonis .3ds files (grid spectroscopy) into matrix-compatible entries."""
+    reader = _ensure_nanonis_reader()
+    if reader is None:
+        log("[Nanonis] nanonispy2 not available; cannot parse .3ds")
+        return []
+    GridCls = None
+    try:
+        GridCls = getattr(reader, "Grid", None)
+    except Exception:
+        GridCls = None
+    if GridCls is None:
+        log("[Nanonis] Grid reader not found in nanonispy2; skipping .3ds")
+        return []
+    try:
+        grid = GridCls(str(path))
+    except Exception as exc:
+        log(f"[Nanonis] Failed to read {path}: {exc}")
+        return []
+    try:
+        return _parse_nanonis_3ds_grid(grid, path, chans=getattr(grid, "signals", {}) or {})
+    except Exception as exc:
+        log(f"[Nanonis] Unexpected failure parsing {path}: {exc}")
+        return []
+
+
+def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) -> List[Dict[str, object]]:
+    entries: List[Dict[str, object]] = []
+    if not chans:
+        log(f"[Nanonis] No channels found in {path}")
+        return entries
+
+    def _first_non_null(*vals):
+        for v in vals:
+            if v is None:
+                continue
+            try:
+                arr = np.asarray(v)
+                # numpy arrays cannot be used in truth-testing; rely on size instead
+                if arr.size == 0:
+                    continue
+            except Exception:
+                pass
+            return v
+        return None
+
+    # Diagnostic: log header keys and channel shapes for troubleshooting
+    try:
+        hdr_keys = sorted(grid.header.keys())
+        chan_shapes = {str(k): np.shape(v) for k, v in chans.items()}
+        log(f"[Nanonis] 3ds header keys: {hdr_keys}")
+        log(f"[Nanonis] 3ds channel shapes: {chan_shapes}")
+    except Exception:
+        pass
+    bias_raw = chans.get("sweep_signal")
+    bias = np.asarray(bias_raw, dtype=float) if bias_raw is not None else np.asarray([], dtype=float)
+    if bias.size == 0:
+        try:
+            bias = np.asarray(grid._derive_sweep_signal(), dtype=float)
+        except Exception:
+            bias = np.asarray([], dtype=float)
+    # grid dimensions
+    dim_px = _first_non_null(grid.header.get("dim_px"), grid.header.get("Grid dim"))
+    nx = ny = None
+    if dim_px is not None:
+        try:
+            # dim_px is typically (nx, ny) but sometimes includes a params dimension
+            if len(dim_px) >= 2:
+                nx = int(dim_px[0])
+                ny = int(dim_px[1])
+        except Exception:
+            nx = ny = None
+    if nx is None or ny is None:
+        # infer from first usable channel
+        sample_arr = next(iter(chans.values()))
+        shape = np.shape(sample_arr)
+        if len(shape) >= 2:
+            ny, nx = int(shape[0]), int(shape[1])
+        else:
+            nx = ny = 1
+    nx = max(int(nx or 1), 1)
+    ny = max(int(ny or 1), 1)
+    # physical ranges if present (m -> nm)
+    try:
+        scan_range = _first_non_null(
+            grid.header.get("size_xy"),
+            grid.header.get("scan_range"),
+            grid.header.get("ScanRange"),
+        )
+        center = _first_non_null(
+            grid.header.get("pos_xy"),
+            grid.header.get("center_xy"),
+            (0.0, 0.0),
+        )
+        rx, ry = scan_range
+        cx, cy = center
+        rx_nm = float(rx) * 1e9 if abs(rx) < 1e-3 else float(rx)
+        ry_nm = float(ry) * 1e9 if abs(ry) < 1e-3 else float(ry)
+        cx_nm = float(cx) * 1e9 if abs(cx) < 1e-3 else float(cx)
+        cy_nm = float(cy) * 1e9 if abs(cy) < 1e-3 else float(cy)
+        x_offsets = np.linspace(cx_nm - rx_nm / 2, cx_nm + rx_nm / 2, nx)
+        y_offsets = np.linspace(cy_nm - ry_nm / 2, cy_nm + ry_nm / 2, ny)
+    except Exception:
+        x_offsets = np.arange(nx, dtype=float)
+        y_offsets = np.arange(ny, dtype=float)
+    dataset_key = Path(path).stem
+    channel_data: Dict[str, np.ndarray] = {}
+    skip_keys = {"params", "sweep_signal", "topo"}
+    for raw_key, raw_arr in chans.items():
+        if str(raw_key) in skip_keys or raw_key in skip_keys:
+            continue
+        ch_key = _sanitize_channel_label(str(raw_key)) or str(raw_key)
+        try:
+            arr = np.asarray(raw_arr, dtype=float)
+        except Exception as exc:
+            log(f"[Nanonis] Failed to coerce channel {raw_key} in {path}: {exc}")
+            continue
+        if arr.ndim != 3 or arr.size == 0:
+            log(f"[Nanonis] Channel {ch_key} has unsupported shape {arr.shape} in {path}")
+            continue
+        # Normalize layout to (ny, nx, pts)
+        if arr.shape[0] == ny and arr.shape[1] == nx:
+            data = arr
+        elif arr.shape[0] == nx and arr.shape[1] == ny:
+            data = np.transpose(arr, (1, 0, 2))
+        elif arr.shape[0] == bias.size and arr.shape[1] == ny and arr.shape[2] == nx:
+            data = np.transpose(arr, (1, 2, 0))
+        elif arr.shape[0] == ny and arr.shape[2] == nx:
+            data = np.transpose(arr, (0, 2, 1))
+        else:
+            data = arr
+        channel_data[ch_key] = data
+    if not channel_data:
+        log(f"[Nanonis] Parsed 0 spectra from {path} (channels: {list(chans.keys())})")
+        return entries
+
+    rows, cols, pts = next(iter(channel_data.values())).shape
+    x_coords = x_offsets if len(x_offsets) == cols else np.linspace(0, cols - 1, cols)
+    y_coords = y_offsets if len(y_offsets) == rows else np.linspace(0, rows - 1, rows)
+    channel_count = len(channel_data)
+    idx = 0
+    for y in range(rows):
+        for x in range(cols):
+            idx += 1
+            chan_vals = {name: np.asarray(data[y, x, :], dtype=float) for name, data in channel_data.items()}
+            first_vals = next(iter(chan_vals.values()))
+            axis = bias.copy() if bias.size == first_vals.size else np.linspace(0, 1, first_vals.size, dtype=float)
+            entry = {
+                "path": str(path),
+                "matrix_dataset": dataset_key,
+                "matrix_index": idx - 1,
+                "grid_rows": rows,
+                "grid_cols": cols,
+                "x": float(x_coords[x]),
+                "y": float(y_coords[y]),
+                "channels": chan_vals,
+                "channel_name": None,
+                "channel_code": None,
+                "AxisLabel": "Bias",
+                "AxisUnit": "V",
+                "V": axis,
+                "points_per_trace": int(first_vals.size),
+                "source": "nanonis_3ds",
+            }
+            entries.append(entry)
+    log(f"[Nanonis] Parsed {len(entries)} spectra from {path} ({rows}x{cols}, channels={channel_count})")
+    return entries
+
+
 def _flatten_nanonis_fields(target: Dict[str, object], source: Dict[str, object] | None, prefix: str):
     if not source:
         return
@@ -689,4 +858,4 @@ def _format_meta_value(value):
     return value
 
 
-__all__ = ["prepare_nanonis_folder", "parse_nanonis_spectroscopy"]
+__all__ = ["prepare_nanonis_folder", "parse_nanonis_spectroscopy", "parse_nanonis_3ds"]

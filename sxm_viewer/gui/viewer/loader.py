@@ -83,7 +83,7 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, parse_nanonis_spectroscopy
+from ...providers import convert_nanonis, parse_nanonis_spectroscopy, parse_nanonis_3ds
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
@@ -328,6 +328,9 @@ def _scan_spectros(viewer, folder:Path):
         return clone
 
     def _reset_spec_classification(spec):
+        # Preserve nanonis .3ds matrix metadata so grids are classified correctly.
+        if spec.get("source") == "nanonis_3ds":
+            return
         for key in ("matrix_dataset", "grid_rows", "grid_cols", "matrix_index", "grid_row", "grid_col", "channel_name", "channel_code"):
             if key in spec:
                 spec.pop(key, None)
@@ -392,7 +395,7 @@ def _scan_spectros(viewer, folder:Path):
     viewer.matrix_datasets = {}
     if not folder or not Path(folder).exists():
         return specs, stats
-    patterns = ("*.dat","*.DAT")
+    patterns = ("*.dat","*.DAT","*.3ds","*.3DS")
     cache = viewer._spectro_cache
     seen_keys = set()
     file_map = {}
@@ -425,6 +428,8 @@ def _scan_spectros(viewer, folder:Path):
             stats['dat_files'] += 1
         elif ext == ".txt":
             stats['txt_files'] += 1
+        elif ext == ".3ds":
+            stats['dat_files'] += 1
         if norm_key in seen_keys:
             continue
         seen_keys.add(norm_key)
@@ -452,7 +457,18 @@ def _scan_spectros(viewer, folder:Path):
                     spec_list = parse_nanonis_spectroscopy(p)
                 except Exception:
                     spec_list = None
-            if not spec_list:
+            elif ext == ".3ds":
+                try:
+                    spec_list = parse_nanonis_3ds(p)
+                except Exception:
+                    spec_list = None
+                # do NOT fall back to text parser for .3ds
+                if not spec_list:
+                    try:
+                        log_status(f"Spectroscopy parse rejected: {p} returned no spectra (.3ds)")
+                    except Exception:
+                        pass
+            if not spec_list and ext not in (".3ds",):
                 try:
                     spec_list = parse_spectroscopy_file(p)
                 except SpectroscopyParseError as exc:

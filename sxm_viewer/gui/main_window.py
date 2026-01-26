@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import io
 from matplotlib import colormaps
 from matplotlib.figure import Figure
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -3417,7 +3418,8 @@ QLabel:hover {{
             pass
     def _on_thumb_context_menu(self, label_widget, pos):
         fp = str(label_widget.property("file_path"))
-        targets = list(self.thumb_multi_select) if self.thumb_multi_select and fp in self.thumb_multi_select else [fp]
+        # If user has a multi-selection, operate on all of them (plus the clicked one)
+        targets = sorted(set(self.thumb_multi_select or []) | {fp})
         menu = QtWidgets.QMenu(self)
         sub = menu.addMenu("Apply filter")
         for key, info in FILTER_DEFINITIONS.items():
@@ -3472,6 +3474,14 @@ QLabel:hover {{
             clear_specs_act = QtWidgets.QAction("Clear spectroscopy selections", menu)
             clear_specs_act.triggered.connect(self._clear_multi_spec_selection)
             menu.addAction(clear_specs_act)
+
+        menu.addSeparator()
+        drift_act = QtWidgets.QAction("Drift-correct and export...", menu)
+        drift_act.triggered.connect(lambda _, paths=list(targets): self._on_drift_correct(paths))
+        menu.addAction(drift_act)
+        anim_act = QtWidgets.QAction("Create animation from selection...", menu)
+        anim_act.triggered.connect(lambda _, paths=list(targets): self._on_create_animation(paths))
+        menu.addAction(anim_act)
 
         menu.exec_(label_widget.mapToGlobal(pos))
 
@@ -3606,6 +3616,357 @@ QLabel:hover {{
                 pass
         self._multi_spectro_popups = []
         self._update_spec_selection_label()
+
+    def _on_drift_correct(self, paths):
+        if not paths:
+            return
+        try:
+            from scipy import ndimage  # type: ignore
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "Drift correction", "scipy is required for alignment interpolation.")
+            return
+        # Prefer skimage phase_cross_correlation; fall back to OpenCV ECC; else zeros
+        try:
+            from skimage.registration import phase_cross_correlation  # type: ignore
+        except Exception:
+            phase_cross_correlation = None  # type: ignore
+        try:
+            import cv2  # type: ignore
+            has_cv = True
+        except Exception:
+            has_cv = False
+        channel_idx = self.channel_dropdown.currentIndex()
+        images = []
+        names = []
+        missing = 0
+        for p in sorted({str(Path(p)) for p in paths}):
+            try:
+                header, fds = self.headers.get(p, (None, None))
+                if header is None or fds is None:
+                    header, fds = parse_header(Path(p))
+                if not fds:
+                    continue
+                # Prefer current channel, but fall back to any available channel with data
+                indices = [channel_idx] + [i for i in range(len(fds)) if i != channel_idx]
+                arr = None
+                for idx in indices:
+                    if idx < 0 or idx >= len(fds):
+                        continue
+                    try:
+                        arr = self._get_channel_array(p, idx, header, fds[idx])
+                    except Exception:
+                        arr = None
+                    if arr is not None:
+                        break
+                if arr is None:
+                    missing += 1
+                    continue
+                names.append(Path(p).stem)
+                images.append(np.array(arr, dtype=float))
+            except Exception:
+                missing += 1
+                continue
+        if len(images) < 2:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Drift correction",
+                f"Need at least two images to align.\nLoaded: {len(images)} / Selected: {len(set(paths))}\n"
+                f"Skipped/missing: {missing}",
+            )
+            return
+        # Align relative to the first frame
+        ref_idx = 0
+        reference = images[ref_idx]
+        shifts = np.zeros((len(images), 2), dtype=float)
+        ref_gray = reference.astype(np.float32)
+        ref_gray = (ref_gray - ref_gray.min()) / max(ref_gray.ptp(), 1e-6)
+        # apply a Hann window to reduce edge effects
+        try:
+            win_y = np.hanning(ref_gray.shape[0])
+            win_x = np.hanning(ref_gray.shape[1])
+            window = np.sqrt(np.outer(win_y, win_x))
+            ref_gray *= window
+        except Exception:
+            pass
+        for i, img in enumerate(images):
+            if i == ref_idx:
+                continue
+            target = img.astype(np.float32)
+            target = (target - target.min()) / max(target.ptp(), 1e-6)
+            try:
+                target *= window
+            except Exception:
+                pass
+            try:
+                if phase_cross_correlation is not None:
+                    shift, _, _ = phase_cross_correlation(ref_gray, target, upsample_factor=20, normalization=None)
+                    shifts[i] = [float(shift[0]), float(shift[1])]  # dy, dx mapping target -> ref
+                elif has_cv:
+                    import cv2  # type: ignore
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-6)
+                    warp_matrix = np.eye(2, 3, dtype=np.float32)
+                    _, warp_matrix = cv2.findTransformECC(ref_gray, target, warp_matrix, cv2.MOTION_TRANSLATION, criteria)
+                    shifts[i] = [warp_matrix[1, 2], warp_matrix[0, 2]]  # dy, dx that map target -> ref
+                else:
+                    shifts[i] = [0.0, 0.0]
+            except Exception:
+                shifts[i] = [0.0, 0.0]
+        H, W = images[0].shape[:2]
+        top = int(np.ceil(max(0, np.max(shifts[:, 0]))))
+        bottom = H - int(np.ceil(max(0, -np.min(shifts[:, 0]))))
+        left = int(np.ceil(max(0, np.max(shifts[:, 1]))))
+        right = W - int(np.ceil(max(0, -np.min(shifts[:, 1]))))
+        top = max(0, min(top, H - 1))
+        left = max(0, min(left, W - 1))
+        bottom = max(top + 1, min(bottom, H))
+        right = max(left + 1, min(right, W))
+        aligned = []
+        for img, shift in zip(images, shifts):
+            dy, dx = shift
+            try:
+                warped = ndimage.shift(img, [-dy, -dx], order=3, mode="reflect", cval=0.0)
+            except Exception:
+                warped = img
+            aligned.append(warped[top:bottom, left:right])
+        self._show_alignment_preview(names, aligned, shifts, channel_idx)
+
+    def _on_create_animation(self, paths):
+        if not paths:
+            return
+        try:
+            import imageio.v3 as iio  # type: ignore
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "Animation", "imageio is required to create GIF/MP4 animations.")
+            return
+        fmt, ok = QtWidgets.QInputDialog.getItem(self, "Animation format", "Choose format:", ["gif", "mp4"], 0, False)
+        if not ok or not fmt:
+            return
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save animation", f"animation.{fmt}", f"*.{fmt}")
+        if not out_path:
+            return
+        channel_idx = self.channel_dropdown.currentIndex()
+        frames = []
+        missing = 0
+        for p in sorted({str(Path(p)) for p in paths}):
+            try:
+                header, fds = self.headers.get(p, (None, None))
+                if header is None or fds is None:
+                    header, fds = parse_header(Path(p))
+                if not fds:
+                    continue
+                indices = [channel_idx] + [i for i in range(len(fds)) if i != channel_idx]
+                arr = None
+                for idx in indices:
+                    if idx < 0 or idx >= len(fds):
+                        continue
+                    try:
+                        arr = self._get_channel_array(p, idx, header, fds[idx])
+                    except Exception:
+                        arr = None
+                    if arr is not None:
+                        break
+                if arr is None:
+                    missing += 1
+                    continue
+                frames.append(np.array(arr, dtype=float))
+            except Exception:
+                missing += 1
+                continue
+        if not frames:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Animation",
+                f"No frames could be loaded. Selected: {len(set(paths))}, skipped: {missing}",
+            )
+            return
+        try:
+            # normalize to uint8 for broad codec support
+            norm_frames = []
+            for arr in frames:
+                arr = np.asarray(arr, dtype=float)
+                rng = arr.max() - arr.min()
+                if rng <= 0:
+                    norm = np.zeros_like(arr, dtype=np.uint8)
+                else:
+                    norm = ((arr - arr.min()) / rng * 255.0).clip(0, 255).astype(np.uint8)
+                norm_frames.append(norm)
+            if fmt == "gif":
+                iio.imwrite(out_path, norm_frames, plugin="pillow", loop=0, duration=0.4)
+            else:
+                iio.imwrite(out_path, norm_frames, plugin="ffmpeg", fps=6)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Animation", f"Failed to save animation: {exc}")
+            return
+        QtWidgets.QMessageBox.information(self, "Animation", f"Saved animation to {out_path}")
+
+    def _show_alignment_preview(self, names, aligned, shifts, channel_idx):
+        """Preview aligned/cropped images and optionally save outputs/animation."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Drift correction preview")
+        dlg.resize(900, 720)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        info = QtWidgets.QPlainTextEdit()
+        info.setReadOnly(True)
+        info.setMaximumHeight(140)
+        text_lines = []
+        for name, shift in zip(names, shifts):
+            text_lines.append(f"{name}: dy={shift[0]:.3f} px, dx={shift[1]:.3f} px")
+        info.setPlainText("\n".join(text_lines))
+        layout.addWidget(info)
+
+        # Controls row: cmap + speed slider
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Colormap:"))
+        cmap_combo = QtWidgets.QComboBox()
+        try:
+            cmap_combo.addItems(sorted(colormaps.keys()))
+        except Exception:
+            cmap_combo.addItems(["gray", "viridis", "plasma", "magma", "cividis"])
+        if hasattr(self, "thumb_cmap"):
+            idx = cmap_combo.findText(self.thumb_cmap)
+            if idx >= 0:
+                cmap_combo.setCurrentIndex(idx)
+        controls.addWidget(cmap_combo)
+        controls.addSpacing(12)
+        controls.addWidget(QtWidgets.QLabel("Speed (fps):"))
+        speed_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        speed_slider.setRange(1, 30)
+        speed_slider.setValue(6)
+        controls.addWidget(speed_slider)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        preview_label = QtWidgets.QLabel("")
+        preview_label.setAlignment(QtCore.Qt.AlignCenter)
+        preview_label.setMinimumHeight(320)
+        layout.addWidget(preview_label, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        save_imgs_btn = QtWidgets.QPushButton("Save aligned PNGs...")
+        save_gif_btn = QtWidgets.QPushButton("Save animation...")
+        btn_row.addWidget(save_imgs_btn)
+        btn_row.addWidget(save_gif_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        # Build simple QTimer-based preview using RGB frames to avoid GIF issues
+        preview_timer = QtCore.QTimer(dlg)
+        preview_timer.setSingleShot(False)
+        frames_rgb = []
+
+        def _build_frames(cmap_name):
+            nonlocal frames_rgb
+            frames_rgb = []
+            try:
+                import matplotlib.cm as mcm
+            except Exception:
+                mcm = None
+            cmap_lookup = getattr(mcm, "cmap_d", None)
+            cmap = None
+            if mcm:
+                try:
+                    if (cmap_lookup and cmap_name in cmap_lookup) or hasattr(mcm, "get_cmap"):
+                        cmap = mcm.get_cmap(cmap_name)
+                except Exception:
+                    cmap = None
+            for arr in aligned:
+                arr = np.asarray(arr, dtype=float)
+                rng = arr.max() - arr.min()
+                if rng <= 0:
+                    base = np.zeros_like(arr, dtype=float)
+                else:
+                    base = (arr - arr.min()) / rng
+                if cmap is not None:
+                    rgb = (cmap(base)[:, :, :3] * 255.0).astype(np.uint8)
+                else:
+                    rgb = np.repeat((base * 255.0).astype(np.uint8)[..., None], 3, axis=2)
+                frames_rgb.append(rgb)
+
+        def _update_preview():
+            if not frames_rgb:
+                preview_label.setText("Preview unavailable")
+                return
+            idx = (preview_timer.property("frame_idx") or 0) % len(frames_rgb)
+            frame = frames_rgb[idx]
+            h, w, _ = frame.shape
+            qimg = QtGui.QImage(frame.data, w, h, 3 * w, QtGui.QImage.Format_RGB888)
+            preview_label.setPixmap(QtGui.QPixmap.fromImage(qimg))
+            preview_timer.setProperty("frame_idx", (idx + 1) % len(frames_rgb))
+
+        def _render_preview(cmap_name, fps):
+            _build_frames(cmap_name)
+            interval = max(30, int(1000 / max(1, fps)))
+            preview_timer.setInterval(interval)
+            preview_timer.setProperty("frame_idx", 0)
+            preview_timer.start()
+            _update_preview()
+
+        _render_preview(cmap_combo.currentText(), speed_slider.value())
+        cmap_combo.currentTextChanged.connect(lambda name: _render_preview(name, speed_slider.value()))
+        speed_slider.valueChanged.connect(lambda val: _render_preview(cmap_combo.currentText(), val))
+
+        def _save_imgs():
+            out_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select output folder")
+            if not out_dir:
+                return
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for name, arr in zip(names, aligned):
+                out_path = out_dir / f"{name}_aligned.png"
+                try:
+                    import imageio.v3 as iio  # type: ignore
+                    iio.imwrite(out_path, arr.astype(np.float32))
+                except Exception:
+                    try:
+                        from matplotlib import pyplot as plt  # type: ignore
+                        plt.imsave(out_path, arr, cmap=cmap_combo.currentText())
+                    except Exception:
+                        np.savetxt(out_path.with_suffix(".txt"), arr)
+            QtWidgets.QMessageBox.information(self, "Drift correction", f"Saved aligned images to {out_dir}")
+
+        def _save_anim():
+            try:
+                import imageio.v3 as iio  # type: ignore
+            except Exception:
+                QtWidgets.QMessageBox.warning(dlg, "Animation", "imageio is required to save animations.")
+                return
+            out_path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save animation", "aligned.gif", "GIF (*.gif);;MP4 (*.mp4)")
+            if not out_path:
+                return
+            try:
+                import matplotlib.cm as mcm
+            except Exception:
+                mcm = None
+            cmap_lookup = getattr(mcm, "cmap_d", None)
+            frames_out = []
+            for arr in aligned:
+                arr = np.asarray(arr, dtype=float)
+                rng = arr.max() - arr.min()
+                if rng <= 0:
+                    base = np.zeros_like(arr, dtype=float)
+                else:
+                    base = (arr - arr.min()) / rng
+                if mcm and ((cmap_lookup and cmap_combo.currentText() in cmap_lookup) or hasattr(mcm, "get_cmap")):
+                    cmap = mcm.get_cmap(cmap_combo.currentText())
+                    frames_out.append((cmap(base)[:, :, :3] * 255.0).astype(np.uint8))
+                else:
+                    frames_out.append((base * 255.0).astype(np.uint8))
+            suffix = Path(out_path).suffix.lower()
+            fps = max(1, speed_slider.value())
+            try:
+                if suffix == ".mp4":
+                    iio.imwrite(out_path, frames_out, plugin="ffmpeg", fps=fps)
+                else:
+                    iio.imwrite(out_path, frames_out, plugin="pillow", loop=0, duration=max(20, int(1000 / fps)))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(dlg, "Animation", f"Failed to save animation: {exc}")
+                return
+            QtWidgets.QMessageBox.information(dlg, "Animation", f"Saved animation to {out_path}")
+
+        save_imgs_btn.clicked.connect(_save_imgs)
+        save_gif_btn.clicked.connect(_save_anim)
+        dlg.exec_()
 
     def on_clear_spec_selection(self):
         self._clear_multi_spec_selection()

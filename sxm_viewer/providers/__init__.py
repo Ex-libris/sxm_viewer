@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable, List
 
 # Expose Nanonis provider
-from .nanonis import prepare_nanonis_folder, parse_nanonis_spectroscopy  # noqa: F401
+from .nanonis import prepare_nanonis_folder, parse_nanonis_spectroscopy, parse_nanonis_3ds  # noqa: F401
 
 
 def convert_nanonis(folder: Path | str) -> List[Path]:
@@ -17,4 +17,5 @@ __all__: Iterable[str] = [
     "convert_nanonis",
     "prepare_nanonis_folder",
     "parse_nanonis_spectroscopy",
+    "parse_nanonis_3ds",
 ]

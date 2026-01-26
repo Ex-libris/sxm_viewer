@@ -1,3 +1,3 @@
-from .adapter import prepare_nanonis_folder, parse_nanonis_spectroscopy
+from .adapter import prepare_nanonis_folder, parse_nanonis_spectroscopy, parse_nanonis_3ds
 
-__all__ = ["prepare_nanonis_folder", "parse_nanonis_spectroscopy"]
+__all__ = ["prepare_nanonis_folder", "parse_nanonis_spectroscopy", "parse_nanonis_3ds"]
