@@ -160,6 +160,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         if preview_cfg is None:
             preview_cfg = self.show_spectra
         self.show_preview_spectra = bool(preview_cfg)
+        # Defaults: disable tag auto-detection and allow users to re-enable via config
+        self.auto_detect_tags = bool(self.config.get("auto_detect_tags", False))
+        # Allow skipping Nanonis scan conversion if cache already exists
+        self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
+        # Enable persistent spectroscopy disk cache (per-folder) by default
+        self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
         self.thumb_grid_columns = 1
         self.display_units_si = bool(self.config.get("display_units_si", False))
@@ -244,9 +250,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectros_loaded = False
         self._spectro_cache = {}
         self._spectro_deferred = set()
-        # spectro_eager_limit: 0 means no deferral; otherwise minimum of 5000 to avoid accidental truncation
-        limit_cfg = int(self.config.get("spectro_eager_limit", 0))
-        self.spectro_eager_limit = 0 if limit_cfg <= 0 else max(5000, limit_cfg)
+        # spectro_eager_limit: 0 means no deferral; otherwise parse at most N spectroscopy files eagerly
+        limit_cfg = int(self.config.get("spectro_eager_limit", 300))
+        self.spectro_eager_limit = max(0, limit_cfg)
         self.image_time_index = {}
         self._spectro_popups = []
         self._popup_refs = []

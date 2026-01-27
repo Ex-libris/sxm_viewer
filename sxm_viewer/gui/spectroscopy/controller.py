@@ -59,7 +59,28 @@ def _assign_spectros_to_images(viewer):
     except Exception:
         pass
 
+    image_paths = {str(img.get('path')) for img in images}
+    image_paths_lower = {p.lower(): p for p in image_paths}
+
+    debug_nanonis = {"total": 0, "assigned": 0, "missing": 0}
+
     for spec in specs:
+        preset_key = spec.get('image_key')
+        if preset_key:
+            mapped = image_paths_lower.get(str(preset_key).lower())
+            if mapped:
+                image_key = mapped
+                specs_for_image = viewer.spectros_by_image[image_key]
+                spec['order_idx'] = len(specs_for_image) + 1
+                specs_for_image.append(spec)
+                if spec.get('source') == 'nanonis_3ds':
+                    debug_nanonis["total"] += 1
+                    debug_nanonis["assigned"] += 1
+                continue
+            else:
+                if spec.get('source') == 'nanonis_3ds':
+                    debug_nanonis["total"] += 1
+                    debug_nanonis["missing"] += 1
         match = viewer._choose_image_for_spec(spec, images, image_extents)
         if not match and images:
             # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
@@ -71,6 +92,8 @@ def _assign_spectros_to_images(viewer):
                     match = images[0]
             else:
                 match = images[0]
+        if not match and images:
+            match = images[0]
         if not match:
             continue
         image_key = str(match['path'])
@@ -78,6 +101,9 @@ def _assign_spectros_to_images(viewer):
         specs_for_image = viewer.spectros_by_image[image_key]
         spec['order_idx'] = len(specs_for_image) + 1  # stable order for fallback placement
         specs_for_image.append(spec)
+        if spec.get('source') == 'nanonis_3ds':
+            debug_nanonis["total"] += 1
+            debug_nanonis["assigned"] += 1
     # If nothing got assigned (e.g., all matches failed), place all specs on the first image to ensure visibility.
     if not viewer.spectros_by_image and images and specs:
         primary = images[0]
@@ -88,6 +114,9 @@ def _assign_spectros_to_images(viewer):
             viewer.spectros_by_image[image_key].append(spec)
     for k in list(viewer.spectros_by_image.keys()):
         viewer.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
+
+    # Debug log for nanonis 3ds assignments
+    # Suppress debug summary in normal runs
 
 
 def _is_dat_spec(spec):

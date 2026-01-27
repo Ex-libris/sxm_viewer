@@ -684,6 +684,18 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
     if not chans:
         log(f"[Nanonis] No channels found in {path}")
         return entries
+    def _parse_time(value):
+        try:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, (int, float)):
+                return datetime.fromtimestamp(float(value))
+            if isinstance(value, str) and value.strip():
+                # nanonispy2 returns datetime for start_time/end_time; still guard strings
+                return datetime.fromisoformat(value)
+        except Exception:
+            return None
+        return None
 
     def _first_non_null(*vals):
         for v in vals:
@@ -699,14 +711,7 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
             return v
         return None
 
-    # Diagnostic: log header keys and channel shapes for troubleshooting
-    try:
-        hdr_keys = sorted(grid.header.keys())
-        chan_shapes = {str(k): np.shape(v) for k, v in chans.items()}
-        log(f"[Nanonis] 3ds header keys: {hdr_keys}")
-        log(f"[Nanonis] 3ds channel shapes: {chan_shapes}")
-    except Exception:
-        pass
+    # Diagnostic logs removed for normal runs (too noisy)
     bias_raw = chans.get("sweep_signal")
     bias = np.asarray(bias_raw, dtype=float) if bias_raw is not None else np.asarray([], dtype=float)
     if bias.size == 0:
@@ -759,6 +764,13 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
         x_offsets = np.arange(nx, dtype=float)
         y_offsets = np.arange(ny, dtype=float)
     dataset_key = Path(path).stem
+    # acquisition time from header if available
+    spec_time = _parse_time(grid.header.get("start_time")) or _parse_time(grid.header.get("end_time"))
+    if spec_time is None:
+        try:
+            spec_time = datetime.fromtimestamp(Path(path).stat().st_mtime)
+        except Exception:
+            spec_time = None
     channel_data: Dict[str, np.ndarray] = {}
     skip_keys = {"params", "sweep_signal", "topo"}
     for raw_key, raw_arr in chans.items():
@@ -816,9 +828,14 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
                 "V": axis,
                 "points_per_trace": int(first_vals.size),
                 "source": "nanonis_3ds",
+                "time": spec_time,
             }
             entries.append(entry)
     log(f"[Nanonis] Parsed {len(entries)} spectra from {path} ({rows}x{cols}, channels={channel_count})")
+    try:
+        # Quieted noisy 3ds debug logging in normal runs
+    except Exception:
+        pass
     return entries
 
 

@@ -99,10 +99,14 @@ def load_folder(viewer, folder:Path):
     viewer._record_recent_dir(folder)
 
     txts = sorted(folder.glob("*.txt"))
-    converted = convert_nanonis(folder)
-    if converted:
-        txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
-        log_status(f"Converted {len(converted)} Nanonis scan(s)")
+    converted = []
+    if getattr(viewer, "convert_nanonis_enabled", True):
+        converted = convert_nanonis(folder)
+        if converted:
+            txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} Nanonis scan(s)")
+    else:
+        log_status("Skipping Nanonis .sxm conversion (disabled in config)")
     log_status(f"Found {len(txts)} header file(s)")
     viewer.files = txts
     viewer.headers.clear()
@@ -169,9 +173,13 @@ def load_folder(viewer, folder:Path):
     except Exception:
         pass
 
-    # auto-detect tags for files not already tagged
-    log_status("Auto-detecting tags...")
-    viewer._auto_detect_tags_for_folder()
+    # auto-detect tags for files not already tagged (can be disabled via config)
+    should_tag = getattr(viewer, "auto_detect_tags", True)
+    if should_tag:
+        log_status("Auto-detecting tags...")
+        viewer._auto_detect_tags_for_folder()
+    else:
+        log_status("Skipping auto-detect tags (disabled in config)")
 
     # keep spectroscopy folder aligned with the SXM folder unless the user picked a custom path
     try:
@@ -348,6 +356,29 @@ def _scan_spectros(viewer, folder:Path):
         }
         if not spec_list:
             return info
+        # Force nanonis .3ds to be treated as matrix datasets
+        if any(s.get("source") == "nanonis_3ds" for s in spec_list):
+            grid_rows = spec_list[0].get("grid_rows") or spec_list[0].get("grid_row") or 0
+            grid_cols = spec_list[0].get("grid_cols") or spec_list[0].get("grid_col") or 0
+            if not grid_rows or not grid_cols:
+                grid_rows, grid_cols, zero_based = _derive_grid_from_specs(spec_list)
+            else:
+                zero_based = True
+            points_per_trace = _points_per_trace_for_list(spec_list)
+            dataset_key = path_obj.stem
+            info.update(
+                {
+                    "is_matrix": True,
+                    "dataset_key": dataset_key,
+                    "channel_code": None,
+                    "channel_label": None,
+                    "grid_rows": grid_rows,
+                    "grid_cols": grid_cols,
+                    "zero_based": zero_based,
+                    "points_per_trace": points_per_trace,
+                }
+            )
+            return info
         grid_rows, grid_cols, zero_based = _derive_grid_from_specs(spec_list)
         points_per_trace = _points_per_trace_for_list(spec_list)
         base, channel_code, ch_label = parse_matrix_filename(path_obj.name)
@@ -392,13 +423,146 @@ def _scan_spectros(viewer, folder:Path):
         )
         return info
 
+    def _assign_matrix_reference(spec_list, headers, ref_mtime: float, image_paths=None, image_meta=None):
+        """Attach a single reference image_key to all spectra in a matrix dataset.
+        We only anchor to actual loaded images (thumbnails). If none exist, we skip anchoring.
+        """
+        if not spec_list:
+            return None
+        candidates = []
+        try:
+            if image_meta:
+                for img in image_meta:
+                    p = str(img.get("path"))
+                    if not p or "commands" in p.lower():
+                        continue
+                    candidates.append((p, img.get("time")))
+        except Exception:
+            candidates = []
+        if not candidates:
+            try:
+                if image_paths:
+                    for p in image_paths:
+                        if p and "commands" not in str(p).lower():
+                            candidates.append((str(p), None))
+            except Exception:
+                candidates = []
+        if not candidates:
+            return None
+        valid_paths_lower = {p.lower(): p for p, _ in candidates}
+        ref_epoch = None
+        try:
+            st = spec_list[0].get("time")
+            if isinstance(st, datetime):
+                ref_epoch = st.timestamp()
+        except Exception:
+            ref_epoch = None
+        if ref_epoch is None:
+            ref_epoch = ref_mtime if ref_mtime is not None else None
+        best_key = None
+        best_delta = None
+        # Prefer loaded images (using image_meta time if available, else file mtime)
+        for pth, tval in candidates:
+            delta = None
+            try:
+                if isinstance(tval, datetime):
+                    delta = abs(tval.timestamp() - ref_epoch) if ref_epoch is not None else None
+                if delta is None:
+                    ht = Path(pth).stat().st_mtime
+                    delta = abs(ht - ref_epoch) if ref_epoch is not None else None
+            except Exception:
+                delta = None
+            if delta is None:
+                continue
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_key = pth
+        # Final fallback: first candidate
+        if not best_key:
+            best_key = candidates[0][0]
+        if best_key:
+            key_norm = best_key
+            if key_norm.lower() in valid_paths_lower:
+                key_norm = valid_paths_lower[key_norm.lower()]
+            for s in spec_list:
+                s["image_key"] = key_norm
+                s["image_path"] = key_norm
+        return best_key
+
     viewer.matrix_datasets = {}
     if not folder or not Path(folder).exists():
         return specs, stats
+    # persistent spectroscopy cache directory (per folder)
+    disk_cache_dir = None
+    if getattr(viewer, "spectro_disk_cache_enabled", True):
+        disk_cache_dir = folder / ".sxmviewer_spectro_cache"
+        try:
+            disk_cache_dir.mkdir(exist_ok=True)
+            try:
+                existing = list(disk_cache_dir.glob("*.pkl"))
+                log_status(f"Spectroscopy cache dir: {disk_cache_dir} (entries={len(existing)})")
+            except Exception:
+                pass
+        except Exception:
+            disk_cache_dir = None
+
+    def _disk_cache_paths(key: str):
+        if not disk_cache_dir:
+            return None, None
+        cache_file = disk_cache_dir / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".pkl")
+        meta_file = cache_file.with_suffix(".json")
+        return cache_file, meta_file
+
+    def _load_disk_cached_specs(key: str, mtime: float, fsize: int):
+        cf, mf = _disk_cache_paths(key)
+        if not cf or not mf or not cf.exists() or not mf.exists():
+            return None
+        try:
+            meta = json.loads(mf.read_text())
+            meta_mtime = float(meta.get("mtime", -1.0))
+            meta_size = int(meta.get("size", -1))
+            # compare with tolerance to avoid sub-second drift across runs
+            if meta_mtime > 0 and mtime > 0 and abs(meta_mtime - mtime) > 2.0:
+                try:
+                    log_status(f"  - spectro cache stale (mtime): {cf.name} (meta={meta_mtime:.3f}, file={mtime:.3f})")
+                except Exception:
+                    pass
+                return None
+            if meta_size >= 0 and fsize >= 0 and meta_size != int(fsize):
+                try:
+                    log_status(f"  - spectro cache stale (size): {cf.name} (meta={meta_size}, file={int(fsize)})")
+                except Exception:
+                    pass
+                return None
+            import pickle
+            with open(cf, "rb") as fh:
+                data = pickle.load(fh)
+            return data if isinstance(data, list) else None
+        except Exception:
+            return None
+
+    def _store_disk_cache(key: str, mtime: float, fsize: int, data):
+        if not disk_cache_dir:
+            return
+        try:
+            cf, mf = _disk_cache_paths(key)
+            if not cf or not mf:
+                return
+            import pickle
+            with open(cf, "wb") as fh:
+                pickle.dump(data, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            mf.write_text(json.dumps({"mtime": float(mtime), "size": int(fsize)}))
+            try:
+                log_status(f"  - spectroscopy cache stored: {cf.name}")
+            except Exception:
+                pass
+        except Exception:
+            pass
     patterns = ("*.dat","*.DAT","*.3ds","*.3DS")
     cache = viewer._spectro_cache
     seen_keys = set()
     file_map = {}
+    cache_miss_logged = 0
     for pat in patterns:
         for f in folder.glob(pat):
             # normalize path for dedup (case-insensitive on Windows)
@@ -414,7 +578,32 @@ def _scan_spectros(viewer, folder:Path):
     if total:
         log_status(f"Scanning {total} spectroscopy file(s)...")
     progress_step = max(1, total // 20) if total else 1
+    # Use the known image files (thumbnails) as anchoring targets.
+    # Prefer thumbnail metadata paths (image_meta), then files, then headers (skipping commands).
+    image_paths = []
+    try:
+        image_paths = [str(img.get("path")) for img in (getattr(viewer, "image_meta", []) or []) if img.get("path")]
+    except Exception:
+        image_paths = []
+    if not image_paths:
+        try:
+            image_paths = [str(p) for p in getattr(viewer, "files", []) or []]
+        except Exception:
+            image_paths = []
+    # Debug log removed for normal operation
+    if not image_paths:
+        try:
+            image_paths = [
+                str(Path(k))
+                for k in (viewer.headers.keys() if getattr(viewer, "headers", None) else [])
+                if "commands" not in str(k).lower()
+            ]
+        except Exception:
+            image_paths = []
     for idx, f in enumerate(files, 1):
+        spec_list = None
+        parse_error = None
+        disk_cached = None
         p = Path(f)
         if p.is_dir():
             continue
@@ -434,48 +623,68 @@ def _scan_spectros(viewer, folder:Path):
             continue
         seen_keys.add(norm_key)
         try:
-            mtime = p.stat().st_mtime
+            st = p.stat()
+            mtime = st.st_mtime
+            fsize = st.st_size
         except Exception:
             mtime = 0.0
+            fsize = -1
         cached = cache.get(norm_key)
         # eager parse limit (0 means no deferral)
         if viewer.spectro_eager_limit and idx > viewer.spectro_eager_limit:
-            stats['deferred_files'] += 1
-            cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
-            viewer._spectro_deferred.add(norm_key)
-            continue
+            # Try disk cache even when over eager limit; otherwise defer
+            if disk_cache_dir:
+                disk_cached = _load_disk_cached_specs(norm_key, mtime, fsize)
+                if disk_cached is not None:
+                    spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
+            if not spec_list:
+                stats['deferred_files'] += 1
+                cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
+                viewer._spectro_deferred.add(norm_key)
+                continue
 
         if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
             raw_list = cached.get('data') or []
             spec_list = [_clone_spec_entry(entry) for entry in raw_list]
         else:
-            spec_list = None
-            parse_error = None
-            if ext == ".dat":
-                # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
+            # try disk cache
+            if disk_cache_dir:
+                disk_cached = _load_disk_cached_specs(norm_key, mtime, fsize)
+                if disk_cached is not None:
+                    spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
+                    log_status(f"  - spectroscopy cache hit: {p.name}")
+            if spec_list is None and disk_cache_dir and cache_miss_logged < 10:
+                cache_miss_logged += 1
                 try:
-                    spec_list = parse_nanonis_spectroscopy(p)
+                    log_status(f"  - spectroscopy cache miss: {p.name}")
                 except Exception:
-                    spec_list = None
-            elif ext == ".3ds":
-                try:
-                    spec_list = parse_nanonis_3ds(p)
-                except Exception:
-                    spec_list = None
-                # do NOT fall back to text parser for .3ds
-                if not spec_list:
+                    pass
+            if spec_list is None:
+                if ext == ".dat":
+                    # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
                     try:
-                        log_status(f"Spectroscopy parse rejected: {p} returned no spectra (.3ds)")
+                        spec_list = parse_nanonis_spectroscopy(p)
                     except Exception:
-                        pass
-            if not spec_list and ext not in (".3ds",):
-                try:
-                    spec_list = parse_spectroscopy_file(p)
-                except SpectroscopyParseError as exc:
-                    parse_error = exc
-                    spec_list = None
-                except Exception:
-                    spec_list = None
+                        spec_list = None
+                elif ext == ".3ds":
+                    try:
+                        spec_list = parse_nanonis_3ds(p)
+                    except Exception:
+                        spec_list = None
+                    # do NOT fall back to text parser for .3ds
+                    if not spec_list:
+                        try:
+                            log_status(f"Spectroscopy parse rejected: {p} returned no spectra (.3ds)")
+                        except Exception:
+                            pass
+                if spec_list is None and ext not in (".3ds",):
+                    try:
+                        spec_list = parse_spectroscopy_file(p)
+                    except SpectroscopyParseError as exc:
+                        parse_error = exc
+                        spec_list = None
+                    except Exception:
+                        spec_list = None
             if parse_error is not None:
                 stats['invalid_files'] += 1
                 try:
@@ -486,7 +695,6 @@ def _scan_spectros(viewer, folder:Path):
             if not spec_list:
                 stats['empty_files'] += 1
                 continue
-
             # --- Fallback: Parse coordinates from header comments if missing (e.g. Nanonis .dat) ---
             if spec_list and ext == ".dat":
                 if any(s.get('x') is None or s.get('y') is None for s in spec_list):
@@ -543,6 +751,9 @@ def _scan_spectros(viewer, folder:Path):
                     except Exception:
                         pass
             cache[norm_key] = {'mtime': mtime, 'data': [_clone_spec_entry(spec) for spec in spec_list]}
+            # persist to disk cache with final image_key/image_path anchoring
+            if disk_cache_dir:
+                _store_disk_cache(norm_key, mtime, fsize, spec_list)
         for spec in spec_list or []:
             _reset_spec_classification(spec)
         specs.extend(spec_list or [])
@@ -551,6 +762,21 @@ def _scan_spectros(viewer, folder:Path):
             grid_rows = info.get("grid_rows") or 1
             grid_cols = info.get("grid_cols") or 1
             _ensure_grid_indices(spec_list, grid_rows, grid_cols, zero_based=info.get("zero_based", True))
+            # Anchor all points of the matrix to a single reference image to avoid scatter
+            chosen_key = _assign_matrix_reference(spec_list, viewer.headers, mtime, image_paths=image_paths, image_meta=getattr(viewer, "image_meta", None))
+            if not chosen_key and image_paths:
+                fallback_key = image_paths[0]
+                for s in spec_list:
+                    s["image_key"] = fallback_key
+                    s["image_path"] = fallback_key
+                chosen_key = fallback_key
+            if chosen_key:
+                try:
+                    log_status(f"  - matrix anchored to: {Path(chosen_key).name} ({len(spec_list)} pts, {grid_cols}x{grid_rows})")
+                except Exception:
+                    pass
+                # Warn if anchor is not among known image paths (may prevent markers from drawing)
+                # No extra debug here; anchor info is logged above
             stats['matrix_files'] += 1
             stats['matrix_specs'] += len(spec_list)
             stats['display_count'] += 1
