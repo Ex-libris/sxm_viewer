@@ -67,6 +67,10 @@ def clear_thumbs(viewer):
         if w: w.setParent(None)
     viewer.thumb_widgets = {}
     viewer._thumb_labels = {}
+    viewer._thumb_meta = {}
+    viewer._thumb_loaded = set()
+    viewer._thumb_inflight = set()
+    viewer._thumb_card_height = None
 
 
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
@@ -122,6 +126,9 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         files_iter.sort(key=lambda p: (order.get((viewer.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
 
     viewer.current_thumb_files = [str(f) for f in files_iter]
+    viewer._thumb_meta = {}
+    # approximate per-card height: thumb + label + padding
+    viewer._thumb_card_height = thumb_h + 48
     for i, t in enumerate(files_iter):
         key = str(t)
         if key not in viewer.headers:
@@ -181,9 +188,10 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 markers = viewer._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds)
                 lbl.setPixmap(pix)
                 lbl.setProperty("spec_markers", markers)
+                viewer._thumb_loaded.add(key)
             else:
                 lbl.setProperty("spec_markers", [])
-                viewer._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+            viewer._thumb_meta[key] = (channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
         else:
             blank = QtGui.QPixmap(thumb_w, thumb_h)
             blank.fill(QtGui.QColor('black'))
@@ -193,6 +201,11 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         col += 1
         if col >= max_cols:
             col = 0; row += 1
+    # kick off initial batch for visible thumbs
+    try:
+        viewer._request_visible_thumbs()
+    except Exception:
+        pass
     viewer._refresh_frame_map_pixmaps()
 
 def on_thumb_sort_changed(viewer, idx):

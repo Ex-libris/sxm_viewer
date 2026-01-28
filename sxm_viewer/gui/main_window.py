@@ -235,6 +235,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumb_generation = 0
         self._thumb_data_lock = threading.Lock()
         self._thumb_threadpool = QtCore.QThreadPool()
+        self._thumb_meta = {}
+        self._thumb_loaded = set()
+        self._thumb_inflight = set()
+        self._thumb_card_height = None
         try:
             self._thumb_threadpool.setMaxThreadCount(max(2, min(6, QtCore.QThreadPool.globalInstance().maxThreadCount())))
         except Exception:
@@ -567,6 +571,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumb_viewport.installEventFilter(self)
         self.scroll.installEventFilter(self)
         self.thumb_container.installEventFilter(self)
+        try:
+            self.scroll.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_thumbs())
+        except Exception:
+            pass
         thumbs_panel = QtWidgets.QWidget()
         self.left_w = left_w
         thumbs_panel_layout = QtWidgets.QVBoxLayout(); thumbs_panel_layout.setContentsMargins(0,0,0,0)
@@ -1265,8 +1273,13 @@ QLabel:hover {{
                 self._thumbs_reflow_timer.start(150)
             except Exception:
                 pass
-            # allow normal resize processing to continue
-            return False
+        if obj in thumb_objects and event.type() in (QtCore.QEvent.Scroll, QtCore.QEvent.Wheel):
+            try:
+                # defer slightly to let the scroll settle
+                QtCore.QTimer.singleShot(0, self._request_visible_thumbs)
+            except Exception:
+                pass
+        # allow normal processing to continue
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
@@ -1588,6 +1601,9 @@ QLabel:hover {{
         return marker_defs
 
     def _schedule_thumbnail_job(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation):
+        if file_key in self._thumb_inflight or file_key in self._thumb_loaded:
+            return
+        self._thumb_inflight.add(file_key)
         job = _ThumbnailJob(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
         job.signals.finished.connect(self._on_thumbnail_job_finished)
         job.signals.failed.connect(self._on_thumbnail_job_failed)
@@ -1613,6 +1629,12 @@ QLabel:hover {{
         markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds)
         label.setPixmap(pix)
         label.setProperty("spec_markers", markers)
+        self._thumb_inflight.discard(file_key)
+        self._thumb_loaded.add(file_key)
+        try:
+            self._request_visible_thumbs()
+        except Exception:
+            pass
 
     def _on_thumbnail_job_failed(self, file_key, channel_idx, error, generation):
         if generation != self._thumb_generation:
@@ -1628,10 +1650,44 @@ QLabel:hover {{
         pix.fill(QtGui.QColor('black'))
         label.setPixmap(pix)
         label.setProperty("spec_markers", [])
+        self._thumb_inflight.discard(file_key)
         try:
             log_status(f"Thumbnail failed for {file_key}: {error}")
         except Exception:
             pass
+        try:
+            self._request_visible_thumbs()
+        except Exception:
+            pass
+
+    def _request_visible_thumbs(self):
+        """Schedule thumbnail rendering for currently visible rows (+margin)."""
+        if not getattr(self, 'current_thumb_files', None):
+            return
+        vp = getattr(self, '_thumb_viewport', None)
+        scroll = getattr(self, 'scroll', None)
+        cols = max(1, getattr(self, 'thumb_grid_columns', 1))
+        card_h = getattr(self, '_thumb_card_height', None) or (self.thumb_size_px + 48)
+        try:
+            y0 = scroll.verticalScrollBar().value() if scroll else 0
+            vh = vp.height() if vp else card_h * 4
+        except Exception:
+            y0 = 0; vh = card_h * 4
+        first_row = max(0, int(y0 // card_h) - 2)
+        last_row = int((y0 + vh) // card_h) + 2
+        start_idx = max(0, first_row * cols)
+        end_idx = min(len(self.current_thumb_files), (last_row + 1) * cols)
+        visible_keys = self.current_thumb_files[start_idx:end_idx]
+        for key in visible_keys:
+            if key in self._thumb_loaded or key in self._thumb_inflight:
+                continue
+            meta = self._thumb_meta.get(key)
+            if not meta:
+                continue
+            channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen = meta
+            if gen != self._thumb_generation:
+                continue
+            self._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen)
 
     def _get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h):
         return viewer_thumbnails._get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h)
