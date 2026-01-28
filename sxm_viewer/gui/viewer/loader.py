@@ -206,8 +206,23 @@ def load_folder(viewer, folder:Path):
 
     # load spectroscopy markers referencing this folder
     log_status("Loading spectroscopy references...")
-    viewer._reload_spectros(refresh=False)
-    t_specs = time.perf_counter()
+    if getattr(viewer, "lazy_spectros_enabled", False) and getattr(viewer, "show_spectra", True):
+        viewer.spectros = []
+        viewer.matrix_spectros = []
+        viewer.spectros_by_image = defaultdict(list)
+        viewer.files_with_matrix = set()
+        viewer._spectros_loaded = False
+        viewer._spectros_pending = True
+        try:
+            viewer._update_spectro_stats_label()
+        except Exception:
+            pass
+        t_specs = time.perf_counter()
+        log_status("[Perf] Spectroscopy load deferred (lazy mode on)")
+    else:
+        viewer._spectros_pending = False
+        viewer._reload_spectros(refresh=False)
+        t_specs = time.perf_counter()
 
     QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
     log_status("Folder load complete.")

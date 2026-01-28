@@ -168,6 +168,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
         # Enable persistent spectroscopy disk cache (per-folder) by default
         self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
+        # Lazily load spectroscopies (defer until requested) to speed up initial folder loads
+        self.lazy_spectros_enabled = bool(self.config.get("lazy_spectros_enabled", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
         self.thumb_grid_columns = 1
         self.display_units_si = bool(self.config.get("display_units_si", False))
@@ -254,6 +256,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.files_with_matrix = set()
         self.spectros_by_image = defaultdict(list)
         self._spectros_loaded = False
+        self._spectros_loading = False
+        self._spectros_pending = False
         self._spectro_cache = {}
         self._spectro_deferred = set()
         # spectro_eager_limit: 0 means no deferral; otherwise parse at most N spectroscopy files eagerly
@@ -1103,9 +1107,13 @@ QLabel:hover {{
         return main_window_spectro.open_single_spectro_popup(self, spectro)
 
     def _open_spectro_summary_for_file(self, file_key, show_mode="single", quiet=False):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode, quiet=quiet)
 
     def _open_matrix_explorer_for_file(self, file_key):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         image_specs = [s for s in self.spectros_by_image.get(str(file_key), []) if s.get('matrix_index') is not None]
         dataset_specs = list(image_specs)
         dataset = None
@@ -1142,6 +1150,8 @@ QLabel:hover {{
         return main_window_spectro.ensure_spectro_dock(self)
 
     def open_spectro_browser(self, entries=None):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_browser(self, entries=entries)
 
     def _filter_spectro_browser(self):
@@ -1279,7 +1289,7 @@ QLabel:hover {{
                 QtCore.QTimer.singleShot(0, self._request_visible_thumbs)
             except Exception:
                 pass
-        # allow normal processing to continue
+        # allow normal resize processing to continue
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
@@ -2874,11 +2884,35 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
-        self._reload_spectros(refresh=True)
+        # if lazy loading is enabled, mark spectros pending; otherwise reload immediately
+        if getattr(self, "lazy_spectros_enabled", False):
+            self._spectros_pending = True
+            self._spectros_loaded = False
+            self._update_spectro_stats_label()
+        else:
+            self._reload_spectros(refresh=True)
+
+    def ensure_spectros_loaded(self, refresh: bool = True):
+        """Load spectroscopies on-demand if they were deferred."""
+        if self._spectros_loaded:
+            return True
+        if not self.show_spectra:
+            return False
+        if getattr(self, "_spectros_loading", False):
+            return False
+        self._spectros_loading = True
+        self._spectros_pending = False
+        try:
+            log_status("[Lazy] Loading spectroscopy references...")
+            self._reload_spectros(refresh=refresh)
+        finally:
+            self._spectros_loading = False
+        return True
 
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
         self._spectros_loaded = False
+        self._spectros_pending = False
         t_scan_start = time.perf_counter()
         try:
             folder = getattr(self, 'spec_folder_path', None) or self.last_dir
@@ -3066,6 +3100,13 @@ QLabel:hover {{
     def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
         """Render spectroscopy markers directly on the thumbnail pixmap."""
         if not self.show_spectra and not reveal_points_override:
+            return []
+        if not self._spectros_loaded:
+            if getattr(self, "lazy_spectros_enabled", False) and getattr(self, "_spectros_pending", False):
+                try:
+                    QtCore.QTimer.singleShot(0, lambda: self.ensure_spectros_loaded(refresh=True))
+                except Exception:
+                    pass
             return []
         return spectro_overlays._render_spectroscopy_overlays(
             self,
@@ -3354,6 +3395,8 @@ QLabel:hover {{
         return False
 
     def _open_spectroscopy_popup(self, spec):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(self, spec)
 
     def _ensure_single_spectro_popup(self, spec):
@@ -4055,9 +4098,13 @@ QLabel:hover {{
         self._clear_multi_spec_selection()
 
     def _open_multi_spectroscopy_popup(self):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(self)
 
     def on_show_matrix_spectro_viewer(self):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups.on_show_matrix_spectro_viewer(self)
 
     def on_spec_coord_mode_changed(self, idx):
@@ -4227,7 +4274,7 @@ QLabel:hover {{
             pass
         if self.show_spectra:
             if not self._spectros_loaded:
-                self._reload_spectros(refresh=False)
+                self.ensure_spectros_loaded(refresh=False)
             else:
                 # already loaded for this session; just update counts
                 self._update_spectro_stats_label()
