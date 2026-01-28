@@ -1,6 +1,7 @@
 """Loader helpers for SXMGridViewer."""
 from __future__ import annotations
 
+import time
 from ..._shared import (
     QtCore,
     QtGui,
@@ -90,6 +91,7 @@ from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 def load_folder(viewer, folder:Path):
     folder = Path(folder)
     log_status(f"Loading folder: {folder}")
+    t0 = time.perf_counter()
     viewer._update_toolbar_actions(False)
     prev_last_dir = getattr(viewer, 'last_dir', None)
     viewer.last_dir = folder
@@ -136,6 +138,7 @@ def load_folder(viewer, folder:Path):
         viewer.clear_thumbs(); return
     viewer._build_image_timestamp_index()
     viewer._rebuild_frame_map_entries()
+    t_headers = time.perf_counter()
 
     # build channel dropdown from first header
     first_key = next(iter(viewer.headers))
@@ -180,6 +183,7 @@ def load_folder(viewer, folder:Path):
         viewer._auto_detect_tags_for_folder()
     else:
         log_status("Skipping auto-detect tags (disabled in config)")
+    t_tags = time.perf_counter()
 
     # keep spectroscopy folder aligned with the SXM folder unless the user picked a custom path
     try:
@@ -203,9 +207,16 @@ def load_folder(viewer, folder:Path):
     # load spectroscopy markers referencing this folder
     log_status("Loading spectroscopy references...")
     viewer._reload_spectros(refresh=False)
+    t_specs = time.perf_counter()
 
     QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
     log_status("Folder load complete.")
+    log_status(
+        f"[Perf] Load stages: headers { (t_headers - t0)*1000:.0f} ms | "
+        f"tags { (t_tags - t_headers)*1000:.0f} ms | "
+        f"spectros { (t_specs - t_tags)*1000:.0f} ms | "
+        f"total { (t_specs - t0)*1000:.0f} ms"
+    )
 
 
 def _parse_header_datetime(viewer, header):
@@ -506,58 +517,83 @@ def _scan_spectros(viewer, folder:Path):
         except Exception:
             disk_cache_dir = None
 
-    def _disk_cache_paths(key: str):
-        if not disk_cache_dir:
-            return None, None
-        cache_file = disk_cache_dir / (hashlib.sha1(key.encode("utf-8")).hexdigest() + ".pkl")
-        meta_file = cache_file.with_suffix(".json")
-        return cache_file, meta_file
-
-    def _load_disk_cached_specs(key: str, mtime: float, fsize: int):
-        cf, mf = _disk_cache_paths(key)
-        if not cf or not mf or not cf.exists() or not mf.exists():
+    def _load_disk_cache(cache_dir: Path, filepath: Path, mtime: float, fsize: int):
+        """Load cached spectroscopy data if valid."""
+        if not cache_dir or not cache_dir.exists():
+            return None
+        cache_key = hashlib.md5(filepath.name.encode("utf-8")).hexdigest()[:16]
+        meta_file = cache_dir / f"{cache_key}_meta.json"
+        data_file = cache_dir / f"{cache_key}_data.npy"
+        if not meta_file.exists() or not data_file.exists():
             return None
         try:
-            meta = json.loads(mf.read_text())
-            meta_mtime = float(meta.get("mtime", -1.0))
-            meta_size = int(meta.get("size", -1))
-            # compare with tolerance to avoid sub-second drift across runs
-            if meta_mtime > 0 and mtime > 0 and abs(meta_mtime - mtime) > 2.0:
-                try:
-                    log_status(f"  - spectro cache stale (mtime): {cf.name} (meta={meta_mtime:.3f}, file={mtime:.3f})")
-                except Exception:
-                    pass
+            with open(meta_file, "r") as f:
+                cache_meta = json.load(f)
+            meta_mtime = cache_meta.get("mtime")
+            meta_size = cache_meta.get("size")
+            # allow small drift (network/OneDrive) when comparing mtime
+            if meta_mtime is None or meta_size is None:
                 return None
-            if meta_size >= 0 and fsize >= 0 and meta_size != int(fsize):
-                try:
-                    log_status(f"  - spectro cache stale (size): {cf.name} (meta={meta_size}, file={int(fsize)})")
-                except Exception:
-                    pass
+            try:
+                drift = abs(float(meta_mtime) - float(mtime))
+            except Exception:
+                drift = None
+            if drift is None or drift > 2.0:
                 return None
-            import pickle
-            with open(cf, "rb") as fh:
-                data = pickle.load(fh)
-            return data if isinstance(data, list) else None
+            if int(meta_size) != int(fsize):
+                return None
+            cache_data = np.load(data_file, allow_pickle=True)
+            specs = []
+            for entry_dict in cache_data:
+                spec = dict(entry_dict)
+                if "channels" in spec and isinstance(spec["channels"], dict):
+                    spec["channels"] = {k: np.array(v) for k, v in spec["channels"].items()}
+                if "V" in spec:
+                    spec["V"] = np.array(spec["V"])
+                specs.append(spec)
+            return specs
         except Exception:
             return None
 
-    def _store_disk_cache(key: str, mtime: float, fsize: int, data):
-        if not disk_cache_dir:
+    cache_store_errors = {"count": 0}
+
+    def _store_disk_cache(cache_dir: Path, filepath: Path, mtime: float, fsize: int, specs):
+        """Store spectroscopy data to disk cache."""
+        if not cache_dir:
             return
         try:
-            cf, mf = _disk_cache_paths(key)
-            if not cf or not mf:
-                return
-            import pickle
-            with open(cf, "wb") as fh:
-                pickle.dump(data, fh, protocol=pickle.HIGHEST_PROTOCOL)
-            mf.write_text(json.dumps({"mtime": float(mtime), "size": int(fsize)}))
-            try:
-                log_status(f"  - spectroscopy cache stored: {cf.name}")
-            except Exception:
-                pass
-        except Exception:
-            pass
+            if not cache_dir.exists():
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_key = hashlib.md5(filepath.name.encode("utf-8")).hexdigest()[:16]
+            meta_file = cache_dir / f"{cache_key}_meta.json"
+            data_file = cache_dir / f"{cache_key}_data.npy"
+            cache_meta = {
+                "filename": filepath.name,
+                "mtime": float(mtime),
+                "size": int(fsize),
+                "cached_at": datetime.utcnow().isoformat(),
+                "spec_count": len(specs),
+            }
+            with open(meta_file, "w") as f:
+                json.dump(cache_meta, f, indent=2)
+            serializable_specs = []
+            for spec in specs:
+                s = dict(spec)
+                if "channels" in s and isinstance(s["channels"], dict):
+                    s["channels"] = {
+                        k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in s["channels"].items()
+                    }
+                if "V" in s and hasattr(s["V"], "tolist"):
+                    s["V"] = s["V"].tolist()
+                serializable_specs.append(s)
+            np.save(data_file, np.array(serializable_specs, dtype=object), allow_pickle=True)
+        except Exception as exc:
+            if cache_store_errors["count"] < 3:
+                cache_store_errors["count"] += 1
+                try:
+                    log_status(f"  - spectroscopy cache store failed: {exc}")
+                except Exception:
+                    pass
     patterns = ("*.dat","*.DAT","*.3ds","*.3DS")
     cache = viewer._spectro_cache
     seen_keys = set()
@@ -634,9 +670,10 @@ def _scan_spectros(viewer, folder:Path):
         if viewer.spectro_eager_limit and idx > viewer.spectro_eager_limit:
             # Try disk cache even when over eager limit; otherwise defer
             if disk_cache_dir:
-                disk_cached = _load_disk_cached_specs(norm_key, mtime, fsize)
+                disk_cached = _load_disk_cache(disk_cache_dir, p, mtime, fsize)
                 if disk_cached is not None:
                     spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
+                    stats["disk_cache_hits"] = stats.get("disk_cache_hits", 0) + 1
             if not spec_list:
                 stats['deferred_files'] += 1
                 cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
@@ -646,13 +683,14 @@ def _scan_spectros(viewer, folder:Path):
         if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
             raw_list = cached.get('data') or []
             spec_list = [_clone_spec_entry(entry) for entry in raw_list]
+            stats["cache_hits"] = stats.get("cache_hits", 0) + 1
         else:
             # try disk cache
             if disk_cache_dir:
-                disk_cached = _load_disk_cached_specs(norm_key, mtime, fsize)
+                disk_cached = _load_disk_cache(disk_cache_dir, p, mtime, fsize)
                 if disk_cached is not None:
                     spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
-                    log_status(f"  - spectroscopy cache hit: {p.name}")
+                    stats["disk_cache_hits"] = stats.get("disk_cache_hits", 0) + 1
             if spec_list is None and disk_cache_dir and cache_miss_logged < 10:
                 cache_miss_logged += 1
                 try:
@@ -660,6 +698,7 @@ def _scan_spectros(viewer, folder:Path):
                 except Exception:
                     pass
             if spec_list is None:
+                stats["cache_miss"] = stats.get("cache_miss", 0) + 1
                 if ext == ".dat":
                     # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
                     try:
@@ -753,7 +792,7 @@ def _scan_spectros(viewer, folder:Path):
             cache[norm_key] = {'mtime': mtime, 'data': [_clone_spec_entry(spec) for spec in spec_list]}
             # persist to disk cache with final image_key/image_path anchoring
             if disk_cache_dir:
-                _store_disk_cache(norm_key, mtime, fsize, spec_list)
+                _store_disk_cache(disk_cache_dir, p, mtime, fsize, spec_list)
         for spec in spec_list or []:
             _reset_spec_classification(spec)
         specs.extend(spec_list or [])
@@ -838,6 +877,15 @@ def _scan_spectros(viewer, folder:Path):
     log_status(
         f"  Spectra: {stats['total_specs']} total  |  from singles: {single_entries} traces  |  from matrices: {matrix_specs} traces"
     )
+    cache_hits = stats.get("cache_hits", 0)
+    disk_hits = stats.get("disk_cache_hits", 0)
+    cache_miss = stats.get("cache_miss", 0)
+    total_cached = cache_hits + disk_hits
+    if total:
+        cache_pct = (total_cached / max(total, 1)) * 100
+        log_status(
+            f"  Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
+        )
     if viewer.matrix_datasets:
         log_status("  Matrix datasets:")
         for key, ds in sorted(viewer.matrix_datasets.items(), key=lambda kv: kv[0]):
@@ -883,7 +931,6 @@ def _scan_spectros(viewer, folder:Path):
                 f"    - {label}: {ds.cols}x{ds.rows} px | channels: {chan_txt}{spectra_txt}{points_txt}{acq_txt}"
             )
     try:
-        import json
         verbose = os.environ.get("SXM_VERBOSE")
         json_line = {
             "folder": str(folder),
@@ -900,11 +947,15 @@ def _scan_spectros(viewer, folder:Path):
         if verbose:
             log_status("Matrix datasets:")
             for key, ds in viewer.matrix_datasets.items():
-                log_status(f"  - {ds.base}: {len(ds.channels)} channel(s)  {ds.rows}x{ds.cols} -> "
-                           f"{sum(c.get('spectra_count',0) for c in ds.channels)} spectra")
+                log_status(
+                    f"  - {ds.base}: {len(ds.channels)} channel(s)  {ds.rows}x{ds.cols} -> "
+                    f"{sum(c.get('spectra_count',0) for c in ds.channels)} spectra"
+                )
                 for ch in ds.channels:
-                    log_status(f"      * {Path(ch['path']).name} ({ch.get('channel_code')}) {ch.get('label','')} "
-                               f"-> {ch.get('spectra_count')} spectra")
+                    log_status(
+                        f"      * {Path(ch['path']).name} ({ch.get('channel_code')}) {ch.get('label','')} "
+                        f"-> {ch.get('spectra_count')} spectra"
+                    )
     except Exception:
         pass
     return specs, stats

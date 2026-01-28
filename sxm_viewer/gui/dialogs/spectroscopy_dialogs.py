@@ -5,6 +5,7 @@ import functools
 import itertools
 import json
 import math
+import time
 import re
 
 import numpy as np
@@ -1257,6 +1258,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     ]
     MARKER_SIZE_PRESETS = [16, 28, 42]
     def __init__(self, parent, image_entry, specs, dataset=None, palette_name=None):
+        t0 = time.perf_counter()
         super().__init__(parent)
         self.image_entry = image_entry
         self.specs = list(specs)
@@ -1348,7 +1350,21 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
+        try:
+            log_status(f"[Perf] Matrix explorer init: {(time.perf_counter()-t0)*1000:.0f} ms | specs={len(self.specs)} markers={len(self.specs)}")
+        except Exception:
+            pass
+        # Debounced redraw timer to avoid heavy repaints during window resize/move
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._draw_image_layer)
+        # Suppress canvas updates while the window is being moved; re-enable shortly after movement stops
+        self._move_timer = QtCore.QTimer(self)
+        self._move_timer.setSingleShot(True)
+        self._move_timer.timeout.connect(self._end_move_updates)
+        self._movement_active = False
 
+        # Initialize state and wiring
         self._channel_specs = self._group_specs_by_channel()
 
         self.canvas.mpl_connect("button_press_event", self._on_click)
@@ -1372,8 +1388,10 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         }
         self._aggregate_mode = False
         self._focused_key = None
-        self.palette_name = palette_name or getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
-        self._color_palette = get_color_cycle(self.palette_name)
+        # Guard against palette_name not being provided by callers
+        palette_choice = palette_name or getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
+        self.palette_name = palette_choice
+        self._color_palette = get_color_cycle(palette_choice)
         if not self._color_palette:
             self._color_palette = ["#4c78a8"]
         self._color_index = 0
@@ -1400,6 +1418,47 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
         self._draw_image_layer()
         self._update_matrix_info_label()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Delay redraw to after resize to reduce jank
+        try:
+            self._resize_timer.start(120)
+        except Exception:
+            self._draw_image_layer()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._begin_move_updates()
+        try:
+            self._move_timer.start(150)
+        except Exception:
+            self._end_move_updates()
+
+    def _begin_move_updates(self):
+        if self._movement_active:
+            return
+        self._movement_active = True
+        try:
+            self.canvas.setUpdatesEnabled(False)
+            self.curve_canvas.setUpdatesEnabled(False)
+        except Exception:
+            pass
+
+    def _end_move_updates(self):
+        if not self._movement_active:
+            return
+        self._movement_active = False
+        try:
+            self.canvas.setUpdatesEnabled(True)
+            self.curve_canvas.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        try:
+            self._draw_image_layer()
+            self._update_plot()
+        except Exception:
+            pass
 
     def _group_specs_by_channel(self):
         mapping = defaultdict(list)
@@ -2240,6 +2299,7 @@ class _SpectroFitWorker(QtCore.QObject):
 class SpectroscopyCompareDialog(QtWidgets.QDialog):
     """Modern comparison UI for spectroscopy overlays and fitting."""
     def __init__(self, specs, parent=None, palette_name=None):
+        t0 = time.perf_counter()
         super().__init__(parent)
         self.specs = list(specs)
         self.viewer = parent if hasattr(parent, "headers") else getattr(parent, "viewer", None)
@@ -2282,6 +2342,56 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._populate_axes()
         self._update_plot()
         self._suppress_undo_push = False
+        try:
+            log_status(f"[Perf] Spectroscopy comparison init: {(time.perf_counter()-t0)*1000:.0f} ms | spectra={len(self.specs)}")
+        except Exception:
+            pass
+        # Debounced redraw timer to smooth window resize/move
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._update_plot)
+        # Suppress canvas updates while the window is being moved; re-enable shortly after movement stops
+        self._move_timer = QtCore.QTimer(self)
+        self._move_timer.setSingleShot(True)
+        self._move_timer.timeout.connect(self._end_move_updates)
+        self._movement_active = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            self._resize_timer.start(120)
+        except Exception:
+            self._update_plot()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._begin_move_updates()
+        try:
+            self._move_timer.start(150)
+        except Exception:
+            self._end_move_updates()
+
+    def _begin_move_updates(self):
+        if self._movement_active:
+            return
+        self._movement_active = True
+        try:
+            self.canvas.setUpdatesEnabled(False)
+        except Exception:
+            pass
+
+    def _end_move_updates(self):
+        if not self._movement_active:
+            return
+        self._movement_active = False
+        try:
+            self.canvas.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        try:
+            self._update_plot()
+        except Exception:
+            pass
 
     def _get_icon(self, name):
         """Get a themed icon, falling back to empty icon if not available."""

@@ -832,10 +832,6 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
             }
             entries.append(entry)
     log(f"[Nanonis] Parsed {len(entries)} spectra from {path} ({rows}x{cols}, channels={channel_count})")
-    try:
-        # Quieted noisy 3ds debug logging in normal runs
-    except Exception:
-        pass
     return entries
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import time
 import re
 import threading
 from collections import OrderedDict, defaultdict
@@ -116,6 +117,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         super().__init__()
         self.setAcceptDrops(True)
         log_status("Initializing SXM Viewer...")
+        self._app_start_ts = time.perf_counter()
         self.setWindowTitle("SXM Viewer")
         self.resize(*MAIN_WINDOW_SIZE)
 
@@ -1446,7 +1448,13 @@ QLabel:hover {{
         self._refresh_recent_dirs_menu()
 
     def load_folder(self, folder:Path):
-        return viewer_loader.load_folder(self, folder)
+        start = time.perf_counter()
+        result = viewer_loader.load_folder(self, folder)
+        end = time.perf_counter()
+        folder_ms = (end - start) * 1000.0
+        gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
+        log_status(f"[Perf] Load folder: {folder_ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        return result
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
@@ -2815,6 +2823,7 @@ QLabel:hover {{
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
         self._spectros_loaded = False
+        t_scan_start = time.perf_counter()
         try:
             folder = getattr(self, 'spec_folder_path', None) or self.last_dir
             folder = Path(folder)
@@ -2830,6 +2839,7 @@ QLabel:hover {{
             return
         self._spectro_deferred = set()
         self.spectros, spec_stats = self._scan_spectros(folder)
+        t_scan_end = time.perf_counter()
         if spec_stats:
             total_entries = spec_stats.get('total_specs', len(self.spectros))
             single_files = spec_stats.get('single_dat_files', 0)
@@ -2839,16 +2849,27 @@ QLabel:hover {{
             # keep stats for UI but avoid duplicate terminal spam (loader already logged)
         else:
             log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
+        t_assign_start = time.perf_counter()
         self._assign_spectros_to_images()
+        t_assign_end = time.perf_counter()
         self.matrix_spectros = [spec for spec in self.spectros if spec.get('matrix_index') is not None]
         self._clear_multi_spec_selection()
         self._update_spectro_stats_label(spec_stats)
         self._spectros_loaded = True
         self._update_matrix_summary_banner()
         if refresh:
+            t_thumb_start = time.perf_counter()
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            t_thumb_end = time.perf_counter()
+        else:
+            t_thumb_start = t_assign_end
+            t_thumb_end = t_assign_end
+        scan_ms = (t_scan_end - t_scan_start) * 1000.0
+        assign_ms = (t_assign_end - t_assign_start) * 1000.0
+        thumb_ms = (t_thumb_end - t_thumb_start) * 1000.0
+        log_status(f"[Perf] Spectros: scan {scan_ms:.0f} ms | assign {assign_ms:.0f} ms | thumbs {thumb_ms:.0f} ms")
 
     def _scan_spectros(self, folder:Path):
         return viewer_loader._scan_spectros(self, folder)
