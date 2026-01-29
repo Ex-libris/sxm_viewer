@@ -224,6 +224,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._marker_refresh_timer = QtCore.QTimer(self)
         self._marker_refresh_timer.setSingleShot(True)
         self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
+        # Preview docking state
+        self.preview_detached = False
+        self.preview_locked = bool(self.config.get("preview_locked", False))
+        self._preview_dialog = None
         self._highlight_timer.setInterval(350)
         self._highlight_timer.timeout.connect(self._on_highlight_tick)
         self._highlighted_spec = None
@@ -649,6 +653,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_header = QtWidgets.QHBoxLayout()
         preview_header.addWidget(QtWidgets.QLabel("Preview"))
         preview_header.addStretch(1)
+        # Dock/lock controls
+        self.preview_lock_cb = QtWidgets.QCheckBox("Lock")
+        self.preview_lock_cb.setChecked(self.preview_locked)
+        self.preview_lock_cb.setToolTip("Lock preview inside the main window")
+        self.preview_lock_cb.toggled.connect(self.on_preview_lock_toggled)
+        self.preview_detach_btn = QtWidgets.QToolButton()
+        self.preview_detach_btn.setText("Detach")
+        self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
+        self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
+        self.preview_detach_btn.setEnabled(not self.preview_locked)
+        preview_header.addWidget(self.preview_detach_btn)
+        preview_header.addWidget(self.preview_lock_cb)
         display_strip = QtWidgets.QWidget()
         display_layout = QtWidgets.QHBoxLayout(display_strip)
         display_layout.setContentsMargins(0, 0, 0, 0)
@@ -4227,6 +4243,113 @@ QLabel:hover {{
                     self.show_file_channel(self.last_preview[0], self.last_preview[1])
             except Exception:
                 pass
+        except Exception:
+            pass
+
+    def on_preview_lock_toggled(self, checked: bool):
+        self.preview_locked = bool(checked)
+        self.config["preview_locked"] = self.preview_locked; save_config(self.config)
+        if hasattr(self, "preview_detach_btn"):
+            try:
+                self.preview_detach_btn.setEnabled(not self.preview_locked)
+            except Exception:
+                pass
+        if self.preview_locked and getattr(self, "preview_detached", False):
+            self._attach_preview()
+
+    def on_toggle_preview_detach(self):
+        if self.preview_locked:
+            return
+        if getattr(self, "preview_detached", False):
+            self._attach_preview()
+        else:
+            self._detach_preview()
+
+    def _detach_preview(self):
+        if self.preview_locked or getattr(self, "preview_detached", False):
+            try:
+                if self._preview_dialog:
+                    self._preview_dialog.show(); self._preview_dialog.raise_(); self._preview_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+        try:
+            # Remove from splitter
+            try:
+                w = self.main_splitter.widget(2)
+                if w is self._preview_panel:
+                    self._preview_panel.setParent(None)
+            except Exception:
+                pass
+            if self._preview_dialog is None:
+                dlg = QtWidgets.QDialog(self)
+                dlg.setWindowTitle("Preview")
+                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+                layout = QtWidgets.QVBoxLayout()
+                layout.setContentsMargins(0, 0, 0, 0)
+                dlg.setLayout(layout)
+                self._preview_dialog = dlg
+            lay = self._preview_dialog.layout()
+            if lay is not None and self._preview_panel not in lay.children():
+                try:
+                    lay.addWidget(self._preview_panel)
+                except Exception:
+                    pass
+            self.preview_detached = True
+            if hasattr(self, "preview_detach_btn"):
+                try:
+                    self.preview_detach_btn.setText("Attach")
+                except Exception:
+                    pass
+            try:
+                self._preview_dialog.resize(self._preview_panel.size())
+            except Exception:
+                pass
+            if self._preview_dialog:
+                # Ensure re-attach when the dialog is closed
+                def _on_close(ev):
+                    self._attach_preview()
+                    ev.accept()
+                try:
+                    self._preview_dialog.closeEvent = _on_close
+                except Exception:
+                    pass
+                try:
+                    self._preview_dialog.show(); self._preview_dialog.raise_(); self._preview_dialog.activateWindow()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _attach_preview(self):
+        if not getattr(self, "preview_detached", False):
+            return
+        try:
+            if self._preview_dialog and self._preview_panel:
+                try:
+                    lay = self._preview_dialog.layout()
+                    if lay is not None:
+                        lay.removeWidget(self._preview_panel)
+                except Exception:
+                    pass
+                try:
+                    self._preview_dialog.hide()
+                except Exception:
+                    pass
+            # Insert back into the main splitter at index 2 (rightmost pane)
+            try:
+                self.main_splitter.insertWidget(2, self._preview_panel)
+                self.main_splitter.setStretchFactor(0, 1)
+                self.main_splitter.setStretchFactor(1, 2)
+                self.main_splitter.setStretchFactor(2, 3)
+            except Exception:
+                pass
+            self.preview_detached = False
+            if hasattr(self, "preview_detach_btn"):
+                try:
+                    self.preview_detach_btn.setText("Detach")
+                except Exception:
+                    pass
         except Exception:
             pass
 
