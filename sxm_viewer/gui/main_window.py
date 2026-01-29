@@ -1222,6 +1222,10 @@ QLabel:hover {{
         clear_btn = QtWidgets.QToolButton()
         clear_btn.setText("Clear overlays")
         clear_btn.setToolTip("Clear profiles, angles and related overlays")
+        filter_btn = QtWidgets.QToolButton()
+        filter_btn.setText("Filter")
+        filter_btn.setToolTip("Apply scan-level filters (flatten, plane, etc.)")
+        filter_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
         hist_btn = QtWidgets.QToolButton()
         hist_btn.setText("Histogram")
         hist_btn.setToolTip("Show histogram and adjust display range")
@@ -1237,6 +1241,7 @@ QLabel:hover {{
         controls_bar.addWidget(measure_btn)
         controls_bar.addWidget(angle_btn)
         controls_bar.addWidget(scale_btn)
+        controls_bar.addWidget(filter_btn)
         controls_bar.addWidget(hist_btn)
         controls_bar.addWidget(clear_btn)
         controls_bar.addSpacing(6)
@@ -1264,6 +1269,19 @@ QLabel:hover {{
         measure_btn.setChecked(measure_initial)
         angle_btn.setChecked(angle_initial)
         scale_btn.setChecked(self.scale_bar_cb.isChecked())
+        filter_menu = QtWidgets.QMenu(filter_btn)
+        for key, info in FILTER_DEFINITIONS.items():
+            act = QtWidgets.QAction(info['label'], filter_menu)
+            if info.get('needs_gaussian') and not _gaussian_available():
+                act.setEnabled(False)
+                act.setToolTip("Requires scipy or OpenCV.")
+            act.triggered.connect(lambda _, k=key: self._apply_filter_to_canvas(canvas, filter_key=k))
+            filter_menu.addAction(act)
+        filter_menu.addSeparator()
+        filter_menu.addAction("Custom pipeline...", lambda: self._open_custom_filter_for_canvas(canvas))
+        filter_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
+        filter_btn.setMenu(filter_menu)
+        filter_btn.clicked.connect(lambda _: self._open_custom_filter_for_canvas(canvas))
         layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
         popup_state = {"profile_dialog": None}
         def _update_profile_dialog(active, saved):
@@ -2469,6 +2487,53 @@ QLabel:hover {{
         if not spec:
             return arr
         return self._apply_filter_pipeline(arr, spec.get('steps', []))
+
+    def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
+        """Apply a filter pipeline to the views of a popup/preview canvas."""
+        if not canvas or not getattr(canvas, "views", None):
+            return
+        steps = pipeline
+        if steps is None and filter_key:
+            params = {}
+            if filter_key in ('highpass', 'lowpass'):
+                params['sigma'] = FILTER_DEFINITIONS.get(filter_key, {}).get('default_sigma', 2.0)
+            steps = [{'key': filter_key, 'params': params}]
+            label = label or FILTER_DEFINITIONS.get(filter_key, {}).get('label', filter_key)
+        new_views = []
+        for v in canvas.views:
+            nv = dict(v)
+            base = nv.get('_filter_base_arr')
+            if base is None:
+                try:
+                    base = np.array(nv.get('arr'), copy=True)
+                except Exception:
+                    base = nv.get('arr')
+                nv['_filter_base_arr'] = base
+            if not steps:
+                nv['arr'] = np.array(base, copy=True) if base is not None else nv.get('arr')
+                nv.pop('filter_steps', None)
+                nv.pop('filter_label', None)
+            else:
+                nv['arr'] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get('arr')
+                nv['filter_steps'] = steps
+                nv['filter_label'] = label
+            new_views.append(nv)
+        canvas.set_views(new_views, preserve_profiles=True)
+
+    def _open_custom_filter_for_canvas(self, canvas):
+        if not canvas or not getattr(canvas, "views", None):
+            return
+        base_arr = None
+        try:
+            if canvas.views:
+                base_arr = canvas.views[0].get('_filter_base_arr') or canvas.views[0].get('arr')
+        except Exception:
+            base_arr = None
+        dlg = CustomFilterDialog(self, base_arr, self._run_filter_step)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            steps = dlg.pipeline_steps()
+            label = dlg.pipeline_label()
+            self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
 
     def _apply_filter_pipeline(self, arr, steps):
         result = np.asarray(arr, dtype=float)
