@@ -2317,6 +2317,9 @@ QLabel:hover {{
     def _make_thumb_move_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_move_handler(self, label_widget)
 
+    def _make_thumb_double_handler(self, label_widget):
+        return viewer_thumb_ui._make_thumb_double_handler(self, label_widget)
+
     def _canvas_window_ref(self):
         win = getattr(self, "_canvas_window", None)
         if win is None:
@@ -2377,6 +2380,24 @@ QLabel:hover {{
         key = str(header_path_str)
         self.current_inspector_header = key
         self.current_inspector_channel = int(channel_idx)
+
+    def on_thumbnail_double_clicked(self, header_path_str, channel_idx):
+        """
+        Double-click a thumbnail: show it in preview and open a popup window (like preview zoom).
+        """
+        try:
+            self.on_thumbnail_clicked(header_path_str, channel_idx)
+        except Exception:
+            pass
+        try:
+            views = getattr(self.preview_canvas, "views", None)
+            if not views:
+                return
+            copied = [self._copy_view_for_popup(v) for v in views]
+            title = Path(header_path_str).name
+            self._spawn_preview_popup(copied, title=title)
+        except Exception:
+            pass
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
     # These functions supported the removed per-file inspector UI. The same "show channel"
