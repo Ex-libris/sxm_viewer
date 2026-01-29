@@ -13,6 +13,7 @@ import numpy as np
 import io
 from matplotlib import colormaps
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5 import QtCore, QtGui, QtWidgets
 import sip
 from PyQt5.QtGui import QIcon
@@ -665,8 +666,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
         self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
         self.preview_detach_btn.setEnabled(not self.preview_locked)
-        preview_header.addWidget(self.preview_detach_btn)
-        preview_header.addWidget(self.preview_lock_cb)
         display_strip = QtWidgets.QWidget()
         display_layout = QtWidgets.QHBoxLayout(display_strip)
         display_layout.setContentsMargins(0, 0, 0, 0)
@@ -677,6 +676,19 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.scale_bar_cb = QtWidgets.QCheckBox("Scale bar")
         self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
         display_layout.addWidget(self.scale_bar_cb)
+        self.preview_hist_btn = QtWidgets.QToolButton()
+        self.preview_hist_btn.setText("Histogram")
+        self.preview_hist_btn.setToolTip("Show histogram and adjust display range")
+        self.preview_hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+        self.preview_hist_menu = QtWidgets.QMenu(self.preview_hist_btn)
+        self.preview_hist_menu.addAction("Adjust…", lambda: self._open_histogram_dialog(self.preview_canvas))
+        self.preview_hist_menu.addAction("Auto (1–99%)", lambda: self._auto_contrast(self.preview_canvas))
+        self.preview_hist_menu.addAction("Reset range", lambda: self._reset_contrast(self.preview_canvas))
+        self.preview_hist_btn.setMenu(self.preview_hist_menu)
+        self.preview_hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(self.preview_canvas))
+        preview_header.addWidget(self.preview_hist_btn)
+        preview_header.addWidget(self.preview_detach_btn)
+        preview_header.addWidget(self.preview_lock_cb)
         preview_header.addWidget(display_strip)
         # Canvas launch button moved to the main toolbar for prominence.
         preview_panel_layout.addLayout(preview_header)
@@ -1210,11 +1222,22 @@ QLabel:hover {{
         clear_btn = QtWidgets.QToolButton()
         clear_btn.setText("Clear overlays")
         clear_btn.setToolTip("Clear profiles, angles and related overlays")
+        hist_btn = QtWidgets.QToolButton()
+        hist_btn.setText("Histogram")
+        hist_btn.setToolTip("Show histogram and adjust display range")
+        hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+        hist_menu = QtWidgets.QMenu(hist_btn)
+        hist_menu.addAction("Adjust…", lambda: self._open_histogram_dialog(canvas))
+        hist_menu.addAction("Auto (1–99%)", lambda: self._auto_contrast(canvas))
+        hist_menu.addAction("Reset range", lambda: self._reset_contrast(canvas))
+        hist_btn.setMenu(hist_menu)
+        hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(canvas))
         layout_cb = QtWidgets.QComboBox()
         layout_cb.addItems(["Grid", "Stacked"])
         controls_bar.addWidget(measure_btn)
         controls_bar.addWidget(angle_btn)
         controls_bar.addWidget(scale_btn)
+        controls_bar.addWidget(hist_btn)
         controls_bar.addWidget(clear_btn)
         controls_bar.addSpacing(6)
         controls_bar.addWidget(QtWidgets.QLabel("Layout"))
@@ -2317,6 +2340,9 @@ QLabel:hover {{
     def _make_thumb_move_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_move_handler(self, label_widget)
 
+    def _make_thumb_double_handler(self, label_widget):
+        return viewer_thumb_ui._make_thumb_double_handler(self, label_widget)
+
     def _canvas_window_ref(self):
         win = getattr(self, "_canvas_window", None)
         if win is None:
@@ -2377,6 +2403,24 @@ QLabel:hover {{
         key = str(header_path_str)
         self.current_inspector_header = key
         self.current_inspector_channel = int(channel_idx)
+
+    def on_thumbnail_double_clicked(self, header_path_str, channel_idx):
+        """
+        Double-click a thumbnail: show it in preview and open a popup window (like preview zoom).
+        """
+        try:
+            self.on_thumbnail_clicked(header_path_str, channel_idx)
+        except Exception:
+            pass
+        try:
+            views = getattr(self.preview_canvas, "views", None)
+            if not views:
+                return
+            copied = [self._copy_view_for_popup(v) for v in views]
+            title = Path(header_path_str).name
+            self._spawn_preview_popup(copied, title=title)
+        except Exception:
+            pass
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
     # These functions supported the removed per-file inspector UI. The same "show channel"
@@ -3047,6 +3091,223 @@ QLabel:hover {{
 
     def _on_preview_value(self, value, x, y, view):
         return viewer_preview._on_preview_value(self, value, x, y, view)
+
+    def _view_finite_values(self, view):
+        if not view:
+            return None, None, None
+        try:
+            arr = np.asarray(view.get("arr"))
+        except Exception:
+            return None, None, None
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None, None, None
+        return float(finite.min()), float(finite.max()), finite
+
+    def _apply_clim_to_view(self, canvas, view, lo, hi):
+        if canvas is None or view is None:
+            return
+        try:
+            canvas.set_view_clim(view, (float(lo), float(hi)))
+        except Exception:
+            pass
+
+    def _auto_contrast(self, canvas, pct_low=1.0, pct_high=99.0):
+        view = canvas.views[0] if canvas and getattr(canvas, "views", None) else None
+        vmin, vmax, finite = self._view_finite_values(view)
+        if finite is None:
+            return
+        try:
+            lo, hi = np.percentile(finite, [pct_low, pct_high])
+        except Exception:
+            lo, hi = vmin, vmax
+        self._apply_clim_to_view(canvas, view, lo, hi)
+
+    def _reset_contrast(self, canvas):
+        view = canvas.views[0] if canvas and getattr(canvas, "views", None) else None
+        vmin, vmax, _ = self._view_finite_values(view)
+        if vmin is None:
+            return
+        self._apply_clim_to_view(canvas, view, vmin, vmax)
+
+    def _open_histogram_dialog(self, canvas):
+        if canvas is None or not getattr(canvas, "views", None):
+            QtWidgets.QMessageBox.information(self, "Histogram", "No image loaded in preview.")
+            return
+        views = list(canvas.views)
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Histogram & Range")
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        selector = None
+        if len(views) > 1:
+            selector = QtWidgets.QComboBox()
+            for v in views:
+                title = v.get("title") or Path(str(v.get("path",""))).name
+                selector.addItem(title)
+            layout.addWidget(selector)
+
+        fig = Figure(figsize=(4.5, 3))
+        canvas_hist = FigureCanvas(fig)
+        ax = fig.add_subplot(111)
+        layout.addWidget(canvas_hist)
+
+        spins_layout = QtWidgets.QHBoxLayout()
+        spins_layout.addWidget(QtWidgets.QLabel("Min:"))
+        spin_lo = QtWidgets.QDoubleSpinBox()
+        spin_lo.setDecimals(6); spin_lo.setMinimum(-1e12); spin_lo.setMaximum(1e12)
+        spins_layout.addWidget(spin_lo, 1)
+        spins_layout.addWidget(QtWidgets.QLabel("Max:"))
+        spin_hi = QtWidgets.QDoubleSpinBox()
+        spin_hi.setDecimals(6); spin_hi.setMinimum(-1e12); spin_hi.setMaximum(1e12)
+        spins_layout.addWidget(spin_hi, 1)
+        layout.addLayout(spins_layout)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        auto_btn = QtWidgets.QPushButton("Auto (1-99%)")
+        reset_btn = QtWidgets.QPushButton("Reset")
+        live_cb = QtWidgets.QCheckBox("Live preview")
+        live_cb.setChecked(True)
+        apply_btn = QtWidgets.QPushButton("Apply")
+        btn_row.addWidget(auto_btn); btn_row.addWidget(reset_btn); btn_row.addWidget(live_cb); btn_row.addStretch(1); btn_row.addWidget(apply_btn)
+        layout.addLayout(btn_row)
+
+        state = {"view_idx": 0, "lines": (None, None), "finite": None, "dragging": None}
+
+        def load_view(idx: int):
+            idx = max(0, min(idx, len(views)-1))
+            state["view_idx"] = idx
+            view = views[idx]
+            vmin, vmax, finite = self._view_finite_values(view)
+            state["finite"] = finite
+            ax.clear()
+            if finite is None:
+                ax.set_title("No finite data")
+                canvas_hist.draw_idle()
+                return
+            hist, edges = np.histogram(finite, bins=256)
+            ax.plot(edges[:-1], hist, color="#4a90e2")
+            ax.set_xlabel("Value"); ax.set_ylabel("Count")
+            lo, hi = view.get("clim", (vmin, vmax))
+            spin_lo.blockSignals(True); spin_hi.blockSignals(True)
+            spin_lo.setMinimum(vmin); spin_hi.setMinimum(vmin)
+            spin_lo.setMaximum(vmax); spin_hi.setMaximum(vmax)
+            spin_lo.setValue(lo); spin_hi.setValue(hi)
+            spin_lo.blockSignals(False); spin_hi.blockSignals(False)
+            l0 = ax.axvline(lo, color="#d81b60", linestyle="--")
+            l1 = ax.axvline(hi, color="#d81b60", linestyle="--")
+            state["lines"] = (l0, l1)
+            ax.set_title(view.get("title") or Path(str(view.get("path",""))).name)
+            canvas_hist.draw_idle()
+
+        def update_lines():
+            l0, l1 = state.get("lines", (None, None))
+            if l0 is None or l1 is None:
+                return
+            lo = spin_lo.value(); hi = spin_hi.value()
+            l0.set_xdata([lo, lo]); l1.set_xdata([hi, hi])
+            canvas_hist.draw_idle()
+
+        def apply_current(close=False):
+            idx = state.get("view_idx", 0)
+            view = views[idx]
+            lo, hi = spin_lo.value(), spin_hi.value()
+            if lo > hi:
+                lo, hi = hi, lo
+            self._apply_clim_to_view(canvas, view, lo, hi)
+            if close:
+                dlg.accept()
+
+        def on_apply():
+            apply_current(close=True)
+
+        def on_auto():
+            finite = state.get("finite", None)
+            if finite is None:
+                return
+            try:
+                lo, hi = np.percentile(finite, [1, 99])
+            except Exception:
+                return
+            spin_lo.setValue(float(lo)); spin_hi.setValue(float(hi))
+            update_lines()
+
+        def on_reset():
+            view = views[state.get("view_idx", 0)]
+            vmin, vmax, _ = self._view_finite_values(view)
+            if vmin is None:
+                return
+            _set_spin_values(vmin, vmax, block=True)
+            update_lines()
+
+        def _set_spin_values(lo, hi, block=False):
+            if block:
+                spin_lo.blockSignals(True); spin_hi.blockSignals(True)
+            spin_lo.setValue(lo); spin_hi.setValue(hi)
+            if block:
+                spin_lo.blockSignals(False); spin_hi.blockSignals(False)
+
+        def _on_press(event):
+            if event.button != 1:
+                return
+            if event.xdata is None:
+                return
+            l0, l1 = state.get("lines", (None, None))
+            if l0 is None or l1 is None:
+                return
+            lo_val = spin_lo.value(); hi_val = spin_hi.value()
+            span = max(abs(hi_val - lo_val), 1e-12)
+            tol = span * 0.01
+            if abs(event.xdata - lo_val) < tol:
+                state["dragging"] = "lo"
+            elif abs(event.xdata - hi_val) < tol:
+                state["dragging"] = "hi"
+            else:
+                state["dragging"] = None
+
+        def _on_motion(event):
+            if state.get("dragging") is None:
+                return
+            if event.xdata is None:
+                return
+            x = float(event.xdata)
+            lo_val = spin_lo.value(); hi_val = spin_hi.value()
+            if state["dragging"] == "lo":
+                lo_val = min(x, hi_val)
+            elif state["dragging"] == "hi":
+                hi_val = max(x, lo_val)
+            _set_spin_values(lo_val, hi_val, block=True)
+            update_lines()
+
+        def _on_release(event):
+            if state.get("dragging") is None:
+                return
+            state["dragging"] = None
+
+        spin_lo.valueChanged.connect(update_lines)
+        spin_hi.valueChanged.connect(update_lines)
+        def maybe_live_apply():
+            if live_cb.isChecked():
+                apply_current(close=False)
+        spin_lo.valueChanged.connect(maybe_live_apply)
+        spin_hi.valueChanged.connect(maybe_live_apply)
+        apply_btn.clicked.connect(on_apply)
+        auto_btn.clicked.connect(on_auto)
+        reset_btn.clicked.connect(on_reset)
+        if selector:
+            selector.currentIndexChanged.connect(load_view)
+
+        try:
+            cid_press = canvas_hist.mpl_connect("button_press_event", _on_press)
+            cid_motion = canvas_hist.mpl_connect("motion_notify_event", _on_motion)
+            cid_release = canvas_hist.mpl_connect("button_release_event", _on_release)
+            fig.canvas.setProperty("hist_cids", (cid_press, cid_motion, cid_release))
+        except Exception:
+            pass
+
+        load_view(0)
+        dlg.exec_()
 
     def _is_matrix_spec(self, spec) -> bool:
         try:

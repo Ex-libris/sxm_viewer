@@ -149,6 +149,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         lbl.mousePressEvent = viewer._make_thumb_press_handler(lbl)
         lbl.mouseReleaseEvent = viewer._make_thumb_release_handler(lbl)
         lbl.mouseMoveEvent = viewer._make_thumb_move_handler(lbl)
+        lbl.mouseDoubleClickEvent = viewer._make_thumb_double_handler(lbl)
         lbl.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         lbl.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
         vbox = QtWidgets.QVBoxLayout(); vbox.setContentsMargins(0,0,0,0); vbox.setSpacing(2)
@@ -431,6 +432,21 @@ def _make_thumb_move_handler(viewer, label_widget):
             QtWidgets.QLabel.mouseMoveEvent(label_widget, event)
     return handler
 
+
+def _make_thumb_double_handler(viewer, label_widget):
+    def handler(event):
+        if sip.isdeleted(label_widget):
+            return
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        fp = label_widget.property("file_path")
+        ch_idx = int(label_widget.property("channel_index") or 0)
+        try:
+            viewer.on_thumbnail_double_clicked(fp, ch_idx)
+        except Exception:
+            pass
+    return handler
+
 # ---------- thumbnail clicked -> preview + inspector populate ----------
 
 def _toggle_thumb_multi_selection(viewer, file_path):
@@ -466,6 +482,7 @@ __all__ = [
     "_make_thumb_press_handler",
     "_make_thumb_release_handler",
     "_make_thumb_move_handler",
+    "_make_thumb_double_handler",
     "_toggle_thumb_multi_selection",
     "_clear_thumb_multi_selection",
     "on_thumb_cmap_changed",

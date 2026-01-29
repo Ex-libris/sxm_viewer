@@ -76,10 +76,33 @@ if defined IMPORT_FAILED (
 )
 
 echo Using !PYTHON_EXE!
+
+REM Try to load a local .env automatically if python-dotenv is available
+set "DOTENV_OK="
 if /i "!PYTHON_EXE!"=="py -3" (
-    py -3 -m sxm_viewer
+    py -3 -m dotenv --version >nul 2>&1 && set "DOTENV_OK=1"
 ) else if /i "!PYTHON_EXE!"=="python" (
-    python -m sxm_viewer
+    python -m dotenv --version >nul 2>&1 && set "DOTENV_OK=1"
 ) else (
-    "!PYTHON_EXE!" -m sxm_viewer
+    "!PYTHON_EXE!" -m dotenv --version >nul 2>&1 && set "DOTENV_OK=1"
+)
+
+if defined DOTENV_OK (
+    echo Loading .env (if present) via python-dotenv...
+    if /i "!PYTHON_EXE!"=="py -3" (
+        py -3 -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
+    ) else if /i "!PYTHON_EXE!"=="python" (
+        python -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
+    ) else (
+        "!PYTHON_EXE!" -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
+    )
+) else (
+    echo Tip: install python-dotenv to auto-load .env (pip install python-dotenv)
+    if /i "!PYTHON_EXE!"=="py -3" (
+        py -3 -m sxm_viewer
+    ) else if /i "!PYTHON_EXE!"=="python" (
+        python -m sxm_viewer
+    ) else (
+        "!PYTHON_EXE!" -m sxm_viewer
+    )
 )

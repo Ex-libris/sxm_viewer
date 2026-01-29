@@ -1,5 +1,7 @@
-﻿numpy==1.26.4
+numpy==1.26.4
 matplotlib==3.8.2
 PyQt5==5.15.11
 scipy==1.11.4
 opencv-python==4.8.1.78
+# For loading .env automatically in the launcher
+python-dotenv==1.0.1
