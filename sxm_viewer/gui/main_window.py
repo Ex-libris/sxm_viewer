@@ -168,6 +168,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
         # Enable persistent spectroscopy disk cache (per-folder) by default
         self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
+        # Lazily load spectroscopies (defer until requested) to speed up initial folder loads
+        self.lazy_spectros_enabled = bool(self.config.get("lazy_spectros_enabled", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
         self.thumb_grid_columns = 1
         self.display_units_si = bool(self.config.get("display_units_si", False))
@@ -218,6 +220,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._highlight_phase = 0.0
         self._highlight_pulse_strength = 1.0
         self._highlight_timer = QtCore.QTimer(self)
+        # Debounced marker refresh to avoid repaint storms
+        self._marker_refresh_timer = QtCore.QTimer(self)
+        self._marker_refresh_timer.setSingleShot(True)
+        self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
+        # Preview docking state
+        self.preview_detached = False
+        self.preview_locked = bool(self.config.get("preview_locked", False))
+        self._preview_dialog = None
         self._highlight_timer.setInterval(350)
         self._highlight_timer.timeout.connect(self._on_highlight_tick)
         self._highlighted_spec = None
@@ -235,6 +245,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumb_generation = 0
         self._thumb_data_lock = threading.Lock()
         self._thumb_threadpool = QtCore.QThreadPool()
+        self._thumb_meta = {}
+        self._thumb_loaded = set()
+        self._thumb_inflight = set()
+        self._thumb_card_height = None
         try:
             self._thumb_threadpool.setMaxThreadCount(max(2, min(6, QtCore.QThreadPool.globalInstance().maxThreadCount())))
         except Exception:
@@ -250,6 +264,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.files_with_matrix = set()
         self.spectros_by_image = defaultdict(list)
         self._spectros_loaded = False
+        self._spectros_loading = False
+        self._spectros_pending = False
         self._spectro_cache = {}
         self._spectro_deferred = set()
         # spectro_eager_limit: 0 means no deferral; otherwise parse at most N spectroscopy files eagerly
@@ -567,6 +583,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumb_viewport.installEventFilter(self)
         self.scroll.installEventFilter(self)
         self.thumb_container.installEventFilter(self)
+        try:
+            self.scroll.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_thumbs())
+        except Exception:
+            pass
         thumbs_panel = QtWidgets.QWidget()
         self.left_w = left_w
         thumbs_panel_layout = QtWidgets.QVBoxLayout(); thumbs_panel_layout.setContentsMargins(0,0,0,0)
@@ -633,6 +653,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_header = QtWidgets.QHBoxLayout()
         preview_header.addWidget(QtWidgets.QLabel("Preview"))
         preview_header.addStretch(1)
+        # Dock/lock controls
+        self.preview_lock_cb = QtWidgets.QCheckBox("Lock")
+        self.preview_lock_cb.setChecked(self.preview_locked)
+        self.preview_lock_cb.setToolTip("Lock preview inside the main window")
+        self.preview_lock_cb.toggled.connect(self.on_preview_lock_toggled)
+        self.preview_detach_btn = QtWidgets.QToolButton()
+        self.preview_detach_btn.setText("Detach")
+        self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
+        self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
+        self.preview_detach_btn.setEnabled(not self.preview_locked)
+        preview_header.addWidget(self.preview_detach_btn)
+        preview_header.addWidget(self.preview_lock_cb)
         display_strip = QtWidgets.QWidget()
         display_layout = QtWidgets.QHBoxLayout(display_strip)
         display_layout.setContentsMargins(0, 0, 0, 0)
@@ -1095,9 +1127,13 @@ QLabel:hover {{
         return main_window_spectro.open_single_spectro_popup(self, spectro)
 
     def _open_spectro_summary_for_file(self, file_key, show_mode="single", quiet=False):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode, quiet=quiet)
 
     def _open_matrix_explorer_for_file(self, file_key):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         image_specs = [s for s in self.spectros_by_image.get(str(file_key), []) if s.get('matrix_index') is not None]
         dataset_specs = list(image_specs)
         dataset = None
@@ -1134,6 +1170,8 @@ QLabel:hover {{
         return main_window_spectro.ensure_spectro_dock(self)
 
     def open_spectro_browser(self, entries=None):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_browser(self, entries=entries)
 
     def _filter_spectro_browser(self):
@@ -1265,8 +1303,13 @@ QLabel:hover {{
                 self._thumbs_reflow_timer.start(150)
             except Exception:
                 pass
-            # allow normal resize processing to continue
-            return False
+        if obj in thumb_objects and event.type() in (QtCore.QEvent.Scroll, QtCore.QEvent.Wheel):
+            try:
+                # defer slightly to let the scroll settle
+                QtCore.QTimer.singleShot(0, self._request_visible_thumbs)
+            except Exception:
+                pass
+        # allow normal resize processing to continue
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
@@ -1588,6 +1631,9 @@ QLabel:hover {{
         return marker_defs
 
     def _schedule_thumbnail_job(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation):
+        if file_key in self._thumb_inflight or file_key in self._thumb_loaded:
+            return
+        self._thumb_inflight.add(file_key)
         job = _ThumbnailJob(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
         job.signals.finished.connect(self._on_thumbnail_job_finished)
         job.signals.failed.connect(self._on_thumbnail_job_failed)
@@ -1613,6 +1659,12 @@ QLabel:hover {{
         markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds)
         label.setPixmap(pix)
         label.setProperty("spec_markers", markers)
+        self._thumb_inflight.discard(file_key)
+        self._thumb_loaded.add(file_key)
+        try:
+            self._request_visible_thumbs()
+        except Exception:
+            pass
 
     def _on_thumbnail_job_failed(self, file_key, channel_idx, error, generation):
         if generation != self._thumb_generation:
@@ -1628,10 +1680,44 @@ QLabel:hover {{
         pix.fill(QtGui.QColor('black'))
         label.setPixmap(pix)
         label.setProperty("spec_markers", [])
+        self._thumb_inflight.discard(file_key)
         try:
             log_status(f"Thumbnail failed for {file_key}: {error}")
         except Exception:
             pass
+        try:
+            self._request_visible_thumbs()
+        except Exception:
+            pass
+
+    def _request_visible_thumbs(self):
+        """Schedule thumbnail rendering for currently visible rows (+margin)."""
+        if not getattr(self, 'current_thumb_files', None):
+            return
+        vp = getattr(self, '_thumb_viewport', None)
+        scroll = getattr(self, 'scroll', None)
+        cols = max(1, getattr(self, 'thumb_grid_columns', 1))
+        card_h = getattr(self, '_thumb_card_height', None) or (self.thumb_size_px + 48)
+        try:
+            y0 = scroll.verticalScrollBar().value() if scroll else 0
+            vh = vp.height() if vp else card_h * 4
+        except Exception:
+            y0 = 0; vh = card_h * 4
+        first_row = max(0, int(y0 // card_h) - 2)
+        last_row = int((y0 + vh) // card_h) + 2
+        start_idx = max(0, first_row * cols)
+        end_idx = min(len(self.current_thumb_files), (last_row + 1) * cols)
+        visible_keys = self.current_thumb_files[start_idx:end_idx]
+        for key in visible_keys:
+            if key in self._thumb_loaded or key in self._thumb_inflight:
+                continue
+            meta = self._thumb_meta.get(key)
+            if not meta:
+                continue
+            channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen = meta
+            if gen != self._thumb_generation:
+                continue
+            self._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen)
 
     def _get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h):
         return viewer_thumbnails._get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h)
@@ -1938,6 +2024,12 @@ QLabel:hover {{
 
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
+
+    def _schedule_marker_refresh(self, delay_ms: int = 120):
+        try:
+            self._marker_refresh_timer.start(max(0, int(delay_ms)))
+        except Exception:
+            self._schedule_marker_refresh()
 
     def _refresh_thumbnail_markers(self):
         labels = getattr(self, '_thumb_labels', {}) or {}
@@ -2818,11 +2910,35 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
-        self._reload_spectros(refresh=True)
+        # if lazy loading is enabled, mark spectros pending; otherwise reload immediately
+        if getattr(self, "lazy_spectros_enabled", False):
+            self._spectros_pending = True
+            self._spectros_loaded = False
+            self._update_spectro_stats_label()
+        else:
+            self._reload_spectros(refresh=True)
+
+    def ensure_spectros_loaded(self, refresh: bool = True):
+        """Load spectroscopies on-demand if they were deferred."""
+        if self._spectros_loaded:
+            return True
+        if not self.show_spectra:
+            return False
+        if getattr(self, "_spectros_loading", False):
+            return False
+        self._spectros_loading = True
+        self._spectros_pending = False
+        try:
+            log_status("[Lazy] Loading spectroscopy references...")
+            self._reload_spectros(refresh=refresh)
+        finally:
+            self._spectros_loading = False
+        return True
 
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
         self._spectros_loaded = False
+        self._spectros_pending = False
         t_scan_start = time.perf_counter()
         try:
             folder = getattr(self, 'spec_folder_path', None) or self.last_dir
@@ -3010,6 +3126,13 @@ QLabel:hover {{
     def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
         """Render spectroscopy markers directly on the thumbnail pixmap."""
         if not self.show_spectra and not reveal_points_override:
+            return []
+        if not self._spectros_loaded:
+            if getattr(self, "lazy_spectros_enabled", False) and getattr(self, "_spectros_pending", False):
+                try:
+                    QtCore.QTimer.singleShot(0, lambda: self.ensure_spectros_loaded(refresh=True))
+                except Exception:
+                    pass
             return []
         return spectro_overlays._render_spectroscopy_overlays(
             self,
@@ -3298,6 +3421,8 @@ QLabel:hover {{
         return False
 
     def _open_spectroscopy_popup(self, spec):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(self, spec)
 
     def _ensure_single_spectro_popup(self, spec):
@@ -3388,7 +3513,7 @@ QLabel:hover {{
             self._highlighted_spec = None
             self._highlight_phase = 0.0
             self._highlight_pulse_strength = 1.0
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 try:
                     self.preview_canvas.update_highlight_pulse(1.0)
@@ -3413,7 +3538,7 @@ QLabel:hover {{
                 self._highlight_timer.stop()
             self._highlight_phase = 0.0
             self._highlight_pulse_strength = 1.0
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 try:
                     self.preview_canvas.update_highlight_pulse(1.0)
@@ -3437,7 +3562,7 @@ QLabel:hover {{
             self._highlight_phase = (self._highlight_phase + 0.35) % (2 * math.pi)
         pulse = 0.9 + 0.4 * (0.5 * (1.0 + math.sin(self._highlight_phase)))
         self._highlight_pulse_strength = pulse
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         try:
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 self.preview_canvas.update_highlight_pulse(pulse)
@@ -3999,9 +4124,13 @@ QLabel:hover {{
         self._clear_multi_spec_selection()
 
     def _open_multi_spectroscopy_popup(self):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(self)
 
     def on_show_matrix_spectro_viewer(self):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
         return spectro_popups.on_show_matrix_spectro_viewer(self)
 
     def on_spec_coord_mode_changed(self, idx):
@@ -4030,7 +4159,7 @@ QLabel:hover {{
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
 
     def on_pick_spectro_matrix_color(self):
         col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_matrix, self, "Select Matrix Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
@@ -4041,7 +4170,7 @@ QLabel:hover {{
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def set_spectro_color_cycle(self, name: str):
@@ -4065,7 +4194,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def on_set_spectro_size(self, size):
         self.spectro_marker_size = float(size)
@@ -4074,7 +4203,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def _populate_marker_style_menu(self, menu):
         col_single = menu.addAction("Single marker color...")
@@ -4114,6 +4243,113 @@ QLabel:hover {{
                     self.show_file_channel(self.last_preview[0], self.last_preview[1])
             except Exception:
                 pass
+        except Exception:
+            pass
+
+    def on_preview_lock_toggled(self, checked: bool):
+        self.preview_locked = bool(checked)
+        self.config["preview_locked"] = self.preview_locked; save_config(self.config)
+        if hasattr(self, "preview_detach_btn"):
+            try:
+                self.preview_detach_btn.setEnabled(not self.preview_locked)
+            except Exception:
+                pass
+        if self.preview_locked and getattr(self, "preview_detached", False):
+            self._attach_preview()
+
+    def on_toggle_preview_detach(self):
+        if self.preview_locked:
+            return
+        if getattr(self, "preview_detached", False):
+            self._attach_preview()
+        else:
+            self._detach_preview()
+
+    def _detach_preview(self):
+        if self.preview_locked or getattr(self, "preview_detached", False):
+            try:
+                if self._preview_dialog:
+                    self._preview_dialog.show(); self._preview_dialog.raise_(); self._preview_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+        try:
+            # Remove from splitter
+            try:
+                w = self.main_splitter.widget(2)
+                if w is self._preview_panel:
+                    self._preview_panel.setParent(None)
+            except Exception:
+                pass
+            if self._preview_dialog is None:
+                dlg = QtWidgets.QDialog(self)
+                dlg.setWindowTitle("Preview")
+                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+                layout = QtWidgets.QVBoxLayout()
+                layout.setContentsMargins(0, 0, 0, 0)
+                dlg.setLayout(layout)
+                self._preview_dialog = dlg
+            lay = self._preview_dialog.layout()
+            if lay is not None and self._preview_panel not in lay.children():
+                try:
+                    lay.addWidget(self._preview_panel)
+                except Exception:
+                    pass
+            self.preview_detached = True
+            if hasattr(self, "preview_detach_btn"):
+                try:
+                    self.preview_detach_btn.setText("Attach")
+                except Exception:
+                    pass
+            try:
+                self._preview_dialog.resize(self._preview_panel.size())
+            except Exception:
+                pass
+            if self._preview_dialog:
+                # Ensure re-attach when the dialog is closed
+                def _on_close(ev):
+                    self._attach_preview()
+                    ev.accept()
+                try:
+                    self._preview_dialog.closeEvent = _on_close
+                except Exception:
+                    pass
+                try:
+                    self._preview_dialog.show(); self._preview_dialog.raise_(); self._preview_dialog.activateWindow()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _attach_preview(self):
+        if not getattr(self, "preview_detached", False):
+            return
+        try:
+            if self._preview_dialog and self._preview_panel:
+                try:
+                    lay = self._preview_dialog.layout()
+                    if lay is not None:
+                        lay.removeWidget(self._preview_panel)
+                except Exception:
+                    pass
+                try:
+                    self._preview_dialog.hide()
+                except Exception:
+                    pass
+            # Insert back into the main splitter at index 2 (rightmost pane)
+            try:
+                self.main_splitter.insertWidget(2, self._preview_panel)
+                self.main_splitter.setStretchFactor(0, 1)
+                self.main_splitter.setStretchFactor(1, 2)
+                self.main_splitter.setStretchFactor(2, 3)
+            except Exception:
+                pass
+            self.preview_detached = False
+            if hasattr(self, "preview_detach_btn"):
+                try:
+                    self.preview_detach_btn.setText("Detach")
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -4171,7 +4407,7 @@ QLabel:hover {{
             pass
         if self.show_spectra:
             if not self._spectros_loaded:
-                self._reload_spectros(refresh=False)
+                self.ensure_spectros_loaded(refresh=False)
             else:
                 # already loaded for this session; just update counts
                 self._update_spectro_stats_label()
@@ -4181,7 +4417,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def on_show_preview_spectra_toggled(self, checked: bool):
         self.show_preview_spectra = bool(checked)
@@ -4210,7 +4446,7 @@ QLabel:hover {{
         if not self.spectro_highlight_glow:
             self._highlight_spectrum_entry(None)
         else:
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
@@ -4232,7 +4468,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'matrix_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -4245,7 +4481,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'single_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -4258,7 +4494,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'compact_markers_act', None)
         if act is not None:
             act.blockSignals(True)
