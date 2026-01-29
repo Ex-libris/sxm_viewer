@@ -9,7 +9,7 @@ adapter (they are converted into Omicron-style headers on load).
 ![Spectroscopy and parabolas](screenshots/spectroscopies.png)
 
 ## Quick start
-- Prereqs: Python 3.10+ and Git.
+- Prereqs: Python 3.8–3.12 and Git. (We auto-detect a working Python; use python.org builds for least friction.)
 - Recommended (self-contained venv):
   ```bash
   python scripts/install.py
@@ -17,11 +17,13 @@ adapter (they are converted into Omicron-style headers on load).
   ```
 - Existing or Conda environment:
   ```bash
-  pip install -r requirements.txt
+  pip install -r scripts/requirements.txt
   python -m sxm_viewer
   ```
-- Windows double-click: run `scripts\install_sxm_viewer.bat`, then
-  `scripts\run_sxm_viewer.bat`.
+- Windows, minimal clicks:
+  1) Run `scripts\install_sxm_viewer.bat` (creates `.venv`, installs deps).
+  2) Run `scripts\run_sxm_viewer.bat` (launches using `.venv`, auto-loads `.env` if present).
+     - Tip: edit `.env` after first launch to set paths/options; the runner will pick it up automatically when `python-dotenv` is installed (bundled in requirements).
 
 ## Supported data and caches
 - Anfatec/Omicron `.txt` images with multiple channels.

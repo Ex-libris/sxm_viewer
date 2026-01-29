@@ -15,7 +15,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 VENV_DIR = PROJECT_ROOT / ".venv"
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
-MIN_PY = (3, 9)
+MIN_PY = (3, 8)
 MAX_PY = (3, 12)
 
 # Fallback pip installer URL (works without SSL)
