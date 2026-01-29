@@ -192,6 +192,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
+        self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -199,6 +200,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
         }
+        self._popup_canvases = []
         c_single = self.config.get('spectro_marker_color_single')
         if c_single:
             self.spectro_marker_color_single = QtGui.QColor(c_single)
@@ -692,6 +694,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             "  Ctrl+C copies the focused image to clipboard"
         )
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
+        try:
+            self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
+            self.preview_canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
+        except Exception:
+            pass
         preview_panel_layout.addWidget(self.preview_canvas, 1)
         self.preview_value_label = QtWidgets.QLabel("Value: --")
         preview_panel_layout.addWidget(self.preview_value_label)
@@ -1220,6 +1227,12 @@ QLabel:hover {{
         canvas._detail_dark = bool(self.detail_dark_view)
         canvas._detail_grid = bool(self.detail_grid_view)
         canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=v.get("title")))
+        try:
+            canvas.set_molecule_palette(self.molecule_palette, notify=False)
+            canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
+            self._popup_canvases.append(canvas)
+        except Exception:
+            pass
         # Sync initial tool states
         measure_initial = getattr(self.preview_canvas, "profile_enabled", False)
         angle_initial = getattr(self.preview_canvas, "angle_enabled", False)
@@ -1362,6 +1375,25 @@ QLabel:hover {{
         dlg.show()
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+        dlg.finished.connect(lambda _=None: self._popup_canvases.remove(canvas) if canvas in self._popup_canvases else None)
+
+    def _on_molecule_palette_changed(self, palette: str):
+        palette = (palette or "cpk").lower()
+        self.molecule_palette = palette
+        try:
+            self.config["molecule_palette"] = palette
+            save_config(self.config)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_molecule_palette(palette, notify=False)
+        except Exception:
+            pass
+        for canv in list(self._popup_canvases):
+            try:
+                canv.set_molecule_palette(palette, notify=False)
+            except Exception:
+                continue
 
     def _on_preview_crop(self, view):
         """Receive cropped view from preview canvas and pop it out."""

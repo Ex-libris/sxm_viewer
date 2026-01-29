@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from ..._shared import QtWidgets, QtCore, QtGui
 
-# CPK coloring (simplified)
+# Atom palettes (simplified, hex)
 CPK_COLORS = {
     'H': '#FFFFFF', 'C': '#909090', 'N': '#3050F8', 'O': '#FF0D0D',
     'F': '#90E050', 'Cl': '#1FF01F', 'Br': '#A62929', 'I': '#940094',
@@ -16,6 +16,37 @@ CPK_COLORS = {
     'Sr': '#26FF00', 'Ba': '#00FF00', 'Ra': '#00FF00', 'Ti': '#BFC2C7',
     'Fe': '#E06633', 'Cu': '#C88033', 'Zn': '#C88033', 'Ag': '#C88033',
     'Au': '#FFD123', 'Pt': '#D0D0E0', 'Si': '#F0C8A0', 'Pb': '#575961',
+}
+
+# Pymol palette (classic)
+PYMOL_COLORS = {
+    'H': '#ffffff', 'C': '#c8c8c8', 'N': '#8f8fff', 'O': '#f00000',
+    'S': '#ffbf00', 'P': '#ffa500', 'F': '#00ff00', 'Cl': '#00ff00',
+    'Br': '#a52a2a', 'I': '#940094', 'Fe': '#ffa500', 'Cu': '#c88033',
+    'Zn': '#7d7d7d'
+}
+
+# Jmol palette (subset)
+JMOL_COLORS = {
+    'H': '#FFFFFF', 'C': '#909090', 'N': '#3050F8', 'O': '#FF0D0D',
+    'S': '#FFFF30', 'P': '#FF8000', 'F': '#90E050', 'Cl': '#1FF01F',
+    'Br': '#A62929', 'I': '#940094', 'Fe': '#E06633', 'Cu': '#C88033',
+    'Zn': '#7d80b0', 'Si': '#F0C8A0', 'B': '#FFB5B5'
+}
+
+# Avogadro palette (subset)
+AVOGADRO_COLORS = {
+    'H': '#ffffff', 'C': '#000000', 'N': '#3050f8', 'O': '#ff0d0d',
+    'S': '#c8c800', 'P': '#ffa500', 'F': '#00ff00', 'Cl': '#00ff00',
+    'Br': '#8a0a0a', 'I': '#940094', 'Si': '#da8b45', 'B': '#ffb5b5',
+    'Fe': '#b7410e', 'Cu': '#b87333'
+}
+
+ATOM_PALETTES = {
+    'cpk': CPK_COLORS,
+    'pymol': PYMOL_COLORS,
+    'jmol': JMOL_COLORS,
+    'avogadro': AVOGADRO_COLORS,
 }
 
 COVALENT_RADII = {
@@ -37,8 +68,18 @@ COVALENT_RADII = {
     'Pa': 2.00, 'U': 1.96, 'Np': 1.90, 'Pu': 1.87, 'Am': 1.80, 'Cm': 1.69
 }
 
+def available_atom_palettes():
+    """Return sorted list of available palette keys."""
+    return sorted(ATOM_PALETTES.keys())
+
+def get_atom_color(element, palette='cpk'):
+    """Return color for element from selected palette (fallback to CPK)."""
+    pal = ATOM_PALETTES.get(str(palette).lower()) or CPK_COLORS
+    return pal.get(element.title(), CPK_COLORS.get(element.title(), '#FF1493'))
+
+# Backwards compatible alias
 def get_cpk_color(element):
-    return CPK_COLORS.get(element.title(), '#FF1493')
+    return get_atom_color(element, 'cpk')
 
 class Molecule:
     def __init__(self, filepath=None):
@@ -54,6 +95,8 @@ class Molecule:
         self.z_height_scale = 1.0 # For visual depth cue
         self.bonds = [] # List of (index1, index2)
         self.display_mode = 'Atoms + Bonds'
+        self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire
+        self.bond_style = 'default'    # default | thin | thick
         
         if filepath:
             self.load(filepath)
@@ -218,6 +261,8 @@ class Molecule:
         new_mol.mirror_y = self.mirror_y
         new_mol.bonds = list(self.bonds)
         new_mol.display_mode = self.display_mode
+        new_mol.render_style = self.render_style
+        new_mol.bond_style = self.bond_style
         return new_mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
@@ -238,6 +283,24 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.combo_mode.setCurrentText(molecule.display_mode)
         self.combo_mode.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Style:", self.combo_mode)
+        self.combo_atom_style = QtWidgets.QComboBox()
+        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wire"])
+        style_label = molecule.render_style.lower()
+        if style_label == 'flat': self.combo_atom_style.setCurrentText("Flat")
+        elif style_label == 'spacefill': self.combo_atom_style.setCurrentText("Spacefill")
+        elif style_label == 'licorice': self.combo_atom_style.setCurrentText("Licorice")
+        elif style_label == 'wire': self.combo_atom_style.setCurrentText("Wire")
+        else: self.combo_atom_style.setCurrentText("Shaded")
+        self.combo_atom_style.currentTextChanged.connect(self._on_change)
+        form_disp.addRow("Atom style:", self.combo_atom_style)
+        self.combo_bond_style = QtWidgets.QComboBox()
+        self.combo_bond_style.addItems(["Default", "Thin", "Thick"])
+        bs = molecule.bond_style.lower()
+        if bs == 'thin': self.combo_bond_style.setCurrentText("Thin")
+        elif bs == 'thick': self.combo_bond_style.setCurrentText("Thick")
+        else: self.combo_bond_style.setCurrentText("Default")
+        self.combo_bond_style.currentTextChanged.connect(self._on_change)
+        form_disp.addRow("Bond style:", self.combo_bond_style)
         layout.addWidget(grp_disp)
 
         # Rotation
@@ -294,5 +357,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.mirror_x = self.chk_mx.isChecked()
         self.molecule.mirror_y = self.chk_my.isChecked()
         self.molecule.display_mode = self.combo_mode.currentText()
+        self.molecule.render_style = self.combo_atom_style.currentText().lower()
+        self.molecule.bond_style = self.combo_bond_style.currentText().lower()
         if self.callback:
             self.callback()

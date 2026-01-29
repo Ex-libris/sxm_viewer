@@ -20,7 +20,12 @@ from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets
-from .molecular_overlay import Molecule, MoleculePropertiesDialog, get_cpk_color
+from .molecular_overlay import (
+    Molecule,
+    MoleculePropertiesDialog,
+    get_atom_color,
+    available_atom_palettes,
+)
 from ..thumbnail_render import sample_array_value, array_to_qimage
 
 class MultiPreviewCanvas(FigureCanvas):
@@ -139,6 +144,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._active_profile_original_color = None
         self._profile_blit_active = False
         self._profile_animation_enabled = False
+        # Molecule palette
+        self.molecule_palette = "cpk"
+        self._molecule_palette_cb = None
 
     def draw(self):
         try:
@@ -325,11 +333,33 @@ class MultiPreviewCanvas(FigureCanvas):
 
             lc = None
             sc = None
+            shadow_sc = None
+            atom_style = (mol.render_style or "shaded").lower()
+            bond_style = (mol.bond_style or "default").lower()
+            # Style params
+            if atom_style == "spacefill":
+                size_base, size_scale = 120, 200
+                shadow_alpha = 0.25
+            elif atom_style == "licorice":
+                size_base, size_scale = 60, 100
+                shadow_alpha = 0.2
+            elif atom_style == "wire":
+                size_base, size_scale = 20, 40
+                shadow_alpha = 0.1
+            else:  # shaded / flat default
+                size_base, size_scale = 80, 140
+                shadow_alpha = 0.25
+
             # Draw Bonds
             if 'Bonds' in mol.display_mode and mol.bonds:
                 lines = []
                 colors = []
                 linewidths = []
+                lw_scale = 1.0
+                if bond_style == "thick":
+                    lw_scale = 1.6
+                elif bond_style == "thin":
+                    lw_scale = 0.7
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     p1 = coords[i]
@@ -341,7 +371,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
                     colors.append((0.9, 0.9, 0.9, alpha)) # White/Grey bonds
-                    linewidths.append(1.0 + 2.0 * z_norm)
+                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
                 ax.add_collection(lc)
@@ -359,21 +389,36 @@ class MultiPreviewCanvas(FigureCanvas):
                 z = coords_sorted[:, 2]
                 
                 z_norm = (z - z_min) / z_range
-                sizes = 40 + 80 * z_norm
+                sizes = size_base + size_scale * z_norm
                 
-                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.4 + 0.6 * z_norm[i]
-                    final_colors.append((r, g, b, depth_alpha))
+                    depth_alpha = 0.45 + 0.55 * z_norm[i]
+                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
+                    r_h = min(1.0, r + (1 - r) * highlight)
+                    g_h = min(1.0, g + (1 - g) * highlight)
+                    b_h = min(1.0, b + (1 - b) * highlight)
+                    final_colors.append((r_h, g_h, b_h, depth_alpha))
                 
-                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black', linewidths=0.5, zorder=30)
+                if atom_style in ("shaded", "spacefill", "licorice"):
+                    shadow_sc = ax.scatter(
+                        x + 0.05, y - 0.05,
+                        s=sizes * 1.25,
+                        c=[(0, 0, 0, shadow_alpha)] * len(x),
+                        edgecolors='none',
+                        linewidths=0,
+                        zorder=28,
+                    )
+                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black',
+                                linewidths=0.6 if atom_style != "wire" else 0.3, zorder=30)
 
             self._molecule_artists.append({
                 'mol': mol,
                 'ax': ax,
                 'scatter': sc,
+                'shadow': shadow_sc,
                 'lines': lc
             })
 
@@ -492,7 +537,22 @@ class MultiPreviewCanvas(FigureCanvas):
         for entry in self._molecule_artists:
             mol = entry['mol']
             sc = entry['scatter']
+            shadow_sc = entry.get('shadow')
             lc = entry['lines']
+            atom_style = (mol.render_style or "shaded").lower()
+            bond_style = (mol.bond_style or "default").lower()
+            if atom_style == "spacefill":
+                size_base, size_scale = 120, 200
+                shadow_alpha = 0.25
+            elif atom_style == "licorice":
+                size_base, size_scale = 60, 100
+                shadow_alpha = 0.2
+            elif atom_style == "wire":
+                size_base, size_scale = 20, 40
+                shadow_alpha = 0.1
+            else:
+                size_base, size_scale = 80, 140
+                shadow_alpha = 0.25
             
             coords = mol.get_transformed_coordinates()
             if len(coords) == 0: continue
@@ -508,6 +568,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 lines = []
                 colors = []
                 linewidths = []
+                lw_scale = 1.0
+                if bond_style == "thick":
+                    lw_scale = 1.6
+                elif bond_style == "thin":
+                    lw_scale = 0.7
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     p1 = coords[i]; p2 = coords[j]
@@ -516,7 +581,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
                     colors.append((0.9, 0.9, 0.9, alpha))
-                    linewidths.append(1.0 + 2.0 * z_norm)
+                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 lc.set_segments(lines)
                 lc.set_color(colors)
                 lc.set_linewidths(linewidths)
@@ -534,16 +599,24 @@ class MultiPreviewCanvas(FigureCanvas):
                 # for pure translation we could skip it, but rotation needs it.
                 # We'll skip full color/size recalc for speed during drag if needed, 
                 # but for now let's do it to keep depth cues correct.
-                sizes = 40 + 80 * z_norm
-                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                sizes = size_base + size_scale * z_norm
+                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.4 + 0.6 * z_norm[i]
-                    final_colors.append((r, g, b, depth_alpha))
+                    depth_alpha = 0.45 + 0.55 * z_norm[i]
+                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
+                    r_h = min(1.0, r + (1 - r) * highlight)
+                    g_h = min(1.0, g + (1 - g) * highlight)
+                    b_h = min(1.0, b + (1 - b) * highlight)
+                    final_colors.append((r_h, g_h, b_h, depth_alpha))
                 sc.set_sizes(sizes)
                 sc.set_facecolors(final_colors)
-        
+                if shadow_sc:
+                    shadow_sc.set_offsets(np.c_[x + 0.05, y - 0.05])
+                    shadow_sc.set_sizes(sizes * 1.25)
+                    shadow_sc.set_color([(0, 0, 0, shadow_alpha)] * len(x))
+
         self.draw_idle()
 
     def enable_scale_bar(self, enable: bool):
@@ -3093,11 +3166,37 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._molecule_rotation_guide = None
                 self._redraw()
 
+    def set_molecule_palette(self, palette: str, notify: bool = True):
+        palette = (palette or "cpk").lower()
+        if palette not in available_atom_palettes():
+            palette = "cpk"
+        if palette == getattr(self, "molecule_palette", None):
+            return
+        self.molecule_palette = palette
+        self._redraw()
+        if notify and callable(self._molecule_palette_cb):
+            try:
+                self._molecule_palette_cb(palette)
+            except Exception:
+                pass
+
+    def set_molecule_palette_callback(self, cb):
+        self._molecule_palette_cb = cb
+
     def _show_molecule_menu(self, event, mol):
         menu = QtWidgets.QMenu(self)
         props_act = menu.addAction("Properties (Rotate/Scale)...")
         dup_act = menu.addAction("Duplicate")
         del_act = menu.addAction("Delete")
+        menu.addSeparator()
+        pal_menu = menu.addMenu("Palette")
+        current_pal = (getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        palette_actions = {}
+        for pal in available_atom_palettes():
+            act = pal_menu.addAction(pal.title())
+            act.setCheckable(True)
+            act.setChecked(pal == current_pal)
+            palette_actions[act] = pal
         
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
@@ -3112,6 +3211,8 @@ class MultiPreviewCanvas(FigureCanvas):
             if mol in self.molecules:
                 self.molecules.remove(mol)
                 self._redraw()
+        elif action in palette_actions:
+            self.set_molecule_palette(palette_actions[action])
 
     def _copy_view_to_clipboard(self, view):
         try:
