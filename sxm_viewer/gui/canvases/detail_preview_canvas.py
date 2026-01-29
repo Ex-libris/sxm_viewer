@@ -39,6 +39,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_start = None
         self._crop_rect = None
         self._crop_ax = None
+        self._crop_square = False
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -2923,16 +2924,26 @@ class MultiPreviewCanvas(FigureCanvas):
             if event.button == 3:
                 self._show_context_menu(event, view)
             return
-        # Crop rectangle start (Ctrl or Shift + left-click drag)
-        mods = getattr(event, 'key', None)
-        start_crop = (event.button == 1) and (mods in ('control', 'shift'))
-        if start_crop and view is not None:
+        # Crop rectangle start:
+        #   Shift + drag -> arbitrary rectangle
+        #   Ctrl + Shift + drag -> square selection
+        mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
+        mods_key = str(getattr(event, 'key', '') or '').lower()
+        want_square = (event.button == 1) and (
+            (mods_qt & QtCore.Qt.ControlModifier and mods_qt & QtCore.Qt.ShiftModifier)
+            or ('control' in mods_key and 'shift' in mods_key)
+        )
+        want_rect = (event.button == 1) and (
+            (mods_qt & QtCore.Qt.ShiftModifier) or ('shift' in mods_key)
+        )
+        if want_rect and view is not None:
             self._crop_start = (event.xdata, event.ydata)
             self._crop_ax = ax
+            self._crop_square = bool(want_square)
             try:
                 from matplotlib.patches import Rectangle
                 rect = Rectangle((event.xdata, event.ydata), 0, 0,
-                                 linewidth=1.0, edgecolor='cyan', facecolor='none', alpha=0.8, linestyle='--')
+                                 linewidth=2.2, edgecolor='#ff00cc', facecolor='none', alpha=0.9, linestyle='--')
                 ax.add_patch(rect)
                 self._crop_rect = rect
                 self.draw_idle()
@@ -3460,6 +3471,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 x0, y0 = self._crop_start
                 x1, y1 = event.xdata, event.ydata
                 if x1 is not None and y1 is not None:
+                    if self._crop_square:
+                        dx = x1 - x0
+                        dy = y1 - y0
+                        side = min(abs(dx), abs(dy))
+                        sx = 1 if dx >= 0 else -1
+                        sy = 1 if dy >= 0 else -1
+                        x1 = x0 + sx * side
+                        y1 = y0 + sy * side
                     self._crop_rect.set_x(min(x0, x1))
                     self._crop_rect.set_y(min(y0, y1))
                     self._crop_rect.set_width(abs(x1 - x0))
@@ -3496,6 +3515,14 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         x1, y1 = event.xdata, event.ydata
         x0, y0 = self._crop_start
+        if x1 is not None and y1 is not None and self._crop_square:
+            dx = x1 - x0
+            dy = y1 - y0
+            side = min(abs(dx), abs(dy))
+            sx = 1 if dx >= 0 else -1
+            sy = 1 if dy >= 0 else -1
+            x1 = x0 + sx * side
+            y1 = y0 + sy * side
         # clean up the rectangle artist
         try:
             if self._crop_rect is not None:
@@ -3535,6 +3562,10 @@ class MultiPreviewCanvas(FigureCanvas):
             c0, c1 = c1, c0
         if r1 < r0:
             r0, r1 = r1, r0
+        if self._crop_square:
+            span = min(c1 - c0, r1 - r0)
+            c1 = c0 + span
+            r1 = r0 + span
         cropped_disp = arr_disp[r0:r1 + 1, c0:c1 + 1]
         if cropped_disp.size == 0:
             self._reset_crop_state()
@@ -3576,6 +3607,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_start = None
         self._crop_rect = None
         self._crop_ax = None
+        self._crop_square = False
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:

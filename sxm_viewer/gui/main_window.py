@@ -1187,13 +1187,80 @@ QLabel:hover {{
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         dlg.setWindowTitle(title or "Preview")
         layout = QtWidgets.QVBoxLayout(dlg)
+        controls_bar = QtWidgets.QHBoxLayout()
+        controls_bar.setContentsMargins(4, 4, 4, 4)
+        controls_bar.setSpacing(8)
+        measure_cb = QtWidgets.QCheckBox("Measure profile")
+        angle_cb = QtWidgets.QCheckBox("Angle tool")
+        scale_cb = QtWidgets.QCheckBox("Scale bar")
+        layout_cb = QtWidgets.QComboBox()
+        layout_cb.addItems(["Grid", "Stacked"])
+        controls_bar.addWidget(measure_cb)
+        controls_bar.addWidget(angle_cb)
+        controls_bar.addWidget(scale_cb)
+        controls_bar.addWidget(QtWidgets.QLabel("Layout"))
+        controls_bar.addWidget(layout_cb)
+        controls_bar.addStretch(1)
         canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
         canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
         canvas.set_views([self._copy_view_for_popup(v) for v in views])
         canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         canvas._detail_dark = bool(self.detail_dark_view)
         canvas._detail_grid = bool(self.detail_grid_view)
+        canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=v.get("title")))
+        # Sync initial tool states
+        canvas.profile_enabled = getattr(self.preview_canvas, "profile_enabled", False)
+        canvas.angle_enabled = getattr(self.preview_canvas, "angle_enabled", False)
+        measure_cb.setChecked(canvas.profile_enabled)
+        angle_cb.setChecked(canvas.angle_enabled)
+        scale_cb.setChecked(self.scale_bar_cb.isChecked())
+        layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
+        def _toggle_measure(checked):
+            canvas.profile_enabled = bool(checked)
+            try:
+                canvas._redraw()
+            except Exception:
+                pass
+        def _toggle_angle(checked):
+            canvas.angle_enabled = bool(checked)
+            try:
+                canvas._redraw()
+            except Exception:
+                pass
+        def _toggle_scale(checked):
+            canvas.enable_scale_bar(bool(checked))
+            try:
+                canvas._redraw()
+            except Exception:
+                pass
+        def _toggle_layout(text):
+            canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
+        measure_cb.toggled.connect(_toggle_measure)
+        angle_cb.toggled.connect(_toggle_angle)
+        scale_cb.toggled.connect(_toggle_scale)
+        layout_cb.currentTextChanged.connect(_toggle_layout)
+        layout.addLayout(controls_bar)
         layout.addWidget(canvas, 1)
+        canvas.setFocus()
+        # Simple event filter to support Ctrl+D duplication inside pop-outs
+        class _PopupKeyFilter(QtCore.QObject):
+            def __init__(self, outer, cvs):
+                super().__init__(cvs)
+                self.outer = outer
+                self.canvas = cvs
+            def eventFilter(self, obj, event):
+                if event.type() == QtCore.QEvent.KeyPress:
+                    if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() == QtCore.Qt.Key_D:
+                        try:
+                            self.outer._spawn_preview_popup([self.outer._copy_view_for_popup(v) for v in self.canvas.views], title="Preview copy")
+                        except Exception:
+                            pass
+                        event.accept()
+                        return True
+                return False
+        key_filter = _PopupKeyFilter(self, canvas)
+        dlg.installEventFilter(key_filter)
+        canvas.installEventFilter(key_filter)
         dlg.resize(760, 620)
         dlg.show()
         self._popup_refs.append(dlg)
