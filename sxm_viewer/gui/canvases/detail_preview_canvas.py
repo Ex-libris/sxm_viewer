@@ -5,6 +5,7 @@ import io
 import itertools
 import json
 import math
+import time
 
 import numpy as np
 from matplotlib import patches
@@ -45,6 +46,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_rect = None
         self._crop_ax = None
         self._crop_square = False
+        self._crop_last_ts = 0.0
+        self._crop_move_throttle_ms = 12  # throttle mouse-move driven crop updates
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -200,6 +203,21 @@ class MultiPreviewCanvas(FigureCanvas):
         """Register a callback to receive cropped views created via drag-crop."""
         self._crop_callback = cb
 
+    def set_view_clim(self, view, clim):
+        """Update the color limits for a specific view and redraw while preserving overlays."""
+        if not view or clim is None:
+            return
+        try:
+            lo, hi = clim
+        except Exception:
+            return
+        view['clim'] = (float(lo), float(hi))
+        # redraw while preserving profiles/angles where possible
+        try:
+            self.set_views(self.views, preserve_profiles=True)
+        except Exception:
+            self._redraw()
+
     def set_spectra_click_callback(self, cb):
         """Register a callback for spectroscopy marker clicks (spec, event)."""
         self._spectra_click_cb = cb
@@ -264,6 +282,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
                 im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            clim = v.get('clim')
+            if clim:
+                try:
+                    im.set_clim(*clim)
+                except Exception:
+                    pass
             ax.set_autoscale_on(False)
             cbar_label = v.get('colorbar_label') or v.get('unit', '')
             if cbar_label and self._show_colorbar:
@@ -3573,6 +3597,11 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_motion_value(self, event):
         if self._crop_rect is not None and self._crop_start is not None and event.inaxes is self._crop_ax:
             try:
+                # Throttle drag updates to keep UI responsive
+                now_ms = time.perf_counter() * 1000.0
+                if (now_ms - getattr(self, "_crop_last_ts", 0.0)) < getattr(self, "_crop_move_throttle_ms", 12):
+                    return
+                self._crop_last_ts = now_ms
                 x0, y0 = self._crop_start
                 x1, y1 = event.xdata, event.ydata
                 if x1 is not None and y1 is not None:
@@ -3713,6 +3742,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_rect = None
         self._crop_ax = None
         self._crop_square = False
+        self._crop_last_ts = 0.0
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:
