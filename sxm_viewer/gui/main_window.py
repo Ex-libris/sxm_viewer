@@ -700,6 +700,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
+        self.preview_canvas.set_crop_callback(self._on_preview_crop)
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
@@ -1165,6 +1166,45 @@ QLabel:hover {{
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
 
+    # ---------- Preview pop-outs ----------
+    def _copy_view_for_popup(self, view):
+        """Deep-copy a preview view dict so pop-outs do not share array state."""
+        if not view:
+            return {}
+        new_view = dict(view)
+        arr = view.get("arr")
+        if arr is not None:
+            try:
+                new_view["arr"] = np.array(arr, copy=True)
+            except Exception:
+                new_view["arr"] = arr
+        return new_view
+
+    def _spawn_preview_popup(self, views, title=None):
+        if not views:
+            return
+        dlg = QtWidgets.QDialog(self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.setWindowTitle(title or "Preview")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
+        canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
+        canvas.set_views([self._copy_view_for_popup(v) for v in views])
+        canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
+        canvas._detail_dark = bool(self.detail_dark_view)
+        canvas._detail_grid = bool(self.detail_grid_view)
+        layout.addWidget(canvas, 1)
+        dlg.resize(760, 620)
+        dlg.show()
+        self._popup_refs.append(dlg)
+        dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+
+    def _on_preview_crop(self, view):
+        """Receive cropped view from preview canvas and pop it out."""
+        if not view:
+            return
+        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=view.get("title") or "Cropped view")
+
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
         return main_window_spectro.ensure_spectro_dock(self)
@@ -1314,6 +1354,13 @@ QLabel:hover {{
 
     def keyPressEvent(self, event):
         key = event.key()
+        mods = event.modifiers()
+        if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_D:
+            views = getattr(self.preview_canvas, "views", None)
+            if views:
+                self._spawn_preview_popup([self._copy_view_for_popup(v) for v in views], title="Preview copy")
+                event.accept()
+                return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
@@ -1322,7 +1369,7 @@ QLabel:hover {{
         ):
             focus_widget = QtWidgets.QApplication.focusWidget()
             if not self._focus_widget_blocks_thumb_nav(focus_widget):
-                if self._handle_thumbnail_navigation(key, event.modifiers()):
+                if self._handle_thumbnail_navigation(key, mods):
                     event.accept()
                     return
         super().keyPressEvent(event)

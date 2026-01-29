@@ -3486,6 +3486,96 @@ class MultiPreviewCanvas(FigureCanvas):
         else:
             self._value_callback(val, event.xdata, event.ydata, view)
 
+    def _on_crop_release(self, event):
+        """Finish a crop drag and emit a cropped view copy."""
+        if self._crop_start is None or self._crop_ax is None:
+            return
+        if getattr(event, "button", None) != 1 or event.inaxes is not self._crop_ax:
+            # Only respond to the matching left-button release inside the same axes
+            self._reset_crop_state()
+            return
+        x1, y1 = event.xdata, event.ydata
+        x0, y0 = self._crop_start
+        # clean up the rectangle artist
+        try:
+            if self._crop_rect is not None:
+                self._crop_rect.remove()
+                self._crop_rect = None
+                self.draw_idle()
+        except Exception:
+            pass
+        view = self._ax_view_map.get(self._crop_ax)
+        if view is None or x1 is None or y1 is None:
+            self._reset_crop_state()
+            return
+        arr = np.asarray(view.get("arr"))
+        if arr.size == 0:
+            self._reset_crop_state()
+            return
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        xmin, xmax = self._crop_ax.get_xlim()
+        ymin, ymax = self._crop_ax.get_ylim()
+        # clamp rectangle to axis limits
+        x_lo, x_hi = sorted([max(min(x0, x1), xmin), min(max(x0, x1), xmax)])
+        y_lo, y_hi = sorted([max(min(y0, y1), ymin), min(max(y0, y1), ymax)])
+        if xmax == xmin or ymax == ymin:
+            self._reset_crop_state()
+            return
+        def _map_x(x):
+            frac = (x - xmin) / (xmax - xmin)
+            return int(np.clip(round(frac * (w - 1)), 0, w - 1))
+        def _map_y(y):
+            frac = (y - ymin) / (ymax - ymin)
+            return int(np.clip(round(frac * (h - 1)), 0, h - 1))
+        c0, c1 = _map_x(x_lo), _map_x(x_hi)
+        r0, r1 = _map_y(y_lo), _map_y(y_hi)
+        if c1 < c0:
+            c0, c1 = c1, c0
+        if r1 < r0:
+            r0, r1 = r1, r0
+        cropped_disp = arr_disp[r0:r1 + 1, c0:c1 + 1]
+        if cropped_disp.size == 0:
+            self._reset_crop_state()
+            return
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        # Build new extent in data coordinates, preserving orientation
+        ext = view.get("extent")
+        if ext is None:
+            crop_extent = None
+        else:
+            x_extent0, x_extent1, y_extent1, y_extent0 = ext
+            def _lerp_x(idx):
+                return x_extent0 + (x_extent1 - x_extent0) * (idx / (w - 1))
+            def _lerp_y(idx):
+                return y_extent0 + (y_extent1 - y_extent0) * (idx / (h - 1))
+            crop_extent = (
+                _lerp_x(c0),
+                _lerp_x(c1),
+                _lerp_y(r1),  # note: extent ordering is (x0, x1, y1, y0)
+                _lerp_y(r0),
+            )
+        new_view = dict(view)
+        try:
+            new_view["arr"] = np.array(cropped_arr, copy=True)
+        except Exception:
+            new_view["arr"] = cropped_arr
+        if crop_extent is not None:
+            new_view["extent"] = crop_extent
+        title = view.get("title") or "crop"
+        new_view["title"] = f"{title} [crop]"
+        if callable(self._crop_callback):
+            try:
+                self._crop_callback(new_view)
+            except Exception:
+                pass
+        self._reset_crop_state()
+
+    def _reset_crop_state(self):
+        self._crop_start = None
+        self._crop_rect = None
+        self._crop_ax = None
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:
