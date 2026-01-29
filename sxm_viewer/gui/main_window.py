@@ -220,6 +220,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._highlight_phase = 0.0
         self._highlight_pulse_strength = 1.0
         self._highlight_timer = QtCore.QTimer(self)
+        # Debounced marker refresh to avoid repaint storms
+        self._marker_refresh_timer = QtCore.QTimer(self)
+        self._marker_refresh_timer.setSingleShot(True)
+        self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
         self._highlight_timer.setInterval(350)
         self._highlight_timer.timeout.connect(self._on_highlight_tick)
         self._highlighted_spec = None
@@ -2005,6 +2009,12 @@ QLabel:hover {{
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
 
+    def _schedule_marker_refresh(self, delay_ms: int = 120):
+        try:
+            self._marker_refresh_timer.start(max(0, int(delay_ms)))
+        except Exception:
+            self._schedule_marker_refresh()
+
     def _refresh_thumbnail_markers(self):
         labels = getattr(self, '_thumb_labels', {}) or {}
         if not labels:
@@ -3487,7 +3497,7 @@ QLabel:hover {{
             self._highlighted_spec = None
             self._highlight_phase = 0.0
             self._highlight_pulse_strength = 1.0
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 try:
                     self.preview_canvas.update_highlight_pulse(1.0)
@@ -3512,7 +3522,7 @@ QLabel:hover {{
                 self._highlight_timer.stop()
             self._highlight_phase = 0.0
             self._highlight_pulse_strength = 1.0
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 try:
                     self.preview_canvas.update_highlight_pulse(1.0)
@@ -3536,7 +3546,7 @@ QLabel:hover {{
             self._highlight_phase = (self._highlight_phase + 0.35) % (2 * math.pi)
         pulse = 0.9 + 0.4 * (0.5 * (1.0 + math.sin(self._highlight_phase)))
         self._highlight_pulse_strength = pulse
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         try:
             if hasattr(self, 'preview_canvas') and self.preview_canvas:
                 self.preview_canvas.update_highlight_pulse(pulse)
@@ -4133,7 +4143,7 @@ QLabel:hover {{
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
 
     def on_pick_spectro_matrix_color(self):
         col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_matrix, self, "Select Matrix Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
@@ -4144,7 +4154,7 @@ QLabel:hover {{
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def set_spectro_color_cycle(self, name: str):
@@ -4168,7 +4178,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def on_set_spectro_size(self, size):
         self.spectro_marker_size = float(size)
@@ -4177,7 +4187,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def _populate_marker_style_menu(self, menu):
         col_single = menu.addAction("Single marker color...")
@@ -4284,7 +4294,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
 
     def on_show_preview_spectra_toggled(self, checked: bool):
         self.show_preview_spectra = bool(checked)
@@ -4313,7 +4323,7 @@ QLabel:hover {{
         if not self.spectro_highlight_glow:
             self._highlight_spectrum_entry(None)
         else:
-            self._refresh_thumbnail_markers()
+            self._schedule_marker_refresh()
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
@@ -4335,7 +4345,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'matrix_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -4348,7 +4358,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'single_markers_act', None)
         if act is not None:
             act.blockSignals(True)
@@ -4361,7 +4371,7 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        self._refresh_thumbnail_markers()
+        self._schedule_marker_refresh()
         act = getattr(self, 'compact_markers_act', None)
         if act is not None:
             act.blockSignals(True)
