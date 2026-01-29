@@ -1052,6 +1052,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if enable:
             self._connect_profile_events()
             self._ensure_profile_artists()
+            try:
+                self._emit_profile()
+            except Exception:
+                pass
         else:
             self._disconnect_profile_events()
             self._clear_profile_artists()
@@ -2907,24 +2911,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
 
         view = self._ax_view_map.get(ax)
-        if event.button == 1:
-            hit = self._hit_spectrum_point(event)
-            if hit is not None and callable(self._spectra_click_cb):
-                try:
-                    self._spectra_click_cb(hit, event)
-                except Exception:
-                    pass
-                return
-        if self.profile_enabled and ax is self.main_ax:
-            # avoid starting thumbnail drag/other actions while measuring profiles
-            if event.button == 3:
-                self._show_context_menu(event, view)
-            return
-        if self.angle_enabled and ax is self.main_ax:
-            if event.button == 3:
-                self._show_context_menu(event, view)
-            return
-        # Crop rectangle start:
+        # Crop rectangle start (handle before tool guards):
         #   Shift + drag -> arbitrary rectangle
         #   Ctrl + Shift + drag -> square selection
         mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
@@ -2949,6 +2936,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 self.draw_idle()
             except Exception:
                 self._crop_rect = None
+            return
+        if event.button == 1:
+            hit = self._hit_spectrum_point(event)
+            if hit is not None and callable(self._spectra_click_cb):
+                try:
+                    self._spectra_click_cb(hit, event)
+                except Exception:
+                    pass
+                return
+        if self.profile_enabled and ax is self.main_ax:
+            # avoid starting thumbnail drag/other actions while measuring profiles
+            if event.button == 3:
+                self._show_context_menu(event, view)
+            return
+        if self.angle_enabled and ax is self.main_ax:
+            if event.button == 3:
+                self._show_context_menu(event, view)
             return
         if event.button == 3:
             self._show_context_menu(event, view)

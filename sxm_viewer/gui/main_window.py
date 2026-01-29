@@ -1188,16 +1188,28 @@ QLabel:hover {{
         dlg.setWindowTitle(title or "Preview")
         layout = QtWidgets.QVBoxLayout(dlg)
         controls_bar = QtWidgets.QHBoxLayout()
-        controls_bar.setContentsMargins(4, 4, 4, 4)
-        controls_bar.setSpacing(8)
-        measure_cb = QtWidgets.QCheckBox("Measure profile")
-        angle_cb = QtWidgets.QCheckBox("Angle tool")
-        scale_cb = QtWidgets.QCheckBox("Scale bar")
+        controls_bar.setContentsMargins(6, 6, 6, 6)
+        controls_bar.setSpacing(10)
+        def _tool_button(label, tooltip):
+            btn = QtWidgets.QToolButton()
+            btn.setText(label)
+            btn.setCheckable(True)
+            btn.setAutoRaise(False)
+            btn.setToolTip(tooltip)
+            return btn
+        measure_btn = _tool_button("Profile", "Toggle profile measurement (drag line)")
+        angle_btn = _tool_button("Angle", "Toggle angle tool (Ctrl+Shift+click to add vertex)")
+        scale_btn = _tool_button("Scale", "Toggle scale bar")
+        clear_btn = QtWidgets.QToolButton()
+        clear_btn.setText("Clear overlays")
+        clear_btn.setToolTip("Clear profiles, angles and related overlays")
         layout_cb = QtWidgets.QComboBox()
         layout_cb.addItems(["Grid", "Stacked"])
-        controls_bar.addWidget(measure_cb)
-        controls_bar.addWidget(angle_cb)
-        controls_bar.addWidget(scale_cb)
+        controls_bar.addWidget(measure_btn)
+        controls_bar.addWidget(angle_btn)
+        controls_bar.addWidget(scale_btn)
+        controls_bar.addWidget(clear_btn)
+        controls_bar.addSpacing(6)
         controls_bar.addWidget(QtWidgets.QLabel("Layout"))
         controls_bar.addWidget(layout_cb)
         controls_bar.addStretch(1)
@@ -1209,22 +1221,96 @@ QLabel:hover {{
         canvas._detail_grid = bool(self.detail_grid_view)
         canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=v.get("title")))
         # Sync initial tool states
-        canvas.profile_enabled = getattr(self.preview_canvas, "profile_enabled", False)
-        canvas.angle_enabled = getattr(self.preview_canvas, "angle_enabled", False)
-        measure_cb.setChecked(canvas.profile_enabled)
-        angle_cb.setChecked(canvas.angle_enabled)
-        scale_cb.setChecked(self.scale_bar_cb.isChecked())
+        measure_initial = getattr(self.preview_canvas, "profile_enabled", False)
+        angle_initial = getattr(self.preview_canvas, "angle_enabled", False)
+        canvas.enable_profile(measure_initial)
+        canvas.enable_angle(angle_initial)
+        measure_btn.setChecked(measure_initial)
+        angle_btn.setChecked(angle_initial)
+        scale_btn.setChecked(self.scale_bar_cb.isChecked())
         layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
-        def _toggle_measure(checked):
-            canvas.profile_enabled = bool(checked)
+        popup_state = {"profile_dialog": None}
+        def _update_profile_dialog(active, saved):
+            dlg_prof = popup_state.get("profile_dialog")
+            if dlg_prof is None:
+                unit = None
+                y_label = None
+                if views:
+                    try:
+                        unit = views[0].get("unit")
+                        y_label = views[0].get("colorbar_label") or views[0].get("unit")
+                    except Exception:
+                        pass
+                dlg_prof = ProfileDialog(active, saved, parent=dlg, unit=unit, y_label=y_label)
+                dlg_prof.setWindowTitle((title or "Profile") + " (popup)")
+                try:
+                    dlg_prof.set_context_source(canvas, dark=self.detail_dark_view, grid=self.detail_grid_view)
+                except Exception:
+                    pass
+                dlg_prof.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+                dlg_prof.finished.connect(lambda _=None: popup_state.__setitem__("profile_dialog", None))
+                popup_state["profile_dialog"] = dlg_prof
+            dlg_prof.update_profiles(active, saved, preserve_profiles=False, label_scale=getattr(canvas, "_view_font_scale", 1.0))
+            dlg_prof.show()
+        canvas.profile_callback = _update_profile_dialog
+        def _refresh_profile_dialog_from_canvas():
+            if not getattr(canvas, "profile_enabled", False):
+                return
             try:
-                canvas._redraw()
+                active = canvas._build_profile_data(canvas.profile_pts, color=getattr(canvas, "_active_profile_color", "#fbc02d"), view=canvas.views[0] if canvas.views else None)
+            except Exception:
+                active = None
+            saved = []
+            try:
+                for entry in getattr(canvas, "_saved_profiles", []):
+                    data = entry.get("data")
+                    if data is None:
+                        data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
+                    if data:
+                        saved.append(data)
+            except Exception:
+                saved = []
+            _update_profile_dialog(active, saved)
+        canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
+
+        def _toggle_measure(checked):
+            def _force_profile_dialog():
+                try:
+                    active = canvas._build_profile_data(
+                        canvas.profile_pts,
+                        color=getattr(canvas, "_active_profile_color", "#fbc02d"),
+                        view=canvas.views[0] if canvas.views else None,
+                    )
+                except Exception:
+                    active = None
+                saved = []
+                try:
+                    for entry in getattr(canvas, "_saved_profiles", []):
+                        data = entry.get("data")
+                        if data is None:
+                            data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
+                        if data:
+                            saved.append(data)
+                except Exception:
+                    saved = []
+                _update_profile_dialog(active, saved)
+            try:
+                canvas.enable_profile(bool(checked))
+                if not checked and popup_state.get("profile_dialog"):
+                    popup_state["profile_dialog"].close()
+                if checked:
+                    try:
+                        canvas._emit_profile()
+                    except Exception:
+                        _force_profile_dialog()
+                    else:
+                        _force_profile_dialog()
+                _refresh_profile_dialog_from_canvas()
             except Exception:
                 pass
         def _toggle_angle(checked):
-            canvas.angle_enabled = bool(checked)
             try:
-                canvas._redraw()
+                canvas.enable_angle(bool(checked))
             except Exception:
                 pass
         def _toggle_scale(checked):
@@ -1235,10 +1321,21 @@ QLabel:hover {{
                 pass
         def _toggle_layout(text):
             canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
-        measure_cb.toggled.connect(_toggle_measure)
-        angle_cb.toggled.connect(_toggle_angle)
-        scale_cb.toggled.connect(_toggle_scale)
+        measure_btn.toggled.connect(_toggle_measure)
+        angle_btn.toggled.connect(_toggle_angle)
+        scale_btn.toggled.connect(_toggle_scale)
         layout_cb.currentTextChanged.connect(_toggle_layout)
+        def _clear_overlays():
+            try:
+                canvas.clear_angle_measurement()
+                canvas._clear_profile_artists()
+                canvas._clear_saved_profile_artists(notify=False)
+                canvas.profile_pts = None
+                canvas._emit_profile_state()
+                canvas.draw_idle()
+            except Exception:
+                pass
+        clear_btn.clicked.connect(_clear_overlays)
         layout.addLayout(controls_bar)
         layout.addWidget(canvas, 1)
         canvas.setFocus()
