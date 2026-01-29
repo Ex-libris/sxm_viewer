@@ -35,10 +35,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self._copy_feedback_handler = None
         self._views_callback = None
         self._drag_candidate = None  # (view, QPoint start, QImage cache)
+        self._crop_callback = None  # callable(view_dict) -> None
+        self._crop_start = None
+        self._crop_rect = None
+        self._crop_ax = None
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
         self.mpl_connect('button_release_event', self._on_molecule_release)
+        self._crop_release_cid = self.mpl_connect('button_release_event', self._on_crop_release)
         # profile (interactive line) state
         self.profile_enabled = False
         self.profile_pts = None  # (x0, y0, x1, y1) in data coords of main ax
@@ -181,6 +186,10 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_views_callback(self, cb):
         self._views_callback = cb
+
+    def set_crop_callback(self, cb):
+        """Register a callback to receive cropped views created via drag-crop."""
+        self._crop_callback = cb
 
     def set_spectra_click_callback(self, cb):
         """Register a callback for spectroscopy marker clicks (spec, event)."""
@@ -2914,6 +2923,22 @@ class MultiPreviewCanvas(FigureCanvas):
             if event.button == 3:
                 self._show_context_menu(event, view)
             return
+        # Crop rectangle start (Ctrl or Shift + left-click drag)
+        mods = getattr(event, 'key', None)
+        start_crop = (event.button == 1) and (mods in ('control', 'shift'))
+        if start_crop and view is not None:
+            self._crop_start = (event.xdata, event.ydata)
+            self._crop_ax = ax
+            try:
+                from matplotlib.patches import Rectangle
+                rect = Rectangle((event.xdata, event.ydata), 0, 0,
+                                 linewidth=1.0, edgecolor='cyan', facecolor='none', alpha=0.8, linestyle='--')
+                ax.add_patch(rect)
+                self._crop_rect = rect
+                self.draw_idle()
+            except Exception:
+                self._crop_rect = None
+            return
         if event.button == 3:
             self._show_context_menu(event, view)
             return
@@ -3430,6 +3455,18 @@ class MultiPreviewCanvas(FigureCanvas):
         super().mouseReleaseEvent(event)
 
     def _on_motion_value(self, event):
+        if self._crop_rect is not None and self._crop_start is not None and event.inaxes is self._crop_ax:
+            try:
+                x0, y0 = self._crop_start
+                x1, y1 = event.xdata, event.ydata
+                if x1 is not None and y1 is not None:
+                    self._crop_rect.set_x(min(x0, x1))
+                    self._crop_rect.set_y(min(y0, y1))
+                    self._crop_rect.set_width(abs(x1 - x0))
+                    self._crop_rect.set_height(abs(y1 - y0))
+                    self.draw_idle()
+            except Exception:
+                pass
         if self._value_callback is None:
             return
         # Performance: skip value inspection while dragging profiles or molecules
