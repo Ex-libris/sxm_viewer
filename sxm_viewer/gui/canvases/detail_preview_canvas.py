@@ -20,7 +20,12 @@ from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets
-from .molecular_overlay import Molecule, MoleculePropertiesDialog, get_cpk_color
+from .molecular_overlay import (
+    Molecule,
+    MoleculePropertiesDialog,
+    get_atom_color,
+    available_atom_palettes,
+)
 from ..thumbnail_render import sample_array_value, array_to_qimage
 
 class MultiPreviewCanvas(FigureCanvas):
@@ -39,6 +44,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_start = None
         self._crop_rect = None
         self._crop_ax = None
+        self._crop_square = False
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -138,6 +144,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._active_profile_original_color = None
         self._profile_blit_active = False
         self._profile_animation_enabled = False
+        # Molecule palette
+        self.molecule_palette = "cpk"
+        self._molecule_palette_cb = None
 
     def draw(self):
         try:
@@ -324,11 +333,33 @@ class MultiPreviewCanvas(FigureCanvas):
 
             lc = None
             sc = None
+            shadow_sc = None
+            atom_style = (mol.render_style or "shaded").lower()
+            bond_style = (mol.bond_style or "default").lower()
+            # Style params
+            if atom_style == "spacefill":
+                size_base, size_scale = 120, 200
+                shadow_alpha = 0.25
+            elif atom_style == "licorice":
+                size_base, size_scale = 60, 100
+                shadow_alpha = 0.2
+            elif atom_style == "wire":
+                size_base, size_scale = 20, 40
+                shadow_alpha = 0.1
+            else:  # shaded / flat default
+                size_base, size_scale = 80, 140
+                shadow_alpha = 0.25
+
             # Draw Bonds
             if 'Bonds' in mol.display_mode and mol.bonds:
                 lines = []
                 colors = []
                 linewidths = []
+                lw_scale = 1.0
+                if bond_style == "thick":
+                    lw_scale = 1.6
+                elif bond_style == "thin":
+                    lw_scale = 0.7
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     p1 = coords[i]
@@ -340,7 +371,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
                     colors.append((0.9, 0.9, 0.9, alpha)) # White/Grey bonds
-                    linewidths.append(1.0 + 2.0 * z_norm)
+                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
                 ax.add_collection(lc)
@@ -358,21 +389,36 @@ class MultiPreviewCanvas(FigureCanvas):
                 z = coords_sorted[:, 2]
                 
                 z_norm = (z - z_min) / z_range
-                sizes = 40 + 80 * z_norm
+                sizes = size_base + size_scale * z_norm
                 
-                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.4 + 0.6 * z_norm[i]
-                    final_colors.append((r, g, b, depth_alpha))
+                    depth_alpha = 0.45 + 0.55 * z_norm[i]
+                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
+                    r_h = min(1.0, r + (1 - r) * highlight)
+                    g_h = min(1.0, g + (1 - g) * highlight)
+                    b_h = min(1.0, b + (1 - b) * highlight)
+                    final_colors.append((r_h, g_h, b_h, depth_alpha))
                 
-                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black', linewidths=0.5, zorder=30)
+                if atom_style in ("shaded", "spacefill", "licorice"):
+                    shadow_sc = ax.scatter(
+                        x + 0.05, y - 0.05,
+                        s=sizes * 1.25,
+                        c=[(0, 0, 0, shadow_alpha)] * len(x),
+                        edgecolors='none',
+                        linewidths=0,
+                        zorder=28,
+                    )
+                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black',
+                                linewidths=0.6 if atom_style != "wire" else 0.3, zorder=30)
 
             self._molecule_artists.append({
                 'mol': mol,
                 'ax': ax,
                 'scatter': sc,
+                'shadow': shadow_sc,
                 'lines': lc
             })
 
@@ -491,7 +537,22 @@ class MultiPreviewCanvas(FigureCanvas):
         for entry in self._molecule_artists:
             mol = entry['mol']
             sc = entry['scatter']
+            shadow_sc = entry.get('shadow')
             lc = entry['lines']
+            atom_style = (mol.render_style or "shaded").lower()
+            bond_style = (mol.bond_style or "default").lower()
+            if atom_style == "spacefill":
+                size_base, size_scale = 120, 200
+                shadow_alpha = 0.25
+            elif atom_style == "licorice":
+                size_base, size_scale = 60, 100
+                shadow_alpha = 0.2
+            elif atom_style == "wire":
+                size_base, size_scale = 20, 40
+                shadow_alpha = 0.1
+            else:
+                size_base, size_scale = 80, 140
+                shadow_alpha = 0.25
             
             coords = mol.get_transformed_coordinates()
             if len(coords) == 0: continue
@@ -507,6 +568,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 lines = []
                 colors = []
                 linewidths = []
+                lw_scale = 1.0
+                if bond_style == "thick":
+                    lw_scale = 1.6
+                elif bond_style == "thin":
+                    lw_scale = 0.7
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     p1 = coords[i]; p2 = coords[j]
@@ -515,7 +581,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
                     colors.append((0.9, 0.9, 0.9, alpha))
-                    linewidths.append(1.0 + 2.0 * z_norm)
+                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 lc.set_segments(lines)
                 lc.set_color(colors)
                 lc.set_linewidths(linewidths)
@@ -533,16 +599,24 @@ class MultiPreviewCanvas(FigureCanvas):
                 # for pure translation we could skip it, but rotation needs it.
                 # We'll skip full color/size recalc for speed during drag if needed, 
                 # but for now let's do it to keep depth cues correct.
-                sizes = 40 + 80 * z_norm
-                base_colors = [get_cpk_color(e) for e in elements_sorted]
+                sizes = size_base + size_scale * z_norm
+                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.4 + 0.6 * z_norm[i]
-                    final_colors.append((r, g, b, depth_alpha))
+                    depth_alpha = 0.45 + 0.55 * z_norm[i]
+                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
+                    r_h = min(1.0, r + (1 - r) * highlight)
+                    g_h = min(1.0, g + (1 - g) * highlight)
+                    b_h = min(1.0, b + (1 - b) * highlight)
+                    final_colors.append((r_h, g_h, b_h, depth_alpha))
                 sc.set_sizes(sizes)
                 sc.set_facecolors(final_colors)
-        
+                if shadow_sc:
+                    shadow_sc.set_offsets(np.c_[x + 0.05, y - 0.05])
+                    shadow_sc.set_sizes(sizes * 1.25)
+                    shadow_sc.set_color([(0, 0, 0, shadow_alpha)] * len(x))
+
         self.draw_idle()
 
     def enable_scale_bar(self, enable: bool):
@@ -1051,6 +1125,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if enable:
             self._connect_profile_events()
             self._ensure_profile_artists()
+            try:
+                self._emit_profile()
+            except Exception:
+                pass
         else:
             self._disconnect_profile_events()
             self._clear_profile_artists()
@@ -2906,6 +2984,32 @@ class MultiPreviewCanvas(FigureCanvas):
             return
 
         view = self._ax_view_map.get(ax)
+        # Crop rectangle start (handle before tool guards):
+        #   Shift + drag -> arbitrary rectangle
+        #   Ctrl + Shift + drag -> square selection
+        mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
+        mods_key = str(getattr(event, 'key', '') or '').lower()
+        want_square = (event.button == 1) and (
+            (mods_qt & QtCore.Qt.ControlModifier and mods_qt & QtCore.Qt.ShiftModifier)
+            or ('control' in mods_key and 'shift' in mods_key)
+        )
+        want_rect = (event.button == 1) and (
+            (mods_qt & QtCore.Qt.ShiftModifier) or ('shift' in mods_key)
+        )
+        if want_rect and view is not None:
+            self._crop_start = (event.xdata, event.ydata)
+            self._crop_ax = ax
+            self._crop_square = bool(want_square)
+            try:
+                from matplotlib.patches import Rectangle
+                rect = Rectangle((event.xdata, event.ydata), 0, 0,
+                                 linewidth=2.2, edgecolor='#ff00cc', facecolor='none', alpha=0.9, linestyle='--')
+                ax.add_patch(rect)
+                self._crop_rect = rect
+                self.draw_idle()
+            except Exception:
+                self._crop_rect = None
+            return
         if event.button == 1:
             hit = self._hit_spectrum_point(event)
             if hit is not None and callable(self._spectra_click_cb):
@@ -2922,22 +3026,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.angle_enabled and ax is self.main_ax:
             if event.button == 3:
                 self._show_context_menu(event, view)
-            return
-        # Crop rectangle start (Ctrl or Shift + left-click drag)
-        mods = getattr(event, 'key', None)
-        start_crop = (event.button == 1) and (mods in ('control', 'shift'))
-        if start_crop and view is not None:
-            self._crop_start = (event.xdata, event.ydata)
-            self._crop_ax = ax
-            try:
-                from matplotlib.patches import Rectangle
-                rect = Rectangle((event.xdata, event.ydata), 0, 0,
-                                 linewidth=1.0, edgecolor='cyan', facecolor='none', alpha=0.8, linestyle='--')
-                ax.add_patch(rect)
-                self._crop_rect = rect
-                self.draw_idle()
-            except Exception:
-                self._crop_rect = None
             return
         if event.button == 3:
             self._show_context_menu(event, view)
@@ -3078,11 +3166,37 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._molecule_rotation_guide = None
                 self._redraw()
 
+    def set_molecule_palette(self, palette: str, notify: bool = True):
+        palette = (palette or "cpk").lower()
+        if palette not in available_atom_palettes():
+            palette = "cpk"
+        if palette == getattr(self, "molecule_palette", None):
+            return
+        self.molecule_palette = palette
+        self._redraw()
+        if notify and callable(self._molecule_palette_cb):
+            try:
+                self._molecule_palette_cb(palette)
+            except Exception:
+                pass
+
+    def set_molecule_palette_callback(self, cb):
+        self._molecule_palette_cb = cb
+
     def _show_molecule_menu(self, event, mol):
         menu = QtWidgets.QMenu(self)
         props_act = menu.addAction("Properties (Rotate/Scale)...")
         dup_act = menu.addAction("Duplicate")
         del_act = menu.addAction("Delete")
+        menu.addSeparator()
+        pal_menu = menu.addMenu("Palette")
+        current_pal = (getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        palette_actions = {}
+        for pal in available_atom_palettes():
+            act = pal_menu.addAction(pal.title())
+            act.setCheckable(True)
+            act.setChecked(pal == current_pal)
+            palette_actions[act] = pal
         
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
@@ -3097,6 +3211,8 @@ class MultiPreviewCanvas(FigureCanvas):
             if mol in self.molecules:
                 self.molecules.remove(mol)
                 self._redraw()
+        elif action in palette_actions:
+            self.set_molecule_palette(palette_actions[action])
 
     def _copy_view_to_clipboard(self, view):
         try:
@@ -3460,6 +3576,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 x0, y0 = self._crop_start
                 x1, y1 = event.xdata, event.ydata
                 if x1 is not None and y1 is not None:
+                    if self._crop_square:
+                        dx = x1 - x0
+                        dy = y1 - y0
+                        side = min(abs(dx), abs(dy))
+                        sx = 1 if dx >= 0 else -1
+                        sy = 1 if dy >= 0 else -1
+                        x1 = x0 + sx * side
+                        y1 = y0 + sy * side
                     self._crop_rect.set_x(min(x0, x1))
                     self._crop_rect.set_y(min(y0, y1))
                     self._crop_rect.set_width(abs(x1 - x0))
@@ -3486,6 +3610,109 @@ class MultiPreviewCanvas(FigureCanvas):
         else:
             self._value_callback(val, event.xdata, event.ydata, view)
 
+    def _on_crop_release(self, event):
+        """Finish a crop drag and emit a cropped view copy."""
+        if self._crop_start is None or self._crop_ax is None:
+            return
+        if getattr(event, "button", None) != 1 or event.inaxes is not self._crop_ax:
+            # Only respond to the matching left-button release inside the same axes
+            self._reset_crop_state()
+            return
+        x1, y1 = event.xdata, event.ydata
+        x0, y0 = self._crop_start
+        if x1 is not None and y1 is not None and self._crop_square:
+            dx = x1 - x0
+            dy = y1 - y0
+            side = min(abs(dx), abs(dy))
+            sx = 1 if dx >= 0 else -1
+            sy = 1 if dy >= 0 else -1
+            x1 = x0 + sx * side
+            y1 = y0 + sy * side
+        # clean up the rectangle artist
+        try:
+            if self._crop_rect is not None:
+                self._crop_rect.remove()
+                self._crop_rect = None
+                self.draw_idle()
+        except Exception:
+            pass
+        view = self._ax_view_map.get(self._crop_ax)
+        if view is None or x1 is None or y1 is None:
+            self._reset_crop_state()
+            return
+        arr = np.asarray(view.get("arr"))
+        if arr.size == 0:
+            self._reset_crop_state()
+            return
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        xmin, xmax = self._crop_ax.get_xlim()
+        ymin, ymax = self._crop_ax.get_ylim()
+        # clamp rectangle to axis limits
+        x_lo, x_hi = sorted([max(min(x0, x1), xmin), min(max(x0, x1), xmax)])
+        y_lo, y_hi = sorted([max(min(y0, y1), ymin), min(max(y0, y1), ymax)])
+        if xmax == xmin or ymax == ymin:
+            self._reset_crop_state()
+            return
+        def _map_x(x):
+            frac = (x - xmin) / (xmax - xmin)
+            return int(np.clip(round(frac * (w - 1)), 0, w - 1))
+        def _map_y(y):
+            frac = (y - ymin) / (ymax - ymin)
+            return int(np.clip(round(frac * (h - 1)), 0, h - 1))
+        c0, c1 = _map_x(x_lo), _map_x(x_hi)
+        r0, r1 = _map_y(y_lo), _map_y(y_hi)
+        if c1 < c0:
+            c0, c1 = c1, c0
+        if r1 < r0:
+            r0, r1 = r1, r0
+        if self._crop_square:
+            span = min(c1 - c0, r1 - r0)
+            c1 = c0 + span
+            r1 = r0 + span
+        cropped_disp = arr_disp[r0:r1 + 1, c0:c1 + 1]
+        if cropped_disp.size == 0:
+            self._reset_crop_state()
+            return
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        # Build new extent in data coordinates, preserving orientation
+        ext = view.get("extent")
+        if ext is None:
+            crop_extent = None
+        else:
+            x_extent0, x_extent1, y_extent1, y_extent0 = ext
+            def _lerp_x(idx):
+                return x_extent0 + (x_extent1 - x_extent0) * (idx / (w - 1))
+            def _lerp_y(idx):
+                return y_extent0 + (y_extent1 - y_extent0) * (idx / (h - 1))
+            crop_extent = (
+                _lerp_x(c0),
+                _lerp_x(c1),
+                _lerp_y(r1),  # note: extent ordering is (x0, x1, y1, y0)
+                _lerp_y(r0),
+            )
+        new_view = dict(view)
+        try:
+            new_view["arr"] = np.array(cropped_arr, copy=True)
+        except Exception:
+            new_view["arr"] = cropped_arr
+        if crop_extent is not None:
+            new_view["extent"] = crop_extent
+        title = view.get("title") or "crop"
+        new_view["title"] = f"{title} [crop]"
+        if callable(self._crop_callback):
+            try:
+                self._crop_callback(new_view)
+            except Exception:
+                pass
+        self._reset_crop_state()
+
+    def _reset_crop_state(self):
+        self._crop_start = None
+        self._crop_rect = None
+        self._crop_ax = None
+        self._crop_square = False
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:

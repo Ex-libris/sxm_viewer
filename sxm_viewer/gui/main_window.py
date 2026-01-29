@@ -192,6 +192,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
+        self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -199,6 +200,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
         }
+        self._popup_canvases = []
         c_single = self.config.get('spectro_marker_color_single')
         if c_single:
             self.spectro_marker_color_single = QtGui.QColor(c_single)
@@ -692,6 +694,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             "  Ctrl+C copies the focused image to clipboard"
         )
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
+        try:
+            self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
+            self.preview_canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
+        except Exception:
+            pass
         preview_panel_layout.addWidget(self.preview_canvas, 1)
         self.preview_value_label = QtWidgets.QLabel("Value: --")
         preview_panel_layout.addWidget(self.preview_value_label)
@@ -700,6 +707,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
+        self.preview_canvas.set_crop_callback(self._on_preview_crop)
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
@@ -1165,6 +1173,234 @@ QLabel:hover {{
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
 
+    # ---------- Preview pop-outs ----------
+    def _copy_view_for_popup(self, view):
+        """Deep-copy a preview view dict so pop-outs do not share array state."""
+        if not view:
+            return {}
+        new_view = dict(view)
+        arr = view.get("arr")
+        if arr is not None:
+            try:
+                new_view["arr"] = np.array(arr, copy=True)
+            except Exception:
+                new_view["arr"] = arr
+        return new_view
+
+    def _spawn_preview_popup(self, views, title=None):
+        if not views:
+            return
+        dlg = QtWidgets.QDialog(self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.setWindowTitle(title or "Preview")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        controls_bar = QtWidgets.QHBoxLayout()
+        controls_bar.setContentsMargins(6, 6, 6, 6)
+        controls_bar.setSpacing(10)
+        def _tool_button(label, tooltip):
+            btn = QtWidgets.QToolButton()
+            btn.setText(label)
+            btn.setCheckable(True)
+            btn.setAutoRaise(False)
+            btn.setToolTip(tooltip)
+            return btn
+        measure_btn = _tool_button("Profile", "Toggle profile measurement (drag line)")
+        angle_btn = _tool_button("Angle", "Toggle angle tool (Ctrl+Shift+click to add vertex)")
+        scale_btn = _tool_button("Scale", "Toggle scale bar")
+        clear_btn = QtWidgets.QToolButton()
+        clear_btn.setText("Clear overlays")
+        clear_btn.setToolTip("Clear profiles, angles and related overlays")
+        layout_cb = QtWidgets.QComboBox()
+        layout_cb.addItems(["Grid", "Stacked"])
+        controls_bar.addWidget(measure_btn)
+        controls_bar.addWidget(angle_btn)
+        controls_bar.addWidget(scale_btn)
+        controls_bar.addWidget(clear_btn)
+        controls_bar.addSpacing(6)
+        controls_bar.addWidget(QtWidgets.QLabel("Layout"))
+        controls_bar.addWidget(layout_cb)
+        controls_bar.addStretch(1)
+        canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
+        canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
+        canvas.set_views([self._copy_view_for_popup(v) for v in views])
+        canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
+        canvas._detail_dark = bool(self.detail_dark_view)
+        canvas._detail_grid = bool(self.detail_grid_view)
+        canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=v.get("title")))
+        try:
+            canvas.set_molecule_palette(self.molecule_palette, notify=False)
+            canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
+            self._popup_canvases.append(canvas)
+        except Exception:
+            pass
+        # Sync initial tool states
+        measure_initial = getattr(self.preview_canvas, "profile_enabled", False)
+        angle_initial = getattr(self.preview_canvas, "angle_enabled", False)
+        canvas.enable_profile(measure_initial)
+        canvas.enable_angle(angle_initial)
+        measure_btn.setChecked(measure_initial)
+        angle_btn.setChecked(angle_initial)
+        scale_btn.setChecked(self.scale_bar_cb.isChecked())
+        layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
+        popup_state = {"profile_dialog": None}
+        def _update_profile_dialog(active, saved):
+            dlg_prof = popup_state.get("profile_dialog")
+            if dlg_prof is None:
+                unit = None
+                y_label = None
+                if views:
+                    try:
+                        unit = views[0].get("unit")
+                        y_label = views[0].get("colorbar_label") or views[0].get("unit")
+                    except Exception:
+                        pass
+                dlg_prof = ProfileDialog(active, saved, parent=dlg, unit=unit, y_label=y_label)
+                dlg_prof.setWindowTitle((title or "Profile") + " (popup)")
+                try:
+                    dlg_prof.set_context_source(canvas, dark=self.detail_dark_view, grid=self.detail_grid_view)
+                except Exception:
+                    pass
+                dlg_prof.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+                dlg_prof.finished.connect(lambda _=None: popup_state.__setitem__("profile_dialog", None))
+                popup_state["profile_dialog"] = dlg_prof
+            dlg_prof.update_profiles(active, saved, preserve_profiles=False, label_scale=getattr(canvas, "_view_font_scale", 1.0))
+            dlg_prof.show()
+        canvas.profile_callback = _update_profile_dialog
+        def _refresh_profile_dialog_from_canvas():
+            if not getattr(canvas, "profile_enabled", False):
+                return
+            try:
+                active = canvas._build_profile_data(canvas.profile_pts, color=getattr(canvas, "_active_profile_color", "#fbc02d"), view=canvas.views[0] if canvas.views else None)
+            except Exception:
+                active = None
+            saved = []
+            try:
+                for entry in getattr(canvas, "_saved_profiles", []):
+                    data = entry.get("data")
+                    if data is None:
+                        data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
+                    if data:
+                        saved.append(data)
+            except Exception:
+                saved = []
+            _update_profile_dialog(active, saved)
+        canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
+
+        def _toggle_measure(checked):
+            def _force_profile_dialog():
+                try:
+                    active = canvas._build_profile_data(
+                        canvas.profile_pts,
+                        color=getattr(canvas, "_active_profile_color", "#fbc02d"),
+                        view=canvas.views[0] if canvas.views else None,
+                    )
+                except Exception:
+                    active = None
+                saved = []
+                try:
+                    for entry in getattr(canvas, "_saved_profiles", []):
+                        data = entry.get("data")
+                        if data is None:
+                            data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
+                        if data:
+                            saved.append(data)
+                except Exception:
+                    saved = []
+                _update_profile_dialog(active, saved)
+            try:
+                canvas.enable_profile(bool(checked))
+                if not checked and popup_state.get("profile_dialog"):
+                    popup_state["profile_dialog"].close()
+                if checked:
+                    try:
+                        canvas._emit_profile()
+                    except Exception:
+                        _force_profile_dialog()
+                    else:
+                        _force_profile_dialog()
+                _refresh_profile_dialog_from_canvas()
+            except Exception:
+                pass
+        def _toggle_angle(checked):
+            try:
+                canvas.enable_angle(bool(checked))
+            except Exception:
+                pass
+        def _toggle_scale(checked):
+            canvas.enable_scale_bar(bool(checked))
+            try:
+                canvas._redraw()
+            except Exception:
+                pass
+        def _toggle_layout(text):
+            canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
+        measure_btn.toggled.connect(_toggle_measure)
+        angle_btn.toggled.connect(_toggle_angle)
+        scale_btn.toggled.connect(_toggle_scale)
+        layout_cb.currentTextChanged.connect(_toggle_layout)
+        def _clear_overlays():
+            try:
+                canvas.clear_angle_measurement()
+                canvas._clear_profile_artists()
+                canvas._clear_saved_profile_artists(notify=False)
+                canvas.profile_pts = None
+                canvas._emit_profile_state()
+                canvas.draw_idle()
+            except Exception:
+                pass
+        clear_btn.clicked.connect(_clear_overlays)
+        layout.addLayout(controls_bar)
+        layout.addWidget(canvas, 1)
+        canvas.setFocus()
+        # Simple event filter to support Ctrl+D duplication inside pop-outs
+        class _PopupKeyFilter(QtCore.QObject):
+            def __init__(self, outer, cvs):
+                super().__init__(cvs)
+                self.outer = outer
+                self.canvas = cvs
+            def eventFilter(self, obj, event):
+                if event.type() == QtCore.QEvent.KeyPress:
+                    if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() == QtCore.Qt.Key_D:
+                        try:
+                            self.outer._spawn_preview_popup([self.outer._copy_view_for_popup(v) for v in self.canvas.views], title="Preview copy")
+                        except Exception:
+                            pass
+                        event.accept()
+                        return True
+                return False
+        key_filter = _PopupKeyFilter(self, canvas)
+        dlg.installEventFilter(key_filter)
+        canvas.installEventFilter(key_filter)
+        dlg.resize(760, 620)
+        dlg.show()
+        self._popup_refs.append(dlg)
+        dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+        dlg.finished.connect(lambda _=None: self._popup_canvases.remove(canvas) if canvas in self._popup_canvases else None)
+
+    def _on_molecule_palette_changed(self, palette: str):
+        palette = (palette or "cpk").lower()
+        self.molecule_palette = palette
+        try:
+            self.config["molecule_palette"] = palette
+            save_config(self.config)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_molecule_palette(palette, notify=False)
+        except Exception:
+            pass
+        for canv in list(self._popup_canvases):
+            try:
+                canv.set_molecule_palette(palette, notify=False)
+            except Exception:
+                continue
+
+    def _on_preview_crop(self, view):
+        """Receive cropped view from preview canvas and pop it out."""
+        if not view:
+            return
+        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=view.get("title") or "Cropped view")
+
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
         return main_window_spectro.ensure_spectro_dock(self)
@@ -1314,6 +1550,13 @@ QLabel:hover {{
 
     def keyPressEvent(self, event):
         key = event.key()
+        mods = event.modifiers()
+        if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_D:
+            views = getattr(self.preview_canvas, "views", None)
+            if views:
+                self._spawn_preview_popup([self._copy_view_for_popup(v) for v in views], title="Preview copy")
+                event.accept()
+                return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
@@ -1322,7 +1565,7 @@ QLabel:hover {{
         ):
             focus_widget = QtWidgets.QApplication.focusWidget()
             if not self._focus_widget_blocks_thumb_nav(focus_widget):
-                if self._handle_thumbnail_navigation(key, event.modifiers()):
+                if self._handle_thumbnail_navigation(key, mods):
                     event.accept()
                     return
         super().keyPressEvent(event)
