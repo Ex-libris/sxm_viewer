@@ -48,6 +48,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_square = False
         self._crop_last_ts = 0.0
         self._crop_move_throttle_ms = 12  # throttle mouse-move driven crop updates
+        self._double_click_callback = None  # callable(view_dict) -> None
+        self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -202,6 +204,14 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_crop_callback(self, cb):
         """Register a callback to receive cropped views created via drag-crop."""
         self._crop_callback = cb
+
+    def set_double_click_callback(self, cb):
+        """Register a callback to pop out the clicked view on double-click."""
+        self._double_click_callback = cb
+
+    def set_filter_menu_callback(self, cb):
+        """Provide a callback to populate filter actions on the context menu."""
+        self._filter_menu_callback = cb
 
     def set_view_clim(self, view, clim):
         """Update the color limits for a specific view and redraw while preserving overlays."""
@@ -3008,6 +3018,14 @@ class MultiPreviewCanvas(FigureCanvas):
             return
 
         view = self._ax_view_map.get(ax)
+        # Double-click: pop out the clicked view if callback provided
+        if getattr(event, "dblclick", False) and event.button == 1 and view is not None:
+            if callable(self._double_click_callback):
+                try:
+                    self._double_click_callback(view)
+                except Exception:
+                    pass
+            return
         # Crop rectangle start (handle before tool guards):
         #   Shift + drag -> arbitrary rectangle
         #   Ctrl + Shift + drag -> square selection
@@ -3277,6 +3295,14 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act = menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(self._show_colorbar)
+
+        # Filters (provided by parent viewer)
+        if callable(self._filter_menu_callback):
+            menu.addSeparator()
+            try:
+                self._filter_menu_callback(menu, view, self)
+            except Exception:
+                pass
         
         angle_style_act = None
         if self.angle_enabled and self._angle_frames:

@@ -100,6 +100,7 @@ from ...data.spectroscopy import (
     _mtime,
     _read_text,
 )
+from ...processing.filters import FILTER_DEFINITIONS
 from ..thumbnail_render import (
     array_to_qimage,
     _ThumbnailJobSignals,

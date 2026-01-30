@@ -720,6 +720,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.set_crop_callback(self._on_preview_crop)
+        self.preview_canvas.set_double_click_callback(
+            lambda v=None: self._spawn_preview_popup(
+                [self._copy_view_for_popup(v)] if v else [],
+                title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
+            )
+        )
+        self.preview_canvas.set_filter_menu_callback(
+            lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
+        )
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
@@ -1254,7 +1263,14 @@ QLabel:hover {{
         canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         canvas._detail_dark = bool(self.detail_dark_view)
         canvas._detail_grid = bool(self.detail_grid_view)
-        canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=v.get("title")))
+        canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=self._friendly_view_title(v, default="Cropped view")))
+        canvas.set_double_click_callback(
+            lambda v=None: self._spawn_preview_popup(
+                [self._copy_view_for_popup(v)] if v else [],
+                title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
+            )
+        )
+        canvas.set_filter_menu_callback(lambda menu, view, c=canvas: self._populate_canvas_filter_menu(menu, c, view))
         try:
             canvas.set_molecule_palette(self.molecule_palette, notify=False)
             canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
@@ -1514,6 +1530,7 @@ QLabel:hover {{
             getattr(self, 'thumb_container', None),
             getattr(self, 'scroll', None),
         )
+        preview_canvas = getattr(self, 'preview_canvas', None)
 
         # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
         if obj in thumb_objects and event.type() == QtCore.QEvent.Wheel:
@@ -1586,6 +1603,12 @@ QLabel:hover {{
                 QtCore.QTimer.singleShot(0, self._request_visible_thumbs)
             except Exception:
                 pass
+        if obj is preview_canvas and event.type() == QtCore.QEvent.KeyPress:
+            key = event.key()
+            if key in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right, QtCore.Qt.Key_Up, QtCore.Qt.Key_Down):
+                if getattr(self, "current_mode", self.MODE_BROWSE) == self.MODE_BROWSE and self._handle_thumbnail_navigation(key, event.modifiers()):
+                    event.accept()
+                    return True
         # allow normal resize processing to continue
         return super().eventFilter(obj, event)
 
@@ -2435,7 +2458,7 @@ QLabel:hover {{
             if not views:
                 return
             copied = [self._copy_view_for_popup(v) for v in views]
-            title = Path(header_path_str).name
+            title = self._friendly_view_title(views[0], default=Path(header_path_str).name if header_path_str else "Preview")
             self._spawn_preview_popup(copied, title=title)
         except Exception:
             pass
@@ -2487,6 +2510,22 @@ QLabel:hover {{
         if not spec:
             return arr
         return self._apply_filter_pipeline(arr, spec.get('steps', []))
+
+    def _populate_canvas_filter_menu(self, menu, canvas, view=None):
+        """Populate a context menu with quick filter actions for a preview canvas."""
+        if menu is None or canvas is None:
+            return
+        filt_menu = menu.addMenu("Filters")
+        for key, info in FILTER_DEFINITIONS.items():
+            act = QtWidgets.QAction(info.get("label", key.title()), filt_menu)
+            if info.get("needs_gaussian") and not _gaussian_available():
+                act.setEnabled(False)
+                act.setToolTip("Requires scipy or OpenCV.")
+            act.triggered.connect(lambda _, k=key: self._apply_filter_to_canvas(canvas, filter_key=k))
+            filt_menu.addAction(act)
+        filt_menu.addSeparator()
+        filt_menu.addAction("Custom pipeline...", lambda: self._open_custom_filter_for_canvas(canvas))
+        filt_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
         """Apply a filter pipeline to the views of a popup/preview canvas."""
@@ -2540,6 +2579,27 @@ QLabel:hover {{
         for step in steps:
             result = self._run_filter_step(result, step)
         return result
+
+    def _friendly_view_title(self, view, default="Preview"):
+        if not view:
+            return default
+        title = view.get("title")
+        if title:
+            return title
+        path = view.get("path") or ""
+        label = view.get("label") or ""
+        fname = ""
+        try:
+            fname = Path(str(path)).name if path else ""
+        except Exception:
+            fname = str(path)
+        if fname and label:
+            return f"{fname} - {label}"
+        if fname:
+            return fname
+        if label:
+            return label
+        return default
 
     def _run_filter_step(self, arr, step):
         key = step.get('key')
@@ -3344,11 +3404,13 @@ QLabel:hover {{
                 hi_val = max(x, lo_val)
             _set_spin_values(lo_val, hi_val, block=True)
             update_lines()
+            maybe_live_apply()
 
         def _on_release(event):
             if state.get("dragging") is None:
                 return
             state["dragging"] = None
+            maybe_live_apply()
 
         spin_lo.valueChanged.connect(update_lines)
         spin_hi.valueChanged.connect(update_lines)
@@ -4956,6 +5018,17 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(idx)
         if getattr(self, 'frame_real_view', False):
             self._refresh_frame_map_pixmaps()
+        # Refresh preview to the current selection on the newly chosen channel
+        try:
+            target_file = None
+            if getattr(self, 'selected_file_for_thumbs', None):
+                target_file = self.selected_file_for_thumbs
+            elif getattr(self, 'current_thumb_files', None):
+                target_file = self.current_thumb_files[0] if self.current_thumb_files else None
+            if target_file:
+                self.show_file_channel(target_file, idx)
+        except Exception:
+            pass
 
     def on_thumb_cmap_changed(self, idx):
         return viewer_thumb_ui.on_thumb_cmap_changed(self, idx)
