@@ -47,6 +47,12 @@ ATOM_PALETTES = {
     'pymol': PYMOL_COLORS,
     'jmol': JMOL_COLORS,
     'avogadro': AVOGADRO_COLORS,
+    'ase': {
+        'H': '#FFFFFF', 'C': '#404040', 'N': '#3050F8', 'O': '#FF0D0D',
+        'S': '#FFFF30', 'P': '#FF8000', 'F': '#90E050', 'Cl': '#1FF01F',
+        'Br': '#A62929', 'I': '#940094', 'Fe': '#E06633', 'Cu': '#C88033',
+        'Zn': '#7d80b0', 'Si': '#DA8B45', 'B': '#FFB5B5'
+    }
 }
 
 COVALENT_RADII = {
@@ -98,7 +104,9 @@ class Molecule:
         self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire
         self.bond_style = 'default'    # default | thin | thick
         self.atom_color_override = None  # Hex string or None (use palette)
+        self.atom_color_map = {}         # Element -> hex override
         self.bond_color_override = None  # Hex string or None (use default)
+        self.bond_color_mode = 'default' # default | single | by_atoms
         
         # Avoid truth-testing numpy arrays or other iterables; only treat valid paths.
         if isinstance(filepath, (str, Path)) and str(filepath).strip():
@@ -267,7 +275,9 @@ class Molecule:
         new_mol.render_style = self.render_style
         new_mol.bond_style = self.bond_style
         new_mol.atom_color_override = self.atom_color_override
+        new_mol.atom_color_map = dict(self.atom_color_map or {})
         new_mol.bond_color_override = self.bond_color_override
+        new_mol.bond_color_mode = self.bond_color_mode
         return new_mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
@@ -289,12 +299,13 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.combo_mode.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Style:", self.combo_mode)
         self.combo_atom_style = QtWidgets.QComboBox()
-        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wire"])
+        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wire", "Stick/Skeletal"])
         style_label = molecule.render_style.lower()
         if style_label == 'flat': self.combo_atom_style.setCurrentText("Flat")
         elif style_label == 'spacefill': self.combo_atom_style.setCurrentText("Spacefill")
         elif style_label == 'licorice': self.combo_atom_style.setCurrentText("Licorice")
         elif style_label == 'wire': self.combo_atom_style.setCurrentText("Wire")
+        elif style_label == 'skeletal': self.combo_atom_style.setCurrentText("Stick/Skeletal")
         else: self.combo_atom_style.setCurrentText("Shaded")
         self.combo_atom_style.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Atom style:", self.combo_atom_style)
@@ -371,7 +382,11 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.mirror_x = self.chk_mx.isChecked()
         self.molecule.mirror_y = self.chk_my.isChecked()
         self.molecule.display_mode = self.combo_mode.currentText()
-        self.molecule.render_style = self.combo_atom_style.currentText().lower()
+        style_choice = self.combo_atom_style.currentText()
+        if style_choice == "Stick/Skeletal":
+            self.molecule.render_style = "skeletal"
+        else:
+            self.molecule.render_style = style_choice.lower()
         self.molecule.bond_style = self.combo_bond_style.currentText().lower()
         if self.callback:
             self.callback()

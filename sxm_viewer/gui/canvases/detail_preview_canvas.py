@@ -122,6 +122,7 @@ class MultiPreviewCanvas(FigureCanvas):
         ]
         self._show_hydrogens = True
         self._default_bond_color = (0.9, 0.9, 0.9)
+        self._bond_color_mode = 'default'  # default | single | by_atoms
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_background = None
@@ -378,6 +379,9 @@ class MultiPreviewCanvas(FigureCanvas):
             if atom_style == "spacefill":
                 size_base, size_scale = 120, 200
                 shadow_alpha = 0.25
+            elif atom_style == "skeletal":
+                size_base, size_scale = 10, 20
+                shadow_alpha = 0.0
             elif atom_style == "licorice":
                 size_base, size_scale = 60, 100
                 shadow_alpha = 0.2
@@ -416,9 +420,18 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_mid = (p1[2] + p2[2]) * 0.5
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
-                    # Use override if provided, else default light grey
-                    if mol.bond_color_override:
+                    # Choose bond color
+                    bond_mode = getattr(mol, "bond_color_mode", None) or self._bond_color_mode
+                    if bond_mode == "single" and mol.bond_color_override:
                         br, bg, bb, _ = matplotlib.colors.to_rgba(mol.bond_color_override)
+                    elif bond_mode == "by_atoms":
+                        c1 = mol.atom_color_map.get(ei, mol.atom_color_map.get(ei.title(), None)) if hasattr(mol, "atom_color_map") else None
+                        c2 = mol.atom_color_map.get(ej, mol.atom_color_map.get(ej.title(), None)) if hasattr(mol, "atom_color_map") else None
+                        if not c1: c1 = get_atom_color(ei, self.molecule_palette)
+                        if not c2: c2 = get_atom_color(ej, self.molecule_palette)
+                        r1, g1, b1, _ = matplotlib.colors.to_rgba(c1)
+                        r2, g2, b2, _ = matplotlib.colors.to_rgba(c2)
+                        br, bg, bb = (0.5*(r1+r2), 0.5*(g1+g2), 0.5*(b1+b2))
                     else:
                         br, bg, bb = self._default_bond_color
                     colors.append((br, bg, bb, alpha))
@@ -446,10 +459,16 @@ class MultiPreviewCanvas(FigureCanvas):
                 z_norm = (z - z_min) / z_range
                 sizes = size_base + size_scale * z_norm
                 
-                if mol.atom_color_override:
-                    base_colors = [mol.atom_color_override for _ in elements_sorted]
-                else:
-                    base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
+                base_colors = []
+                for e in elements_sorted:
+                    m = getattr(mol, "atom_color_map", {}) or {}
+                    override = m.get(e.upper()) or m.get(e.title())
+                    if override:
+                        base_colors.append(override)
+                    elif mol.atom_color_override:
+                        base_colors.append(mol.atom_color_override)
+                    else:
+                        base_colors.append(get_atom_color(e, self.molecule_palette))
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
@@ -3172,7 +3191,7 @@ class MultiPreviewCanvas(FigureCanvas):
             
             # Threshold: 0.5 nm radius click tolerance
             if min_dist < 0.25: 
-                if event.button == 1:
+                if event.button == 1 or event.button == 2:
                     self._molecule_drag_idx = idx
                     self._molecule_drag_start = (event.xdata, event.ydata)
                     self._molecule_drag_start_px = (event.x, event.y)
@@ -3180,7 +3199,10 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._molecule_drag_mol_angles = mol.angles.copy()
                     
                     key = str(event.key).lower() if event.key else ''
-                    if 'control' in key and 'shift' in key:
+                    if event.button == 2:
+                        # Middle button drag: full 3D rotate
+                        self._molecule_drag_mode = 'rotate_3d'
+                    elif 'control' in key and 'shift' in key:
                         self._molecule_drag_mode = 'rotate_3d'
                     elif 'shift' in key:
                         self._molecule_drag_mode = 'rotate_z'
@@ -3275,6 +3297,7 @@ class MultiPreviewCanvas(FigureCanvas):
         menu = QtWidgets.QMenu(self)
         props_act = menu.addAction("Properties (Rotate/Scale)...")
         atom_color_act = menu.addAction("Set atom color...")
+        atom_elem_color_act = menu.addAction("Set element color...")
         bond_color_act = menu.addAction("Set bond color...")
         reset_colors_act = menu.addAction("Reset colors")
         dup_act = menu.addAction("Duplicate")
@@ -3302,14 +3325,28 @@ class MultiPreviewCanvas(FigureCanvas):
             if c:
                 mol.atom_color_override = c
                 self._redraw()
+        elif action == atom_elem_color_act:
+            elem, ok = QtWidgets.QInputDialog.getText(self, "Element", "Element symbol:", text="C")
+            if ok and elem.strip():
+                c = self._pick_color(get_atom_color(elem.strip(), self.molecule_palette))
+                if c:
+                    m = getattr(mol, "atom_color_map", None)
+                    if m is None:
+                        mol.atom_color_map = {}
+                        m = mol.atom_color_map
+                    m[elem.strip().upper()] = c
+                    self._redraw()
         elif action == bond_color_act:
             c = self._pick_color(mol.bond_color_override or "#e0e0e0")
             if c:
                 mol.bond_color_override = c
+                mol.bond_color_mode = "single"
                 self._redraw()
         elif action == reset_colors_act:
             mol.atom_color_override = None
             mol.bond_color_override = None
+            mol.bond_color_mode = 'default'
+            mol.atom_color_map = {}
             self._redraw()
         elif action == dup_act:
             new_mol = mol.copy()
