@@ -31,6 +31,8 @@ from .molecular_overlay import (
 from ..thumbnail_render import sample_array_value, array_to_qimage
 
 class MultiPreviewCanvas(FigureCanvas):
+    _RECENT_MOLECULES = []
+
     def __init__(self, parent=None, figsize=(6,6)):
         self.fig = Figure(figsize=figsize)
         super().__init__(self.fig)
@@ -123,6 +125,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_hydrogens = True
         self._default_bond_color = (0.9, 0.9, 0.9)
         self._bond_color_mode = 'default'  # default | single | by_atoms
+        self._recent_molecule_paths = []
+        self._recent_molecule_cb = None
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_background = None
@@ -3126,8 +3130,13 @@ class MultiPreviewCanvas(FigureCanvas):
             self._drag_candidate = {'view': view, 'start': QtCore.QPoint(pos), 'image': None}
 
     def _load_molecule_dialog(self):
+        start_dir = ""
+        if self._recent_molecule_paths:
+            start_dir = str(Path(self._recent_molecule_paths[0]).parent)
+        elif MultiPreviewCanvas._RECENT_MOLECULES:
+            start_dir = str(Path(MultiPreviewCanvas._RECENT_MOLECULES[0]).parent)
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load Molecule", "", "Molecule Files (*.xyz *.pdb *.mol);;All Files (*)"
+            self, "Load Molecule", start_dir, "Molecule Files (*.xyz *.pdb *.mol);;All Files (*)"
         )
         if path:
             self.add_molecule(path)
@@ -3148,11 +3157,40 @@ class MultiPreviewCanvas(FigureCanvas):
                 ylim = self.main_ax.get_ylim()
                 mol.offset = np.array([(xlim[0]+xlim[1])/2, (ylim[0]+ylim[1])/2, 0.0])
             self.molecules.append(mol)
+            # Track recent paths (MRU up to 8)
+            try:
+                norm = str(Path(path).resolve())
+                for lst in (self._recent_molecule_paths, MultiPreviewCanvas._RECENT_MOLECULES):
+                    if norm in lst:
+                        lst.remove(norm)
+                    lst.insert(0, norm)
+                    if len(lst) > 8:
+                        del lst[8:]
+                if callable(self._recent_molecule_cb):
+                    try:
+                        self._recent_molecule_cb(self.get_recent_molecule_paths())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self._redraw()
         except Exception as e:
             import traceback
             print(f"Failed to load molecule: {e}")
             traceback.print_exc()
+
+    def get_recent_molecule_paths(self):
+        """Return MRU list of molecule paths (combined local + global)."""
+        recent_all = []
+        for lst in (self._recent_molecule_paths, MultiPreviewCanvas._RECENT_MOLECULES):
+            for p in lst:
+                if p not in recent_all:
+                    recent_all.append(p)
+        return recent_all[:8]
+
+    def set_recent_molecule_callback(self, cb):
+        """Callback invoked when MRU list changes; cb(list[str])."""
+        self._recent_molecule_cb = cb
 
     def _pick_color(self, initial_hex: str | None = None) -> str | None:
         """Show a QColorDialog and return a hex string or None."""
@@ -3421,6 +3459,19 @@ class MultiPreviewCanvas(FigureCanvas):
 
         menu.addSeparator()
         load_mol_act = menu.addAction("Load Molecule (XYZ/PDB)...")
+        recent_menu = None
+        recent_actions = {}
+        recent_all = []
+        for lst in (self._recent_molecule_paths, MultiPreviewCanvas._RECENT_MOLECULES):
+            for p in lst:
+                if p not in recent_all:
+                    recent_all.append(p)
+        if recent_all:
+            recent_menu = menu.addMenu("Load Recent")
+            for p in recent_all[:8]:
+                act = recent_menu.addAction(Path(p).name)
+                act.setToolTip(p)
+                recent_actions[act] = p
         clear_mols_act = menu.addAction("Clear Molecules")
 
         chosen = menu.exec_(event.guiEvent.globalPos())
@@ -3448,6 +3499,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._toggle_colorbar()
         elif chosen == load_mol_act:
             self._load_molecule_dialog()
+        elif recent_menu and chosen in recent_actions:
+            self.add_molecule(recent_actions[chosen])
         elif chosen == clear_mols_act:
             self._clear_molecules()
         elif angle_style_act and chosen == angle_style_act:
