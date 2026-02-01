@@ -2,7 +2,10 @@
 setlocal enabledelayedexpansion
 
 REM Launcher for SXM Viewer. Prefers the local .venv, falls back to Conda envs, then PATH python.
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
+set "ROOT_DIR=%~dp0.."
+REM Run from repo root so package imports resolve correctly.
+cd /d "%ROOT_DIR%"
 
 set "PYTHON_EXE="
 
@@ -10,8 +13,12 @@ if defined PYTHON (
     set "PYTHON_EXE=%PYTHON%"
 )
 
+if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" (
+    if not defined PYTHON_EXE set "PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe"
+)
+
 if exist ".venv\Scripts\python.exe" (
-    if not defined PYTHON_EXE set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+    if not defined PYTHON_EXE set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
 )
 
 if not defined PYTHON_EXE if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\python.exe" (
@@ -88,7 +95,7 @@ if /i "!PYTHON_EXE!"=="py -3" (
 )
 
 if defined DOTENV_OK (
-    echo Loading .env (if present) via python-dotenv...
+    echo Loading .env ^(if present^) via python-dotenv...
     if /i "!PYTHON_EXE!"=="py -3" (
         py -3 -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
     ) else if /i "!PYTHON_EXE!"=="python" (
@@ -97,7 +104,7 @@ if defined DOTENV_OK (
         "!PYTHON_EXE!" -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
     )
 ) else (
-    echo Tip: install python-dotenv to auto-load .env (pip install python-dotenv)
+    echo Tip: install python-dotenv to auto-load .env ^(pip install python-dotenv^)
     if /i "!PYTHON_EXE!"=="py -3" (
         py -3 -m sxm_viewer
     ) else if /i "!PYTHON_EXE!"=="python" (
