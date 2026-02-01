@@ -385,6 +385,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if atom_style == "spacefill":
                 size_base, size_scale = 120, 200
                 shadow_alpha = 0.25
+            elif atom_style == "sticks":
+                # Sticks: medium bonds, tiny atom caps
+                size_base, size_scale = 18, 35
+                shadow_alpha = 0.12
             elif atom_style == "skeletal":
                 size_base, size_scale = 10, 20
                 shadow_alpha = 0.0
@@ -408,12 +412,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     lw_scale = 1.6
                 elif bond_style == "thin":
                     lw_scale = 0.7
+                display_mode_lower = (mol.display_mode or "").lower()
+                force_atom_bond_colors = (atom_style == "sticks") or ("bonds only" in display_mode_lower)
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
+                    ei = (mol.elements[i] or "").strip().upper() if i < len(mol.elements) else ""
+                    ej = (mol.elements[j] or "").strip().upper() if j < len(mol.elements) else ""
                     if hide_h:
                         try:
-                            ei = (mol.elements[i] or "").strip().upper()
-                            ej = (mol.elements[j] or "").strip().upper()
                             if ei == 'H' or ej == 'H':
                                 continue
                         except Exception:
@@ -428,6 +434,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     alpha = 0.4 + 0.6 * z_norm
                     # Choose bond color
                     bond_mode = getattr(mol, "bond_color_mode", None) or self._bond_color_mode
+                    if force_atom_bond_colors and bond_mode == "default":
+                        bond_mode = "by_atoms"
                     if bond_mode == "single" and mol.bond_color_override:
                         br, bg, bb, _ = matplotlib.colors.to_rgba(mol.bond_color_override)
                     elif bond_mode == "by_atoms":
