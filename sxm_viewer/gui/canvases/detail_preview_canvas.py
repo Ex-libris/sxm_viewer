@@ -6,6 +6,7 @@ import itertools
 import json
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 from matplotlib import patches
@@ -119,6 +120,8 @@ class MultiPreviewCanvas(FigureCanvas):
             ('#7c4dff', '#f4511e'),
             ('#00897b', '#fdd835'),
         ]
+        self._show_hydrogens = True
+        self._default_bond_color = (0.9, 0.9, 0.9)
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_background = None
@@ -357,6 +360,7 @@ class MultiPreviewCanvas(FigureCanvas):
             coords = mol.get_transformed_coordinates()
             if len(coords) == 0:
                 continue
+            hide_h = not getattr(self, "_show_hydrogens", True)
             
             # Z-range for depth cueing
             z_vals = coords[:, 2]
@@ -385,7 +389,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 shadow_alpha = 0.25
 
             # Draw Bonds
-            if 'Bonds' in mol.display_mode and mol.bonds:
+            if 'Bonds' in mol.display_mode and len(mol.bonds) > 0:
                 lines = []
                 colors = []
                 linewidths = []
@@ -396,6 +400,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     lw_scale = 0.7
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
+                    if hide_h:
+                        try:
+                            ei = (mol.elements[i] or "").strip().upper()
+                            ej = (mol.elements[j] or "").strip().upper()
+                            if ei == 'H' or ej == 'H':
+                                continue
+                        except Exception:
+                            pass
                     p1 = coords[i]
                     p2 = coords[j]
                     lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
@@ -404,7 +416,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     z_mid = (p1[2] + p2[2]) * 0.5
                     z_norm = (z_mid - z_min) / z_range
                     alpha = 0.4 + 0.6 * z_norm
-                    colors.append((0.9, 0.9, 0.9, alpha)) # White/Grey bonds
+                    # Use override if provided, else default light grey
+                    if mol.bond_color_override:
+                        br, bg, bb, _ = matplotlib.colors.to_rgba(mol.bond_color_override)
+                    else:
+                        br, bg, bb = self._default_bond_color
+                    colors.append((br, bg, bb, alpha))
                     linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
@@ -415,6 +432,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if 'Atoms' in mol.display_mode:
                 # Sort atoms by Z for simple painter's algorithm
                 order = np.argsort(z_vals)
+                if hide_h:
+                    order = [idx for idx in order if str(mol.elements[idx]).strip().upper() != 'H']
+                if len(order) == 0:
+                    continue
                 coords_sorted = coords[order]
                 elements_sorted = [mol.elements[i] for i in order]
                 
@@ -425,7 +446,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 z_norm = (z - z_min) / z_range
                 sizes = size_base + size_scale * z_norm
                 
-                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
+                if mol.atom_color_override:
+                    base_colors = [mol.atom_color_override for _ in elements_sorted]
+                else:
+                    base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
                 rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
@@ -3091,6 +3115,13 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def add_molecule(self, path):
         try:
+            # Be robust to numpy arrays or non-string inputs
+            if isinstance(path, np.ndarray):
+                if path.size == 0:
+                    raise ValueError("Empty molecule path")
+                path = str(path.flatten()[0])
+            elif not isinstance(path, (str, Path)):
+                path = str(path)
             mol = Molecule(path)
             # Center in current view if possible
             if self.main_ax:
@@ -3100,7 +3131,17 @@ class MultiPreviewCanvas(FigureCanvas):
             self.molecules.append(mol)
             self._redraw()
         except Exception as e:
+            import traceback
             print(f"Failed to load molecule: {e}")
+            traceback.print_exc()
+
+    def _pick_color(self, initial_hex: str | None = None) -> str | None:
+        """Show a QColorDialog and return a hex string or None."""
+        initial = QtGui.QColor(initial_hex) if initial_hex else QtGui.QColor("#cccccc")
+        color = QtWidgets.QColorDialog.getColor(initial, self, "Select color")
+        if color.isValid():
+            return color.name()
+        return None
 
     def _clear_molecules(self):
         self.molecules = []
@@ -3115,6 +3156,11 @@ class MultiPreviewCanvas(FigureCanvas):
         for idx, mol in reversed(list(enumerate(self.molecules))):
             coords = mol.get_transformed_coordinates()
             if len(coords) == 0: continue
+            if not getattr(self, "_show_hydrogens", True):
+                mask = [str(el).strip().upper() != 'H' for el in mol.elements]
+                if not any(mask):
+                    continue
+                coords = coords[np.array(mask)]
             
             # Map event data coords to display coords is hard without transform
             # We'll just check data distance. 
@@ -3228,6 +3274,9 @@ class MultiPreviewCanvas(FigureCanvas):
     def _show_molecule_menu(self, event, mol):
         menu = QtWidgets.QMenu(self)
         props_act = menu.addAction("Properties (Rotate/Scale)...")
+        atom_color_act = menu.addAction("Set atom color...")
+        bond_color_act = menu.addAction("Set bond color...")
+        reset_colors_act = menu.addAction("Reset colors")
         dup_act = menu.addAction("Duplicate")
         del_act = menu.addAction("Delete")
         menu.addSeparator()
@@ -3239,11 +3288,29 @@ class MultiPreviewCanvas(FigureCanvas):
             act.setCheckable(True)
             act.setChecked(pal == current_pal)
             palette_actions[act] = pal
+        menu.addSeparator()
+        show_h_act = menu.addAction("Show hydrogens")
+        show_h_act.setCheckable(True)
+        show_h_act.setChecked(getattr(self, "_show_hydrogens", True))
         
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
             dlg = MoleculePropertiesDialog(mol, self, callback=self._redraw)
             dlg.show()
+        elif action == atom_color_act:
+            c = self._pick_color(mol.atom_color_override or get_atom_color('C', self.molecule_palette))
+            if c:
+                mol.atom_color_override = c
+                self._redraw()
+        elif action == bond_color_act:
+            c = self._pick_color(mol.bond_color_override or "#e0e0e0")
+            if c:
+                mol.bond_color_override = c
+                self._redraw()
+        elif action == reset_colors_act:
+            mol.atom_color_override = None
+            mol.bond_color_override = None
+            self._redraw()
         elif action == dup_act:
             new_mol = mol.copy()
             new_mol.offset += np.array([1.0, 1.0, 0.0]) # Slight offset
@@ -3255,6 +3322,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._redraw()
         elif action in palette_actions:
             self.set_molecule_palette(palette_actions[action])
+        elif action == show_h_act:
+            self._show_hydrogens = show_h_act.isChecked()
+            self._redraw()
 
     def _copy_view_to_clipboard(self, view):
         try:

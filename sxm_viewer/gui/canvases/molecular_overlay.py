@@ -97,8 +97,11 @@ class Molecule:
         self.display_mode = 'Atoms + Bonds'
         self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire
         self.bond_style = 'default'    # default | thin | thick
+        self.atom_color_override = None  # Hex string or None (use palette)
+        self.bond_color_override = None  # Hex string or None (use default)
         
-        if filepath:
+        # Avoid truth-testing numpy arrays or other iterables; only treat valid paths.
+        if isinstance(filepath, (str, Path)) and str(filepath).strip():
             self.load(filepath)
 
     def load(self, filepath):
@@ -263,6 +266,8 @@ class Molecule:
         new_mol.display_mode = self.display_mode
         new_mol.render_style = self.render_style
         new_mol.bond_style = self.bond_style
+        new_mol.atom_color_override = self.atom_color_override
+        new_mol.bond_color_override = self.bond_color_override
         return new_mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
@@ -301,6 +306,15 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else: self.combo_bond_style.setCurrentText("Default")
         self.combo_bond_style.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Bond style:", self.combo_bond_style)
+        # Color overrides
+        self.btn_atom_color = QtWidgets.QPushButton("Atom color...")
+        self.btn_atom_color.clicked.connect(self._pick_atom_color)
+        self.btn_bond_color = QtWidgets.QPushButton("Bond color...")
+        self.btn_bond_color.clicked.connect(self._pick_bond_color)
+        self.btn_reset_colors = QtWidgets.QPushButton("Reset colors")
+        self.btn_reset_colors.clicked.connect(self._reset_colors)
+        form_disp.addRow(self.btn_atom_color, self.btn_bond_color)
+        form_disp.addRow(self.btn_reset_colors)
         layout.addWidget(grp_disp)
 
         # Rotation
@@ -361,3 +375,28 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.bond_style = self.combo_bond_style.currentText().lower()
         if self.callback:
             self.callback()
+
+    def _pick_atom_color(self):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self.molecule.atom_color_override or "#cccccc"),
+            self,
+            "Select atom color"
+        )
+        if color.isValid():
+            self.molecule.atom_color_override = color.name()
+            self._on_change()
+
+    def _pick_bond_color(self):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self.molecule.bond_color_override or "#e0e0e0"),
+            self,
+            "Select bond color"
+        )
+        if color.isValid():
+            self.molecule.bond_color_override = color.name()
+            self._on_change()
+
+    def _reset_colors(self):
+        self.molecule.atom_color_override = None
+        self.molecule.bond_color_override = None
+        self._on_change()
