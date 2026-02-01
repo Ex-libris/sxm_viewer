@@ -153,6 +153,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_drag_mode = None
         self._molecule_rotation_guide = None
         self._molecule_artists = []
+        self._molecule_history = []
+        self._molecule_drag_snapshot = False
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
@@ -620,83 +622,26 @@ class MultiPreviewCanvas(FigureCanvas):
             sc = entry['scatter']
             shadow_sc = entry.get('shadow')
             lc = entry['lines']
-            atom_style = (mol.render_style or "shaded").lower()
-            bond_style = (mol.bond_style or "default").lower()
-            if atom_style == "spacefill":
-                size_base, size_scale = 120, 200
-                shadow_alpha = 0.25
-            elif atom_style == "licorice":
-                size_base, size_scale = 60, 100
-                shadow_alpha = 0.2
-            elif atom_style == "wire":
-                size_base, size_scale = 20, 40
-                shadow_alpha = 0.1
-            else:
-                size_base, size_scale = 80, 140
-                shadow_alpha = 0.25
-            
             coords = mol.get_transformed_coordinates()
-            if len(coords) == 0: continue
-            
-            # Re-calculate Z sort and props (same logic as _draw_molecules)
-            z_vals = coords[:, 2]
-            z_min = z_vals.min()
-            z_range = z_vals.ptp()
-            if z_range < 1e-6: z_range = 1.0
-            
+            if len(coords) == 0:
+                continue
+
             if lc:
-                # Update bonds
                 lines = []
-                colors = []
-                linewidths = []
-                lw_scale = 1.0
-                if bond_style == "thick":
-                    lw_scale = 1.6
-                elif bond_style == "thin":
-                    lw_scale = 0.7
                 for (i, j) in mol.bonds:
-                    if i >= len(coords) or j >= len(coords): continue
-                    p1 = coords[i]; p2 = coords[j]
+                    if i >= len(coords) or j >= len(coords):
+                        continue
+                    p1 = coords[i]
+                    p2 = coords[j]
                     lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                    z_mid = (p1[2] + p2[2]) * 0.5
-                    z_norm = (z_mid - z_min) / z_range
-                    alpha = 0.4 + 0.6 * z_norm
-                    colors.append((0.9, 0.9, 0.9, alpha))
-                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
                 lc.set_segments(lines)
-                lc.set_color(colors)
-                lc.set_linewidths(linewidths)
 
             if sc:
-                # Update atoms
-                order = np.argsort(z_vals)
+                order = np.argsort(coords[:, 2])
                 coords_sorted = coords[order]
-                elements_sorted = [mol.elements[i] for i in order]
-                x = coords_sorted[:, 0]
-                y = coords_sorted[:, 1]
-                z_norm = (z_vals[order] - z_min) / z_range
-                sc.set_offsets(np.c_[x, y])
-                # Note: updating sizes/colors is possible but expensive; 
-                # for pure translation we could skip it, but rotation needs it.
-                # We'll skip full color/size recalc for speed during drag if needed, 
-                # but for now let's do it to keep depth cues correct.
-                sizes = size_base + size_scale * z_norm
-                base_colors = [get_atom_color(e, self.molecule_palette) for e in elements_sorted]
-                rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
-                final_colors = []
-                for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.45 + 0.55 * z_norm[i]
-                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
-                    r_h = min(1.0, r + (1 - r) * highlight)
-                    g_h = min(1.0, g + (1 - g) * highlight)
-                    b_h = min(1.0, b + (1 - b) * highlight)
-                    final_colors.append((r_h, g_h, b_h, depth_alpha))
-                sc.set_sizes(sizes)
-                sc.set_facecolors(final_colors)
+                sc.set_offsets(np.c_[coords_sorted[:, 0], coords_sorted[:, 1]])
                 if shadow_sc:
-                    shadow_sc.set_offsets(np.c_[x + 0.05, y - 0.05])
-                    shadow_sc.set_sizes(sizes * 1.25)
-                    shadow_sc.set_color([(0, 0, 0, shadow_alpha)] * len(x))
+                    shadow_sc.set_offsets(np.c_[coords_sorted[:, 0] + 0.05, coords_sorted[:, 1] - 0.05])
 
         self.draw_idle()
 
@@ -1226,6 +1171,13 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
                     self._undo_last_profile_snapshot()
+                    return
+            except Exception:
+                pass
+        if event is not None:
+            try:
+                if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
+                    self.undo_last_molecule_change()
                     return
             except Exception:
                 pass
@@ -3150,6 +3102,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 path = str(path.flatten()[0])
             elif not isinstance(path, (str, Path)):
                 path = str(path)
+            self._push_molecule_snapshot()
             mol = Molecule(path)
             # Center in current view if possible
             if self.main_ax:
@@ -3201,8 +3154,37 @@ class MultiPreviewCanvas(FigureCanvas):
         return None
 
     def _clear_molecules(self):
+        if not self.molecules:
+            return
+        self._push_molecule_snapshot()
         self.molecules = []
+        self._molecule_artists = []
         self._redraw()
+
+    def reset_molecules(self):
+        """Public helper to clear all molecules with undo support."""
+        self._clear_molecules()
+
+    def _push_molecule_snapshot(self):
+        """Save current molecule state for undo."""
+        try:
+            snap = [m.copy() for m in self.molecules]
+            self._molecule_history.append(snap)
+            if len(self._molecule_history) > 20:
+                self._molecule_history.pop(0)
+        except Exception:
+            pass
+
+    def undo_last_molecule_change(self):
+        """Undo the latest molecule change, if any."""
+        if not self._molecule_history:
+            return
+        try:
+            last = self._molecule_history.pop()
+            self.molecules = [m.copy() for m in last]
+            self._redraw()
+        except Exception:
+            pass
 
     def _check_molecule_hit(self, event):
         if not self.molecules or event.inaxes is None:
@@ -3230,6 +3212,9 @@ class MultiPreviewCanvas(FigureCanvas):
             # Threshold: 0.5 nm radius click tolerance
             if min_dist < 0.25: 
                 if event.button == 1 or event.button == 2:
+                    if not self._molecule_drag_snapshot:
+                        self._push_molecule_snapshot()
+                        self._molecule_drag_snapshot = True
                     self._molecule_drag_idx = idx
                     self._molecule_drag_start = (event.xdata, event.ydata)
                     self._molecule_drag_start_px = (event.x, event.y)
@@ -3313,6 +3298,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 except: pass
                 self._molecule_rotation_guide = None
                 self._redraw()
+            self._molecule_drag_snapshot = False
 
     def set_molecule_palette(self, palette: str, notify: bool = True):
         palette = (palette or "cpk").lower()
@@ -3338,6 +3324,8 @@ class MultiPreviewCanvas(FigureCanvas):
         atom_elem_color_act = menu.addAction("Set element color...")
         bond_color_act = menu.addAction("Set bond color...")
         reset_colors_act = menu.addAction("Reset colors")
+        reset_all_act = menu.addAction("Reset all molecules")
+        undo_act = menu.addAction("Undo last change (Ctrl+Z)")
         dup_act = menu.addAction("Duplicate")
         del_act = menu.addAction("Delete")
         menu.addSeparator()
@@ -3361,6 +3349,7 @@ class MultiPreviewCanvas(FigureCanvas):
         elif action == atom_color_act:
             c = self._pick_color(mol.atom_color_override or get_atom_color('C', self.molecule_palette))
             if c:
+                self._push_molecule_snapshot()
                 mol.atom_color_override = c
                 self._redraw()
         elif action == atom_elem_color_act:
@@ -3368,6 +3357,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if ok and elem.strip():
                 c = self._pick_color(get_atom_color(elem.strip(), self.molecule_palette))
                 if c:
+                    self._push_molecule_snapshot()
                     m = getattr(mol, "atom_color_map", None)
                     if m is None:
                         mol.atom_color_map = {}
@@ -3377,27 +3367,37 @@ class MultiPreviewCanvas(FigureCanvas):
         elif action == bond_color_act:
             c = self._pick_color(mol.bond_color_override or "#e0e0e0")
             if c:
+                self._push_molecule_snapshot()
                 mol.bond_color_override = c
                 mol.bond_color_mode = "single"
                 self._redraw()
         elif action == reset_colors_act:
+            self._push_molecule_snapshot()
             mol.atom_color_override = None
             mol.bond_color_override = None
             mol.bond_color_mode = 'default'
             mol.atom_color_map = {}
             self._redraw()
+        elif action == reset_all_act:
+            self.reset_molecules()
+        elif action == undo_act:
+            self.undo_last_molecule_change()
         elif action == dup_act:
+            self._push_molecule_snapshot()
             new_mol = mol.copy()
             new_mol.offset += np.array([1.0, 1.0, 0.0]) # Slight offset
             self.molecules.append(new_mol)
             self._redraw()
         elif action == del_act:
             if mol in self.molecules:
+                self._push_molecule_snapshot()
                 self.molecules.remove(mol)
                 self._redraw()
         elif action in palette_actions:
+            self._push_molecule_snapshot()
             self.set_molecule_palette(palette_actions[action])
         elif action == show_h_act:
+            self._push_molecule_snapshot()
             self._show_hydrogens = show_h_act.isChecked()
             self._redraw()
 
