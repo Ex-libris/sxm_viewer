@@ -4569,15 +4569,45 @@ QLabel:hover {{
         except Exception:
             QtWidgets.QMessageBox.warning(self, "Animation", "imageio is required to create GIF/MP4 animations.")
             return
-        fmt, ok = QtWidgets.QInputDialog.getItem(self, "Animation format", "Choose format:", ["gif", "mp4"], 0, False)
-        if not ok or not fmt:
-            return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save animation", f"animation.{fmt}", f"*.{fmt}")
-        if not out_path:
-            return
+
+        def _resize_frame(arr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+            if arr.shape[0] == target_h and arr.shape[1] == target_w:
+                return arr
+            # Prefer Pillow if available
+            try:
+                from PIL import Image
+                mode = "L" if arr.ndim == 2 else "RGB"
+                im = Image.fromarray(arr, mode=mode if mode else None)
+                im = im.resize((target_w, target_h), Image.BILINEAR)
+                return np.array(im)
+            except Exception:
+                pass
+            # Fallback to scipy if present
+            try:
+                from scipy import ndimage as _ndi  # type: ignore
+                zoom = (target_h / arr.shape[0], target_w / arr.shape[1]) + (() if arr.ndim == 2 else (1,))
+                return _ndi.zoom(arr, zoom, order=1)
+            except Exception:
+                pass
+            # Last resort: nearest-neighbor using numpy repeat
+            y_idx = np.linspace(0, arr.shape[0] - 1, target_h).astype(int)
+            x_idx = np.linspace(0, arr.shape[1] - 1, target_w).astype(int)
+            if arr.ndim == 2:
+                return arr[np.ix_(y_idx, x_idx)]
+            else:
+                return arr[np.ix_(y_idx, x_idx, np.arange(arr.shape[2]))]
+
+        # Build a rich export dialog with preview and options
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Export animation")
+        dlg.resize(800, 640)
+        vbox = QtWidgets.QVBoxLayout(dlg); vbox.setContentsMargins(10, 10, 10, 10); vbox.setSpacing(8)
+
+        # Gather frames
         channel_idx = self.channel_dropdown.currentIndex()
         frames = []
         missing = 0
+        names = []
         for p in sorted({str(Path(p)) for p in paths}):
             try:
                 header, fds = self.headers.get(p, (None, None))
@@ -4600,6 +4630,7 @@ QLabel:hover {{
                     missing += 1
                     continue
                 frames.append(np.array(arr, dtype=float))
+                names.append(Path(p).name)
             except Exception:
                 missing += 1
                 continue
@@ -4610,25 +4641,203 @@ QLabel:hover {{
                 f"No frames could be loaded. Selected: {len(set(paths))}, skipped: {missing}",
             )
             return
-        try:
-            # normalize to uint8 for broad codec support
-            norm_frames = []
-            for arr in frames:
-                arr = np.asarray(arr, dtype=float)
-                rng = arr.max() - arr.min()
-                if rng <= 0:
-                    norm = np.zeros_like(arr, dtype=np.uint8)
-                else:
-                    norm = ((arr - arr.min()) / rng * 255.0).clip(0, 255).astype(np.uint8)
-                norm_frames.append(norm)
-            if fmt == "gif":
-                iio.imwrite(out_path, norm_frames, plugin="pillow", loop=0, duration=0.4)
+
+        # Controls row
+        controls = QtWidgets.QHBoxLayout(); controls.setSpacing(12)
+        controls.addWidget(QtWidgets.QLabel("Format:"))
+        fmt_combo = QtWidgets.QComboBox(); fmt_combo.addItems(["gif", "mp4", "png-seq"]); controls.addWidget(fmt_combo)
+        controls.addWidget(QtWidgets.QLabel("FPS:"))
+        fps_spin = QtWidgets.QSpinBox(); fps_spin.setRange(1, 60); fps_spin.setValue(6); controls.addWidget(fps_spin)
+        controls.addWidget(QtWidgets.QLabel("Duration (s):"))
+        dur_spin = QtWidgets.QDoubleSpinBox(); dur_spin.setRange(0.1, 120.0); dur_spin.setDecimals(1); dur_spin.setSingleStep(0.5); controls.addWidget(dur_spin)
+        dur_spin.setValue(max(0.1, len(frames) / fps_spin.value()))
+        def _update_duration():
+            dur_spin.setValue(max(0.1, len(frames) / max(1, fps_spin.value())))
+        fps_spin.valueChanged.connect(_update_duration)
+        controls.addStretch(1)
+        vbox.addLayout(controls)
+
+        # Overlay toggles
+        overlay_row = QtWidgets.QHBoxLayout(); overlay_row.setSpacing(12)
+        scale_cb = QtWidgets.QCheckBox("Include scale bar"); scale_cb.setChecked(True)
+        markers_cb = QtWidgets.QCheckBox("Include markers/overlays"); markers_cb.setChecked(True)
+        mol_cb = QtWidgets.QCheckBox("Include molecules"); mol_cb.setChecked(True)
+        overlay_row.addWidget(scale_cb); overlay_row.addWidget(markers_cb); overlay_row.addWidget(mol_cb); overlay_row.addStretch(1)
+        vbox.addLayout(overlay_row)
+
+        # Resolution
+        res_row = QtWidgets.QHBoxLayout(); res_row.setSpacing(12)
+        res_row.addWidget(QtWidgets.QLabel("Resolution:"))
+        res_combo = QtWidgets.QComboBox(); res_combo.addItems(["Auto", "720p", "1080p", "Custom"]); res_row.addWidget(res_combo)
+        w_spin = QtWidgets.QSpinBox(); w_spin.setRange(256, 4096); w_spin.setValue(frames[0].shape[1]); res_row.addWidget(QtWidgets.QLabel("W")); res_row.addWidget(w_spin)
+        h_spin = QtWidgets.QSpinBox(); h_spin.setRange(256, 4096); h_spin.setValue(frames[0].shape[0]); res_row.addWidget(QtWidgets.QLabel("H")); res_row.addWidget(h_spin)
+        def _on_res_change(text):
+            presets = {"720p": (1280, 720), "1080p": (1920, 1080)}
+            if text in presets:
+                w_spin.setValue(presets[text][0]); h_spin.setValue(presets[text][1])
+            elif text == "Auto":
+                w_spin.setValue(frames[0].shape[1]); h_spin.setValue(frames[0].shape[0])
+        res_combo.currentTextChanged.connect(_on_res_change)
+        vbox.addLayout(res_row)
+
+        # Preview canvas
+        prev_label = QtWidgets.QLabel(); prev_label.setAlignment(QtCore.Qt.AlignCenter)
+        prev_label.setMinimumHeight(260)
+        vbox.addWidget(prev_label, 1)
+
+        # Buttons
+        btn_row = QtWidgets.QHBoxLayout(); btn_row.addStretch(1)
+        save_btn = QtWidgets.QPushButton("Save…"); cancel_btn = QtWidgets.QPushButton("Cancel")
+        btn_row.addWidget(save_btn); btn_row.addWidget(cancel_btn)
+        vbox.addLayout(btn_row)
+
+        def _render_frame(arr):
+            # simple normalization for preview
+            a = np.asarray(arr, dtype=float)
+            rng = a.max() - a.min()
+            if rng <= 0:
+                norm = np.zeros_like(a, dtype=np.uint8)
             else:
-                iio.imwrite(out_path, norm_frames, plugin="ffmpeg", fps=6)
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Animation", f"Failed to save animation: {exc}")
-            return
-        QtWidgets.QMessageBox.information(self, "Animation", f"Saved animation to {out_path}")
+                norm = ((a - a.min()) / rng * 255.0).clip(0, 255).astype(np.uint8)
+            h, w = norm.shape[:2]
+            if norm.ndim == 2:
+                rgb = np.stack([norm]*3, axis=-1)
+            else:
+                rgb = norm
+            qimg = QtGui.QImage(rgb.data, w, h, 3*w, QtGui.QImage.Format_RGB888)
+            pm = QtGui.QPixmap.fromImage(qimg.copy())
+            return pm
+
+        def _fit_resize_with_pad(rgb: np.ndarray, tw: int, th: int, fill=255):
+            rgb = np.asarray(rgb)
+            if rgb.ndim == 2:
+                rgb = np.stack([rgb]*3, axis=-1)
+            h, w = rgb.shape[:2]
+            if h == 0 or w == 0:
+                return np.zeros((th, tw, 3), dtype=np.uint8)
+            scale = min(tw / w, th / h)
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            resized = _resize_frame(rgb, new_w, new_h)
+            canvas = np.full((th, tw, 3), fill, dtype=np.uint8)
+            off_x = (tw - new_w) // 2
+            off_y = (th - new_h) // 2
+            canvas[off_y:off_y+new_h, off_x:off_x+new_w, :] = resized if resized.ndim == 3 else np.stack([resized]*3, axis=-1)
+            return canvas
+
+        def _update_preview(idx=0):
+            pm = _render_frame(frames[idx % len(frames)])
+            if not pm.isNull():
+                pm = pm.scaled(prev_label.width(), prev_label.height(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                prev_label.setPixmap(pm)
+        _update_preview(0)
+
+        # Auto-play preview timer
+        timer = QtCore.QTimer(dlg); timer.setInterval(400)
+        idx_ref = {"i": 0}
+        def _tick():
+            idx_ref["i"] = (idx_ref["i"] + 1) % len(frames)
+            _update_preview(idx_ref["i"])
+        timer.timeout.connect(_tick); timer.start()
+
+        def _save():
+            fmt = fmt_combo.currentText()
+            default_name = f"animation.{ 'gif' if fmt=='gif' else ('mp4' if fmt=='mp4' else 'png') }"
+            filter_str = "GIF (*.gif);;MP4 (*.mp4);;PNG sequence (*.png)"
+            out_path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save animation", default_name, filter_str)
+            if not out_path:
+                return
+            # render each frame via the preview canvas so overlays (scale bar) are honored
+            target_w, target_h = w_spin.value(), h_spin.value()
+            canvas = getattr(self, "preview_canvas", None)
+            orig_last = getattr(self, "last_preview", None)
+            orig_views = list(getattr(canvas, "views", [])) if canvas else []
+            norm_frames = []
+
+            def _render_path(path_str: str):
+                if not canvas:
+                    return None
+                try:
+                    # toggle scale bar; drop molecules/markers for clean export
+                    prev_scale = canvas.scale_bar_enabled
+                    prev_ticks = canvas._show_ticks
+                    prev_mols = list(getattr(canvas, "molecules", []))
+                    canvas.scale_bar_enabled = scale_cb.isChecked()
+                    canvas._show_ticks = prev_ticks  # keep ticks as-is
+                    canvas.molecules = []  # always exclude molecules for animation per requirement
+                    # show file/channel and draw a fresh figure (with scale bar)
+                    self.show_file_channel(path_str, channel_idx)
+                    QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                    if not getattr(canvas, "views", None):
+                        return None
+                    view = canvas.views[0]
+                    fig = canvas._render_view_figure(view)
+                    fig.set_dpi(100)
+                    fig.set_size_inches(target_w / 100.0, target_h / 100.0)
+                    fig.canvas.draw()
+                    buf = fig.canvas.buffer_rgba()
+                    if buf is None:
+                        return None
+                    arr = np.asarray(buf)
+                    rgb = arr[:, :, :3].copy()
+                    rgb = _fit_resize_with_pad(rgb, target_w, target_h, fill=255)
+                    try:
+                        import matplotlib.pyplot as _plt  # type: ignore
+                        _plt.close(fig)
+                    except Exception:
+                        pass
+                    # restore
+                    canvas.scale_bar_enabled = prev_scale
+                    canvas._show_ticks = prev_ticks
+                    canvas.molecules = prev_mols
+                    return rgb
+                except Exception:
+                    return None
+
+            for p in sorted({str(Path(p)) for p in paths}):
+                rendered = _render_path(p)
+                if rendered is not None:
+                    norm_frames.append(rendered)
+
+            # fallback to raw frames if rendering failed
+            if not norm_frames:
+                for arr in frames:
+                    a = np.asarray(arr, dtype=float)
+                    rng = a.max() - a.min()
+                    if rng <= 0:
+                        norm = np.zeros_like(a, dtype=np.uint8)
+                    else:
+                        norm = ((a - a.min()) / rng * 255.0).clip(0, 255).astype(np.uint8)
+                    if norm.shape[0] != target_h or norm.shape[1] != target_w:
+                        norm = _resize_frame(norm, target_w, target_h)
+                    norm_frames.append(norm)
+
+            # restore original view
+            try:
+                if orig_last:
+                    self.show_file_channel(orig_last[0], orig_last[1])
+                elif canvas and orig_views:
+                    canvas.views = orig_views
+                    canvas._redraw()
+            except Exception:
+                pass
+            try:
+                if fmt == "gif":
+                    iio.imwrite(out_path, norm_frames, plugin="pillow", loop=0, duration=1000.0 / max(1, fps_spin.value()))
+                elif fmt == "mp4":
+                    iio.imwrite(out_path, norm_frames, plugin="ffmpeg", fps=max(1, fps_spin.value()))
+                else:
+                    stem = Path(out_path).with_suffix("")
+                    for i, fr in enumerate(norm_frames):
+                        iio.imwrite(f"{stem}_{i:03d}.png", fr)
+                QtWidgets.QMessageBox.information(dlg, "Animation", f"Saved animation to {out_path}")
+                dlg.accept()
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(dlg, "Animation", f"Failed to save animation: {exc}")
+
+        save_btn.clicked.connect(_save)
+        cancel_btn.clicked.connect(dlg.reject)
+        dlg.exec_()
 
     def _show_alignment_preview(self, names, aligned, shifts, channel_idx):
         """Preview aligned/cropped images and optionally save outputs/animation."""
