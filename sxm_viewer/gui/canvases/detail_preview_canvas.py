@@ -111,6 +111,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._view_layout = "grid"
         self._spectra_points = {}
         self._spectra_click_cb = None
+        self._zoom_reset_limits = {}
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by) for the active frame
         self._angle_frames = []
@@ -155,6 +156,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_artists = []
         self._molecule_history = []
         self._molecule_drag_snapshot = False
+        self.mpl_connect('scroll_event', self._on_scroll_zoom)
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
@@ -162,6 +164,15 @@ class MultiPreviewCanvas(FigureCanvas):
         # Molecule palette
         self.molecule_palette = "cpk"
         self._molecule_palette_cb = None
+        self._zoom_reset_limits = {}
+        # Pan/zoom state
+        self._pan_active = False
+        self._pan_ax = None
+        self._pan_start = None
+        self._pan_start_lim = None
+        self._pan_last_ts = 0.0
+        self._pan_throttle_ms = 16
+        self.mpl_connect('scroll_event', self._on_scroll_zoom)
 
     def draw(self):
         try:
@@ -344,6 +355,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._add_scale_bar(ax, v)
                 except Exception:
                     pass
+            if ax not in self._zoom_reset_limits:
+                self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
             self._draw_molecules(ax)
             self._draw_spectra(ax)
@@ -1186,6 +1199,9 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
                     self.undo_last_molecule_change()
+                    return
+                if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_R:
+                    self._reset_view_zoom()
                     return
             except Exception:
                 pass
@@ -3037,14 +3053,16 @@ class MultiPreviewCanvas(FigureCanvas):
         #   Shift + drag -> arbitrary rectangle
         #   Ctrl + Shift + drag -> square selection
         mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
-        mods_key = str(getattr(event, 'key', '') or '').lower()
-        want_square = (event.button == 1) and (
-            (mods_qt & QtCore.Qt.ControlModifier and mods_qt & QtCore.Qt.ShiftModifier)
-            or ('control' in mods_key and 'shift' in mods_key)
-        )
-        want_rect = (event.button == 1) and (
-            (mods_qt & QtCore.Qt.ShiftModifier) or ('shift' in mods_key)
-        )
+        want_square = (event.button == 1) and (mods_qt & QtCore.Qt.ControlModifier) and (mods_qt & QtCore.Qt.ShiftModifier)
+        want_rect = (event.button == 1) and (mods_qt & QtCore.Qt.ShiftModifier)
+        # Pan start: only in browse-like mode, left button, zoomed view
+        if event.button in (1, 2) and not want_rect and view is not None and not self.profile_enabled and not self.angle_enabled:
+            if event.xdata is not None and event.ydata is not None and self._is_zoomed(ax):
+                self._pan_active = True
+                self._pan_ax = ax
+                self._pan_start = (event.xdata, event.ydata)
+                self._pan_start_lim = (ax.get_xlim(), ax.get_ylim())
+                return
         if want_rect and view is not None:
             self._crop_start = (event.xdata, event.ydata)
             self._crop_ax = ax
@@ -3247,6 +3265,30 @@ class MultiPreviewCanvas(FigureCanvas):
         return False
 
     def _on_molecule_motion(self, event):
+        if self._pan_active and self._pan_ax is event.inaxes:
+            if event.xdata is None or event.ydata is None or self._pan_start is None or self._pan_start_lim is None:
+                return
+            now_ms = time.perf_counter() * 1000.0
+            if (now_ms - self._pan_last_ts) < self._pan_throttle_ms:
+                return
+            self._pan_last_ts = now_ms
+            x0, y0 = self._pan_start
+            (xlim0, ylim0) = self._pan_start_lim
+            dx = event.xdata - x0
+            dy = event.ydata - y0
+            new_xlim = (xlim0[0] - dx, xlim0[1] - dx)
+            new_ylim = (ylim0[0] - dy, ylim0[1] - dy)
+            base_xlim, base_ylim = self._zoom_reset_limits.get(self._pan_ax, (xlim0, ylim0))
+            new_xlim = self._clamp_limits(new_xlim, base_xlim)
+            new_ylim = self._clamp_limits(new_ylim, base_ylim)
+            self._pan_ax.set_xlim(new_xlim)
+            self._pan_ax.set_ylim(new_ylim)
+            # Partial refresh: redraw only this axes if possible, else full canvas
+            try:
+                self._pan_ax.figure.canvas.draw_idle()
+            except Exception:
+                self.draw_idle()
+            return
         if self._molecule_drag_idx is not None:
             if event.xdata is None or event.ydata is None:
                 return
@@ -3307,6 +3349,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._molecule_rotation_guide = None
                 self._redraw()
             self._molecule_drag_snapshot = False
+        if self._pan_active:
+            self._pan_active = False
+            self._pan_ax = None
+            self._pan_start = None
+            self._pan_start_lim = None
+            self._pan_last_ts = 0.0
 
     def set_molecule_palette(self, palette: str, notify: bool = True):
         palette = (palette or "cpk").lower()
@@ -3514,6 +3562,8 @@ class MultiPreviewCanvas(FigureCanvas):
         elif angle_style_act and chosen == angle_style_act:
             checked = angle_style_act.isChecked()
             self._update_active_angle_style('arrows' if checked else 'dots')
+        elif chosen == reset_zoom_act:
+            self._reset_view_zoom()
 
     def _save_view_to_file(self, view):
         try:
@@ -3583,8 +3633,18 @@ class MultiPreviewCanvas(FigureCanvas):
             QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save vector image.")
 
     def _reset_view_zoom(self):
-        self._view_font_scale = 1.0
-        self._apply_view_font_scale()
+        # Restore stored axis limits if present; otherwise no-op.
+        did = False
+        for ax, lims in list(self._zoom_reset_limits.items()):
+            try:
+                xlim, ylim = lims
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
+                did = True
+            except Exception:
+                continue
+        if did:
+            self.draw_idle()
 
     def _toggle_colorbar_orientation(self):
         self._colorbar_orientation = 'horizontal' if self._colorbar_orientation == 'vertical' else 'vertical'
@@ -3597,6 +3657,65 @@ class MultiPreviewCanvas(FigureCanvas):
     def _toggle_colorbar(self):
         self._show_colorbar = not self._show_colorbar
         self._redraw()
+
+    def _on_scroll_zoom(self, event):
+        """Mouse wheel zoom centered at cursor."""
+        ax = getattr(event, 'inaxes', None)
+        if ax is None:
+            return
+        try:
+            delta = getattr(event, 'step', 0)
+            if not delta:
+                btn = getattr(event, 'button', '')
+                delta = 1 if btn == 'up' else -1
+            scale = 0.9 if delta > 0 else 1.1
+        except Exception:
+            scale = 0.9
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        if ax not in self._zoom_reset_limits:
+            self._zoom_reset_limits[ax] = (xlim, ylim)
+        x0 = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) * 0.5
+        y0 = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) * 0.5
+        xr = (xlim[1] - xlim[0]) * scale
+        yr = (ylim[1] - ylim[0]) * scale
+        new_xlim = (x0 - xr * 0.5, x0 + xr * 0.5)
+        new_ylim = (y0 - yr * 0.5, y0 + yr * 0.5)
+        base_xlim, base_ylim = self._zoom_reset_limits.get(ax, (xlim, ylim))
+        new_xlim = self._clamp_limits(new_xlim, base_xlim)
+        new_ylim = self._clamp_limits(new_ylim, base_ylim)
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
+        self.draw_idle()
+
+    def _clamp_limits(self, new_lim, base_lim):
+        """Clamp new limits to stay within base limits."""
+        try:
+            width = new_lim[1] - new_lim[0]
+            base_width = base_lim[1] - base_lim[0]
+            if width >= base_width:
+                return base_lim
+            min_start = base_lim[0]
+            max_start = base_lim[1] - width
+            start = max(min_start, min(new_lim[0], max_start))
+            return (start, start + width)
+        except Exception:
+            return new_lim
+
+    def _is_zoomed(self, ax):
+        """Return True if current limits differ from stored reset limits."""
+        try:
+            if ax not in self._zoom_reset_limits:
+                self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
+                return False
+            base_xlim, base_ylim = self._zoom_reset_limits.get(ax, (ax.get_xlim(), ax.get_ylim()))
+            cur_xlim, cur_ylim = ax.get_xlim(), ax.get_ylim()
+            tol = 1e-9
+            zoomed_x = abs(cur_xlim[0] - base_xlim[0]) > tol or abs(cur_xlim[1] - base_xlim[1]) > tol
+            zoomed_y = abs(cur_ylim[0] - base_ylim[0]) > tol or abs(cur_ylim[1] - base_ylim[1]) > tol
+            return zoomed_x or zoomed_y
+        except Exception:
+            return False
 
     def _render_view_figure(self, view):
         fig = Figure(figsize=(6, 6))
