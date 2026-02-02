@@ -101,7 +101,7 @@ class Molecule:
         self.z_height_scale = 1.0 # For visual depth cue
         self.bonds = [] # List of (index1, index2)
         self.display_mode = 'Atoms + Bonds'
-        self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire
+        self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire | sticks | skeletal
         self.bond_style = 'default'    # default | thin | thick
         self.atom_color_override = None  # Hex string or None (use palette)
         self.atom_color_map = {}         # Element -> hex override
@@ -299,12 +299,13 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.combo_mode.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Style:", self.combo_mode)
         self.combo_atom_style = QtWidgets.QComboBox()
-        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wire", "Stick/Skeletal"])
+        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wireframe", "Sticks", "Stick/Skeletal"])
         style_label = molecule.render_style.lower()
         if style_label == 'flat': self.combo_atom_style.setCurrentText("Flat")
         elif style_label == 'spacefill': self.combo_atom_style.setCurrentText("Spacefill")
         elif style_label == 'licorice': self.combo_atom_style.setCurrentText("Licorice")
-        elif style_label == 'wire': self.combo_atom_style.setCurrentText("Wire")
+        elif style_label == 'wire': self.combo_atom_style.setCurrentText("Wireframe")
+        elif style_label == 'sticks': self.combo_atom_style.setCurrentText("Sticks")
         elif style_label == 'skeletal': self.combo_atom_style.setCurrentText("Stick/Skeletal")
         else: self.combo_atom_style.setCurrentText("Shaded")
         self.combo_atom_style.currentTextChanged.connect(self._on_change)

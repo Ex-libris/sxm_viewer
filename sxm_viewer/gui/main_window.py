@@ -194,6 +194,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
+        self.recent_molecules = list(self.config.get("recent_molecules", []))
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -729,6 +730,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_filter_menu_callback(
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
+        # Seed molecule recents from config and listen for updates
+        try:
+            if getattr(self, "recent_molecules", None):
+                self.preview_canvas._recent_molecule_paths = list(self.recent_molecules)
+                MultiPreviewCanvas._RECENT_MOLECULES = list(self.recent_molecules)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_recent_molecule_callback(self._on_recent_molecules_updated)
+        except Exception:
+            pass
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self._apply_detail_view_theme()
         # apply saved metadata font size
@@ -1796,6 +1808,21 @@ QLabel:hover {{
         self.config["recent_dirs"] = self.recent_dirs
         save_config(self.config)
         self._refresh_recent_dirs_menu()
+
+    def _on_recent_molecules_updated(self, paths):
+        """Persist recent molecule file paths to config (up to 8)."""
+        try:
+            recent = []
+            for p in paths or []:
+                if p and p not in recent:
+                    recent.append(p)
+                if len(recent) >= 8:
+                    break
+            self.recent_molecules = recent
+            self.config["recent_molecules"] = recent
+            save_config(self.config)
+        except Exception:
+            pass
 
     def load_folder(self, folder:Path):
         start = time.perf_counter()
@@ -3519,8 +3546,29 @@ QLabel:hover {{
 
     # ---------- Spectroscopy helpers ----------
     def on_load_molecule(self):
-        if self.preview_canvas:
-            self.preview_canvas._load_molecule_dialog()
+        if not self.preview_canvas:
+            return
+        # Offer recent molecules first for quick access
+        recent = []
+        try:
+            recent = self.preview_canvas.get_recent_molecule_paths()
+        except Exception:
+            recent = []
+        if recent:
+            menu = QtWidgets.QMenu(self)
+            actions = {}
+            for p in recent:
+                act = menu.addAction(Path(p).name)
+                act.setToolTip(p)
+                actions[act] = p
+            browse_act = menu.addAction("Browse...")
+            chosen = menu.exec_(QtGui.QCursor.pos())
+            if chosen and chosen in actions:
+                self.preview_canvas.add_molecule(actions[chosen])
+                self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
+                return
+        # Fallback: open file dialog
+        self.preview_canvas._load_molecule_dialog()
 
     def on_spec_folder_browse(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select spectroscopy folder", str(self.spec_folder_path))
