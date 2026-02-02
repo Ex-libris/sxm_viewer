@@ -218,6 +218,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectro_marker_size = float(self.config.get('spectro_marker_size', 5.0))
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
+        self._processed_views = {}
         self._temp_reveal = set()
         self.spectro_dock = None
         self._spectro_browser_entries = []
@@ -2062,10 +2063,21 @@ QLabel:hover {{
     def _invalidate_thumbnail_cache(self, paths=None):
         return viewer_thumbnails._invalidate_thumbnail_cache(self, paths=paths)
 
+    def _is_processed_key(self, key: str):
+        """Return True for in-memory processed/virtual entries (drift copies, etc.)."""
+        try:
+            if isinstance(key, str) and key.startswith("processed_"):
+                return True
+            return str(key) in getattr(self, "_processed_views", {})
+        except Exception:
+            return False
+
     def _channel_cache_key(self, file_key, channel_idx, fd):
         fname = fd.get('FileName')
         if not fname:
             raise ValueError("Missing FileName for channel")
+        if self._is_processed_key(file_key):
+            return (str(file_key), int(channel_idx), 0.0)
         bin_path = Path(file_key).parent / fname
         try:
             mtime = bin_path.stat().st_mtime
@@ -2083,9 +2095,29 @@ QLabel:hover {{
                 return arr
         xpix = int(header.get('xPixel', 128))
         ypix = int(header.get('yPixel', xpix))
-        bin_path = Path(key[0])
-        arr = read_channel_file(bin_path, xpix, ypix,
-                                scale=fd.get('Scale', 1.0), offset=fd.get('Offset', 0.0))
+        if self._is_processed_key(file_key):
+            data = self._processed_views.get(str(file_key))
+            if data is None:
+                raise FileNotFoundError(f"Processed view not found: {file_key}")
+            arr = None
+            arr_by_channel = data.get('arr_by_channel') or {}
+            if arr_by_channel:
+                arr = arr_by_channel.get(channel_idx)
+                if arr is None:
+                    # fallback to any available channel
+                    try:
+                        arr = next(iter(arr_by_channel.values()))
+                    except Exception:
+                        arr = None
+            if arr is None and 'arr' in data:
+                arr = data.get('arr')
+            if arr is None:
+                raise FileNotFoundError(f"Processed data missing array for {file_key}")
+            arr = np.asarray(arr)
+        else:
+            bin_path = Path(key[0])
+            arr = read_channel_file(bin_path, xpix, ypix,
+                                    scale=fd.get('Scale', 1.0), offset=fd.get('Offset', 0.0))
         with self._channel_cache_lock:
             cache[key] = arr
             while len(cache) > CHANNEL_DATA_CACHE_LIMIT:
@@ -2122,9 +2154,13 @@ QLabel:hover {{
                 with self._filtered_cache_lock:
                     self._filtered_channel_cache.clear()
                 self._frame_real_pixmap_cache.clear()
+                self._processed_views.clear()
                 return
-            parent_dirs = {str(Path(p).parent) for p in paths}
-            to_remove = [k for k in self._channel_data_cache.keys() if str(Path(k[0]).parent) in parent_dirs]
+            parent_dirs = {str(Path(p).parent) for p in paths if not self._is_processed_key(str(p))}
+            to_remove = []
+            for k in list(self._channel_data_cache.keys()):
+                if self._is_processed_key(k[0]) or str(Path(k[0]).parent) in parent_dirs:
+                    to_remove.append(k)
             for k in to_remove:
                 self._channel_data_cache.pop(k, None)
         self._invalidate_filtered_cache(paths)
@@ -2135,9 +2171,9 @@ QLabel:hover {{
                 self._filtered_channel_cache.clear()
                 self._frame_real_pixmap_cache.clear()
                 return
-            parent_dirs = {str(Path(p).parent) for p in paths}
+            parent_dirs = {str(Path(p).parent) for p in paths if not self._is_processed_key(str(p))}
             to_remove = [k for k in self._filtered_channel_cache.keys()
-                        if str(Path(k[0][0]).parent) in parent_dirs]
+                        if self._is_processed_key(k[0][0]) or str(Path(k[0][0]).parent) in parent_dirs]
             for k in to_remove:
                 self._filtered_channel_cache.pop(k, None)
         self._frame_real_pixmap_cache.clear()
@@ -4468,9 +4504,19 @@ QLabel:hover {{
             has_cv = False
         channel_idx = self.channel_dropdown.currentIndex()
         images = []
-        names = []
+        names_full = []
+        names_display = []
         missing = 0
-        for p in sorted({str(Path(p)) for p in paths}):
+        # Preserve user selection order while dropping duplicates
+        seen = set()
+        ordered_paths = []
+        for p in paths:
+            ps = str(Path(p))
+            if ps in seen:
+                continue
+            seen.add(ps)
+            ordered_paths.append(ps)
+        for p in ordered_paths:
             try:
                 header, fds = self.headers.get(p, (None, None))
                 if header is None or fds is None:
@@ -4492,7 +4538,8 @@ QLabel:hover {{
                 if arr is None:
                     missing += 1
                     continue
-                names.append(Path(p).stem)
+                names_full.append(str(p))
+                names_display.append(Path(p).stem)
                 images.append(np.array(arr, dtype=float))
             except Exception:
                 missing += 1
@@ -4530,7 +4577,7 @@ QLabel:hover {{
                 pass
             try:
                 if phase_cross_correlation is not None:
-                    shift, _, _ = phase_cross_correlation(ref_gray, target, upsample_factor=20, normalization=None)
+                    shift, _, _ = phase_cross_correlation(ref_gray, target, upsample_factor=20, normalization="phase")
                     shifts[i] = [float(shift[0]), float(shift[1])]  # dy, dx mapping target -> ref
                 elif has_cv:
                     import cv2  # type: ignore
@@ -4542,24 +4589,36 @@ QLabel:hover {{
                     shifts[i] = [0.0, 0.0]
             except Exception:
                 shifts[i] = [0.0, 0.0]
+        
         H, W = images[0].shape[:2]
+        
+        # Calculate the intersection crop region after alignment
+        # After shifting image i by (dy, dx), its valid region is constrained
         top = int(np.ceil(max(0, np.max(shifts[:, 0]))))
-        bottom = H - int(np.ceil(max(0, -np.min(shifts[:, 0]))))
+        bottom = int(np.floor(min(H, H + np.min(shifts[:, 0]))))
         left = int(np.ceil(max(0, np.max(shifts[:, 1]))))
-        right = W - int(np.ceil(max(0, -np.min(shifts[:, 1]))))
+        right = int(np.floor(min(W, W + np.min(shifts[:, 1]))))
+        
+        # Ensure valid bounds
         top = max(0, min(top, H - 1))
         left = max(0, min(left, W - 1))
         bottom = max(top + 1, min(bottom, H))
         right = max(left + 1, min(right, W))
+        
+        # REMOVED: Square enforcement logic that was causing severe overcropping
+        # The intersection crop is sufficient - no need to force square dimensions
+        
         aligned = []
         for img, shift in zip(images, shifts):
             dy, dx = shift
             try:
-                warped = ndimage.shift(img, [-dy, -dx], order=3, mode="reflect", cval=0.0)
+                # FIXED: Apply shift directly (removed negation)
+                warped = ndimage.shift(img, [dy, dx], order=3, mode="reflect", cval=0.0)
             except Exception:
                 warped = img
             aligned.append(warped[top:bottom, left:right])
-        self._show_alignment_preview(names, aligned, shifts, channel_idx)
+        
+        self._show_alignment_preview(names_display, aligned, shifts, channel_idx, names_full, crop_bounds=(top, bottom, left, right))
 
     def _on_create_animation(self, paths):
         if not paths:
@@ -4839,7 +4898,7 @@ QLabel:hover {{
         cancel_btn.clicked.connect(dlg.reject)
         dlg.exec_()
 
-    def _show_alignment_preview(self, names, aligned, shifts, channel_idx):
+    def _show_alignment_preview(self, names, aligned, shifts, channel_idx, source_paths=None, crop_bounds=None):
         """Preview aligned/cropped images and optionally save outputs/animation."""
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Drift correction preview")
@@ -4850,8 +4909,17 @@ QLabel:hover {{
         info.setReadOnly(True)
         info.setMaximumHeight(140)
         text_lines = []
+        max_shift = 0.0
         for name, shift in zip(names, shifts):
-            text_lines.append(f"{name}: dy={shift[0]:.3f} px, dx={shift[1]:.3f} px")
+            mag = float(np.hypot(shift[0], shift[1]))
+            max_shift = max(max_shift, mag)
+            text_lines.append(f"{name}: dy={shift[0]:.3f} px, dx={shift[1]:.3f} px | |d|={mag:.3f} px")
+        if crop_bounds:
+            top, bottom, left, right = crop_bounds
+            crop_h = max(0, bottom - top)
+            crop_w = max(0, right - left)
+            text_lines.append(f"\nCrop: top={top}, bottom={bottom}, left={left}, right={right}  -> size={crop_w}x{crop_h}px")
+        text_lines.append(f"Max shift magnitude: {max_shift:.3f} px")
         info.setPlainText("\n".join(text_lines))
         layout.addWidget(info)
 
@@ -4885,8 +4953,10 @@ QLabel:hover {{
         btn_row = QtWidgets.QHBoxLayout()
         save_imgs_btn = QtWidgets.QPushButton("Save aligned PNGs...")
         save_gif_btn = QtWidgets.QPushButton("Save animation...")
+        save_virtual_btn = QtWidgets.QPushButton("Save corrected copies to thumbnails")
         btn_row.addWidget(save_imgs_btn)
         btn_row.addWidget(save_gif_btn)
+        btn_row.addWidget(save_virtual_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
@@ -5004,8 +5074,102 @@ QLabel:hover {{
                 return
             QtWidgets.QMessageBox.information(dlg, "Animation", f"Saved animation to {out_path}")
 
+        def _save_virtual():
+            added = 0
+            existing = set(str(p) for p in self.files)
+            top, bottom, left, right = crop_bounds if crop_bounds else (None, None, None, None)
+            for idx, arr in enumerate(aligned):
+                orig = str(source_paths[idx] if source_paths and idx < len(source_paths) else names[idx])
+                header_fds = self.headers.get(orig)
+                if not header_fds:
+                    continue
+                header, fds = header_fds
+                if not fds:
+                    continue
+                fd_src = fds[channel_idx if 0 <= channel_idx < len(fds) else 0]
+                header_new = dict(header)
+                header_new['xPixel'] = arr.shape[1]
+                header_new['yPixel'] = arr.shape[0]
+                arr_by_channel = {}
+                try:
+                    from scipy import ndimage as _ndi  # type: ignore
+                except Exception:
+                    _ndi = None
+                dy, dx = shifts[idx]
+                for ch_idx, fd_ch in enumerate(fds):
+                    try:
+                        if ch_idx == channel_idx:
+                            raw_arr = arr  # already aligned/cropped for the primary channel
+                        else:
+                            raw_arr = self._get_channel_array(orig, ch_idx, header, fd_ch)
+                    except Exception:
+                        continue
+                    try:
+                        if ch_idx == channel_idx:
+                            shifted = raw_arr
+                        elif _ndi is not None:
+                            shifted = _ndi.shift(raw_arr, [-dy, -dx], order=1, mode="reflect", cval=0.0)
+                        else:
+                            shifted = raw_arr
+                        if all(v is not None for v in (top, bottom, left, right)):
+                            shifted = shifted[top:bottom, left:right]
+                        arr_by_channel[ch_idx] = np.array(shifted, copy=True)
+                    except Exception:
+                        continue
+                if not arr_by_channel:
+                    continue
+                # adjust header dims to cropped size
+                sample_arr = next(iter(arr_by_channel.values()))
+                header_new['xPixel'] = sample_arr.shape[1]
+                header_new['yPixel'] = sample_arr.shape[0]
+                fds_new = [dict(fd) for fd in fds]
+                caption_base = fds[channel_idx].get('Caption') or Path(orig).name if 0 <= channel_idx < len(fds) else Path(orig).name
+                for i, fd_new in enumerate(fds_new):
+                    fd_new['FileName'] = f"{Path(orig).name}_drift_ch{i}"
+                    fd_new['Caption'] = f"{caption_base} [drift]"
+                processed_key = f"processed_{Path(orig).stem}_drift"
+                self._processed_views[processed_key] = {
+                    'arr_by_channel': arr_by_channel,
+                    'header': header_new,
+                    'fds': fds_new,
+                    'channel_idx': channel_idx,
+                    'source': orig,
+                }
+                self.headers[processed_key] = (header_new, fds_new)
+                if processed_key not in existing:
+                    self.files.append(Path(processed_key))
+                    existing.add(processed_key)
+                added += 1
+            if added:
+                try:
+                    # insert new processed entries right after the last selected source in current ordering
+                    cur_files = [str(p) for p in self.files]
+                    inserted = []
+                    for idx, src in enumerate(source_paths or []):
+                        src_str = str(src)
+                        pk = f"processed_{Path(src_str).stem}_drift"
+                        try:
+                            pos = cur_files.index(src_str)
+                        except ValueError:
+                            pos = len(self.files)
+                        if pk not in cur_files:
+                            self.files.insert(pos + 1, Path(pk))
+                            cur_files.insert(pos + 1, pk)
+                            inserted.append(pk)
+                    if not inserted:
+                        for pk in list(self._processed_views.keys()):
+                            if pk not in cur_files:
+                                self.files.append(Path(pk))
+                    self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+                except Exception:
+                    pass
+                QtWidgets.QMessageBox.information(dlg, "Drift correction", f"Added {added} drift-corrected copy(ies) to thumbnails.\nLook for entries tagged [drift].")
+            else:
+                QtWidgets.QMessageBox.information(dlg, "Drift correction", "No corrected copies were created (missing headers or channels).")
+
         save_imgs_btn.clicked.connect(_save_imgs)
         save_gif_btn.clicked.connect(_save_anim)
+        save_virtual_btn.clicked.connect(_save_virtual)
         dlg.exec_()
 
     def on_clear_spec_selection(self):
