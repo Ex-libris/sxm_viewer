@@ -26,6 +26,7 @@ from .molecular_overlay import (
     Molecule,
     MoleculePropertiesDialog,
     get_atom_color,
+    get_atom_radius,
     available_atom_palettes,
 )
 from ..thumbnail_render import sample_array_value, array_to_qimage
@@ -156,6 +157,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_artists = []
         self._molecule_history = []
         self._molecule_drag_snapshot = False
+        self._show_molecule_shadow = True
         self.mpl_connect('scroll_event', self._on_scroll_zoom)
         self._profile_background = None
         self._active_profile_original_color = None
@@ -484,7 +486,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 z = coords_sorted[:, 2]
                 
                 z_norm = (z - z_min) / z_range
-                sizes = size_base + size_scale * z_norm
+                rad_mode = getattr(mol, "radius_mode", "covalent")
+                rad_scale = getattr(mol, "radius_scale", 1.0)
+                rad_ref = max(get_atom_radius('C', 'covalent'), 1e-3)
+                radius_factors = []
+                for e in elements_sorted:
+                    r_el = get_atom_radius(e, rad_mode)
+                    radius_factors.append(max(r_el / rad_ref, 0.05) * rad_scale)
+                sizes = (size_base + size_scale * z_norm) * np.array(radius_factors)
                 
                 base_colors = []
                 for e in elements_sorted:
@@ -506,7 +515,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     b_h = min(1.0, b + (1 - b) * highlight)
                     final_colors.append((r_h, g_h, b_h, depth_alpha))
                 
-                if atom_style in ("shaded", "spacefill", "licorice"):
+                if self._show_molecule_shadow and atom_style in ("shaded", "spacefill", "licorice"):
                     shadow_sc = ax.scatter(
                         x + 0.05, y - 0.05,
                         s=sizes * 1.25,
@@ -3374,18 +3383,39 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_palette_cb = cb
 
     def _show_molecule_menu(self, event, mol):
+        style = QtWidgets.QApplication.style()
+        icon = lambda std: style.standardIcon(std) if style else QtGui.QIcon()
+
         menu = QtWidgets.QMenu(self)
-        props_act = menu.addAction("Properties (Rotate/Scale)...")
-        atom_color_act = menu.addAction("Set atom color...")
-        atom_elem_color_act = menu.addAction("Set element color...")
-        bond_color_act = menu.addAction("Set bond color...")
-        reset_colors_act = menu.addAction("Reset colors")
-        reset_all_act = menu.addAction("Reset all molecules")
-        undo_act = menu.addAction("Undo last change (Ctrl+Z)")
-        dup_act = menu.addAction("Duplicate")
-        del_act = menu.addAction("Delete")
+
+        # Properties
+        props_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogDetailedView), "Properties (Rotate/Scale)...")
         menu.addSeparator()
-        pal_menu = menu.addMenu("Palette")
+
+        # View toggles
+        toggle_shadow_act = menu.addAction(icon(QtWidgets.QStyle.SP_DialogYesButton), "Show shadows")
+        toggle_shadow_act.setCheckable(True)
+        toggle_shadow_act.setChecked(self._show_molecule_shadow)
+        show_h_act = menu.addAction(icon(QtWidgets.QStyle.SP_TitleBarShadeButton), "Show hydrogens")
+        show_h_act.setCheckable(True)
+        show_h_act.setChecked(getattr(self, "_show_hydrogens", True))
+
+        # Colors submenu
+        colors_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogOpenButton), "Colors...")
+        atom_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_DriveDVDIcon), "Set atom color...")
+        atom_elem_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_FileIcon), "Set element color...")
+        bond_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogListView), "Set bond color...")
+        reset_colors_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset colors")
+
+        menu.addSeparator()
+        reset_all_act = menu.addAction(icon(QtWidgets.QStyle.SP_MessageBoxWarning), "Reset all molecules")
+
+        # Undo
+        undo_act = menu.addAction(icon(QtWidgets.QStyle.SP_ArrowBack), "Undo last change")
+        undo_act.setShortcut(QtGui.QKeySequence("Ctrl+Z"))
+
+        # Palette submenu
+        pal_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogHelpButton), "Palette")
         current_pal = (getattr(self, "molecule_palette", "cpk") or "cpk").lower()
         palette_actions = {}
         for pal in available_atom_palettes():
@@ -3393,11 +3423,14 @@ class MultiPreviewCanvas(FigureCanvas):
             act.setCheckable(True)
             act.setChecked(pal == current_pal)
             palette_actions[act] = pal
+
         menu.addSeparator()
-        show_h_act = menu.addAction("Show hydrogens")
-        show_h_act.setCheckable(True)
-        show_h_act.setChecked(getattr(self, "_show_hydrogens", True))
-        
+
+        dup_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogNewFolder), "Duplicate")
+        dup_act.setShortcut(QtGui.QKeySequence("Ctrl+D"))
+        del_act = menu.addAction(icon(QtWidgets.QStyle.SP_TrashIcon), "Delete")
+        del_act.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Delete))
+
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
             dlg = MoleculePropertiesDialog(mol, self, callback=self._redraw)
@@ -3438,6 +3471,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self.reset_molecules()
         elif action == undo_act:
             self.undo_last_molecule_change()
+        elif action == toggle_shadow_act:
+            self._show_molecule_shadow = toggle_shadow_act.isChecked()
+            self._redraw()
         elif action == dup_act:
             self._push_molecule_snapshot()
             new_mol = mol.copy()

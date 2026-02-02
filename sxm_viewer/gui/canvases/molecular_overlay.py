@@ -74,6 +74,30 @@ COVALENT_RADII = {
     'Pa': 2.00, 'U': 1.96, 'Np': 1.90, 'Pu': 1.87, 'Am': 1.80, 'Cm': 1.69
 }
 
+# van der Waals radii (Å) from Bondi/CRC (fallback to covalent if missing)
+VDW_RADII = {
+    'H': 1.20, 'He': 1.40, 'Li': 1.82, 'Be': 1.53, 'B': 1.92, 'C': 1.70, 'N': 1.55, 'O': 1.52,
+    'F': 1.47, 'Ne': 1.54, 'Na': 2.27, 'Mg': 1.73, 'Al': 1.84, 'Si': 2.10, 'P': 1.80, 'S': 1.80,
+    'Cl': 1.75, 'Ar': 1.88, 'K': 2.75, 'Ca': 2.31, 'Ni': 1.63, 'Cu': 1.40, 'Zn': 1.39,
+    'Ga': 1.87, 'Ge': 2.11, 'As': 1.85, 'Se': 1.90, 'Br': 1.85, 'Kr': 2.02, 'Rb': 3.03,
+    'Sr': 2.49, 'Pd': 1.63, 'Ag': 1.72, 'Cd': 1.58, 'In': 1.93, 'Sn': 2.17, 'Sb': 2.06,
+    'Te': 2.06, 'I': 1.98, 'Xe': 2.16, 'Cs': 3.43, 'Ba': 2.68, 'Pt': 1.75, 'Au': 1.66, 'Hg': 1.55,
+    'Tl': 1.96, 'Pb': 2.02, 'Bi': 2.07, 'Po': 1.97, 'At': 2.02, 'Rn': 2.20
+}
+
+# Neutral atomic radii (Å), CRC/Pauling
+ATOMIC_RADII = {
+    'H': 0.53, 'He': 0.31, 'Li': 1.67, 'Be': 1.12, 'B': 0.87, 'C': 0.67, 'N': 0.56, 'O': 0.48,
+    'F': 0.42, 'Ne': 0.38, 'Na': 1.90, 'Mg': 1.45, 'Al': 1.18, 'Si': 1.11, 'P': 0.98, 'S': 0.88,
+    'Cl': 0.79, 'Ar': 0.71, 'K': 2.43, 'Ca': 1.94, 'Sc': 1.84, 'Ti': 1.76, 'V': 1.71, 'Cr': 1.66,
+    'Mn': 1.61, 'Fe': 1.56, 'Co': 1.52, 'Ni': 1.49, 'Cu': 1.45, 'Zn': 1.42, 'Ga': 1.36, 'Ge': 1.25,
+    'As': 1.14, 'Se': 1.03, 'Br': 0.94, 'Kr': 0.88, 'Rb': 2.65, 'Sr': 2.19, 'Y': 2.12, 'Zr': 2.06,
+    'Nb': 1.98, 'Mo': 1.90, 'Tc': 1.83, 'Ru': 1.78, 'Rh': 1.73, 'Pd': 1.69, 'Ag': 1.65, 'Cd': 1.61,
+    'In': 1.56, 'Sn': 1.45, 'Sb': 1.33, 'Te': 1.23, 'I': 1.15, 'Xe': 1.08, 'Cs': 2.98, 'Ba': 2.53,
+    'La': 1.95, 'Hf': 2.08, 'Ta': 2.00, 'W': 1.93, 'Re': 1.88, 'Os': 1.85, 'Ir': 1.80, 'Pt': 1.77,
+    'Au': 1.74, 'Hg': 1.71, 'Tl': 1.56, 'Pb': 1.54, 'Bi': 1.43, 'Po': 1.35, 'At': 1.27, 'Rn': 1.20
+}
+
 def available_atom_palettes():
     """Return sorted list of available palette keys."""
     return sorted(ATOM_PALETTES.keys())
@@ -86,6 +110,22 @@ def get_atom_color(element, palette='cpk'):
 # Backwards compatible alias
 def get_cpk_color(element):
     return get_atom_color(element, 'cpk')
+
+def get_atom_radius(element, mode='covalent'):
+    """Return an element radius (Å) for the requested mode with sensible fallback."""
+    el = (element or '').title()
+    mode = (mode or 'covalent').lower()
+    if mode == 'vdw':
+        val = VDW_RADII.get(el)
+    elif mode == 'atomic':
+        val = ATOMIC_RADII.get(el)
+    elif mode == 'constant':
+        val = 1.0
+    else:
+        val = COVALENT_RADII.get(el)
+    if val is None:
+        val = COVALENT_RADII.get(el) or VDW_RADII.get(el) or ATOMIC_RADII.get(el) or 1.5
+    return float(val)
 
 class Molecule:
     def __init__(self, filepath=None):
@@ -107,6 +147,8 @@ class Molecule:
         self.atom_color_map = {}         # Element -> hex override
         self.bond_color_override = None  # Hex string or None (use default)
         self.bond_color_mode = 'default' # default | single | by_atoms
+        self.radius_mode = 'covalent'    # covalent | vdw | atomic | constant
+        self.radius_scale = 1.0
         
         # Avoid truth-testing numpy arrays or other iterables; only treat valid paths.
         if isinstance(filepath, (str, Path)) and str(filepath).strip():
@@ -278,6 +320,8 @@ class Molecule:
         new_mol.atom_color_map = dict(self.atom_color_map or {})
         new_mol.bond_color_override = self.bond_color_override
         new_mol.bond_color_mode = self.bond_color_mode
+        new_mol.radius_mode = self.radius_mode
+        new_mol.radius_scale = self.radius_scale
         return new_mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
@@ -318,6 +362,21 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else: self.combo_bond_style.setCurrentText("Default")
         self.combo_bond_style.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Bond style:", self.combo_bond_style)
+        self.combo_radius_mode = QtWidgets.QComboBox()
+        self.combo_radius_mode.addItems(["Covalent", "van der Waals", "Atomic", "Constant"])
+        rm = (molecule.radius_mode or "covalent").lower()
+        if rm == 'vdw': self.combo_radius_mode.setCurrentText("van der Waals")
+        elif rm == 'atomic': self.combo_radius_mode.setCurrentText("Atomic")
+        elif rm == 'constant': self.combo_radius_mode.setCurrentText("Constant")
+        else: self.combo_radius_mode.setCurrentText("Covalent")
+        self.combo_radius_mode.currentTextChanged.connect(self._on_change)
+        form_disp.addRow("Radius model:", self.combo_radius_mode)
+        self.spin_radius_scale = QtWidgets.QDoubleSpinBox()
+        self.spin_radius_scale.setRange(0.1, 5.0)
+        self.spin_radius_scale.setSingleStep(0.05)
+        self.spin_radius_scale.setValue(molecule.radius_scale)
+        self.spin_radius_scale.valueChanged.connect(self._on_change)
+        form_disp.addRow("Radius scale:", self.spin_radius_scale)
         # Color overrides
         self.btn_atom_color = QtWidgets.QPushButton("Atom color...")
         self.btn_atom_color.clicked.connect(self._pick_atom_color)
@@ -389,6 +448,16 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else:
             self.molecule.render_style = style_choice.lower()
         self.molecule.bond_style = self.combo_bond_style.currentText().lower()
+        rm_choice = self.combo_radius_mode.currentText()
+        if rm_choice.lower().startswith("van"):
+            self.molecule.radius_mode = "vdw"
+        elif rm_choice.lower().startswith("atomic"):
+            self.molecule.radius_mode = "atomic"
+        elif rm_choice.lower().startswith("constant"):
+            self.molecule.radius_mode = "constant"
+        else:
+            self.molecule.radius_mode = "covalent"
+        self.molecule.radius_scale = self.spin_radius_scale.value()
         if self.callback:
             self.callback()
 
