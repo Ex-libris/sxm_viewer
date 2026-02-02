@@ -4,6 +4,25 @@ Fast thumbnail browsing, spectroscopy overlays, and publication-ready canvases
 for Omicron/Anfatec data. Nanonis `.sxm` files are supported through the bundled
 adapter (they are converted into Omicron-style headers on load).
 
+## Gallery (animated)
+- Wheel zoom + pan + reset  
+  ![](screenshots/Wheel-zoom%20+%20pan%20+%20reset.gif)
+- Crop → pop-out → measure  
+  ![](screenshots/Crop%20%E2%86%92%20pop-out%20%E2%86%92%20measure.gif)
+- Thumbnail to pop-out  
+  ![](screenshots/Thumbnail%20to%20pop-out.gif)
+- Histogram live contrast  
+  ![](screenshots/Histogram%20live%20contrast.gif)
+- Filters pipeline  
+  ![](screenshots/Filters%20pipeline.gif)
+- Spectro workflow  
+  ![](screenshots/Spectro%20workflow.gif)
+- Molecular overlay styling  
+  ![](screenshots/Molecular%20overlay%20styling.gif)
+- Canvas export flow  
+  ![](screenshots/Canvas%20export%20flow.gif)
+
+Static reference:
 ![Main menu and grid navigation](screenshots/main_menu.png)
 ![Matrix and KPFM views](screenshots/matrix_data.png)
 ![Spectroscopy and parabolas](screenshots/spectroscopies.png)
@@ -33,16 +52,31 @@ adapter (they are converted into Omicron-style headers on load).
 - Keep personal datasets outside the repo; `.gitignore` excludes `.sxm`, `.dat`,
   `.sxmviewer_nanonis/`, and other caches.
 
-## Current capabilities
-- Thumbnail grid plus minimap with sort/filter, channel colormaps, and quick
-  frame tagging.
-- Preview panel with measurement mode (profiles), scale bars, SI/relative axes,
-  and copy/export actions.
-- Spectroscopy workflow: configurable markers, shift-click multi-selection,
-  popups with log/lin axes, inset markers, parabola fits, and a comparison dialog
-  with CSV export. Matrix datasets open in a dedicated explorer.
-- Canvas workspace: drag thumbnails to build layouts, align/distribute/polish
-  tiles, and export PNG/SVG snapshots for figures.
+## Core workflows
+- **Browse datasets quickly**: responsive thumbnail grid with sorting/filtering,
+  tagging, quick colormap swaps, and a minimap to stay oriented in large folders.
+- **Inspect & measure**: wheel-zoom/pan, crop/zoom into pop-out windows, scale
+  bars, line profiles, angle tool, and easy copy/export of what you see.
+- **Spectroscopy & grids**: spectro browser/comparison for single traces and
+  matrix grids; anchor grids to reference images; export fits/CSVs when needed.
+- **Fix and enhance images**: histogram/contrast with draggable limits and live
+  preview; plane/flatten/gamma/flip/rotate pipelines that work the same on
+  thumbnails, preview, crops, and pop-outs.
+- **Overlay molecules**: drop in XYZ/PDB/MOL, pick a style (ball & stick,
+  sticks, wireframe, spacefill, licorice), palette, hydrogens/shadows, and align
+  overlays directly on top of images.
+- **Build figures**: publication canvas for arranging selected views; export
+  PNGs/XYZ from toolbar groups (file/layout/export/tools/theme).
+
+## Highlights
+- Disk-backed caches for Nanonis conversions, headers, and spectroscopies for
+  fast reloads.
+- Double-click anywhere to pop out a full viewer with the same tools (measure,
+  filters, overlays).
+- Activity/status feedback: color-coded log with auto-scroll and a status bar
+  showing current work and cache/selection info.
+- Keyboard-friendly: navigation, layout toggle, exports, zoom/pan/reset, and
+  measurement tools all have shortcuts (see [`docs/SHORTCUTS.md`](docs/SHORTCUTS.md)).
 
 ## Shortcuts and first steps
 - Load a folder, pick a channel, and toggle **Show spectroscopies** to reveal
