@@ -1469,6 +1469,21 @@ QLabel:hover {{
         """Receive cropped view from preview canvas and pop it out."""
         if not view:
             return
+        # Offer to save crop as a virtual copy in thumbnails
+        try:
+            path = view.get("path") or (view.get("meta") or {}).get("path")
+            if path:
+                ret = QtWidgets.QMessageBox.question(
+                    self,
+                    "Save crop",
+                    "Add this cropped view to thumbnails as a virtual copy?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No,
+                )
+                if ret == QtWidgets.QMessageBox.Yes:
+                    self._create_virtual_crop_view(view)
+        except Exception:
+            pass
         self._spawn_preview_popup([self._copy_view_for_popup(view)], title=view.get("title") or "Cropped view")
 
     # ---------- Spectro browser dock ----------
@@ -2071,6 +2086,44 @@ QLabel:hover {{
             return str(key) in getattr(self, "_processed_views", {})
         except Exception:
             return False
+
+    def _make_processed_key(self, origin_path: str, op: str = "virtual", channel_idx=None):
+        """Generate a unique processed key for a virtual copy based on origin and op."""
+        stem = Path(origin_path).stem
+        chan = f"_ch{channel_idx}" if channel_idx is not None else ""
+        ctr = getattr(self, "_virtual_counter", 0) + 1
+        self._virtual_counter = ctr
+        return f"processed_{stem}_{op}{chan}_{ctr}"
+
+    def _insert_processed_after_source(self, processed_key: str, origin_path: str):
+        """Insert processed entry immediately after its origin in self.files."""
+        try:
+            cur_files = [str(p) for p in self.files]
+            if processed_key in cur_files:
+                return
+            try:
+                pos = cur_files.index(str(origin_path))
+            except ValueError:
+                pos = len(self.files) - 1
+            self.files.insert(pos + 1, Path(processed_key))
+        except Exception:
+            # fallback append
+            self.files.append(Path(processed_key))
+
+    def _remove_virtual_entries(self, paths):
+        """Remove selected virtual copies from in-memory store and UI."""
+        if not paths:
+            return
+        keys = {str(Path(p)) for p in paths if self._is_processed_key(str(p))}
+        if not keys:
+            return
+        for k in keys:
+            self._processed_views.pop(k, None)
+            self.headers.pop(k, None)
+        self.files = [p for p in self.files if str(p) not in keys]
+        self._channel_data_cache = OrderedDict()
+        self._invalidate_thumbnail_cache(keys)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def _channel_cache_key(self, file_key, channel_idx, fd):
         fname = fd.get('FileName')
@@ -4336,6 +4389,19 @@ QLabel:hover {{
         marker_menu = menu.addMenu("Marker style")
         self._populate_marker_style_menu(marker_menu)
 
+        # Virtual copies submenu
+        virt_menu = menu.addMenu("Virtual copy")
+        virt_cur = QtWidgets.QAction("Current channel", virt_menu)
+        virt_cur.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, self.channel_dropdown.currentIndex()))
+        virt_menu.addAction(virt_cur)
+        virt_other = QtWidgets.QAction("Choose channel...", virt_menu)
+        virt_other.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, None))
+        virt_menu.addAction(virt_other)
+        virt_menu.addSeparator()
+        virt_remove = QtWidgets.QAction("Remove virtual copies (selected)", virt_menu)
+        virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))
+        virt_menu.addAction(virt_remove)
+
         if hasattr(self, '_clear_multi_spec_selection'):
             menu.addSeparator()
             clear_specs_act = QtWidgets.QAction("Clear spectroscopy selections", menu)
@@ -5171,6 +5237,108 @@ QLabel:hover {{
         save_gif_btn.clicked.connect(_save_anim)
         save_virtual_btn.clicked.connect(_save_virtual)
         dlg.exec_()
+
+    # ---------- Virtual copies (channels, crops, drift) ----------
+
+    def _create_virtual_channel_copies(self, paths, channel_idx=None):
+        """Create virtual copies of selected images for a specific channel."""
+        if not paths:
+            return
+        targets = [str(Path(p)) for p in paths]
+        # If channel not provided, ask the user using first file's channels
+        if channel_idx is None:
+            first = targets[0]
+            header, fds = self.headers.get(first, (None, None))
+            if header is None or fds is None:
+                header, fds = parse_header(Path(first))
+            if not fds:
+                return
+            dlg = QtWidgets.QInputDialog(self)
+            dlg.setInputMode(QtWidgets.QInputDialog.IntInput)
+            dlg.setIntRange(0, len(fds) - 1)
+            dlg.setIntValue(self.channel_dropdown.currentIndex())
+            dlg.setLabelText(f"Channel index (0-{len(fds)-1}) for virtual copy")
+            if dlg.exec_() != QtWidgets.QDialog.Accepted:
+                return
+            channel_idx = dlg.intValue()
+        added = 0
+        for p in targets:
+            try:
+                header, fds = self.headers.get(p, (None, None))
+                if header is None or fds is None:
+                    header, fds = parse_header(Path(p))
+                if not fds or channel_idx < 0 or channel_idx >= len(fds):
+                    continue
+                # Build arrays for all channels so switching works
+                arr_by_channel = {}
+                for ch_idx, fd in enumerate(fds):
+                    try:
+                        arr_by_channel[ch_idx] = np.array(self._get_channel_array(p, ch_idx, header, fd), copy=True)
+                    except Exception:
+                        continue
+                if not arr_by_channel:
+                    continue
+                fds_new = [dict(fd) for fd in fds]
+                for i, fd_new in enumerate(fds_new):
+                    fd_new['FileName'] = f"{Path(p).name}_virt_ch{i}"
+                    fd_new['Caption'] = f"{fd_new.get('Caption') or Path(p).name} [ch{i}]"
+                key = self._make_processed_key(p, op="ch", channel_idx=channel_idx)
+                self._processed_views[key] = {
+                    'arr_by_channel': arr_by_channel,
+                    'header': dict(header),
+                    'fds': fds_new,
+                    'channel_idx': channel_idx,
+                    'source': p,
+                    'label': f"[ch{channel_idx}]",
+                    'op': 'channel',
+                }
+                self.headers[key] = (dict(header), fds_new)
+                self._insert_processed_after_source(key, p)
+                added += 1
+            except Exception:
+                continue
+        if added:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def _create_virtual_crop_view(self, view):
+        """Create a virtual copy from a cropped preview view (single channel)."""
+        if not view:
+            return
+        path = view.get("path") or (view.get("meta") or {}).get("path")
+        arr = view.get("arr")
+        ch_idx = view.get("channel_idx") or (view.get("meta") or {}).get("channel_idx")
+        if path is None or arr is None:
+            return
+        try:
+            header, fds = self.headers.get(str(path), (None, None))
+            if header is None or fds is None:
+                header, fds = parse_header(Path(path))
+            if not fds:
+                return
+            ch_idx = int(ch_idx) if ch_idx is not None else 0
+            arr_by_channel = {ch_idx: np.array(arr, copy=True)}
+            fds_new = [dict(fd) for fd in fds]
+            for i, fd_new in enumerate(fds_new):
+                fd_new['FileName'] = f"{Path(path).name}_crop_ch{i}"
+                fd_new['Caption'] = f"{fd_new.get('Caption') or Path(path).name} [crop]"
+            header_new = dict(header)
+            header_new['xPixel'] = arr.shape[1]
+            header_new['yPixel'] = arr.shape[0]
+            key = self._make_processed_key(str(path), op="crop", channel_idx=ch_idx)
+            self._processed_views[key] = {
+                'arr_by_channel': arr_by_channel,
+                'header': header_new,
+                'fds': fds_new,
+                'channel_idx': ch_idx,
+                'source': str(path),
+                'label': "[crop]",
+                'op': 'crop',
+            }
+            self.headers[key] = (header_new, fds_new)
+            self._insert_processed_after_source(key, str(path))
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            return
 
     def on_clear_spec_selection(self):
         self._clear_multi_spec_selection()
