@@ -90,6 +90,54 @@ QScrollArea {
 }
 """
 
+# Light theme variant for canvas dialogs
+CANVAS_DIALOG_STYLE_LIGHT = """
+QDialog {
+    background-color: #f7f7f7;
+    color: #1b1b1b;
+}
+QGroupBox {
+    border: 1px solid #c4c4c4;
+    border-radius: 6px;
+    margin-top: 10px;
+}
+QGroupBox:title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #303030;
+}
+QLabel {
+    color: #303030;
+}
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #ffffff;
+    border: 1px solid #c4c4c4;
+    padding: 4px;
+    border-radius: 4px;
+    color: #1b1b1b;
+}
+QPushButton {
+    background-color: #e6e6e6;
+    border: 1px solid #c4c4c4;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #1b1b1b;
+}
+QPushButton:hover {
+    background-color: #dcdcdc;
+}
+QPushButton:pressed {
+    background-color: #cfcfcf;
+}
+QCheckBox {
+    color: #303030;
+}
+QScrollArea {
+    background: transparent;
+}
+"""
+
 CANVAS_STATUS_LABEL_STYLE = (
     "QLabel {"
     " padding: 6px 12px;"

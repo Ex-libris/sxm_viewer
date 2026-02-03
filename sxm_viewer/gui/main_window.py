@@ -929,18 +929,18 @@ class SXMGridViewer(QtWidgets.QWidget):
                 pass
         else:
             app.setPalette(app.style().standardPalette())
-        try:
-            win = self._canvas_window_ref()
-            if win is not None and hasattr(win, "set_dark_mode"):
-                win.set_dark_mode(bool(enabled))
-        except Exception:
-            pass
             try:
                 if hasattr(self, 'left_w') and self.left_w is not None:
                     # clear custom styling to return to native look
                     self.left_w.setStyleSheet("")
             except Exception:
                 pass
+        try:
+            win = self._canvas_window_ref()
+            if win is not None and hasattr(win, "set_dark_mode"):
+                win.set_dark_mode(bool(enabled))
+        except Exception:
+            pass
         if hasattr(self, 'shortcuts_label'):
             self.shortcuts_label.setText(self._shortcuts_html())
         try:

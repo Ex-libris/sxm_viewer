@@ -75,6 +75,10 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         # Apply modern styling
         self._dark = bool(getattr(self.viewer, "dark_mode", False))
         self._apply_styles(self._dark)
+        try:
+            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
+        except Exception:
+            pass
 
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setSpacing(0)
@@ -128,6 +132,10 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         """Public hook to refresh styling when the main viewer toggles theme."""
         self._dark = bool(dark)
         self._apply_styles(self._dark)
+        try:
+            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
+        except Exception:
+            pass
 
     def _apply_styles(self, dark: bool | None = None):
         """Apply scientific GUI styling - high contrast, clear organization."""
