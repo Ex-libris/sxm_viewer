@@ -73,7 +73,12 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._restoring = False
 
         # Apply modern styling
-        self._apply_styles()
+        self._dark = bool(getattr(self.viewer, "dark_mode", False))
+        self._apply_styles(self._dark)
+        try:
+            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
+        except Exception:
+            pass
 
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setSpacing(0)
@@ -123,10 +128,27 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
     def _create_separator(self):
         return canvas_window_ui.create_separator()
 
-    def _apply_styles(self):
+    def set_dark_mode(self, dark: bool):
+        """Public hook to refresh styling when the main viewer toggles theme."""
+        self._dark = bool(dark)
+        self._apply_styles(self._dark)
+        try:
+            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
+        except Exception:
+            pass
+
+    def _apply_styles(self, dark: bool | None = None):
         """Apply scientific GUI styling - high contrast, clear organization."""
-        dark = bool(getattr(self.viewer, "dark_mode", False))
-        return canvas_window_ui.apply_styles(self, dark=dark)
+        if dark is None:
+            dark = bool(getattr(self.viewer, "dark_mode", False))
+        canvas_window_ui.apply_styles(self, dark=bool(dark))
+        try:
+            # Force a re-polish so existing widgets pick up the new stylesheet.
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
+        except Exception:
+            pass
 
     def _build_inspector(self):
         return canvas_window_ui.build_inspector(self)
@@ -453,9 +475,29 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         try:
             groups = []
             for payload in payloads:
+                items = payload.get("items")
                 file_path = payload.get("file_path")
                 cmap = payload.get("cmap")
                 channel_idx = payload.get("channel_index")
+                # Handle multi-item payloads from thumbnail drags
+                if items and isinstance(items, (list, tuple, set)):
+                    for path_str in items:
+                        try:
+                            path_obj = Path(path_str)
+                            if channel_idx is not None:
+                                try:
+                                    idx = int(channel_idx)
+                                except Exception:
+                                    idx = None
+                                if idx is not None:
+                                    self._add_view_from_header(path_obj, idx, cmap_override=cmap, place=True)
+                                    continue
+                            group = self._add_kind_views_for_header(path_obj, cmap_override=cmap)
+                            if group:
+                                groups.append(group)
+                        except Exception as exc:
+                            QtWidgets.QMessageBox.warning(self, "Canvas drop", f"Unable to load {path_str}: {exc}")
+                    continue
                 if not file_path:
                     continue
                 try:
@@ -577,6 +619,11 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             cmap = cmap_override
         if not cmap:
             cmap = self.viewer.preview_cmap_combo.currentText() or self.viewer.preview_cmap
+        try:
+            # Match the preview orientation (imshow origin lower); canvas sometimes appeared vertically mirrored.
+            arr_display = np.flipud(arr_display)
+        except Exception:
+            pass
         axis_unit = header.get('XPhysUnit') or header.get('YPhysUnit') or header.get('ScanUnit') or ''
         if not axis_unit:
             axis_unit = 'px' if disp_extent is None else 'nm'

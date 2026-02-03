@@ -388,10 +388,13 @@ def _make_thumb_move_handler(viewer, label_widget):
                 fp = label_widget.property("file_path")
                 ch_idx = int(label_widget.property("channel_index"))
                 cmap = viewer.preview_cmap_combo.currentText() or viewer.preview_cmap
-                selected = list(getattr(viewer, "thumb_multi_select", set()) or [])
-                if fp in selected and len(selected) > 1:
+                selected = set(getattr(viewer, "thumb_multi_select", set()) or [])
+                # Always include the current drag origin in the payload and respect any existing selection,
+                # so users don't need to keep modifiers pressed while starting the drag.
+                if selected:
+                    selected.add(str(fp))
                     payload = {
-                        "items": sorted({str(p) for p in selected}),
+                        "items": sorted(selected),
                         "channel_index": ch_idx,
                         "cmap": cmap,
                     }

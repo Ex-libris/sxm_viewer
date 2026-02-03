@@ -4,6 +4,7 @@ from __future__ import annotations
 from ..._shared import QtCore, QtGui, QtWidgets, colormaps
 from ..styles import (
     CANVAS_DIALOG_STYLE,
+    CANVAS_DIALOG_STYLE_LIGHT,
     CANVAS_HEADER_STYLE,
     CANVAS_LABEL_STYLE,
     CANVAS_LABEL_VALUE_STYLE,
@@ -32,17 +33,21 @@ from ..text import (
 def create_toolbar_group(title):
     """Create a visually grouped section in toolbar."""
     container = QtWidgets.QWidget()
+    container.setProperty("toolbarGroup", True)
     container_layout = QtWidgets.QVBoxLayout(container)
     container_layout.setContentsMargins(0, 0, 0, 0)
     container_layout.setSpacing(2)
 
     label = QtWidgets.QLabel(title)
-    label.setStyleSheet(CANVAS_TOOLBAR_GROUP_LABEL_STYLE)
+    label.setProperty("toolbarLabel", True)
+    # Style via global stylesheet; avoid hardcoded palette.
+    label.setStyleSheet("")
     label.setAlignment(QtCore.Qt.AlignLeft)
     container_layout.addWidget(label)
 
     group = QtWidgets.QWidget()
-    group.setStyleSheet(CANVAS_TOOLBAR_GROUP_STYLE)
+    # Styling comes from the theme; avoid fixed colors.
+    group.setStyleSheet("")
     group_layout = QtWidgets.QHBoxLayout(group)
     group_layout.setContentsMargins(8, 4, 8, 4)
     group_layout.setSpacing(4)
@@ -81,7 +86,9 @@ def create_toolbar_section(title: str, widgets: list) -> QtWidgets.QWidget:
 def build_toolbar(window):
     """Build organized toolbar with clear visual grouping."""
     toolbar_widget = QtWidgets.QWidget()
-    toolbar_widget.setStyleSheet(CANVAS_TOOLBAR_WIDGET_STYLE)
+    toolbar_widget.setObjectName("canvasToolbar")
+    # Use theme-applied styling from apply_styles instead of a fixed palette.
+    toolbar_widget.setStyleSheet("")
     toolbar_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
     main_layout = QtWidgets.QVBoxLayout(toolbar_widget)
@@ -237,6 +244,7 @@ def build_inspector(window):
     scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
 
     panel = QtWidgets.QWidget()
+    panel.setObjectName("inspectorPanel")
     layout = QtWidgets.QVBoxLayout(panel)
     layout.setContentsMargins(12, 12, 12, 12)
     layout.setSpacing(12)
@@ -430,17 +438,39 @@ def build_inspector(window):
 def apply_styles(window, dark: bool = False):
     """Apply scientific GUI styling - high contrast, clear organization."""
     if dark:
+        base = CANVAS_DIALOG_STYLE
         bg = "#1b1d23"
         fg = "#f0f0f0"
         panel = "#21242b"
         border = "#2e333d"
+        toolbar_bg = "#262626"
+        group_bg = "#2d2d2d"
+        label_fg = "#cdd4e0"
+        btn_bg = "#3a3a3a"
+        btn_fg = "#f0f0f0"
+        btn_hover = "#444444"
+        btn_press = "#2f2f2f"
+        input_bg = "#1f1f1f"
+        input_fg = "#f0f0f0"
+        input_border = "#444444"
     else:
+        base = CANVAS_DIALOG_STYLE_LIGHT
         bg = "#f7f7f7"
         fg = "#1b1b1b"
         panel = "#ffffff"
         border = "#c4c4c4"
+        toolbar_bg = "#efefef"
+        group_bg = "#ffffff"
+        label_fg = "#404040"
+        btn_bg = "#e6e6e6"
+        btn_fg = "#1b1b1b"
+        btn_hover = "#dcdcdc"
+        btn_press = "#cfcfcf"
+        input_bg = "#ffffff"
+        input_fg = "#1b1b1b"
+        input_border = "#c4c4c4"
     window.setStyleSheet(
-        CANVAS_DIALOG_STYLE
+        base
         + f"""
 QDialog {{
     background-color: {bg};
@@ -459,6 +489,56 @@ QGroupBox::title {{
     left: 8px;
     padding: 0 4px 0 4px;
     background: transparent;
+}}
+QWidget#canvasToolbar {{
+    background-color: {toolbar_bg};
+    border: none;
+}}
+QWidget[toolbarGroup="true"] {{
+    background-color: {group_bg};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px;
+}}
+QLabel[toolbarLabel="true"] {{
+    color: {label_fg};
+    font-weight: 600;
+    font-size: 10px;
+}}
+QPushButton {{
+    background-color: {btn_bg};
+    color: {btn_fg};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 4px 8px;
+}}
+QPushButton:hover {{
+    background-color: {btn_hover};
+}}
+QPushButton:pressed {{
+    background-color: {btn_press};
+}}
+QCheckBox {{
+    color: {fg};
+}}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+    background-color: {input_bg};
+    color: {input_fg};
+    border: 1px solid {input_border};
+    border-radius: 4px;
+    padding: 2px 4px;
+}}
+QSlider::groove:horizontal {{
+    background: {border};
+    height: 6px;
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    background: {btn_fg};
+    border: 1px solid {border};
+    width: 12px;
+    margin: -4px 0;
+    border-radius: 6px;
 }}
 """
     )

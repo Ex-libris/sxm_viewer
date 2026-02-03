@@ -105,6 +105,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._colorbar_orientation = 'vertical'
         self._show_ticks = True
         self._show_colorbar = True
+        self._show_title = True
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
@@ -175,6 +176,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._pan_last_ts = 0.0
         self._pan_throttle_ms = 16
         self.mpl_connect('scroll_event', self._on_scroll_zoom)
+
+    def set_show_title(self, show: bool):
+        """Toggle rendering of title/date overlays in views."""
+        self._show_title = bool(show)
+        self._redraw()
 
     def draw(self):
         try:
@@ -3511,6 +3517,14 @@ class MultiPreviewCanvas(FigureCanvas):
         if view is None or getattr(event, 'guiEvent', None) is None:
             return
         menu = QtWidgets.QMenu(self)
+        # theme-aware styling
+        try:
+            if self._detail_dark:
+                menu.setStyleSheet("QMenu { background: #1e1e24; color: #f5f5f5; } QMenu::item:selected { background: #2c2c34; }")
+            else:
+                menu.setStyleSheet("")
+        except Exception:
+            pass
         copy_act = menu.addAction("Copy image")
         copy_svg_act = menu.addAction("Copy view as SVG (vector)")
         copy_disp_png = menu.addAction("Copy displayed (PNG)")
@@ -3603,12 +3617,19 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _save_view_to_file(self, view):
         try:
-            title = view.get('title') or 'view'
+            tgt_view = view or (self.views[0] if self.views else {})
+            title = tgt_view.get('title') or 'view'
             default = f"{title}.png"
             path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save view", default, "PNG Files (*.png)")
             if not path:
                 return
-            qimg = self._view_to_qimage(view)
+            if len(self.views) > 1:
+                fig = self._render_views_grid(self.views)
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                qimg = QtGui.QImage.fromData(buf.getvalue())
+            else:
+                qimg = self._view_to_qimage(tgt_view)
             qimg.save(path, "PNG")
         except Exception:
             QtWidgets.QMessageBox.warning(self, "Save view", "Unable to save image.")
@@ -3629,7 +3650,10 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _copy_view_as_svg(self, view):
         try:
-            fig = self._render_view_figure(view)
+            if len(self.views) > 1:
+                fig = self._render_views_grid(self.views)
+            else:
+                fig = self._render_view_figure(view or (self.views[0] if self.views else {}))
             buf = io.BytesIO()
             with matplotlib.rc_context({'svg.fonttype': 'none'}):
                 fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02)
@@ -3641,13 +3665,20 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._copy_feedback_handler(view)
         except Exception:
             pass
+        finally:
+            try:
+                import matplotlib.pyplot as _plt  # type: ignore
+                _plt.close(fig)
+            except Exception:
+                pass
 
     def _save_view_vector(self, view, fmt):
         fmt = (fmt or "").strip().lower()
         if fmt not in ("svg", "pdf"):
             return
         try:
-            title = view.get('title') or 'view'
+            tgt_view = view or (self.views[0] if self.views else {})
+            title = tgt_view.get('title') or 'view'
             default = f"{title}.{fmt}"
             label = "SVG Files (*.svg)" if fmt == "svg" else "PDF Files (*.pdf)"
             path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save view", default, label)
@@ -3655,7 +3686,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 return
             if not path.lower().endswith(f".{fmt}"):
                 path = f"{path}.{fmt}"
-            fig = self._render_view_figure(view)
+            if len(self.views) > 1:
+                fig = self._render_views_grid(self.views)
+            else:
+                fig = self._render_view_figure(tgt_view)
             if fmt == 'svg':
                 with matplotlib.rc_context({'svg.fonttype': 'none'}):
                     fig.savefig(path, format=fmt, bbox_inches="tight", pad_inches=0.02)
@@ -3795,7 +3829,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if not self._show_ticks:
                 cbar.set_ticks([])
         title = view.get('title', '')
-        if title:
+        if title and self._show_title:
             ax.set_title(title, fontsize=9)
         ax.tick_params(labelsize=8)
 
@@ -3845,6 +3879,59 @@ class MultiPreviewCanvas(FigureCanvas):
             fig.tight_layout()
         except Exception:
             pass
+        return fig
+
+    def _render_views_grid(self, views):
+        """Render multiple views into a single figure grid."""
+        views = views or []
+        total = len(views)
+        if total == 0:
+            return self._render_view_figure({})
+        cols = int(math.ceil(math.sqrt(total)))
+        rows = int(math.ceil(total / cols))
+        fig = Figure(figsize=(6 * cols, 6 * rows))
+        dark = bool(self._detail_dark)
+        fig_face = '#111217' if dark else '#ffffff'
+        fig.set_facecolor(fig_face)
+        text_color = '#f5f5f5' if dark else '#111111'
+        font_scale = getattr(self, '_view_font_scale', 1.0)
+        for i, view in enumerate(views, 1):
+            ax = fig.add_subplot(rows, cols, i)
+            arr = np.asarray(view.get('arr'))
+            flip = bool(view.get('relative_axes'))
+            arr_plot = np.flipud(arr) if flip else arr
+            extent = view.get('extent', None)
+            cmap = view.get('cmap', 'viridis')
+            origin = 'lower' if flip else 'upper'
+            if extent is None:
+                im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
+            else:
+                im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            ax.set_autoscale_on(False)
+            if not self._show_ticks:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            ax.tick_params(labelsize=8 * font_scale, colors=text_color, labelcolor=text_color)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+            cbar_label = view.get('colorbar_label') or view.get('unit', '')
+            if cbar_label and self._show_colorbar:
+                try:
+                    divider = make_axes_locatable(ax)
+                    cax = divider.append_axes("right", size="5%", pad=0.05)
+                    cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                    cbar.set_label(cbar_label, size=10 * font_scale)
+                    cbar.ax.yaxis.label.set_color(text_color)
+                    cbar.ax.tick_params(colors=text_color, labelcolor=text_color, labelsize=8 * font_scale)
+                    if not self._show_ticks:
+                        cbar.set_ticks([])
+                    cbar.outline.set_edgecolor(text_color)
+                except Exception:
+                    pass
+            title = view.get('title', '') or view.get('label', '')
+            if title and self._show_title:
+                ax.set_title(title, fontsize=9 * font_scale, color=text_color)
+        fig.tight_layout()
         return fig
 
     def _style_export_figure(self, fig, ax, cbar):

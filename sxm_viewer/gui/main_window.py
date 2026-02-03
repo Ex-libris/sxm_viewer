@@ -686,6 +686,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_hist_menu.addAction("Adjust…", lambda: self._open_histogram_dialog(self.preview_canvas))
         self.preview_hist_menu.addAction("Auto (1–99%)", lambda: self._auto_contrast(self.preview_canvas))
         self.preview_hist_menu.addAction("Reset range", lambda: self._reset_contrast(self.preview_canvas))
+        self.show_preview_title = bool(self.config.get('show_preview_title', True))
+        act_title = self.preview_hist_menu.addAction("Show title/date")
+        act_title.setCheckable(True)
+        act_title.setChecked(self.show_preview_title)
+        act_title.triggered.connect(self._on_toggle_preview_title)
         self.preview_hist_btn.setMenu(self.preview_hist_menu)
         self.preview_hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(self.preview_canvas))
         preview_header.addWidget(self.preview_hist_btn)
@@ -707,6 +712,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             "  Enable 'Measure profile' for line sampling\n"
             "  Ctrl+C copies the focused image to clipboard"
         )
+        try:
+            self.preview_canvas.set_show_title(self.show_preview_title)
+        except Exception:
+            pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         try:
             self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
@@ -926,6 +935,12 @@ class SXMGridViewer(QtWidgets.QWidget):
                     self.left_w.setStyleSheet("")
             except Exception:
                 pass
+        try:
+            win = self._canvas_window_ref()
+            if win is not None and hasattr(win, "set_dark_mode"):
+                win.set_dark_mode(bool(enabled))
+        except Exception:
+            pass
         if hasattr(self, 'shortcuts_label'):
             self.shortcuts_label.setText(self._shortcuts_html())
         try:
@@ -1271,6 +1286,10 @@ QLabel:hover {{
         controls_bar.addWidget(layout_cb)
         controls_bar.addStretch(1)
         canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
+        try:
+            canvas.set_show_title(getattr(self, "show_preview_title", True))
+        except Exception:
+            pass
         canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
         canvas.set_views([self._copy_view_for_popup(v) for v in views])
         canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
@@ -1837,6 +1856,16 @@ QLabel:hover {{
             self.recent_molecules = recent
             self.config["recent_molecules"] = recent
             save_config(self.config)
+        except Exception:
+            pass
+
+    def _on_toggle_preview_title(self, checked):
+        """Toggle title/date overlay in Preview and pop-outs."""
+        self.show_preview_title = bool(checked)
+        self.config['show_preview_title'] = self.show_preview_title
+        save_config(self.config)
+        try:
+            self.preview_canvas.set_show_title(self.show_preview_title)
         except Exception:
             pass
 
@@ -2522,6 +2551,25 @@ QLabel:hover {{
         win.raise_()
         try:
             win.activateWindow()
+        except Exception:
+            pass
+        # Automatically push the current thumbnail selection (or current preview) into the canvas.
+        try:
+            targets = list(getattr(self, "thumb_multi_select", []) or [])
+            if not targets:
+                if getattr(self, "selected_file_for_thumbs", None):
+                    targets = [self.selected_file_for_thumbs]
+                elif self.last_preview:
+                    targets = [self.last_preview[0]]
+            payloads = []
+            for fp in sorted(set(targets)):
+                # When dropping into the canvas we want all selected files, not just the drag origin.
+                payloads.append({"file_path": fp, "channel_index": None, "cmap": None})
+            if payloads:
+                try:
+                    win.handle_drop(payloads, [])
+                except Exception:
+                    pass
         except Exception:
             pass
 
