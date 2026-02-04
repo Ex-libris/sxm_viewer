@@ -39,10 +39,10 @@ Static reference:
   pip install -r scripts/requirements.txt
   python -m sxm_viewer
   ```
-- Windows, minimal clicks:
-  1) Run `scripts\install_sxm_viewer.bat` (creates `.venv`, installs deps).
-  2) Run `scripts\run_sxm_viewer.bat` (launches using `.venv`, auto-loads `.env` if present).
-     - Tip: edit `.env` after first launch to set paths/options; the runner will pick it up automatically when `python-dotenv` is installed (bundled in requirements).
+- Windows, just clicking things:
+  1) Click and Run `scripts\install_sxm_viewer.bat` (creates `.venv`, installs deps).
+  2) Click and Run `scripts\run_sxm_viewer.bat` (launches using `.venv`, auto-loads `.env` if present).
+     - Tip: edit `.env` after first launch to set paths/options; the runner will pick it up automatically when `python-dotenv` is installed (bundled in requirem
 
 ## Supported data and caches
 - Anfatec/Omicron `.txt` images with multiple channels.
