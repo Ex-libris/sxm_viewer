@@ -188,6 +188,13 @@ def _ensure_display_menu(viewer):
     reset_act = viewer.display_menu.addAction("Reset view")
     reset_act.setToolTip("Reset all display toggles to defaults")
     reset_act.triggered.connect(viewer._reset_display_options)
+    viewer.display_menu.addSeparator()
+    save_session_act = viewer.display_menu.addAction("Save session...")
+    save_session_act.setToolTip("Save the full viewer state (virtual copies, overlays, profiles, etc.)")
+    save_session_act.triggered.connect(viewer.on_save_session)
+    load_session_act = viewer.display_menu.addAction("Load session...")
+    load_session_act.setToolTip("Restore a previously saved viewer session")
+    load_session_act.triggered.connect(viewer.on_load_session)
     return viewer.display_menu
 
 

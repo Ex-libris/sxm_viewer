@@ -322,7 +322,60 @@ class Molecule:
         new_mol.bond_color_mode = self.bond_color_mode
         new_mol.radius_mode = self.radius_mode
         new_mol.radius_scale = self.radius_scale
+        new_mol.z_height_scale = self.z_height_scale
         return new_mol
+
+    def to_dict(self) -> dict:
+        return {
+            "filepath": str(self.filepath) if self.filepath else None,
+            "coordinates": self.coordinates.tolist() if len(self.coordinates) else [],
+            "elements": list(self.elements),
+            "offset": self.offset.tolist(),
+            "angles": self.angles.tolist(),
+            "scale": float(self.scale),
+            "mirror_x": bool(self.mirror_x),
+            "mirror_y": bool(self.mirror_y),
+            "z_height_scale": float(getattr(self, "z_height_scale", 1.0)),
+            "bonds": [list(b) for b in (self.bonds or [])],
+            "display_mode": self.display_mode,
+            "render_style": self.render_style,
+            "bond_style": self.bond_style,
+            "atom_color_override": self.atom_color_override,
+            "atom_color_map": dict(self.atom_color_map or {}),
+            "bond_color_override": self.bond_color_override,
+            "bond_color_mode": self.bond_color_mode,
+            "radius_mode": self.radius_mode,
+            "radius_scale": float(self.radius_scale),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Molecule":
+        mol = cls()
+        if not isinstance(data, dict):
+            return mol
+        mol.filepath = data.get("filepath")
+        coords = data.get("coordinates") or []
+        mol.coordinates = np.asarray(coords, dtype=float) if coords else np.zeros((0, 3))
+        mol.elements = list(data.get("elements") or [])
+        mol.offset = np.asarray(data.get("offset") or [0.0, 0.0, 0.0], dtype=float)
+        mol.angles = np.asarray(data.get("angles") or [0.0, 0.0, 0.0], dtype=float)
+        mol.scale = float(data.get("scale", 0.1))
+        mol.mirror_x = bool(data.get("mirror_x", False))
+        mol.mirror_y = bool(data.get("mirror_y", False))
+        mol.z_height_scale = float(data.get("z_height_scale", 1.0))
+        mol.bonds = [tuple(b) for b in (data.get("bonds") or [])]
+        mol.display_mode = data.get("display_mode", "Atoms + Bonds")
+        mol.render_style = data.get("render_style", "classic")
+        mol.bond_style = data.get("bond_style", "default")
+        mol.atom_color_override = data.get("atom_color_override")
+        mol.atom_color_map = dict(data.get("atom_color_map") or {})
+        mol.bond_color_override = data.get("bond_color_override")
+        mol.bond_color_mode = data.get("bond_color_mode", "default")
+        mol.radius_mode = data.get("radius_mode", "covalent")
+        mol.radius_scale = float(data.get("radius_scale", 1.0))
+        if not mol.bonds:
+            mol.recalculate_bonds()
+        return mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
     def __init__(self, molecule, parent=None, callback=None):
