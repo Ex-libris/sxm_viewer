@@ -1263,6 +1263,9 @@ QLabel:hover {{
         filter_btn.setText("Filter")
         filter_btn.setToolTip("Apply scan-level filters (flatten, plane, etc.)")
         filter_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+        add_crop_btn = QtWidgets.QToolButton()
+        add_crop_btn.setText("Add crop")
+        add_crop_btn.setToolTip("Add this cropped view to thumbnails as a virtual copy")
         hist_btn = QtWidgets.QToolButton()
         hist_btn.setText("Histogram")
         hist_btn.setToolTip("Show histogram and adjust display range")
@@ -1279,6 +1282,7 @@ QLabel:hover {{
         controls_bar.addWidget(angle_btn)
         controls_bar.addWidget(scale_btn)
         controls_bar.addWidget(filter_btn)
+        controls_bar.addWidget(add_crop_btn)
         controls_bar.addWidget(hist_btn)
         controls_bar.addWidget(clear_btn)
         controls_bar.addSpacing(6)
@@ -1296,12 +1300,16 @@ QLabel:hover {{
         canvas._detail_dark = bool(self.detail_dark_view)
         canvas._detail_grid = bool(self.detail_grid_view)
         canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=self._friendly_view_title(v, default="Cropped view")))
-        canvas.set_double_click_callback(
-            lambda v=None: self._spawn_preview_popup(
+        def _popup_double_click(v=None):
+            if v and self._is_crop_view(v):
+                self._create_virtual_crop_view(v)
+                log_status("Added cropped view to thumbnails.")
+                return
+            self._spawn_preview_popup(
                 [self._copy_view_for_popup(v)] if v else [],
                 title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
             )
-        )
+        canvas.set_double_click_callback(_popup_double_click)
         canvas.set_filter_menu_callback(lambda menu, view, c=canvas: self._populate_canvas_filter_menu(menu, c, view))
         try:
             canvas.set_molecule_palette(self.molecule_palette, notify=False)
@@ -1330,6 +1338,13 @@ QLabel:hover {{
         filter_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
         filter_btn.setMenu(filter_menu)
         filter_btn.clicked.connect(lambda _: self._open_custom_filter_for_canvas(canvas))
+        def _find_crop_view():
+            for v in (canvas.views or []):
+                if self._is_crop_view(v):
+                    return v
+            return None
+        add_crop_btn.setEnabled(bool(_find_crop_view()))
+        add_crop_btn.clicked.connect(lambda _=None: self._create_virtual_crop_view(_find_crop_view()))
         layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
         popup_state = {"profile_dialog": None}
         def _update_profile_dialog(active, saved):
@@ -1490,7 +1505,7 @@ QLabel:hover {{
             return
         # Offer to save crop as a virtual copy in thumbnails
         try:
-            path = view.get("path") or (view.get("meta") or {}).get("path")
+            path = self._view_source_path(view)
             if path:
                 ret = QtWidgets.QMessageBox.question(
                     self,
@@ -2675,10 +2690,32 @@ QLabel:hover {{
             return arr
         return self._apply_filter_pipeline(arr, spec.get('steps', []))
 
+    def _view_source_path(self, view):
+        if not view:
+            return None
+        path = view.get("path")
+        meta = view.get("meta") or {}
+        if not path:
+            path = meta.get("path") or meta.get("file_path")
+        return path
+
+    def _is_crop_view(self, view):
+        if not view:
+            return False
+        title = str(view.get("title") or "").lower()
+        label = str(view.get("label") or "").lower()
+        if "[crop]" in title or label == "[crop]":
+            return True
+        return False
+
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
         """Populate a context menu with quick filter actions for a preview canvas."""
         if menu is None or canvas is None:
             return
+        if view and self._is_crop_view(view):
+            add_act = menu.addAction("Add cropped view to thumbnails")
+            add_act.triggered.connect(lambda _=None, v=view: self._create_virtual_crop_view(v))
+            menu.addSeparator()
         filt_menu = menu.addMenu("Filters")
         for key, info in FILTER_DEFINITIONS.items():
             act = QtWidgets.QAction(info.get("label", key.title()), filt_menu)
@@ -5352,9 +5389,12 @@ QLabel:hover {{
         """Create a virtual copy from a cropped preview view (single channel)."""
         if not view:
             return
-        path = view.get("path") or (view.get("meta") or {}).get("path")
+        path = self._view_source_path(view)
         arr = view.get("arr")
         ch_idx = view.get("channel_idx") or (view.get("meta") or {}).get("channel_idx")
+        extent = view.get("extent")
+        crop_bounds = view.get("crop_bounds")
+        crop_shape = view.get("crop_shape")
         if path is None or arr is None:
             return
         try:
@@ -5364,14 +5404,63 @@ QLabel:hover {{
             if not fds:
                 return
             ch_idx = int(ch_idx) if ch_idx is not None else 0
-            arr_by_channel = {ch_idx: np.array(arr, copy=True)}
+            arr_by_channel = {}
+            if crop_bounds and crop_shape:
+                try:
+                    r0, r1, c0, c1 = crop_bounds
+                    h0, w0 = crop_shape
+                    r0 = int(np.clip(r0, 0, max(0, h0 - 1)))
+                    r1 = int(np.clip(r1, r0 + 1, h0))
+                    c0 = int(np.clip(c0, 0, max(0, w0 - 1)))
+                    c1 = int(np.clip(c1, c0 + 1, w0))
+                    frac_r0 = r0 / float(h0)
+                    frac_r1 = r1 / float(h0)
+                    frac_c0 = c0 / float(w0)
+                    frac_c1 = c1 / float(w0)
+                    for i, fd in enumerate(fds):
+                        base_arr = self._get_channel_array(str(path), i, header, fd)
+                        if base_arr is None:
+                            continue
+                        h, w = base_arr.shape
+                        rr0 = int(np.clip(round(frac_r0 * h), 0, max(0, h - 1)))
+                        rr1 = int(np.clip(round(frac_r1 * h), rr0 + 1, h))
+                        cc0 = int(np.clip(round(frac_c0 * w), 0, max(0, w - 1)))
+                        cc1 = int(np.clip(round(frac_c1 * w), cc0 + 1, w))
+                        arr_by_channel[i] = np.array(base_arr[rr0:rr1, cc0:cc1], copy=True)
+                except Exception:
+                    arr_by_channel = {}
+            if not arr_by_channel:
+                arr_by_channel = {ch_idx: np.array(arr, copy=True)}
             fds_new = [dict(fd) for fd in fds]
             for i, fd_new in enumerate(fds_new):
                 fd_new['FileName'] = f"{Path(path).name}_crop_ch{i}"
                 fd_new['Caption'] = f"{fd_new.get('Caption') or Path(path).name} [crop]"
             header_new = dict(header)
-            header_new['xPixel'] = arr.shape[1]
-            header_new['yPixel'] = arr.shape[0]
+            # Use any cropped channel to set the pixel dimensions.
+            sample_arr = next(iter(arr_by_channel.values())) if arr_by_channel else np.asarray(arr)
+            header_new['xPixel'] = int(sample_arr.shape[1])
+            header_new['yPixel'] = int(sample_arr.shape[0])
+            if extent:
+                try:
+                    x0, x1, y1, y0 = map(float, extent)
+                    header_new['XScanRange'] = abs(x1 - x0)
+                    header_new['YScanRange'] = abs(y0 - y1)
+                    header_new['xCenter'] = 0.5 * (x0 + x1)
+                    header_new['yCenter'] = 0.5 * (y0 + y1)
+                except Exception:
+                    pass
+            elif crop_bounds and crop_shape:
+                try:
+                    r0, r1, c0, c1 = crop_bounds
+                    h0, w0 = crop_shape
+                    xr = header.get('XScanRange', header.get('XRange'))
+                    yr = header.get('YScanRange', header.get('YRange'))
+                    if xr is not None:
+                        header_new['XScanRange'] = float(xr) * (float(c1 - c0) / float(w0))
+                    if yr is not None:
+                        header_new['YScanRange'] = float(yr) * (float(r1 - r0) / float(h0))
+                except Exception:
+                    pass
             key = self._make_processed_key(str(path), op="crop", channel_idx=ch_idx)
             self._processed_views[key] = {
                 'arr_by_channel': arr_by_channel,

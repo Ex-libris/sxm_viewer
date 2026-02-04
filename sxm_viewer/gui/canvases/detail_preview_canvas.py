@@ -4162,6 +4162,19 @@ class MultiPreviewCanvas(FigureCanvas):
             new_view["arr"] = np.array(cropped_arr, copy=True)
         except Exception:
             new_view["arr"] = cropped_arr
+        # Store crop bounds (end-exclusive) and original shape for virtual copies.
+        try:
+            if flip:
+                # r0/r1 are in flipped (display) space; convert to original array indices.
+                r0_base = int(h - 1 - r1)
+                r1_base = int(h - 1 - r0)
+            else:
+                r0_base = int(r0)
+                r1_base = int(r1)
+            new_view["crop_bounds"] = (int(r0_base), int(r1_base + 1), int(c0), int(c1 + 1))
+            new_view["crop_shape"] = (int(h), int(w))
+        except Exception:
+            pass
         if crop_extent is not None:
             new_view["extent"] = crop_extent
         title = view.get("title") or "crop"
