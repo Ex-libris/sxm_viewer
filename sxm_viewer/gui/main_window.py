@@ -1482,6 +1482,12 @@ QLabel:hover {{
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
         dlg.finished.connect(lambda _=None: self._popup_canvases.remove(canvas) if canvas in self._popup_canvases else None)
+        try:
+            canvas._session_dialog = dlg
+            canvas._session_title = title or "Preview"
+        except Exception:
+            pass
+        return canvas
 
     def _on_molecule_palette_changed(self, palette: str):
         palette = (palette or "cpk").lower()
@@ -2754,6 +2760,60 @@ QLabel:hover {{
             except Exception:
                 pass
             preview_state["view_layout"] = getattr(self.preview_canvas, "_view_layout", "grid")
+        popups_dir = data_dir / "popups"
+        os.makedirs(popups_dir, exist_ok=True)
+        popups = []
+        for idx, canvas in enumerate(list(getattr(self, "_popup_canvases", []) or [])):
+            try:
+                views = list(canvas.views or [])
+            except Exception:
+                views = []
+            view_payloads = []
+            for vi, v in enumerate(views):
+                try:
+                    arr = np.asarray(v.get("arr"))
+                    fname = f"popup_{idx}_view_{vi}.npy"
+                    np.save(popups_dir / fname, arr)
+                    view_payloads.append({
+                        "arr_file": str(Path("popups") / fname),
+                        "extent": v.get("extent"),
+                        "cmap": v.get("cmap"),
+                        "unit": v.get("unit"),
+                        "title": v.get("title"),
+                        "colorbar_label": v.get("colorbar_label"),
+                        "axis_unit": v.get("axis_unit"),
+                        "relative_axes": v.get("relative_axes"),
+                        "clim": v.get("clim"),
+                        "meta": v.get("meta"),
+                    })
+                except Exception:
+                    continue
+            popups.append({
+                "title": getattr(canvas, "_session_title", "Preview"),
+                "layout": getattr(canvas, "_view_layout", "grid"),
+                "detail_dark": bool(getattr(canvas, "_detail_dark", False)),
+                "detail_grid": bool(getattr(canvas, "_detail_grid", False)),
+                "scale_bar": bool(getattr(canvas, "scale_bar_enabled", False)),
+                "views": view_payloads,
+            })
+        spectro_state = {}
+        try:
+            dock = getattr(self, "spectro_dock", None)
+            if dock is not None and dock.isVisible():
+                spectro_state["open"] = True
+                spectro_state["search"] = self.spectro_search.text() if hasattr(self, "spectro_search") else ""
+                spectro_state["selected"] = self.spectro_list.currentRow() if hasattr(self, "spectro_list") else -1
+                spectro_state["geometry"] = [dock.x(), dock.y(), dock.width(), dock.height()]
+        except Exception:
+            pass
+        profile_state = {}
+        try:
+            dlg = getattr(self, "_profile_dialog", None)
+            if dlg is not None and dlg.isVisible():
+                profile_state["open"] = True
+                profile_state["geometry"] = [dlg.x(), dlg.y(), dlg.width(), dlg.height()]
+        except Exception:
+            pass
         canvas_state = None
         win = self._canvas_window_ref()
         if win is not None and win.isVisible():
@@ -2800,6 +2860,9 @@ QLabel:hover {{
             "ui": ui_state,
             "preview_state": preview_state,
             "canvas_state": canvas_state,
+            "popups": popups,
+            "spectro_state": spectro_state,
+            "profile_dialog": profile_state,
             "data_dir": data_dir.name,
         }
         return self._jsonify(payload)
@@ -2965,6 +3028,75 @@ QLabel:hover {{
                 win = self._canvas_window_ref()
                 if win:
                     win._restore_state(canvas_state)
+            except Exception:
+                pass
+        for popup in payload.get("popups", []) or []:
+            try:
+                base_data = session_path.parent / (payload.get("data_dir") or "")
+                views = []
+                for v in popup.get("views", []) or []:
+                    arr_rel = v.get("arr_file") or ""
+                    arr_path = base_data / arr_rel
+                    if not arr_path.exists():
+                        arr_path = session_path.parent / arr_rel
+                    if arr_path.exists():
+                        arr = np.load(arr_path, allow_pickle=False)
+                    else:
+                        arr = None
+                    if arr is None:
+                        continue
+                    view = {
+                        "arr": arr,
+                        "extent": v.get("extent"),
+                        "cmap": v.get("cmap"),
+                        "unit": v.get("unit"),
+                        "title": v.get("title"),
+                        "colorbar_label": v.get("colorbar_label"),
+                        "axis_unit": v.get("axis_unit"),
+                        "relative_axes": v.get("relative_axes"),
+                        "clim": v.get("clim"),
+                        "meta": v.get("meta"),
+                    }
+                    views.append(view)
+                if views:
+                    canvas = self._spawn_preview_popup(views, title=popup.get("title"))
+                    if canvas:
+                        try:
+                            canvas.set_view_layout(popup.get("layout", "grid"))
+                        except Exception:
+                            pass
+                        try:
+                            canvas._detail_dark = bool(popup.get("detail_dark", False))
+                            canvas._detail_grid = bool(popup.get("detail_grid", False))
+                            canvas.enable_scale_bar(bool(popup.get("scale_bar", False)))
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+        spectro_state = payload.get("spectro_state") or {}
+        if spectro_state.get("open"):
+            try:
+                self.open_spectro_browser()
+                if hasattr(self, "spectro_search"):
+                    self.spectro_search.setText(spectro_state.get("search", ""))
+                    self._filter_spectro_browser()
+                if hasattr(self, "spectro_list"):
+                    idx = int(spectro_state.get("selected", -1))
+                    if idx >= 0:
+                        self.spectro_list.setCurrentRow(idx)
+                geom = spectro_state.get("geometry")
+                if geom and hasattr(self, "spectro_dock"):
+                    self.spectro_dock.setGeometry(*geom)
+            except Exception:
+                pass
+        profile_state = payload.get("profile_dialog") or {}
+        if profile_state.get("open"):
+            try:
+                self._on_show_profile_window()
+                dlg = getattr(self, "_profile_dialog", None)
+                geom = profile_state.get("geometry")
+                if dlg is not None and geom:
+                    dlg.setGeometry(*geom)
             except Exception:
                 pass
         return True
