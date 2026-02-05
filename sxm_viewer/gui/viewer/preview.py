@@ -431,10 +431,13 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         except Exception:
             pass
 
-    # Styled HTML metadata
+    # Styled HTML metadata (preserve scroll position while browsing)
     try:
+        sb = viewer.meta_box.verticalScrollBar()
+        prev_pos = sb.value()
         html = viewer._build_metadata_html(header_path, header, fd, channel_idx, unit_normalized, display_unit, display_arr, zero_offset)
         viewer.meta_box.setHtml(html)
+        QtCore.QTimer.singleShot(0, lambda pos=prev_pos: sb.setValue(pos))
     except Exception:
         viewer.meta_box.setPlainText(f"File: {header_path.name}")
 
