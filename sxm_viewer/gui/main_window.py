@@ -198,6 +198,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
+        self.show_molecules = bool(self.config.get('show_molecules', True))
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self._display_defaults = {
@@ -206,6 +207,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'compact_markers': True,
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
+            'show_molecules': True,
         }
         self._popup_canvases = []
         c_single = self.config.get('spectro_marker_color_single')
@@ -224,6 +226,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
+        self.molecule_overlays = {}
         self._temp_reveal = set()
         self.spectro_dock = None
         self._spectro_browser_entries = []
@@ -724,6 +727,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.preview_canvas.set_show_title(self.show_preview_title)
         except Exception:
             pass
+        try:
+            self.preview_canvas.set_show_molecules(self.show_molecules)
+        except Exception:
+            pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         try:
             self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
@@ -1114,6 +1121,7 @@ QLabel:hover {{
             (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
+            (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
         ]
         for action, state in action_pairs:
             if action is not None:
@@ -1297,6 +1305,10 @@ QLabel:hover {{
         canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
         try:
             canvas.set_show_title(getattr(self, "show_preview_title", True))
+        except Exception:
+            pass
+        try:
+            canvas.set_show_molecules(getattr(self, "show_molecules", True))
         except Exception:
             pass
         canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
@@ -2225,6 +2237,7 @@ QLabel:hover {{
         for k in keys:
             self._processed_views.pop(k, None)
             self.headers.pop(k, None)
+            self.molecule_overlays.pop(k, None)
         self.files = [p for p in self.files if str(p) not in keys]
         self._channel_data_cache = OrderedDict()
         self._invalidate_thumbnail_cache(keys)
@@ -2717,7 +2730,90 @@ QLabel:hover {{
                 highlight_path = ''
             if highlight_path and highlight_path != str(header_path_str):
                 self._highlight_spectrum_entry(None)
+        try:
+            prev_key = str(self.last_preview[0]) if self.last_preview else None
+        except Exception:
+            prev_key = None
+        try:
+            new_key = str(header_path_str) if header_path_str is not None else None
+        except Exception:
+            new_key = None
+        if new_key and new_key != prev_key:
+            self._store_molecule_overlay(prev_key)
+            self._load_molecule_overlay(new_key)
         return viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
+
+    def _store_molecule_overlay(self, file_key=None):
+        """Persist current molecule overlays for a specific file key."""
+        if not file_key:
+            return
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        try:
+            state = canvas.export_molecule_state()
+        except Exception:
+            return
+        if state is None:
+            return
+        self.molecule_overlays[str(file_key)] = state
+
+    def _load_molecule_overlay(self, file_key=None):
+        """Load molecule overlays for a specific file key (defaults to empty)."""
+        if not file_key:
+            return
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        key = str(file_key)
+        state = self.molecule_overlays.get(key)
+        if state is None:
+            state = []
+        try:
+            canvas.import_molecule_state(state)
+        except Exception:
+            pass
+
+    def _clear_molecules_for_paths(self, paths):
+        if not paths:
+            return
+        keys = {str(Path(p)) for p in paths}
+        for key in keys:
+            self.molecule_overlays[key] = []
+        try:
+            if self.last_preview and str(self.last_preview[0]) in keys:
+                self._load_molecule_overlay(self.last_preview[0])
+        except Exception:
+            pass
+
+    def _copy_molecules_from_source(self, paths):
+        if not paths:
+            return
+        try:
+            if self.last_preview:
+                self._store_molecule_overlay(self.last_preview[0])
+        except Exception:
+            pass
+        keys = {str(Path(p)) for p in paths if self._is_processed_key(str(p))}
+        if not keys:
+            return
+        for key in keys:
+            try:
+                src = self._processed_views.get(str(key), {}).get("source")
+                if not src:
+                    continue
+                src_key = str(src)
+                state = self.molecule_overlays.get(src_key)
+                if state is None:
+                    continue
+                self.molecule_overlays[str(key)] = state
+            except Exception:
+                continue
+        try:
+            if self.last_preview and str(self.last_preview[0]) in keys:
+                self._load_molecule_overlay(self.last_preview[0])
+        except Exception:
+            pass
 
     def get_current_detail_config(self):
         """Return JSON-friendly configuration describing current detail view state."""
@@ -2777,6 +2873,11 @@ QLabel:hover {{
         processed_dir = data_dir / "processed"
         os.makedirs(processed_dir, exist_ok=True)
         processed = {}
+        try:
+            if self.last_preview:
+                self._store_molecule_overlay(self.last_preview[0])
+        except Exception:
+            pass
         for key, data in (self._processed_views or {}).items():
             arr_files = {}
             arr_by_channel = data.get("arr_by_channel") or {}
@@ -2836,6 +2937,7 @@ QLabel:hover {{
             "compact_markers": bool(getattr(self, "compact_markers", True)),
             "detail_dark_view": bool(getattr(self, "detail_dark_view", False)),
             "detail_grid_view": bool(getattr(self, "detail_grid_view", False)),
+            "show_molecules": bool(getattr(self, "show_molecules", True)),
             "relative_axes": bool(getattr(self, "relative_axes", False)),
             "display_units_relative": bool(getattr(self, "display_units_relative", False)),
             "display_units_si": bool(getattr(self, "display_units_si", False)),
@@ -2853,6 +2955,7 @@ QLabel:hover {{
             "per_file_channel_cmap": self.per_file_channel_cmap,
             "extra_view_specs": self.extra_view_specs,
             "tags": self.tags,
+            "molecule_overlays": self.molecule_overlays,
             "thumb_multi_select": list(getattr(self, "thumb_multi_select", set()) or []),
             "selected_file_for_thumbs": getattr(self, "selected_file_for_thumbs", None),
             "last_preview": self.last_preview,
@@ -2937,9 +3040,11 @@ QLabel:hover {{
         self.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
         self.extra_view_specs = payload.get("extra_view_specs") or []
         self.tags = payload.get("tags") or {}
+        self.molecule_overlays = payload.get("molecule_overlays") or {}
         self.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
         self.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
-        self.last_preview = payload.get("last_preview")
+        pending_preview = payload.get("last_preview")
+        self.last_preview = None
         ui = payload.get("ui") or {}
         if hasattr(self, "thumb_sort_combo") and ui.get("thumb_sort"):
             self.thumb_sort_combo.setCurrentText(ui.get("thumb_sort"))
@@ -2972,6 +3077,7 @@ QLabel:hover {{
             self.on_compact_markers_toggled(bool(ui.get("compact_markers", True)))
             self.on_detail_dark_toggled(bool(ui.get("detail_dark_view", False)))
             self.on_detail_grid_toggled(bool(ui.get("detail_grid_view", False)))
+            self.on_show_molecules_toggled(bool(ui.get("show_molecules", True)))
             self.on_relative_axes_toggled(bool(ui.get("relative_axes", False)))
             self.on_unit_relative_toggled(bool(ui.get("display_units_relative", False)))
             self.on_unit_display_toggled(bool(ui.get("display_units_si", False)))
@@ -2983,9 +3089,9 @@ QLabel:hover {{
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         except Exception:
             pass
-        if self.last_preview:
+        if pending_preview:
             try:
-                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+                self.show_file_channel(pending_preview[0], pending_preview[1])
             except Exception:
                 pass
         preview_state = payload.get("preview_state") or {}
@@ -3006,7 +3112,7 @@ QLabel:hover {{
             except Exception:
                 pass
             try:
-                if preview_state.get("molecules"):
+                if preview_state.get("molecules") and not self.molecule_overlays:
                     self.preview_canvas.import_molecule_state(preview_state.get("molecules"))
             except Exception:
                 pass
@@ -3017,6 +3123,13 @@ QLabel:hover {{
                     self.preview_canvas._scale_bar_settings = dict(preview_state.get("scale_bar_settings") or {})
             except Exception:
                 pass
+        try:
+            if preview_state.get("molecules") and self.last_preview:
+                key = str(self.last_preview[0])
+                if key not in self.molecule_overlays:
+                    self.molecule_overlays[key] = preview_state.get("molecules")
+        except Exception:
+            pass
         canvas_state = payload.get("canvas_state")
         if canvas_state:
             try:
@@ -4848,6 +4961,15 @@ QLabel:hover {{
         virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))
         virt_menu.addAction(virt_remove)
 
+        mol_menu = menu.addMenu("Molecules")
+        mol_clear = QtWidgets.QAction("Clear molecules (selected)", mol_menu)
+        mol_clear.triggered.connect(lambda _, paths=list(targets): self._clear_molecules_for_paths(paths))
+        mol_menu.addAction(mol_clear)
+        mol_copy = QtWidgets.QAction("Copy molecules from source", mol_menu)
+        mol_copy.setEnabled(any(self._is_processed_key(str(p)) for p in targets))
+        mol_copy.triggered.connect(lambda _, paths=list(targets): self._copy_molecules_from_source(paths))
+        mol_menu.addAction(mol_copy)
+
         if hasattr(self, '_clear_multi_spec_selection'):
             menu.addSeparator()
             clear_specs_act = QtWidgets.QAction("Clear spectroscopy selections", menu)
@@ -6187,6 +6309,25 @@ QLabel:hover {{
         self.detail_grid_view = bool(checked)
         self.config['detail_grid_view'] = self.detail_grid_view; save_config(self.config)
         self._apply_detail_view_theme()
+
+    def on_show_molecules_toggled(self, checked: bool):
+        self.show_molecules = bool(checked)
+        self.config['show_molecules'] = self.show_molecules; save_config(self.config)
+        try:
+            if getattr(self, "preview_canvas", None):
+                self.preview_canvas.set_show_molecules(self.show_molecules)
+        except Exception:
+            pass
+        for canv in getattr(self, '_popup_canvases', []):
+            try:
+                canv.set_show_molecules(self.show_molecules)
+            except Exception:
+                continue
+        act = getattr(self, 'molecules_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.show_molecules)
+            act.blockSignals(False)
 
     def on_export_selected_same_view(self):
         return viewer_export.on_export_selected_same_view(self)

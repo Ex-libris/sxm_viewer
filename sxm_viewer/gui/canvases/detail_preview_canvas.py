@@ -198,6 +198,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_history = []
         self._molecule_drag_snapshot = False
         self._show_molecule_shadow = True
+        self.show_molecules = True
         self.mpl_connect('scroll_event', self._on_scroll_zoom)
         self._profile_background = None
         self._active_profile_original_color = None
@@ -219,6 +220,11 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_show_title(self, show: bool):
         """Toggle rendering of title/date overlays in views."""
         self._show_title = bool(show)
+        self._redraw()
+
+    def set_show_molecules(self, show: bool):
+        """Toggle rendering of molecular overlays in views."""
+        self.show_molecules = bool(show)
         self._redraw()
 
     def draw(self):
@@ -502,7 +508,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw()
 
     def _draw_molecules(self, ax):
-        if not self.molecules:
+        if not self.show_molecules or not self.molecules:
             return
 
         for mol in self.molecules:
@@ -3195,7 +3201,7 @@ class MultiPreviewCanvas(FigureCanvas):
         # Right-click: outline context menu (style/clear/undo)
         if event.button == 3 and view is not None:
             if event.xdata is not None and event.ydata is not None and self._outlines.get(self._outline_key(view)):
-                if self._outline_hit_test(view, event.xdata, event.ydata):
+                if self._outline_hit_test(view, event.xdata, event.ydata, ax=ax, event=event):
                     self._show_outline_menu(view)
                     return
         gui_mods = None
@@ -3380,7 +3386,7 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _check_molecule_hit(self, event):
-        if not self.molecules or event.inaxes is None:
+        if not self.show_molecules or not self.molecules or event.inaxes is None:
             return False
         
         # Simple hit test: check distance to any atom in any molecule
@@ -3886,10 +3892,16 @@ class MultiPreviewCanvas(FigureCanvas):
         if ax is None:
             return
         try:
-            delta = getattr(event, 'step', 0)
-            if not delta:
-                btn = getattr(event, 'button', '')
+            delta = 0
+            btn = getattr(event, 'button', None)
+            if btn in ('up', 'down'):
                 delta = 1 if btn == 'up' else -1
+            else:
+                step = getattr(event, 'step', 0)
+                if step:
+                    delta = 1 if step > 0 else -1
+            if not delta:
+                return
             scale = 0.9 if delta > 0 else 1.1
         except Exception:
             scale = 0.9
@@ -4230,11 +4242,45 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         self._redraw()
 
-    def _outline_hit_test(self, view, xdata, ydata, tol_frac=0.02):
+    def _outline_hit_test(self, view, xdata, ydata, ax=None, event=None, tol_px=10, tol_frac=0.02):
         """Return True if a click is close to any outline in the view."""
         outlines = self._outlines.get(self._outline_key(view), [])
         if not outlines:
             return False
+        # Pixel-based hit test for better usability (fall back to data tolerance).
+        try:
+            if ax is not None:
+                click_px = None
+                try:
+                    ex = getattr(event, "x", None)
+                    ey = getattr(event, "y", None)
+                    if ex is not None and ey is not None:
+                        click_px = np.array([float(ex), float(ey)])
+                except Exception:
+                    click_px = None
+                if click_px is None and xdata is not None and ydata is not None:
+                    try:
+                        click_px = np.array(ax.transData.transform((xdata, ydata)), dtype=float)
+                    except Exception:
+                        click_px = None
+                if click_px is not None:
+                    tol_px = max(1.0, float(tol_px))
+                    for entry in outlines:
+                        pts = entry.get("pts") if isinstance(entry, dict) else entry
+                        if pts is None or len(pts) < 2:
+                            continue
+                        try:
+                            pts_px = ax.transData.transform(pts)
+                        except Exception:
+                            pts_px = None
+                        if pts_px is None:
+                            continue
+                        diffs = pts_px - click_px
+                        d2 = np.sum(diffs * diffs, axis=1)
+                        if np.min(d2) <= tol_px * tol_px:
+                            return True
+        except Exception:
+            pass
         try:
             xs = []
             ys = []
