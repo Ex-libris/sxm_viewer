@@ -32,8 +32,14 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
-from ...config import save_config
+from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
+from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging
+from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
+from ..thumbnail_render import detect_valid_scan_region
+
+# Tolerance floor (~20 pm) for deciding constant-height by percentile spread
+CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)
 
 def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel_idx:int,
                          unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
@@ -350,6 +356,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'channel': caption,
         'channel_index': int(channel_idx),
     }
+    clim_main = _auto_preview_clim(display_arr)
     main = {
         'arr': display_arr,
         'extent': display_extent,
@@ -364,6 +371,8 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'spectra': overlay_specs,
         'highlight_spec': highlight_spec,
     }
+    if clim_main:
+        main['clim'] = clim_main
     views.append(main)
 
     # Rebuild extra views for the currently selected file using stored specifications
@@ -390,9 +399,13 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2 = dict(meta)
             meta2['channel'] = caption2
             meta2['channel_index'] = int(idx2)
-            views.append({'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
-                          'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
-                          'relative_axes': bool(viewer.relative_axes), 'meta': meta2})
+            clim2 = _auto_preview_clim(arr2_display)
+            vdict = {'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
+                     'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
+                     'relative_axes': bool(viewer.relative_axes), 'meta': meta2}
+            if clim2:
+                vdict['clim'] = clim2
+            views.append(vdict)
         except Exception:
             # Skip extra view if anything fails for this file
             continue
@@ -431,12 +444,20 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         except Exception:
             pass
 
-    # Styled HTML metadata
+    # Styled HTML metadata (preserve scroll position while browsing)
     try:
+        sb = viewer.meta_box.verticalScrollBar()
+        prev_pos = sb.value()
         html = viewer._build_metadata_html(header_path, header, fd, channel_idx, unit_normalized, display_unit, display_arr, zero_offset)
         viewer.meta_box.setHtml(html)
+        QtCore.QTimer.singleShot(0, lambda pos=prev_pos: sb.setValue(pos))
     except Exception:
         viewer.meta_box.setPlainText(f"File: {header_path.name}")
+    # Optional auto-tagging (constant-height/current) based on topography variance.
+    try:
+        _maybe_auto_tag_file(viewer, header_path, header, fds, channel_idx)
+    except Exception:
+        pass
 
 
 def _on_preview_value(viewer, value, x, y, view):
@@ -464,6 +485,139 @@ __all__ = [
     "_on_preview_value",
     "on_preview_cmap_changed",
 ]
+
+def _auto_preview_clim(arr):
+    """
+    Compute color limits with automatic aborted scan detection and optional flat suppression.
+    """
+    try:
+        a = np.asarray(arr, dtype=float)
+        if a.ndim == 2:
+            region = detect_valid_scan_region(a)
+            if region:
+                r0, r1 = region
+                a = a[r0:r1 + 1, :]
+        finite = a[np.isfinite(a)]
+        if finite.size == 0:
+            return None
+        hist, edges = np.histogram(finite, bins=256)
+        idx_max = int(np.argmax(hist))
+        frac = hist[idx_max] / float(finite.size)
+        if frac > 0.7:
+            lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+            trimmed = finite[(finite < lo_edge) | (finite > hi_edge)]
+            if trimmed.size >= max(10, int(0.001 * finite.size)):
+                if trimmed.size > 100:
+                    if np.std(trimmed) > 1e-12 and np.ptp(trimmed) > 1e-12:
+                        finite = trimmed
+                else:
+                    finite = trimmed
+        vmin = float(np.nanpercentile(finite, 1.0))
+        vmax = float(np.nanpercentile(finite, 99.0))
+        if vmin == vmax:
+            return None
+        return (vmin, vmax)
+    except Exception:
+        return None
+
+
+def _classify_topography_values(vals, tolerance_nm: float | None = None):
+    """Classify topography values into CH/CC using a robust percentile range."""
+    try:
+        arr = np.asarray(vals, dtype=float)
+        if arr.ndim == 2:
+            arr = np.where(np.isfinite(arr), arr, np.nan)
+        else:
+            arr = arr[np.isfinite(arr)]
+        if arr.ndim == 2:
+            region = detect_valid_scan_region(arr)
+            if region:
+                r0, r1 = region
+                arr = arr[r0:r1 + 1, :]
+            for row in arr:
+                row_fin = row[np.isfinite(row)]
+                if row_fin.size and (np.ptp(row_fin) == 0.0):
+                    median = float(np.nanmedian(arr))
+                    abs_pm = int(round(median * 1000.0))
+                    prange = float(np.nanmax(arr) - np.nanmin(arr))
+                    return {'tag': 'constant-height', 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+            arr = arr.ravel()
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    tol = tolerance_nm if tolerance_nm is not None else CH_RANGE_TOL_NM
+    # Dominant bin check: if 90%+ pixels identical and tiny spread -> CH
+    try:
+        hist, edges = np.histogram(arr, bins=256)
+        idx_max = int(np.argmax(hist))
+        frac_dom = hist[idx_max] / float(arr.size)
+    except Exception:
+        frac_dom = 0.0
+    try:
+        p_low, p_high = np.nanpercentile(arr, [1, 99])
+        prange = float(p_high - p_low)
+    except Exception:
+        prange = float(np.nanmax(arr) - np.nanmin(arr))
+    full_range = float(np.nanmax(arr) - np.nanmin(arr))
+    median = float(np.nanmedian(arr))
+    if frac_dom >= 0.9 and prange <= tol:
+        tag = 'constant-height'
+    else:
+        grad_p95 = 0.0
+        try:
+            img = arr
+            if img.ndim == 1:
+                side = int(math.sqrt(img.size))
+                if side > 0:
+                    img = img.reshape(side, -1)
+            if img.ndim == 2:
+                gy, gx = np.gradient(img)
+                grad_mag = np.sqrt(gx * gx + gy * gy)
+                grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
+        except Exception:
+            grad_p95 = 0.0
+        grad_tol = max(tol * 0.5, 0.01)
+        if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
+            tag = 'constant-current'
+        else:
+            tag = 'constant-height' if prange <= tol else 'constant-current'
+    abs_pm = int(round(median * 1000.0)) if tag == 'constant-height' else None
+    return {'tag': tag, 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+
+
+def _maybe_auto_tag_file(viewer, header_path:Path, header:dict, fds:list, channel_idx:int):
+    """Auto-tag constant-height/current using topography variance; respects manual tags."""
+    if not getattr(viewer, "auto_detect_tags", False):
+        return
+    key = str(header_path)
+    existing = viewer.tags.get(key, {})
+    if existing.get("manual"):
+        return
+    if not fds:
+        return
+    topo_idx = _find_topography_channel(fds)
+    if topo_idx is None:
+        topo_idx = channel_idx if 0 <= channel_idx < len(fds) else 0
+    if topo_idx is None or topo_idx >= len(fds):
+        return
+    fd_topo = fds[topo_idx]
+    try:
+        raw_arr = viewer._get_channel_array(key, topo_idx, header, fd_topo)
+        _, arr_nm = normalize_unit_and_data(raw_arr, fd_topo.get('PhysUnit',''))
+    except Exception:
+        return
+    classifier = getattr(viewer, "_classify_topography_values", _classify_topography_values)
+    tag_info = classifier(arr_nm)
+    if not tag_info:
+        return
+    if tag_info['tag'] == 'constant-height':
+        viewer.tags[key] = {'tag': 'constant-height', 'abs_z_pm': tag_info.get('abs_pm'), 'auto': True,
+                            'rng_nm': tag_info.get('rng_nm')}
+    else:
+        viewer.tags[key] = {'tag': 'constant-current', 'auto': True, 'rng_nm': tag_info.get('rng_nm')}
+    viewer.config['tags'] = viewer.tags
+    save_config(viewer.config)
 
 
 

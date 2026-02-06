@@ -86,6 +86,9 @@ from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
 
+# Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
+CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
+
 # Patch export module with missing dependency
 viewer_export.convert_to_si = convert_to_si
 
@@ -560,11 +563,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.tag_ch_btn = QtWidgets.QPushButton("Tag as CH")
         self.tag_cc_btn = QtWidgets.QPushButton("Tag as CC")
         self.untag_btn = QtWidgets.QPushButton("Untag")
+        self.auto_tag_cb = QtWidgets.QCheckBox("Auto CH/CC")
+        self.auto_tag_cb.setToolTip("Auto-detect constant-height/current from topography variance")
+        self.auto_tag_cb.setChecked(self.auto_detect_tags)
         
         # Purge config button
         self.purge_config_btn = QtWidgets.QPushButton('Purge config')
         tag_h.addWidget(self.purge_config_btn)
-        tag_h.addWidget(self.tag_ch_btn); tag_h.addWidget(self.tag_cc_btn); tag_h.addWidget(self.untag_btn)
+        tag_h.addWidget(self.tag_ch_btn); tag_h.addWidget(self.tag_cc_btn); tag_h.addWidget(self.untag_btn); tag_h.addWidget(self.auto_tag_cb)
         left_v.addLayout(tag_h)
 
         # NOTE:
@@ -884,6 +890,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
         self.untag_btn.clicked.connect(lambda: self.on_manual_tag(None))
+        self.auto_tag_cb.toggled.connect(self._on_toggle_auto_tags)
 
         try:
             self.purge_config_btn.clicked.connect(self._on_purge_config)
@@ -1869,6 +1876,68 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _classify_topography_values(self, vals, tolerance_nm: float | None = None):
+        """Classify topography values into CH/CC using a robust percentile range."""
+        try:
+            arr = np.asarray(vals, dtype=float)
+            arr = arr[np.isfinite(arr)]
+        except Exception:
+            return None
+        if arr.size == 0:
+            return None
+        tol = tolerance_nm if tolerance_nm is not None else CH_RANGE_TOL_NM
+        try:
+            p_low, p_high = np.nanpercentile(arr, [1, 99])
+            prange = float(p_high - p_low)
+        except Exception:
+            prange = float(np.nanmax(arr) - np.nanmin(arr))
+        full_range = float(np.nanmax(arr) - np.nanmin(arr))
+        median = float(np.nanmedian(arr))
+        # Gradient-based check: if trimmed range is small but gradients are large, it's not truly flat.
+        grad_p95 = 0.0
+        try:
+            img = arr
+            if img.ndim == 1:
+                side = int(math.sqrt(img.size))
+                img = img.reshape(side, -1)
+            gy, gx = np.gradient(img)
+            grad_mag = np.sqrt(gx * gx + gy * gy)
+            grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
+        except Exception:
+            grad_p95 = 0.0
+        grad_tol = max(tol * 0.5, 0.01)  # ~10 pm minimum
+        # If most of the image is flat but a small fraction has a large jump (unfinished scan),
+        # or if gradients are significant despite a tiny range, treat as CC.
+        if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
+            tag = 'constant-current'
+        else:
+            tag = 'constant-height' if prange <= tol else 'constant-current'
+        abs_pm = int(round(median * 1000.0)) if tag == 'constant-height' else None
+        return {'tag': tag, 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+
+    def _auto_preview_clim(self, arr):
+        """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
+        try:
+            data = np.asarray(arr, dtype=float)
+            finite = data[np.isfinite(data)]
+            if finite.size == 0:
+                return None
+            hist, edges = np.histogram(finite, bins=256)
+            idx_max = int(np.argmax(hist))
+            frac = hist[idx_max] / float(finite.size)
+            if frac > 0.5:
+                lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+                finite = finite[(finite < lo_edge) | (finite > hi_edge)]
+                if finite.size == 0:
+                    finite = data[np.isfinite(data)]
+            vmin = float(np.nanpercentile(finite, 1.0))
+            vmax = float(np.nanpercentile(finite, 99.0))
+            if vmin == vmax:
+                return None
+            return (vmin, vmax)
+        except Exception:
+            return None
+
     def load_folder(self, folder:Path):
         start = time.perf_counter()
         result = viewer_loader.load_folder(self, folder)
@@ -1876,6 +1945,11 @@ QLabel:hover {{
         folder_ms = (end - start) * 1000.0
         gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
         log_status(f"[Perf] Load folder: {folder_ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        if self.auto_detect_tags:
+            try:
+                self._auto_detect_tags_for_folder()
+            except Exception:
+                pass
         return result
 
     def _auto_detect_tags_for_folder(self):
@@ -1919,13 +1993,13 @@ QLabel:hover {{
                 idx = np.linspace(0, vals.size - 1, sample_count, dtype=int)
                 samples = vals[idx]
 
-            sample_range = float(np.nanmax(samples) - np.nanmin(samples)) if samples.size else float('inf')
-            if sample_range <= CH_EQUALITY_TOL_NM:
-                median_nm = float(np.nanmedian(samples)) if samples.size else None
-                abs_pm = int(round(median_nm * 1000.0)) if median_nm is not None else None
-                self.tags[key] = {'tag': 'constant-height', 'abs_z_pm': abs_pm}
-            else:
-                self.tags[key] = {'tag': 'constant-current'}
+            tag_info = self._classify_topography_values(samples if samples is not None else vals)
+            if not tag_info:
+                continue
+            info = {'tag': tag_info['tag'], 'auto': True, 'rng_nm': tag_info.get('rng_nm')}
+            if tag_info['tag'] == 'constant-height':
+                info['abs_z_pm'] = tag_info.get('abs_pm')
+            self.tags[key] = info
 
         # persist tags after the initial auto pass
         self.config['tags'] = self.tags
@@ -3666,20 +3740,30 @@ QLabel:hover {{
                         topo_idx = ch_idx
                     fd = fds[topo_idx]
                     arr = self._get_channel_array(key, topo_idx, hdr, fd)
-                    phys = (fd.get('PhysUnit','') or '').lower()
-                    arr_nm = arr
-                    hist, edges = np.histogram(arr_nm.ravel(), bins=200)
-                    imax = int(np.argmax(hist))
-                    mode_val = 0.5*(edges[imax] + edges[imax+1])
-                    abs_pm = int(round(mode_val * 1000.0))
-                    info['abs_z_pm'] = abs_pm
+                    _, arr_nm = normalize_unit_and_data(arr, fd.get('PhysUnit',''))
+                    tag_info = self._classify_topography_values(arr_nm)
+                    info['abs_z_pm'] = tag_info.get('abs_pm') if tag_info else None
+                    info['rng_nm'] = tag_info.get('rng_nm') if tag_info else None
                 except Exception:
                     info['abs_z_pm'] = None
+                    info['rng_nm'] = None
             self.tags[key] = info
         self.config['tags'] = self.tags; save_config(self.config)
         # refresh thumbnails & preview (so badges/metadata update)
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def _on_toggle_auto_tags(self, checked: bool):
+        self.auto_detect_tags = bool(checked)
+        self.config['auto_detect_tags'] = self.auto_detect_tags
+        save_config(self.config)
+        if checked:
+            try:
+                self._auto_detect_tags_for_folder()
+                # refresh thumbnails to show badges
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
 
     # ---------- Spectroscopy helpers ----------
     def on_load_molecule(self):

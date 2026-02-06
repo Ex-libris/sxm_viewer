@@ -288,12 +288,71 @@ def _value_in_nm(val, unit):
     except Exception:
         return None
 
+def detect_valid_scan_region(arr, tolerance=1e-10):
+    """
+    Detect contiguous valid rows in a scan by finding where variation disappears (aborted/partial scans).
+    Returns (first_valid_row, last_valid_row) or None if not found.
+    """
+    a = np.asarray(arr, dtype=float)
+    if a.ndim != 2:
+        return None
+    rows, cols = a.shape
+    if rows == 0 or cols == 0:
+        return None
+    first_valid = None
+    for i in range(rows):
+        row = a[i, :]
+        finite = row[np.isfinite(row)]
+        if finite.size < 2:
+            continue
+        if np.ptp(finite) > tolerance or np.std(finite) > tolerance:
+            first_valid = i
+            break
+    if first_valid is None:
+        return None
+    last_valid = first_valid
+    for i in range(first_valid + 1, rows):
+        row = a[i, :]
+        finite = row[np.isfinite(row)]
+        if finite.size < 2:
+            if i > first_valid + 5:
+                break
+            continue
+        if np.ptp(finite) > tolerance or np.std(finite) > tolerance:
+            last_valid = i
+        else:
+            break
+    return (first_valid, last_valid)
+
 def robust_limits(arr, low_pct=2.0, high_pct=98.0):
-    """Return percentile-based intensity limits for better contrast."""
-    data = np.asarray(arr, dtype=float)
-    data = data[np.isfinite(data)]
+    """
+    Return percentile-based intensity limits with automatic aborted-scan detection and optional flat suppression.
+    """
+    data_arr = np.asarray(arr, dtype=float)
+    if data_arr.ndim == 2:
+        region = detect_valid_scan_region(data_arr)
+        if region:
+            r0, r1 = region
+            data_arr = data_arr[r0:r1 + 1, :]
+    data = data_arr[np.isfinite(data_arr)]
     if data.size == 0:
         return None, None
+    # Optionally trim a dominant flat bin
+    try:
+        hist, edges = np.histogram(data, bins=256)
+        idx_max = int(np.argmax(hist))
+        frac = hist[idx_max] / float(data.size)
+        if frac > 0.7:
+            lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+            trimmed = data[(data < lo_edge) | (data > hi_edge)]
+            if trimmed.size >= max(10, int(0.001 * data.size)):
+                if trimmed.size > 100:
+                    if np.std(trimmed) > 1e-12 and np.ptp(trimmed) > 1e-12:
+                        data = trimmed
+                else:
+                    data = trimmed
+    except Exception:
+        pass
     low = max(0.0, min(low_pct, 100.0))
     high = max(low + 0.001, min(high_pct, 100.0))
     vmin = float(np.percentile(data, low))

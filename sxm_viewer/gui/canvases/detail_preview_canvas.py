@@ -6,6 +6,7 @@ import itertools
 import json
 import math
 import time
+from typing import List
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,33 @@ from .molecular_overlay import (
     available_atom_palettes,
 )
 from ..thumbnail_render import sample_array_value, array_to_qimage
+
+try:
+    from scipy import ndimage
+    from scipy.spatial import ConvexHull
+    _HAS_SCIPY = True
+except Exception:  # pragma: no cover - optional dependency
+    ndimage = None
+    ConvexHull = None
+    _HAS_SCIPY = False
+
+try:
+    from skimage import measure as sk_measure
+    from skimage import filters as sk_filters
+    from skimage import morphology as sk_morph
+    _HAS_SKIMAGE = True
+except Exception:  # pragma: no cover - optional dependency
+    sk_measure = None
+    sk_filters = None
+    sk_morph = None
+    _HAS_SKIMAGE = False
+
+try:
+    import cv2
+    _HAS_CV2 = True
+except Exception:  # pragma: no cover - optional dependency
+    cv2 = None
+    _HAS_CV2 = False
 
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
@@ -146,6 +174,17 @@ class MultiPreviewCanvas(FigureCanvas):
             'bar_color': None,
             'font_family': 'sans-serif'
         }
+        # Outline extraction state
+        self.outline_mode = False  # if True, Alt+drag will outline blobs
+        self._outline_start = None
+        self._outline_rect = None
+        self._outline_ax = None
+        self._outline_threshold = 0.8  # percentile (0-1)
+        self._outline_default_color = "#ffffff"
+        self._outline_default_lw = 1.6
+        self._outline_default_ls = (0, (6, 4))
+        self._outlines = {}  # key -> list[np.ndarray[N,2]]
+        self._outline_order = []  # global order for undo [(key, idx)]
         # Molecular overlay state
         self.molecules = []
         self._molecule_drag_idx = None
@@ -276,8 +315,21 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
 
     def _redraw(self):
+        # Preserve current zoom/limits per view before clearing
+        current_limits = {}
+        try:
+            for ax, v in list(self._ax_view_map.items()):
+                try:
+                    current_limits[self._outline_key(v)] = (ax.get_xlim(), ax.get_ylim())
+                except Exception:
+                    continue
+        except Exception:
+            current_limits = {}
+
         self.fig.clf()
         self._ax_view_map = {}
+        # reset zoom baselines for new axes
+        self._zoom_reset_limits = {}
         self._scale_bar_artists = []
         self._colorbars = []
         self._molecule_artists = []
@@ -358,6 +410,14 @@ class MultiPreviewCanvas(FigureCanvas):
             if not self._show_ticks:
                 ax.set_xticks([])
                 ax.set_yticks([])
+            # Restore previous zoom if available
+            prev_lim = current_limits.get(self._outline_key(v))
+            if prev_lim:
+                try:
+                    ax.set_xlim(prev_lim[0])
+                    ax.set_ylim(prev_lim[1])
+                except Exception:
+                    pass
             if self.scale_bar_enabled:
                 try:
                     self._add_scale_bar(ax, v)
@@ -368,6 +428,10 @@ class MultiPreviewCanvas(FigureCanvas):
             # Draw molecules on every view
             self._draw_molecules(ax)
             self._draw_spectra(ax)
+            try:
+                self._draw_outlines(ax, v)
+            except Exception:
+                pass
         try: self.fig.tight_layout()
         except Exception: pass
         self._apply_view_theme()
@@ -1213,6 +1277,9 @@ class MultiPreviewCanvas(FigureCanvas):
         if event is not None:
             try:
                 if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
+                    # Undo priority: outlines -> molecules
+                    if self._undo_last_outline():
+                        return
                     self.undo_last_molecule_change()
                     return
                 if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_R:
@@ -3064,12 +3131,40 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
             return
-        # Crop rectangle start (handle before tool guards):
-        #   Shift + drag -> arbitrary rectangle
-        #   Ctrl + Shift + drag -> square selection
-        mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
+        # Crop/outline rectangle start (handle before tool guards):
+        #   Shift + drag -> arbitrary rectangle (crop)
+        #   Ctrl + Shift + drag -> square selection (crop)
+        #   Alt + drag -> outline extraction in ROI
+        # Right-click: outline context menu (style/clear/undo)
+        if event.button == 3 and view is not None:
+            if event.xdata is not None and event.ydata is not None and self._outlines.get(self._outline_key(view)):
+                if self._outline_hit_test(view, event.xdata, event.ydata):
+                    self._show_outline_menu(view)
+                    return
+        gui_mods = None
+        try:
+            gui_mods = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
+        except Exception:
+            gui_mods = None
+        if gui_mods is None or gui_mods == QtCore.Qt.NoModifier:
+            try:
+                gui_mods = QtWidgets.QApplication.keyboardModifiers()
+            except Exception:
+                gui_mods = QtCore.Qt.NoModifier
+        mods_qt = gui_mods
+        alt_pressed = bool(mods_qt & QtCore.Qt.AltModifier) or 'alt' in str(getattr(event, "key", "")).lower() or bool(getattr(self, "outline_mode", False))
         want_square = (event.button == 1) and (mods_qt & QtCore.Qt.ControlModifier) and (mods_qt & QtCore.Qt.ShiftModifier)
         want_rect = (event.button == 1) and (mods_qt & QtCore.Qt.ShiftModifier)
+        # Allow outlining via Alt+left click OR middle click as a fallback shortcut
+        want_outline = ((event.button == 1 and alt_pressed) or event.button == 2) and not want_rect and not want_square
+        if want_outline and view is not None:
+            # Alt+click: outline dominant blob around clicked point (no drag needed)
+            if event.xdata is not None and event.ydata is not None:
+                # print(f"Alt detected! xdata={event.xdata}, ydata={event.ydata}")
+                self._outline_from_point(view, ax, event.xdata, event.ydata)
+            else:
+                print("[Outline] Alt detected but coordinates are None; ignoring.")
+            return
         # Pan start: only in browse-like mode, left button, zoomed view
         if event.button in (1, 2) and not want_rect and view is not None and not self.profile_enabled and not self.angle_enabled:
             if event.xdata is not None and event.ydata is not None and self._is_zoomed(ax):
@@ -3828,6 +3923,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.set_label(cbar_label)
             if not self._show_ticks:
                 cbar.set_ticks([])
+        try:
+            self._draw_outlines(ax, view)
+        except Exception:
+            pass
         title = view.get('title', '')
         if title and self._show_title:
             ax.set_title(title, fontsize=9)
@@ -3907,6 +4006,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
                 im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            # record base limits for reset before any restore
+            try:
+                self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
+            except Exception:
+                pass
             ax.set_autoscale_on(False)
             if not self._show_ticks:
                 ax.set_xticks([])
@@ -3928,6 +4032,10 @@ class MultiPreviewCanvas(FigureCanvas):
                     cbar.outline.set_edgecolor(text_color)
                 except Exception:
                     pass
+            try:
+                self._draw_outlines(ax, view)
+            except Exception:
+                pass
             title = view.get('title', '') or view.get('label', '')
             if title and self._show_title:
                 ax.set_title(title, fontsize=9 * font_scale, color=text_color)
@@ -3984,6 +4092,412 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
 
+    # ------------------------------------------------------------------ #
+    # Outlines                                                           #
+    # ------------------------------------------------------------------ #
+    def set_outline_percentile(self, pct: float):
+        """Set outline threshold (0-1 fraction)."""
+        try:
+            pct = float(pct)
+        except Exception:
+            return
+        self._outline_threshold = max(0.05, min(0.99, pct))
+
+    def _outline_key(self, view):
+        meta = view.get("meta") or {}
+        return (meta.get("file_path"), tuple(view.get("extent") or ()))
+
+    def _add_outlines(self, view, contours_world):
+        """Add one or more outlines for a view and track order for undo."""
+        key = self._outline_key(view)
+        if key is None:
+            return
+        entries = self._outlines.setdefault(key, [])
+        for contour in contours_world:
+            entry = {
+                "pts": np.asarray(contour, dtype=float),
+                "color": "#ffffff",
+                "lw": 1.6,
+                "ls": (0, (6, 4)),
+            }
+            entries.append(entry)
+            self._outline_order.append((key, len(entries) - 1))
+
+    def _draw_outlines(self, ax, view):
+        outlines = self._outlines.get(self._outline_key(view), [])
+        if not outlines:
+            return
+        for entry in outlines:
+            pts = entry.get("pts") if isinstance(entry, dict) else entry
+            if pts is None or len(pts) < 2:
+                continue
+            color = entry.get("color", self._outline_default_color) if isinstance(entry, dict) else self._outline_default_color
+            lw = entry.get("lw", self._outline_default_lw) if isinstance(entry, dict) else self._outline_default_lw
+            ls = entry.get("ls", self._outline_default_ls) if isinstance(entry, dict) else self._outline_default_ls
+            try:
+                line, = ax.plot(
+                    pts[:, 0],
+                    pts[:, 1],
+                    color=color,
+                    linewidth=lw,
+                    alpha=0.9,
+                    linestyle=ls,
+                )
+                line.set_path_effects([
+                    PathEffects.withStroke(linewidth=lw * 1.5, foreground="black", alpha=0.4)
+                ])
+            except Exception:
+                continue
+
+    def _reset_outline_state(self):
+        try:
+            if self._outline_rect is not None:
+                self._outline_rect.remove()
+        except Exception:
+            pass
+        self._outline_start = None
+        self._outline_rect = None
+        self._outline_ax = None
+
+    def clear_outlines(self, view=None):
+        """Clear stored outlines for all views or a specific view."""
+        if view is None:
+            self._outlines.clear()
+            self._outline_order.clear()
+        else:
+            try:
+                key = self._outline_key(view)
+                self._outlines.pop(key, None)
+                self._outline_order = [(k, idx) for (k, idx) in self._outline_order if k != key]
+            except Exception:
+                pass
+        self._redraw()
+
+    def _outline_hit_test(self, view, xdata, ydata, tol_frac=0.02):
+        """Return True if a click is close to any outline in the view."""
+        outlines = self._outlines.get(self._outline_key(view), [])
+        if not outlines:
+            return False
+        try:
+            xs = []
+            ys = []
+            for entry in outlines:
+                pts = entry.get("pts") if isinstance(entry, dict) else entry
+                if pts is None or len(pts) == 0:
+                    continue
+                xs.extend(pts[:, 0])
+                ys.extend(pts[:, 1])
+            if not xs or not ys:
+                return False
+            xr = max(xs) - min(xs)
+            yr = max(ys) - min(ys)
+            tol = max(xr, yr) * tol_frac
+            for entry in outlines:
+                pts = entry.get("pts") if isinstance(entry, dict) else entry
+                if pts is None or len(pts) < 2:
+                    continue
+                diffs = pts - np.array([xdata, ydata])
+                d2 = np.sum(diffs * diffs, axis=1)
+                if np.min(d2) <= tol * tol:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _show_outline_menu(self, view):
+        """Context menu to tweak outline style and clear/undo."""
+        menu = QtWidgets.QMenu(self)
+        act_color = menu.addAction("Change color…")
+        width_menu = menu.addMenu("Line width")
+        style_menu = menu.addMenu("Line style")
+        for w in (0.8, 1.2, 1.6, 2.0, 3.0):
+            a = width_menu.addAction(f"{w:.1f}")
+            a.setData(("width", w))
+        styles = {
+            "Solid": ("solid", "solid"),
+            "Dashed": ("dashed", (0, (6, 4))),
+            "Dotted": ("dotted", (0, (2, 4))),
+            "Dense dash": ("dense", (0, (4, 2))),
+        }
+        for name, val in styles.items():
+            a = style_menu.addAction(name)
+            a.setData(("style", val))
+        menu.addSeparator()
+        act_undo = menu.addAction("Undo last outline")
+        act_clear = menu.addAction("Clear outlines")
+        chosen = menu.exec_(QtGui.QCursor.pos())
+        if chosen is None:
+            return
+        data = chosen.data()
+        if chosen == act_color:
+            col = QtWidgets.QColorDialog.getColor(QtGui.QColor("white"), self, "Outline color")
+            if col.isValid():
+                self._set_outline_style(view, color=col.name())
+        elif chosen == act_undo:
+            self._undo_last_outline()
+        elif chosen == act_clear:
+            self.clear_outlines(view=view)
+        elif data and isinstance(data, tuple):
+            kind, val = data
+            if kind == "width":
+                self._set_outline_style(view, lw=float(val))
+            elif kind == "style":
+                name, ls = val
+                self._set_outline_style(view, ls=ls)
+
+    def _set_outline_style(self, view, color=None, lw=None, ls=None):
+        """Apply style settings to all outlines of a view."""
+        key = self._outline_key(view)
+        entries = self._outlines.get(key, [])
+        new_entries = []
+        for e in entries:
+            if isinstance(e, dict):
+                entry = dict(e)
+            else:
+                entry = {"pts": np.asarray(e), "color": "#ffffff", "lw": 1.6, "ls": (0, (6, 4))}
+            if color is not None:
+                entry["color"] = color
+            if lw is not None:
+                entry["lw"] = lw
+            if ls is not None:
+                entry["ls"] = ls
+            new_entries.append(entry)
+        self._outlines[key] = new_entries
+        self._redraw()
+
+    def _undo_last_outline(self):
+        """Undo the most recently added outline, if any. Returns True if something was undone."""
+        while self._outline_order:
+            key, idx = self._outline_order.pop()
+            outlines = self._outlines.get(key)
+            if outlines and 0 <= idx < len(outlines):
+                try:
+                    outlines.pop(idx)
+                    if not outlines:
+                        self._outlines.pop(key, None)
+                    self._redraw()
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _mask_component_from_seed(self, roi: np.ndarray, seed: tuple | None = None):
+        """Return a binary mask for the component containing the seed (or None)."""
+        if roi.size == 0:
+            return None
+        # Blur slightly
+        if _HAS_SCIPY and ndimage is not None:
+            roi_blur = ndimage.gaussian_filter(roi, sigma=1.2)
+        else:
+            roi_blur = roi
+        # Candidate thresholds: Otsu then percentiles
+        thresholds = []
+        if _HAS_SKIMAGE and sk_filters is not None:
+            try:
+                thresholds.append(float(sk_filters.threshold_otsu(roi_blur)))
+            except Exception:
+                pass
+        thresholds.extend([
+            np.percentile(roi_blur, p) for p in (90, 85, 80, 75, 70, 65, 60)
+        ])
+        for thresh_val in thresholds:
+            try:
+                mask = roi_blur >= thresh_val
+                if _HAS_SKIMAGE and sk_morph is not None:
+                    mask = sk_morph.remove_small_objects(mask, min_size=max(8, mask.size // 800))
+                    mask = sk_morph.binary_closing(mask, sk_morph.disk(1))
+                elif _HAS_SCIPY and ndimage is not None:
+                    mask = ndimage.binary_opening(mask)
+                    mask = ndimage.binary_closing(mask)
+                if _HAS_SCIPY and ndimage is not None:
+                    labels, nlab = ndimage.label(mask)
+                    if nlab == 0:
+                        continue
+                    sr, sc = (int(seed[0]), int(seed[1])) if seed is not None else (None, None)
+                    target_lbl = None
+                    if sr is not None and 0 <= sr < labels.shape[0] and 0 <= sc < labels.shape[1]:
+                        lbl = labels[sr, sc]
+                        if lbl > 0:
+                            target_lbl = lbl
+                    if target_lbl is None:
+                        sizes = ndimage.sum(mask, labels, index=range(1, nlab + 1))
+                        target_lbl = 1 + int(np.argmax(sizes))
+                    if target_lbl > 0:
+                        return labels == target_lbl
+                else:
+                    # No labeling available; fallback: require seed to be foreground
+                    sr, sc = (int(seed[0]), int(seed[1])) if seed is not None else (None, None)
+                    if sr is not None and 0 <= sr < mask.shape[0] and 0 <= sc < mask.shape[1] and mask[sr, sc]:
+                        return mask
+            except Exception:
+                continue
+        # OpenCV flood-fill fallback
+        if _HAS_CV2 and cv2 is not None and seed is not None:
+            try:
+                r8 = roi.astype(np.float32)
+                r_norm = cv2.normalize(r8, None, 0, 255, cv2.NORM_MINMAX)
+                flooded = r_norm.copy()
+                mask_ff = np.zeros((r_norm.shape[0] + 2, r_norm.shape[1] + 2), np.uint8)
+                cv2.floodFill(flooded, mask_ff, (int(seed[1]), int(seed[0])), 255, 5, 5, flags=4 | cv2.FLOODFILL_MASK_ONLY)
+                ff_mask = (mask_ff[1:-1, 1:-1] > 0)
+                if ff_mask.any():
+                    return ff_mask
+            except Exception:
+                pass
+        # Pure NumPy flood from seed as last resort
+        if seed is not None:
+            sr, sc = int(seed[0]), int(seed[1])
+            if 0 <= sr < roi.shape[0] and 0 <= sc < roi.shape[1]:
+                # Use the last computed mask from thresholds if available, else simple percentile
+                try:
+                    base_mask = roi_blur >= np.percentile(roi_blur, 75)
+                except Exception:
+                    base_mask = roi_blur >= roi_blur.mean()
+                if base_mask[sr, sc]:
+                    visited = np.zeros_like(base_mask, dtype=np.bool_)
+                    stack = [(sr, sc)]
+                    visited[sr, sc] = True
+                    h, w = base_mask.shape
+                    while stack:
+                        r, c = stack.pop()
+                        for dr, dc in ((1,0), (-1,0), (0,1), (0,-1)):
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < h and 0 <= nc < w and not visited[nr, nc] and base_mask[nr, nc]:
+                                visited[nr, nc] = True
+                                stack.append((nr, nc))
+                    if visited.any():
+                        return visited
+        return None
+
+    def _contours_from_mask(self, mask: np.ndarray) -> List[np.ndarray]:
+        """Return list of contour point arrays for a binary mask in pixel coords."""
+        outlines_mask: List[np.ndarray] = []
+        if mask is None or mask.size == 0:
+            return outlines_mask
+        # Preferred contour extraction
+        if _HAS_SKIMAGE and sk_measure is not None:
+            try:
+                outlines_mask = [np.array(c) for c in sk_measure.find_contours(mask.astype(float), 0.5) if len(c) >= 4]
+                if outlines_mask and _HAS_SCIPY and ndimage is not None:
+                    try:
+                        smoothed = []
+                        for c in outlines_mask:
+                            if c.shape[0] > 10:
+                                r_s = ndimage.gaussian_filter1d(c[:, 0], sigma=1.0, mode='wrap')
+                                c_s = ndimage.gaussian_filter1d(c[:, 1], sigma=1.0, mode='wrap')
+                                smoothed.append(np.column_stack([r_s, c_s]))
+                            else:
+                                smoothed.append(c)
+                        outlines_mask = smoothed
+                    except Exception:
+                        pass
+            except Exception:
+                outlines_mask = []
+        # Fallback: perimeter then convex hull
+        if not outlines_mask:
+            try:
+                if _HAS_SCIPY and ndimage is not None:
+                    eroded = ndimage.binary_erosion(mask)
+                    perim = mask & ~eroded
+                else:
+                    perim = mask.copy()
+                    perim[1:-1, 1:-1] &= ~mask[:-2, 1:-1] | ~mask[2:, 1:-1] | ~mask[1:-1, :-2] | ~mask[1:-1, 2:]
+                coords = np.argwhere(perim)
+                if coords.shape[0] >= 4:
+                    if ConvexHull is not None:
+                        try:
+                            hull = ConvexHull(coords)
+                            coords = coords[hull.vertices]
+                        except Exception:
+                            pass
+                    outlines_mask = [coords]
+            except Exception:
+                outlines_mask = []
+        # Last resort: all foreground pixels
+        if not outlines_mask:
+            ys, xs = np.nonzero(mask)
+            if len(xs) > 0:
+                outlines_mask = [np.column_stack([ys, xs])]
+        return outlines_mask
+
+    def _finish_outline_drag(self, event):
+        """Finalize an outline selection and store the dashed contour."""
+        # Drag-based outlines are deprecated in favor of click-based extraction,
+        # but keep this for Alt+drag legacy use.
+        if self._outline_start is None or self._outline_ax is None:
+            return
+        if getattr(event, "button", None) != 1 or event.inaxes is not self._outline_ax:
+            # Only respond to matching left-button release inside the same axes
+            self._reset_outline_state()
+            return
+        view = self._ax_view_map.get(self._outline_ax)
+        if view is None:
+            self._reset_outline_state()
+            return
+        self._outline_from_point(view, self._outline_ax, *self._outline_start, drag_end=(event.xdata, event.ydata))
+        self._reset_outline_state()
+
+    def _outline_from_point(self, view, ax, xdata, ydata, drag_end=None):
+        """Create an adaptive outline around the dominant blob near a clicked point."""
+        if xdata is None or ydata is None or view is None or ax is None:
+            return
+        arr = np.asarray(view.get("arr"))
+        if arr.size == 0:
+            return
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        xmin, xmax = ax.get_xlim()
+        ymin, ymax = ax.get_ylim()
+        if xmax == xmin or ymax == ymin:
+            return
+        # Map click to pixel indices (full-image seed; no ROI window)
+        def _map_x(x):
+            frac = (x - xmin) / (xmax - xmin)
+            return int(np.clip(round(frac * (w - 1)), 0, w - 1))
+        def _map_y(y):
+            frac = (y - ymin) / (ymax - ymin)
+            return int(np.clip(round(frac * (h - 1)), 0, h - 1))
+        cx = _map_x(xdata)
+        cy = _map_y(ydata)
+        seed = (cy, cx)
+        comp_mask = self._mask_component_from_seed(arr_disp, seed=seed)
+        if comp_mask is None:
+            # Fallback: tiny seed disk so the user sees some feedback
+            comp_mask = np.zeros_like(arr_disp, dtype=bool)
+            rr0, rr1 = max(0, cy - 3), min(h, cy + 4)
+            cc0, cc1 = max(0, cx - 3), min(w, cx + 4)
+            comp_mask[rr0:rr1, cc0:cc1] = True
+        outlines_mask = self._contours_from_mask(comp_mask)
+        if not outlines_mask:
+            # Last resort: outline the tiny seed box
+            outlines_mask = [np.array([[cy-3, cx-3],[cy-3, cx+3],[cy+3, cx+3],[cy+3, cx-3]])]
+        ext = view.get("extent")
+        outlines_world: List[np.ndarray] = []
+        if ext is None:
+            def _lerp_x_idx(idx):
+                return xmin + (xmax - xmin) * (idx / max(1, w - 1))
+            def _lerp_y_idx(idx):
+                return ymin + (ymax - ymin) * (idx / max(1, h - 1))
+        else:
+            # Extent is (x0, x1, y0, y1) in data coords
+            x_extent0, x_extent1, y_extent0, y_extent1 = ext
+            def _lerp_x_idx(idx):
+                return x_extent0 + (x_extent1 - x_extent0) * (idx / max(1, w - 1))
+            def _lerp_y_idx(idx):
+                return y_extent0 + (y_extent1 - y_extent0) * (idx / max(1, h - 1))
+        for contour in outlines_mask:
+            if contour is None or len(contour) < 2:
+                continue
+            pts_world = []
+            for r_idx, c_idx in contour:
+                pts_world.append((_lerp_x_idx(c_idx), _lerp_y_idx(r_idx)))
+            if len(pts_world) >= 2:
+                outlines_world.append(np.array(pts_world, dtype=float))
+        if outlines_world:
+            self._add_outlines(view, outlines_world)
+            self._redraw()
+
     def _start_drag(self, view, qimg=None):
         try:
             if qimg is None:
@@ -4031,6 +4545,18 @@ class MultiPreviewCanvas(FigureCanvas):
         super().mouseReleaseEvent(event)
 
     def _on_motion_value(self, event):
+        if self._outline_rect is not None and self._outline_start is not None and event.inaxes is self._outline_ax:
+            try:
+                x0, y0 = self._outline_start
+                x1, y1 = event.xdata, event.ydata
+                if x1 is not None and y1 is not None:
+                    self._outline_rect.set_x(min(x0, x1))
+                    self._outline_rect.set_y(min(y0, y1))
+                    self._outline_rect.set_width(abs(x1 - x0))
+                    self._outline_rect.set_height(abs(y1 - y0))
+                    self.draw_idle()
+            except Exception:
+                pass
         if self._crop_rect is not None and self._crop_start is not None and event.inaxes is self._crop_ax:
             try:
                 # Throttle drag updates to keep UI responsive
@@ -4077,6 +4603,9 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _on_crop_release(self, event):
         """Finish a crop drag and emit a cropped view copy."""
+        if self._outline_start is not None and self._outline_ax is not None:
+            self._finish_outline_drag(event)
+            return
         if self._crop_start is None or self._crop_ax is None:
             return
         if getattr(event, "button", None) != 1 or event.inaxes is not self._crop_ax:
@@ -4179,6 +4708,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_ax = None
         self._crop_square = False
         self._crop_last_ts = 0.0
+        self._outline_start = None
+        self._outline_rect = None
+        self._outline_ax = None
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:
