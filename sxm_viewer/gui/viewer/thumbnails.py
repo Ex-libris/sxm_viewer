@@ -48,6 +48,7 @@ from ...data.io import (
     _binary_dtype_candidates,
 )
 from ...processing.filters import _filter_signature
+from ..thumbnail_render import detect_valid_scan_region
 
 def _thumbnail_filter_signature(viewer, file_key):
     spec = viewer.thumbnail_filters.get(str(file_key))
@@ -59,9 +60,15 @@ def _downsample_for_thumbnail(viewer, arr, thumb_w, thumb_h):
     if arr.size == 0:
         return arr
     h, w = arr.shape
+    # Preserve aspect ratio when downsampling/cropping to avoid distortion.
     if h > thumb_h or w > thumb_w:
-        ys = np.linspace(0, h - 1, thumb_h).astype(int)
-        xs = np.linspace(0, w - 1, thumb_w).astype(int)
+        scale = min(thumb_w / float(w), thumb_h / float(h))
+        if scale >= 1.0:
+            return arr
+        target_w = max(1, int(round(w * scale)))
+        target_h = max(1, int(round(h * scale)))
+        ys = np.linspace(0, h - 1, target_h).astype(int)
+        xs = np.linspace(0, w - 1, target_w).astype(int)
         return arr[np.ix_(ys, xs)]
     return arr
 
@@ -82,7 +89,16 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
     if cached is not None:
         return data_key, cached
     _, arr_conv = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
-    thumb_arr = viewer._downsample_for_thumbnail(arr_conv, thumb_w, thumb_h)
+    arr_use = arr_conv
+    try:
+        if arr_conv.ndim == 2:
+            region = detect_valid_scan_region(arr_conv)
+            if region:
+                r0, r1 = region
+                arr_use = arr_conv[r0 : r1 + 1, :]
+    except Exception:
+        arr_use = arr_conv
+    thumb_arr = viewer._downsample_for_thumbnail(arr_use, thumb_w, thumb_h)
     with viewer._thumb_data_lock:
         viewer._thumb_data_cache[data_key] = thumb_arr
     return data_key, thumb_arr
