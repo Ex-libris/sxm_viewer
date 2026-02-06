@@ -162,6 +162,11 @@ def _ensure_display_menu(viewer):
     viewer.spectro_overlay_act.setChecked(viewer.show_spectra)
     viewer.spectro_overlay_act.setToolTip("Toggle spectroscopy overlays in thumbnails and preview")
     viewer.spectro_overlay_act.toggled.connect(viewer.on_show_spectra_toggled)
+    viewer.molecules_act = viewer.display_menu.addAction("Show molecules")
+    viewer.molecules_act.setCheckable(True)
+    viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
+    viewer.molecules_act.setToolTip("Toggle molecular overlays in the preview")
+    viewer.molecules_act.toggled.connect(viewer.on_show_molecules_toggled)
     viewer.display_menu.addSeparator()
     
     markers_menu = viewer.display_menu.addMenu("Marker Style")
