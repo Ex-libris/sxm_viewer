@@ -281,6 +281,63 @@ class MultiPreviewCanvas(FigureCanvas):
         """Provide a callback to populate filter actions on the context menu."""
         self._filter_menu_callback = cb
 
+    def export_molecule_state(self):
+        return [mol.to_dict() for mol in (self.molecules or [])]
+
+    def import_molecule_state(self, state):
+        self.molecules = []
+        for entry in state or []:
+            try:
+                self.molecules.append(Molecule.from_dict(entry))
+            except Exception:
+                continue
+        self._redraw()
+
+    def export_angle_state(self):
+        frames = []
+        for frame in self._angle_frames or []:
+            frames.append({
+                "pts": list(frame.get("pts") or (0.0, 0.0, 1.0, 0.0, 0.0, 1.0)),
+                "color_a": frame.get("color_a"),
+                "color_b": frame.get("color_b"),
+                "style": frame.get("style", "dots"),
+            })
+        return {
+            "frames": frames,
+            "active_idx": int(self._active_angle_frame_idx),
+        }
+
+    def import_angle_state(self, state):
+        if not state:
+            return
+        try:
+            self._clear_angle_artists()
+        except Exception:
+            self._angle_frames = []
+            self._active_angle_frame_idx = -1
+            self.angle_pts = None
+        frames = []
+        for entry in state.get("frames", []) or []:
+            pts = entry.get("pts") or (0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+            frame = {
+                "pts": tuple(pts),
+                "color_a": entry.get("color_a", "#ffb300"),
+                "color_b": entry.get("color_b", "#00acc1"),
+                "style": entry.get("style", "dots"),
+                "lines": [],
+                "markers": [],
+                "arrows": [],
+                "label": None,
+                "len_labels": [],
+                "patch": None,
+            }
+            frames.append(frame)
+        self._angle_frames = frames
+        if frames:
+            self._set_active_angle_frame_index(int(state.get("active_idx", 0)))
+            self._ensure_angle_frames()
+            self._update_angle_artists()
+
     def set_view_clim(self, view, clim):
         """Update the color limits for a specific view and redraw while preserving overlays."""
         if not view or clim is None:
