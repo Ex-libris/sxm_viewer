@@ -525,12 +525,35 @@ def _classify_topography_values(vals, tolerance_nm: float | None = None):
     """Classify topography values into CH/CC using a robust percentile range."""
     try:
         arr = np.asarray(vals, dtype=float)
-        arr = arr[np.isfinite(arr)]
+        if arr.ndim == 2:
+            arr = np.where(np.isfinite(arr), arr, np.nan)
+        else:
+            arr = arr[np.isfinite(arr)]
+        if arr.ndim == 2:
+            region = detect_valid_scan_region(arr)
+            if region:
+                r0, r1 = region
+                arr = arr[r0:r1 + 1, :]
+            for row in arr:
+                row_fin = row[np.isfinite(row)]
+                if row_fin.size and (np.ptp(row_fin) == 0.0):
+                    median = float(np.nanmedian(arr))
+                    abs_pm = int(round(median * 1000.0))
+                    prange = float(np.nanmax(arr) - np.nanmin(arr))
+                    return {'tag': 'constant-height', 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+            arr = arr.ravel()
     except Exception:
         return None
     if arr.size == 0:
         return None
     tol = tolerance_nm if tolerance_nm is not None else CH_RANGE_TOL_NM
+    # Dominant bin check: if 90%+ pixels identical and tiny spread -> CH
+    try:
+        hist, edges = np.histogram(arr, bins=256)
+        idx_max = int(np.argmax(hist))
+        frac_dom = hist[idx_max] / float(arr.size)
+    except Exception:
+        frac_dom = 0.0
     try:
         p_low, p_high = np.nanpercentile(arr, [1, 99])
         prange = float(p_high - p_low)
@@ -538,22 +561,27 @@ def _classify_topography_values(vals, tolerance_nm: float | None = None):
         prange = float(np.nanmax(arr) - np.nanmin(arr))
     full_range = float(np.nanmax(arr) - np.nanmin(arr))
     median = float(np.nanmedian(arr))
-    grad_p95 = 0.0
-    try:
-        img = arr
-        if img.ndim == 1:
-            side = int(math.sqrt(img.size))
-            img = img.reshape(side, -1)
-        gy, gx = np.gradient(img)
-        grad_mag = np.sqrt(gx * gx + gy * gy)
-        grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
-    except Exception:
-        grad_p95 = 0.0
-    grad_tol = max(tol * 0.5, 0.01)
-    if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
-        tag = 'constant-current'
+    if frac_dom >= 0.9 and prange <= tol:
+        tag = 'constant-height'
     else:
-        tag = 'constant-height' if prange <= tol else 'constant-current'
+        grad_p95 = 0.0
+        try:
+            img = arr
+            if img.ndim == 1:
+                side = int(math.sqrt(img.size))
+                if side > 0:
+                    img = img.reshape(side, -1)
+            if img.ndim == 2:
+                gy, gx = np.gradient(img)
+                grad_mag = np.sqrt(gx * gx + gy * gy)
+                grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
+        except Exception:
+            grad_p95 = 0.0
+        grad_tol = max(tol * 0.5, 0.01)
+        if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
+            tag = 'constant-current'
+        else:
+            tag = 'constant-height' if prange <= tol else 'constant-current'
     abs_pm = int(round(median * 1000.0)) if tag == 'constant-height' else None
     return {'tag': tag, 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
 
@@ -574,27 +602,13 @@ def _maybe_auto_tag_file(viewer, header_path:Path, header:dict, fds:list, channe
     if topo_idx is None or topo_idx >= len(fds):
         return
     fd_topo = fds[topo_idx]
-    # Prefer sampled values (faster on big grids), fall back to full array
-    vals = None
     try:
-        samples = _sample_channel_values_for_tagging(key, header, fd_topo, CH_SAMPLE_POINTS)
-        if samples is not None and samples.size:
-            arr_input = samples if samples.ndim > 1 else samples.reshape(1, -1)
-            _, arr_nm = normalize_unit_and_data(arr_input, fd_topo.get('PhysUnit',''))
-            vals = np.asarray(arr_nm, dtype=float).ravel()
+        raw_arr = viewer._get_channel_array(key, topo_idx, header, fd_topo)
+        _, arr_nm = normalize_unit_and_data(raw_arr, fd_topo.get('PhysUnit',''))
     except Exception:
-        vals = None
-    if vals is None or vals.size == 0:
-        try:
-            raw_arr = viewer._get_channel_array(key, topo_idx, header, fd_topo)
-            _, arr_nm = normalize_unit_and_data(raw_arr, fd_topo.get('PhysUnit',''))
-            vals = np.asarray(arr_nm, dtype=float).ravel()
-        except Exception:
-            return
-    vals = vals[np.isfinite(vals)]
-    if vals.size == 0:
         return
-    tag_info = _classify_topography_values(vals)
+    classifier = getattr(viewer, "_classify_topography_values", _classify_topography_values)
+    tag_info = classifier(arr_nm)
     if not tag_info:
         return
     if tag_info['tag'] == 'constant-height':
