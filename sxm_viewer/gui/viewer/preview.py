@@ -33,7 +33,7 @@ from ..._shared import (
     matplotlib,
 )
 from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
-from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging
+from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging, header_indicates_constant
 from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
 from ..thumbnail_render import detect_valid_scan_region
@@ -87,8 +87,20 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     except Exception:
         stats = "min/max/median: N/A"
     # tags
-    taginfo = viewer.tags.get(str(header_path), {})
+    tag_key = str(header_path)
+    taginfo = viewer.tags.get(tag_key, {})
+    try:
+        _hdr, fds_all = viewer.headers.get(tag_key, (None, None))
+    except Exception:
+        fds_all = None
     tag_label = taginfo.get('tag', None)
+    header_hint = header_indicates_constant(header)
+    hinted_label = None
+    if header_hint == 'CH':
+        hinted_label = 'constant-height'
+    elif header_hint == 'CC':
+        hinted_label = 'constant-current'
+    effective_tag = tag_label or hinted_label
     tag_chip = ''
     if tag_label == 'constant-height':
         chip_color = '#2e7d32'; chip_text = 'CH'
@@ -102,11 +114,44 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     # abs z + dzs
     ch_lines = ''
     abs_nm = None
-    if tag_label == 'constant-height':
+    if effective_tag == 'constant-height':
         abs_pm = taginfo.get('abs_z_pm', None)
+        inferred = False
+        if abs_pm is None:
+            # derive from topography channel values (median) when not stored
+            try:
+                topo_idx = _find_topography_channel(fds_all)
+                if topo_idx is None:
+                    topo_idx = channel_idx if (fds_all and 0 <= channel_idx < len(fds_all)) else None
+                if topo_idx is not None:
+                    fd_topo = fds_all[topo_idx] if fds_all else None
+                    if fd_topo is None:
+                        raise ValueError("Topography channel not available")
+                    samples = _sample_channel_values_for_tagging(tag_key, header, fd_topo, CH_SAMPLE_POINTS)
+                    if samples is not None and np.asarray(samples).size:
+                        _, arr_nm = normalize_unit_and_data(samples, fd_topo.get('PhysUnit', ''))
+                        vals = np.asarray(arr_nm, dtype=float).ravel()
+                        vals = vals[np.isfinite(vals)]
+                        if vals.size:
+                            median = float(np.nanmedian(vals))
+                            abs_pm = int(round(median * 1000.0))
+                            inferred = True
+            except Exception:
+                abs_pm = None
         if abs_pm is not None:
-            abs_nm = abs_pm/1000.0
-            ch_lines += f"<div>Const-height (abs z): <b>{abs_nm:.3f} nm</b></div>"
+            abs_nm = abs_pm / 1000.0
+            suffix = " (inferred)" if inferred else ""
+            ch_lines += f"<div>Piezo Z (abs){suffix}: <b>{abs_nm:.3f} nm</b></div>"
+            # persist when we already tagged as CH
+            if tag_label == 'constant-height' and taginfo.get('abs_z_pm') != abs_pm:
+                try:
+                    taginfo = dict(taginfo)
+                    taginfo['abs_z_pm'] = abs_pm
+                    viewer.tags[tag_key] = taginfo
+                    viewer.config['tags'] = viewer.tags
+                    save_config(viewer.config)
+                except Exception:
+                    pass
         dz_prev_nonch, prevname = viewer._dz_vs_last_before_ch(header_path)
         if dz_prev_nonch is not None:
             ch_lines += f"<div>dz vs prev non-CH (<i>{esc(prevname)}</i>): <b>{dz_prev_nonch:+.0f} pm</b> ({dz_prev_nonch/1000.0:+.3f} nm)</div>"
@@ -211,7 +256,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         ("Image size", size_txt),
         ("Pixels", pixel_txt),
         ("X/Y center", center_txt),
-        ("Piezo Z", piezo_txt),
+        ("Piezo Z (abs)", piezo_txt),
     ]
     key_section_rows = "".join(
         f"<tr><td style='padding:2px 6px;color:{label_color};font-weight:600'>{esc(lbl)}</td>"

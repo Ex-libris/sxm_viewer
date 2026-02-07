@@ -138,6 +138,21 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
     st = _spec_time_for_assignment(spec)
     sx = spec.get('x'); sy = spec.get('y')
     if _is_dat_spec(spec):
+        # Prefer spatial matching for .dat when coordinates are available.
+        if sx is not None and sy is not None:
+            candidates = []
+            for img in images:
+                ext = image_extents.get(str(img['path']))
+                if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
+                    candidates.append(img)
+            if candidates:
+                if st:
+                    candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - st))
+                return candidates[0]
+        # Next, prefer time ordering for .dat when coordinates don't match extents.
+        time_match = _image_before_spec_time(images, st)
+        if time_match is not None:
+            return time_match
         hint_match = None
         hint_score = -1
         try:
@@ -145,11 +160,8 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
         except TypeError:
             # Backward compatibility if viewer overrides without new arg
             hint_match = viewer._match_spec_to_image_by_hint(spec, images)
-        time_match = _image_before_spec_time(images, st)
         if hint_match is not None and hint_score is not None and hint_score >= 60:
             return hint_match
-        if time_match is not None:
-            return time_match
         if hint_match is not None:
             return hint_match
     candidates = []

@@ -145,7 +145,19 @@ def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: 
     return [h[1] for h in hits]
 
 
-def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
+def _render_spectroscopy_overlays(
+    viewer,
+    pixmap,
+    header,
+    file_key,
+    xpix,
+    ypix,
+    reveal_points_override=None,
+    selected_spec=None,
+    entries_override=None,
+    matrix_as_points=False,
+    thumb_crop=None,
+):
     """Render spectroscopy overlays with configurable marker symbols and matrix footprints."""
     if not viewer.show_spectra:
         return []
@@ -156,7 +168,17 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
     painter = QtGui.QPainter(pixmap)
     painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
     w_scale = pixmap.width() / max(1, xpix - 1)
-    h_scale = pixmap.height() / max(1, ypix - 1)
+    crop_rows = None
+    if thumb_crop:
+        try:
+            r0 = int(thumb_crop.get("r0"))
+            r1 = int(thumb_crop.get("r1"))
+            if r1 > r0:
+                crop_rows = r1 - r0 + 1
+        except Exception:
+            crop_rows = None
+    y_denom = max(1, (crop_rows - 1)) if crop_rows else max(1, ypix - 1)
+    h_scale = pixmap.height() / y_denom
     if reveal_points_override is None:
         reveal_points = hasattr(viewer, '_temp_reveal') and file_key in getattr(viewer, '_temp_reveal', set())
     else:
@@ -183,7 +205,9 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
     if viewer.show_matrix_markers and matrices and not matrix_as_points:
         matrix_color = QtGui.QColor(getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200)))
         for m_specs in matrices.values():
-            rect = viewer._matrix_bbox_pixels(m_specs, header, xpix, ypix, w_scale, h_scale, file_key)
+            rect = viewer._matrix_bbox_pixels(
+                m_specs, header, xpix, ypix, w_scale, h_scale, file_key, thumb_crop=thumb_crop
+            )
             if rect is None:
                 continue
             painter.save()
@@ -226,7 +250,7 @@ def _render_spectroscopy_overlays(viewer, pixmap, header, file_key, xpix, ypix, 
     if (viewer.show_single_markers or reveal_points or matrix_as_points) and singles:
         coords = []
         for idx, spec in enumerate(singles, 1):
-            c = viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key)
+            c = viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key, thumb_crop=thumb_crop)
             if c is None:
                 c = viewer._fallback_spec_coords(idx, xpix, ypix)
             col, row = c

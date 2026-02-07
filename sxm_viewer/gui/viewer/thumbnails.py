@@ -90,17 +90,30 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
         return data_key, cached
     _, arr_conv = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
     arr_use = arr_conv
+    crop_info = None
     try:
         if arr_conv.ndim == 2:
             region = detect_valid_scan_region(arr_conv)
             if region:
                 r0, r1 = region
                 arr_use = arr_conv[r0 : r1 + 1, :]
+                crop_info = {
+                    "r0": int(r0),
+                    "r1": int(r1),
+                    "orig_rows": int(arr_conv.shape[0]),
+                    "orig_cols": int(arr_conv.shape[1]),
+                }
     except Exception:
         arr_use = arr_conv
+        crop_info = None
     thumb_arr = viewer._downsample_for_thumbnail(arr_use, thumb_w, thumb_h)
     with viewer._thumb_data_lock:
         viewer._thumb_data_cache[data_key] = thumb_arr
+        if hasattr(viewer, "_thumb_crop_cache"):
+            if crop_info is None:
+                viewer._thumb_crop_cache.pop(data_key, None)
+            else:
+                viewer._thumb_crop_cache[data_key] = crop_info
     return data_key, thumb_arr
 
 
@@ -121,6 +134,8 @@ def _invalidate_thumbnail_cache(viewer, paths=None):
     if not paths:
         with viewer._thumb_data_lock:
             viewer._thumb_data_cache.clear()
+            if hasattr(viewer, "_thumb_crop_cache"):
+                viewer._thumb_crop_cache.clear()
         viewer.thumb_cache.clear()
         viewer._frame_real_pixmap_cache.clear()
         return
@@ -129,6 +144,10 @@ def _invalidate_thumbnail_cache(viewer, paths=None):
         data_keys = [k for k in viewer._thumb_data_cache.keys() if k[0] in path_set]
         for k in data_keys:
             viewer._thumb_data_cache.pop(k, None)
+        if hasattr(viewer, "_thumb_crop_cache"):
+            crop_keys = [k for k in viewer._thumb_crop_cache.keys() if k[0] in path_set]
+            for k in crop_keys:
+                viewer._thumb_crop_cache.pop(k, None)
     pix_keys = [k for k in viewer.thumb_cache.keys() if k[0][0] in path_set]
     for k in pix_keys:
         viewer.thumb_cache.pop(k, None)

@@ -270,6 +270,7 @@ def _rows_to_spec(
             time_col = idx
             break
     z_col = None
+    topo_col = None
     for idx, lbl in enumerate(cleaned_labels):
         if idx in (bias_col, time_col):
             continue
@@ -277,15 +278,23 @@ def _rows_to_spec(
         if low in ("dz", "z", "z_rel", "zrel", "height"):
             z_col = idx
             break
+    for idx, lbl in enumerate(cleaned_labels):
+        if idx in (bias_col, time_col, z_col):
+            continue
+        low = (lbl or "").lower()
+        if "topo" in low or "topography" in low or "piezo" in low or low in ("zabs", "z_abs", "absz", "abs_z"):
+            topo_col = idx
+            break
 
     bias = data[:, bias_col].copy()
     z_axis = data[:, z_col].copy() if z_col is not None else None
+    topo_axis = data[:, topo_col].copy() if topo_col is not None else None
     time_axis = data[:, time_col].copy() if time_col is not None else None
     channel_labels = cleaned_labels if cleaned_labels else ["" for _ in range(n_cols)]
 
     channels = {}
     for idx in range(n_cols):
-        if idx in (bias_col, z_col, time_col):
+        if idx in (bias_col, z_col, topo_col, time_col):
             continue
         label = channel_labels[idx] if idx < len(channel_labels) else ""
         label = label or f"channel{idx}"
@@ -316,6 +325,20 @@ def _rows_to_spec(
         except Exception:
             pass
         axes_choices.append({"key": "z", "label": alt_label, "unit": alt_unit, "values": alt_axis})
+    if topo_axis is not None:
+        topo_label = None
+        topo_unit = "nm"
+        if header_tokens and topo_col is not None and topo_col < len(header_tokens):
+            topo_label = header_tokens[topo_col].strip() or None
+        topo_label = topo_label or "Topo"
+        topo_axis = topo_axis.copy()
+        try:
+            max_abs = np.nanmax(np.abs(topo_axis))
+            if max_abs < 1e-3:
+                topo_axis = topo_axis * 1e9  # assume meters -> nm
+        except Exception:
+            pass
+        axes_choices.append({"key": "topo", "label": topo_label, "unit": topo_unit, "values": topo_axis})
 
     # Expose a time axis choice only when an explicit time-like column exists.
     if time_axis is not None:
