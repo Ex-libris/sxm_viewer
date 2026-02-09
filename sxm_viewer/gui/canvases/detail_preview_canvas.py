@@ -681,6 +681,19 @@ class MultiPreviewCanvas(FigureCanvas):
             x0, x1, y1, y0 = raw_extent
         else:
             x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
+        flip_y = False
+        y_min = y_max = None
+        extent = view.get('extent') or raw_extent
+        if extent and not rel:
+            try:
+                y_bottom = float(extent[2])
+                y_top = float(extent[3])
+                if y_bottom > y_top:
+                    flip_y = True
+                    y_min = y_top
+                    y_max = y_bottom
+            except Exception:
+                flip_y = False
         def _to_rel(x, y):
             if not rel or not raw_extent:
                 return x, y
@@ -691,6 +704,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 return x_rel, y_rel
             except Exception:
                 return x, y
+        def _map_y(y):
+            if flip_y and y_min is not None and y_max is not None:
+                return (y_min + y_max - y)
+            return y
         normal_xs = []
         normal_ys = []
         highlight_xs = []
@@ -705,6 +722,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 missing_specs.append(s)
                 continue
             x, y = _to_rel(float(sx), float(sy))
+            y = _map_y(y)
             points.append((x, y, s))
             if highlight_spec is not None and s is highlight_spec:
                 highlight_xs.append(x); highlight_ys.append(y)
@@ -723,6 +741,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
                 fx, fy = _to_rel(fx, fy)
+                fy = _map_y(fy)
                 points.append((fx, fy, spec))
                 if highlight_spec is not None and spec is highlight_spec:
                     highlight_xs.append(fx); highlight_ys.append(fy)
@@ -3911,8 +3930,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._zoom_reset_limits[ax] = (xlim, ylim)
         x0 = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) * 0.5
         y0 = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) * 0.5
-        xr = (xlim[1] - xlim[0]) * scale
-        yr = (ylim[1] - ylim[0]) * scale
+        xr = abs(xlim[1] - xlim[0]) * scale
+        yr = abs(ylim[1] - ylim[0]) * scale
         new_xlim = (x0 - xr * 0.5, x0 + xr * 0.5)
         new_ylim = (y0 - yr * 0.5, y0 + yr * 0.5)
         base_xlim, base_ylim = self._zoom_reset_limits.get(ax, (xlim, ylim))
@@ -3923,16 +3942,19 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
 
     def _clamp_limits(self, new_lim, base_lim):
-        """Clamp new limits to stay within base limits."""
+        """Clamp new limits to stay within base limits, preserving axis direction."""
         try:
-            width = new_lim[1] - new_lim[0]
-            base_width = base_lim[1] - base_lim[0]
+            base_min = min(base_lim[0], base_lim[1])
+            base_max = max(base_lim[0], base_lim[1])
+            new_min = min(new_lim[0], new_lim[1])
+            new_max = max(new_lim[0], new_lim[1])
+            width = new_max - new_min
+            base_width = base_max - base_min
             if width >= base_width:
                 return base_lim
-            min_start = base_lim[0]
-            max_start = base_lim[1] - width
-            start = max(min_start, min(new_lim[0], max_start))
-            return (start, start + width)
+            start = max(base_min, min(new_min, base_max - width))
+            end = start + width
+            return (start, end) if base_lim[0] <= base_lim[1] else (end, start)
         except Exception:
             return new_lim
 
@@ -4744,30 +4766,30 @@ class MultiPreviewCanvas(FigureCanvas):
         flip = bool(view.get("relative_axes"))
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
-        xmin, xmax = self._crop_ax.get_xlim()
-        ymin, ymax = self._crop_ax.get_ylim()
-        # clamp rectangle to axis limits
-        x_lo, x_hi = sorted([max(min(x0, x1), xmin), min(max(x0, x1), xmax)])
-        y_lo, y_hi = sorted([max(min(y0, y1), ymin), min(max(y0, y1), ymax)])
-        if xmax == xmin or ymax == ymin:
+        xlim0, xlim1 = self._crop_ax.get_xlim()
+        ylim0, ylim1 = self._crop_ax.get_ylim()
+        x_min, x_max = (xlim0, xlim1) if xlim0 <= xlim1 else (xlim1, xlim0)
+        y_min, y_max = (ylim0, ylim1) if ylim0 <= ylim1 else (ylim1, ylim0)
+        # clamp rectangle to axis limits (handles inverted axes)
+        x0c = min(max(x0, x_min), x_max)
+        x1c = min(max(x1, x_min), x_max)
+        y0c = min(max(y0, y_min), y_max)
+        y1c = min(max(y1, y_min), y_max)
+        if xlim0 == xlim1 or ylim0 == ylim1:
             self._reset_crop_state()
             return
         def _map_x(x):
-            frac = (x - xmin) / (xmax - xmin)
+            frac = (x - xlim0) / (xlim1 - xlim0)
             return int(np.clip(round(frac * (w - 1)), 0, w - 1))
         def _map_y(y):
-            frac = (y - ymin) / (ymax - ymin)
+            frac = (y - ylim0) / (ylim1 - ylim0)
             return int(np.clip(round(frac * (h - 1)), 0, h - 1))
-        c0, c1 = _map_x(x_lo), _map_x(x_hi)
-        r0, r1 = _map_y(y_lo), _map_y(y_hi)
+        c0, c1 = _map_x(x0c), _map_x(x1c)
+        r0, r1 = _map_y(y0c), _map_y(y1c)
         if c1 < c0:
             c0, c1 = c1, c0
         if r1 < r0:
             r0, r1 = r1, r0
-        if self._crop_square:
-            span = min(c1 - c0, r1 - r0)
-            c1 = c0 + span
-            r1 = r0 + span
         cropped_disp = arr_disp[r0:r1 + 1, c0:c1 + 1]
         if cropped_disp.size == 0:
             self._reset_crop_state()

@@ -234,10 +234,15 @@ def load_folder(viewer, folder:Path):
     )
 
 
-def _parse_header_datetime(viewer, header):
+def _parse_header_datetime(viewer, header, path: Path | str | None = None):
     """Return a sortable key (float timestamp) parsed from header Date/Time if possible; otherwise 0.0.
-    Accepts common formats, falls back to 0.0 on failure."""
+    Accepts common formats and uses file mtime as a tie-breaker for ambiguous day/month formats."""
     try:
+        if path and getattr(viewer, "image_time_source", None) == "mtime":
+            try:
+                return Path(path).stat().st_mtime
+            except Exception:
+                pass
         date = str(header.get('Date', '') or '').strip()
         time = str(header.get('Time', '') or '').strip()
         if not date and not time:
@@ -248,17 +253,30 @@ def _parse_header_datetime(viewer, header):
         if date:
             candidates.append(date)
         fmts = [
-            '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%d/%m/%Y %H:%M:%S',
-            '%d-%m-%Y %H:%M:%S', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'
+            '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S',
+            '%m/%d/%Y %H:%M:%S', '%m/%d/%Y %H:%M', '%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M',
+            '%d-%m-%Y %H:%M:%S', '%d-%m-%Y %H:%M',
+            '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'
         ]
+        parsed = []
         for s in candidates:
             for fmt in fmts:
                 try:
                     dt = datetime.strptime(s, fmt)
-                    return dt.timestamp()
+                    parsed.append(dt)
                 except Exception:
                     continue
-        return 0.0
+        if not parsed:
+            return 0.0
+        file_dt = None
+        if path:
+            try:
+                file_dt = datetime.fromtimestamp(Path(path).stat().st_mtime)
+            except Exception:
+                file_dt = None
+        if file_dt:
+            parsed.sort(key=lambda dt: abs((dt - file_dt).total_seconds()))
+        return parsed[0].timestamp()
     except Exception:
         return 0.0
 
@@ -719,6 +737,8 @@ def _scan_spectros(viewer, folder:Path):
                     try:
                         spec_list = parse_nanonis_spectroscopy(p)
                     except Exception:
+                        spec_list = None
+                    if not spec_list:
                         spec_list = None
                 elif ext == ".3ds":
                     try:

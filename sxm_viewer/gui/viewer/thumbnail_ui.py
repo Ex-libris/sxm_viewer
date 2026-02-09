@@ -1,6 +1,7 @@
 """Thumbnail UI helpers for SXMGridViewer."""
 from __future__ import annotations
 
+import re
 import sip
 
 from ..._shared import (
@@ -114,12 +115,24 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
 
     sort_mode = (viewer.thumb_sort_combo.currentText() if hasattr(viewer, 'thumb_sort_combo') else 'Name (A?Z)')
     if sort_mode.startswith('Name'):
-        files_iter.sort(key=lambda p: Path(p).name.lower())
+        def _natural_key(name: str):
+            parts = re.split(r"(\\d+)", name)
+            key = []
+            for part in parts:
+                if part.isdigit():
+                    try:
+                        key.append(int(part))
+                    except Exception:
+                        key.append(part)
+                else:
+                    key.append(part.lower())
+            return key
+        files_iter.sort(key=lambda p: _natural_key(Path(p).name))
     elif 'Date (new' in sort_mode or 'Date (old' in sort_mode:
         rev = ('new' in sort_mode)
         def sort_key_date(p):
             hdr = viewer.headers.get(str(p), (None, None))[0]
-            return viewer._parse_header_datetime(hdr)
+            return viewer._parse_header_datetime(hdr, path=p)
         files_iter.sort(key=sort_key_date, reverse=rev)
     elif sort_mode.startswith('Tag'):
         order = {'constant-height': 0, 'constant-current': 1, None: 2}
@@ -186,9 +199,19 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 base_pix = viewer.thumb_cache.get((data_key, cmap_name))
             if base_pix is not None:
                 pix = base_pix.copy()
-                markers = viewer._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds)
+                crop_info = None
+                try:
+                    with viewer._thumb_data_lock:
+                        crop_info = viewer._thumb_crop_cache.get(data_key)
+                except Exception:
+                    crop_info = None
+                markers = viewer._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds, thumb_crop=crop_info)
                 lbl.setPixmap(pix)
                 lbl.setProperty("spec_markers", markers)
+                try:
+                    lbl.setProperty("thumb_crop", crop_info)
+                except Exception:
+                    pass
                 viewer._thumb_loaded.add(key)
             else:
                 lbl.setProperty("spec_markers", [])

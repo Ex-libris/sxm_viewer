@@ -124,6 +124,50 @@ from ..thumbnail_render import (
 )
 from .matrix_fit import MatrixFitDialog
 
+def _normalize_topo_axis(values: np.ndarray, unit_hint: str | None) -> tuple[np.ndarray, str]:
+    arr = np.asarray(values, dtype=float)
+    unit = (unit_hint or "").strip()
+    unit_lower = unit.lower()
+    if unit_lower in ("m", "meter", "meters"):
+        return arr * 1e9, "nm"
+    if unit_lower in ("um", "micron", "microns"):
+        return arr * 1e3, "nm"
+    if unit_lower in ("pm", "picometer", "picometers"):
+        return arr * 1e-3, "nm"
+    # Heuristic: if values are tiny, assume meters and convert to nm.
+    if unit_lower in ("nm", "nanometer", "nanometers", ""):
+        try:
+            max_abs = float(np.nanmax(np.abs(arr))) if np.isfinite(arr).any() else 0.0
+        except Exception:
+            max_abs = 0.0
+        if max_abs and max_abs < 1e-3:
+            return arr * 1e9, "nm"
+        return arr, (unit if unit else "nm")
+    return arr, unit
+
+
+def _topo_axis_from_spec(spec: dict | None) -> dict | None:
+    if not spec:
+        return None
+    channels = spec.get("channels") or {}
+    if not isinstance(channels, dict):
+        return None
+    unit_map = spec.get("unit_map") or {}
+    for name, vals in channels.items():
+        low = str(name).strip().lower()
+        if not low:
+            continue
+        if (
+            "topo" in low
+            or "topography" in low
+            or "piezo" in low
+            or low in ("z_abs", "zabs", "absz", "abs_z", "z-abs")
+        ):
+            unit_hint = unit_map.get(name) or guess_channel_unit(name) or ""
+            arr, unit = _normalize_topo_axis(np.asarray(vals, dtype=float), unit_hint)
+            return {"key": "topo", "label": name or "Topo", "unit": unit, "values": arr}
+    return None
+
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
     SCIENCE_PALETTE = [
@@ -264,6 +308,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             unit = ax.get("unit") or ""
             key = ax.get("key") or label
             axes.append({"key": key, "label": label, "unit": unit, "values": vals})
+        extra_topo = _topo_axis_from_spec(spec)
+        if extra_topo and not any((a.get("key") == "topo") or ("topo" in str(a.get("label", "")).lower()) for a in axes):
+            axes.append(extra_topo)
         # Deduplicate identical axes (same values) to avoid duplicate Bias entries
         if axes:
             deduped = []
@@ -306,6 +353,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             if key == axis_key:
                 vals = np.asarray(choice.get("values", []), dtype=float)
                 return vals, choice.get("label") or "Axis", choice.get("unit") or ""
+        if axis_key == "topo":
+            extra_topo = _topo_axis_from_spec(spec)
+            if extra_topo is not None:
+                return (
+                    np.asarray(extra_topo.get("values", []), dtype=float),
+                    extra_topo.get("label") or "Topo",
+                    extra_topo.get("unit") or "nm",
+                )
         if axis_key == "alt":
             alt_vals = spec.get("AltAxis")
             if alt_vals is not None:
@@ -2554,7 +2609,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         axis_row = QtWidgets.QHBoxLayout()
         axis_row.addWidget(QtWidgets.QLabel("Axis:"))
         self.axis_combo = QtWidgets.QComboBox()
-        self.axis_combo.setToolTip("Select X-axis for plotting (bias voltage or Z position)")
+        self.axis_combo.setToolTip("Select X-axis for plotting (bias voltage, Z, or Topo position)")
         self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
         self.axis_combo.setAccessibleName("Axis selection")
         self.axis_combo.setAccessibleDescription("Choose the X-axis variable for the plot")
@@ -2908,6 +2963,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 axes.append(("primary", primary_lbl, primary_unit, np.asarray(spec.get("V", []), dtype=float)))
                 if spec.get("AltAxis") is not None:
                     axes.append(("alt", spec.get("AltAxisLabel") or "Z rel", spec.get("AltAxisUnit") or "", np.asarray(spec.get("AltAxis"), dtype=float)))
+            extra_topo = _topo_axis_from_spec(spec)
+            if extra_topo and not any(a[0] == "topo" for a in axes):
+                axes.append(("topo", extra_topo.get("label") or "Topo", extra_topo.get("unit") or "nm", np.asarray(extra_topo.get("values", []), dtype=float)))
         # dedupe by key+values to avoid duplicate bias axes
         seen = []
         options = []
@@ -2968,6 +3026,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if ax.get("key") == choice_key:
                 vals = np.asarray(ax.get("values", []), dtype=float)
                 return vals, ax.get("label") or "Axis", ax.get("unit") or ""
+        if choice_key == "topo":
+            extra_topo = _topo_axis_from_spec(spec)
+            if extra_topo is not None:
+                vals = np.asarray(extra_topo.get("values", []), dtype=float)
+                return vals, extra_topo.get("label") or "Topo", extra_topo.get("unit") or "nm"
         if choice_key == "alt":
             alt_vals = spec.get("AltAxis")
             if alt_vals is not None:
@@ -4246,7 +4309,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         <h3>Data Selection</h3>
         <ul>
         <li><b>Channel:</b> Choose which data channel to plot and analyze</li>
-        <li><b>Axis:</b> Select the X-axis (bias voltage or Z position)</li>
+        <li><b>Axis:</b> Select the X-axis (bias voltage, Z, or Topo position)</li>
         <li><b>Relative Z:</b> Shift Z-axis to start from zero at minimum value</li>
         </ul>
         

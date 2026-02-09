@@ -129,6 +129,13 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         log_status("Loading configuration...")
         self.config = load_config()
+        time_source = self.config.get("image_time_source", "mtime")
+        if time_source not in ("mtime", "header"):
+            time_source = "mtime"
+        self.image_time_source = time_source
+        if self.config.get("image_time_source") != time_source:
+            self.config["image_time_source"] = time_source
+            save_config(self.config)
         self.last_dir = Path(self.config.get("last_dir", str(Path.cwd())))
         raw_recents = self.config.get("recent_dirs", [])
         self.recent_dirs = []
@@ -249,6 +256,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.headers = {}
         self.thumb_cache = {}
         self._thumb_data_cache = {}
+        self._thumb_crop_cache = {}
         self._topo_stats_cache = {}
         self._channel_data_cache = OrderedDict()
         self._channel_cache_lock = threading.Lock()
@@ -2041,7 +2049,7 @@ QLabel:hover {{
     def _fallback_spec_coords(self, idx, xpix, ypix):
         return viewer_preview._fallback_spec_coords(self, idx, xpix, ypix)
 
-    def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds):
+    def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds, thumb_crop=None):
         """Draw tag borders, filter badges, and spectroscopy markers."""
         marker_defs = []
         taginfo = self.tags.get(str(file_key), {})
@@ -2092,6 +2100,7 @@ QLabel:hover {{
                     xpix,
                     ypix,
                     selected_spec=highlight_spec,
+                    thumb_crop=thumb_crop,
                 )
             except Exception:
                 marker_defs = []
@@ -2121,11 +2130,21 @@ QLabel:hover {{
             self.thumb_cache[(data_key, cmap_name)] = base_pix
         except Exception:
             pass
+        crop_info = None
+        try:
+            with self._thumb_data_lock:
+                crop_info = self._thumb_crop_cache.get(data_key)
+        except Exception:
+            crop_info = None
         pix = base_pix.copy()
         header, fds = self.headers.get(str(file_key), (None, None))
-        markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds)
+        markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds, thumb_crop=crop_info)
         label.setPixmap(pix)
         label.setProperty("spec_markers", markers)
+        try:
+            label.setProperty("thumb_crop", crop_info)
+        except Exception:
+            pass
         self._thumb_inflight.discard(file_key)
         self._thumb_loaded.add(file_key)
         try:
@@ -2386,12 +2405,12 @@ QLabel:hover {{
 
     # removed size change handler
 
-    def _parse_header_datetime(self, header):
-        return viewer_loader._parse_header_datetime(self, header)
+    def _parse_header_datetime(self, header, path=None):
+        return viewer_loader._parse_header_datetime(self, header, path=path)
 
     def _header_datetime_dt(self, header, path):
         try:
-            ts = float(self._parse_header_datetime(header or {}))
+            ts = float(self._parse_header_datetime(header or {}, path=path))
             if ts <= 0:
                 ts = Path(path).stat().st_mtime
             return datetime.fromtimestamp(ts)
@@ -2599,12 +2618,25 @@ QLabel:hover {{
                 continue
             pix = base_pix.copy()
             header, fds = self.headers.get(str(file_key), (None, None))
+            crop_info = None
             try:
-                markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds)
+                if fds and 0 <= channel_idx < len(fds):
+                    fd = fds[channel_idx]
+                    data_key = self._thumbnail_data_key(file_key, channel_idx, fd, thumb_dims[0], thumb_dims[1])
+                    with self._thumb_data_lock:
+                        crop_info = self._thumb_crop_cache.get(data_key)
+            except Exception:
+                crop_info = None
+            try:
+                markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds, thumb_crop=crop_info)
             except Exception:
                 markers = []
             label.setPixmap(pix)
             label.setProperty("spec_markers", markers)
+            try:
+                label.setProperty("thumb_crop", crop_info)
+            except Exception:
+                pass
 
     def _make_thumb_press_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_press_handler(self, label_widget)
@@ -4258,6 +4290,13 @@ QLabel:hover {{
         try:
             log_status("[Lazy] Loading spectroscopy references...")
             self._reload_spectros(refresh=refresh)
+            if not refresh and self._spectros_loaded:
+                self._schedule_marker_refresh()
+                if self.last_preview:
+                    try:
+                        self.show_file_channel(self.last_preview[0], self.last_preview[1])
+                    except Exception:
+                        pass
         finally:
             self._spectros_loading = False
         return True
@@ -4340,7 +4379,7 @@ QLabel:hover {{
     def _match_spec_to_image_by_hint(self, spec, images, with_score=False):
         return spectro_controller._match_spec_to_image_by_hint(self, spec, images, with_score=with_score)
 
-    def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
+    def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None, thumb_crop=None):
         try:
             x = float(spec.get('x'))
             y = float(spec.get('y'))
@@ -4364,24 +4403,49 @@ QLabel:hover {{
             # try to map using spectroscopy cloud extents if available
             fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
             if fallback is not None:
-                return fallback
-            return self._map_spec_by_grid(spec, xpix, ypix)
+                col, row = fallback
+                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+            grid_fallback = self._map_spec_by_grid(spec, xpix, ypix)
+            if grid_fallback is not None:
+                col, row = grid_fallback
+                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+            return None
         frac_x = (x - x0) / xspan
         frac_y = (y1 - y) / yspan  # invert so larger y appears lower on the pixmap
         if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
             # try spectroscopy cloud extent before clamping/grid
             fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
             if fallback is not None:
-                return fallback
+                col, row = fallback
+                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
             grid_pt = self._map_spec_by_grid(spec, xpix, ypix)
             if grid_pt is not None:
-                return grid_pt
+                col, row = grid_pt
+                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
             frac_x = min(max(frac_x, 0.0), 1.0)
             frac_y = min(max(frac_y, 0.0), 1.0)
         cols = max(1, int(xpix) - 1)
         rows = max(1, int(ypix) - 1)
         col = frac_x * cols
         row = frac_y * rows
+        return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+
+    def _apply_thumb_crop_to_coords(self, col, row, xpix, ypix, thumb_crop):
+        if thumb_crop is None:
+            return col, row
+        try:
+            r0 = int(thumb_crop.get("r0"))
+            r1 = int(thumb_crop.get("r1"))
+        except Exception:
+            return col, row
+        if r1 <= r0:
+            return col, row
+        crop_rows = r1 - r0 + 1
+        try:
+            row = float(row) - float(r0)
+        except Exception:
+            return col, row
+        row = min(max(row, 0.0), max(0.0, crop_rows - 1))
         return col, row
 
     def _map_spec_by_spec_extent(self, file_key, spec, xpix, ypix):
@@ -4450,7 +4514,19 @@ QLabel:hover {{
         row = frac_y * max(1, ypix - 1)
         return col, row
 
-    def _render_spectroscopy_overlays(self, pixmap, header, file_key, xpix, ypix, reveal_points_override=None, selected_spec=None, entries_override=None, matrix_as_points=False):
+    def _render_spectroscopy_overlays(
+        self,
+        pixmap,
+        header,
+        file_key,
+        xpix,
+        ypix,
+        reveal_points_override=None,
+        selected_spec=None,
+        entries_override=None,
+        matrix_as_points=False,
+        thumb_crop=None,
+    ):
         """Render spectroscopy markers directly on the thumbnail pixmap."""
         if not self.show_spectra and not reveal_points_override:
             return []
@@ -4472,13 +4548,14 @@ QLabel:hover {{
             selected_spec=selected_spec,
             entries_override=entries_override,
             matrix_as_points=matrix_as_points,
+            thumb_crop=thumb_crop,
         )
 
-    def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None):
+    def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None, thumb_crop=None):
         xs = []
         ys = []
         for idx, spec in enumerate(m_specs, 1):
-            c = self._map_spec_to_pixels(spec, header, xpix, ypix, file_key)
+            c = self._map_spec_to_pixels(spec, header, xpix, ypix, file_key, thumb_crop=thumb_crop)
             if c is None:
                 c = self._fallback_spec_coords(idx, xpix, ypix)
             col, row = c
@@ -4491,7 +4568,17 @@ QLabel:hover {{
         width = max(xmax - xmin, 0.0)
         height = max(ymax - ymin, 0.0)
         max_w = max(1.0, (max(xpix - 1, 1)) * w_scale)
-        max_h = max(1.0, (max(ypix - 1, 1)) * h_scale)
+        crop_rows = None
+        if thumb_crop:
+            try:
+                r0 = int(thumb_crop.get("r0"))
+                r1 = int(thumb_crop.get("r1"))
+                if r1 > r0:
+                    crop_rows = r1 - r0 + 1
+            except Exception:
+                crop_rows = None
+        y_denom = max(1, (crop_rows - 1)) if crop_rows else max(1, ypix - 1)
+        max_h = max(1.0, y_denom * h_scale)
         if width == 0 and height == 0:
             base = min(max_w, max_h) * 0.2
             base = max(base, 18.0)
