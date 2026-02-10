@@ -405,7 +405,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     main = {
         'arr': display_arr,
         'extent': display_extent,
-        'extent_raw': base_extent,
+        'extent_raw': adjusted_extent,
         'cmap': cmap_to_use,
         'unit': display_unit,
         'title': title_text,
@@ -445,8 +445,9 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2['channel'] = caption2
             meta2['channel_index'] = int(idx2)
             clim2 = _auto_preview_clim(arr2_display)
-            vdict = {'arr': arr2_display, 'extent': extent2, 'cmap': cmap2, 'unit': unit2_display,
-                     'title': title2, 'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
+            vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
+                     'cmap': cmap2, 'unit': unit2_display, 'title': title2,
+                     'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                      'relative_axes': bool(viewer.relative_axes), 'meta': meta2}
             if clim2:
                 vdict['clim'] = clim2

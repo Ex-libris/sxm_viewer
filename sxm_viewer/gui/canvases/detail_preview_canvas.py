@@ -59,6 +59,8 @@ except Exception:  # pragma: no cover - optional dependency
     cv2 = None
     _HAS_CV2 = False
 
+_FIXED_CROP_HISTORY_LIMIT = 96
+
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
 
@@ -80,6 +82,20 @@ class MultiPreviewCanvas(FigureCanvas):
         self._crop_square = False
         self._crop_last_ts = 0.0
         self._crop_move_throttle_ms = 12  # throttle mouse-move driven crop updates
+        self._fixed_crop_template = None
+        self._fixed_crop_template_bounds = None
+        self._fixed_crop_template_pixel_bounds = None
+        self._fixed_crop_template_view_key = None
+        self._fixed_crop_template_visible = False
+        self._fixed_crop_history_visible = False
+        self._fixed_crop_quick_mode = False
+        self._fixed_crop_history = []
+        self._fixed_crop_sequence = 1
+        self._fixed_crop_template_unit = "nm"
+        self._fixed_crop_history_callback = None
+        self._fixed_crop_template_manual_dims = None
+        self._fixed_crop_history_highlight_seq = None
+        self._fixed_crop_history_highlight_artists = {}
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._value_callback = None
@@ -429,13 +445,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 arr_plot = np.flipud(arr)
             else:
                 arr_plot = arr
-            extent = v.get('extent', None)
+            raw_extent = v.get('extent_raw')
+            if raw_extent is None:
+                raw_extent = v.get('extent')
             cmap = v.get('cmap', 'viridis')
             origin = 'lower' if flip else 'upper'
-            if extent is None:
+            display_extent = self._display_extent_for_view(v, raw_extent)
+            if display_extent is None:
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
-                im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+                im = ax.imshow(
+                    arr_plot,
+                    extent=display_extent,
+                    origin=origin,
+                    interpolation='nearest',
+                    aspect='equal',
+                    cmap=cmap,
+                )
             clim = v.get('clim')
             if clim:
                 try:
@@ -495,6 +521,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._draw_outlines(ax, v)
             except Exception:
                 pass
+            try:
+                self._draw_fixed_crop_history(ax, v)
+            except Exception:
+                pass
+            try:
+                self._render_template_overlay(ax, v)
+            except Exception:
+                pass
         try: self.fig.tight_layout()
         except Exception: pass
         self._apply_view_theme()
@@ -505,6 +539,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._emit_profile()
         if self.angle_enabled:
             self._ensure_angle_frames()
+        self._update_highlight_artists()
         self.draw()
 
     def _draw_molecules(self, ax):
@@ -3277,6 +3312,27 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
                 return
+            if (
+                self._fixed_crop_quick_mode
+                and view is not None
+                and not want_rect
+                and not want_square
+                and not (mods_qt & QtCore.Qt.ShiftModifier)
+                and not (mods_qt & QtCore.Qt.ControlModifier)
+            ):
+                try:
+                    if self._apply_fixed_crop_quick(event, view, ax):
+                        return
+                except Exception:
+                    pass
+            # Avoid accidental 1 px manual crops when quick mode is enabled and Shift+click with no drag
+            if (
+                self._fixed_crop_quick_mode
+                and (mods_qt & QtCore.Qt.ShiftModifier)
+                and not want_rect
+                and not want_square
+            ):
+                return
         if self.profile_enabled and ax is self.main_ax:
             # avoid starting thumbnail drag/other actions while measuring profiles
             if event.button == 3:
@@ -3973,6 +4029,31 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return False
 
+    def _display_extent_for_view(self, view, extent):
+        """Return the extent that should be passed to matplotlib based on relative axes."""
+        if extent is None:
+            return None
+        if not bool(view.get('relative_axes')):
+            return self._normalize_extent(extent)
+        try:
+            x0, x1, y1, y0 = extent
+        except Exception:
+            return self._normalize_extent(extent)
+        width = max(abs(x1 - x0), 1e-6)
+        height = max(abs(y0 - y1), 1e-6)
+        return self._normalize_extent((0.0, width, height, 0.0))
+
+    def _normalize_extent(self, extent):
+        if not extent or len(extent) != 4:
+            return extent
+        x0, x1, y1, y0 = extent
+        tol = 1e-6
+        if abs(x1 - x0) < tol:
+            x1 = x0 + tol
+        if abs(y1 - y0) < tol:
+            y0 = y1 + tol
+        return (x0, x1, y1, y0)
+
     def _render_view_figure(self, view):
         fig = Figure(figsize=(6, 6))
         ax = fig.add_subplot(1, 1, 1)
@@ -3982,13 +4063,23 @@ class MultiPreviewCanvas(FigureCanvas):
             arr_plot = np.flipud(arr)
         else:
             arr_plot = arr
-        extent = view.get('extent', None)
+        raw_extent = view.get('extent_raw')
+        if raw_extent is None:
+            raw_extent = view.get('extent')
         cmap = view.get('cmap', 'viridis')
         origin = 'lower' if flip else 'upper'
-        if extent is None:
+        display_extent = self._display_extent_for_view(view, raw_extent)
+        if display_extent is None:
             im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
         else:
-            im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            im = ax.imshow(
+                arr_plot,
+                extent=display_extent,
+                origin=origin,
+                interpolation='nearest',
+                aspect='equal',
+                cmap=cmap,
+            )
         ax.set_autoscale_on(False)
         cbar_label = view.get('colorbar_label') or view.get('unit', '')
         cbar = None
@@ -4024,13 +4115,13 @@ class MultiPreviewCanvas(FigureCanvas):
         ax.tick_params(labelsize=8)
 
         if self.scale_bar_enabled:
-            extent = view.get('extent')
-            if extent is None:
+            extent_for_scale = display_extent if display_extent is not None else raw_extent
+            if extent_for_scale is None:
                 h, w = np.shape(view['arr'])
                 width = w
                 unit = 'px'
             else:
-                width = abs(extent[1] - extent[0])
+                width = abs(extent_for_scale[1] - extent_for_scale[0])
                 unit = view.get('axis_unit') or 'nm'
             
             size, label = self._calculate_best_scale_bar(width, unit)
@@ -4071,6 +4162,17 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
         return fig
 
+    def render_crop_entry_figure(self, entry):
+        if not entry:
+            return None
+        view = entry.get("view_snapshot")
+        if not view:
+            return None
+        try:
+            return self._render_view_figure(view)
+        except Exception:
+            return None
+
     def _render_views_grid(self, views):
         """Render multiple views into a single figure grid."""
         views = views or []
@@ -4090,13 +4192,16 @@ class MultiPreviewCanvas(FigureCanvas):
             arr = np.asarray(view.get('arr'))
             flip = bool(view.get('relative_axes'))
             arr_plot = np.flipud(arr) if flip else arr
-            extent = view.get('extent', None)
+            raw_extent = view.get('extent_raw')
+            if raw_extent is None:
+                raw_extent = view.get('extent')
             cmap = view.get('cmap', 'viridis')
             origin = 'lower' if flip else 'upper'
-            if extent is None:
+            display_extent = self._display_extent_for_view(view, raw_extent)
+            if display_extent is None:
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
-                im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+                im = ax.imshow(arr_plot, extent=display_extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
             # record base limits for reset before any restore
             try:
                 self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
@@ -4196,7 +4301,18 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _outline_key(self, view):
         meta = view.get("meta") or {}
-        return (meta.get("file_path"), tuple(view.get("extent") or ()))
+        extent = view.get("extent_raw")
+        if extent is None:
+            extent = view.get("extent")
+        return (meta.get("file_path"), tuple(extent or ()))
+
+    def _guess_view_unit(self, view):
+        unit = ""
+        if view:
+            unit = (view.get("unit") or view.get("colorbar_label") or "").strip()
+        if not unit:
+            unit = "nm"
+        return unit
 
     def _add_outlines(self, view, contours_world):
         """Add one or more outlines for a view and track order for undo."""
@@ -4811,20 +4927,39 @@ class MultiPreviewCanvas(FigureCanvas):
                 _lerp_y(r1),  # note: extent ordering is (x0, x1, y1, y0)
                 _lerp_y(r0),
             )
+        bounds_data = self._pixel_bounds_to_axis_bounds(self._crop_ax, w, h, c0, c1, r0, r1)
+        entry = self._register_crop_entry(view, bounds_data, (c0, c1, r0, r1), self._crop_square, update_size=True)
         new_view = dict(view)
         try:
             new_view["arr"] = np.array(cropped_arr, copy=True)
         except Exception:
             new_view["arr"] = cropped_arr
         if crop_extent is not None:
-            new_view["extent"] = crop_extent
+            new_view["extent_raw"] = crop_extent
+            display_extent = self._display_extent_for_view(new_view, crop_extent)
+            if display_extent is not None:
+                new_view["extent"] = display_extent
+            else:
+                new_view.pop("extent", None)
+        else:
+            new_view.pop("extent", None)
+            new_view.pop("extent_raw", None)
         title = view.get("title") or "crop"
         new_view["title"] = f"{title} [crop]"
+        if entry and entry.get("sequence") is not None:
+            new_view["crop_sequence"] = entry["sequence"]
+            entry["view_snapshot"] = dict(new_view)
         if callable(self._crop_callback):
             try:
                 self._crop_callback(new_view)
             except Exception:
                 pass
+        ax = self._crop_ax
+        if self._fixed_crop_history_visible and entry and ax:
+            self._render_history_entry(ax, entry)
+        if self._fixed_crop_template_visible and ax:
+            self._render_template_overlay(ax, view)
+        self.draw_idle()
         self._reset_crop_state()
 
     def _reset_crop_state(self):
@@ -4836,6 +4971,682 @@ class MultiPreviewCanvas(FigureCanvas):
         self._outline_start = None
         self._outline_rect = None
         self._outline_ax = None
+
+    def enable_fixed_crop_quick_mode(self, enabled: bool):
+        self._fixed_crop_quick_mode = bool(enabled)
+
+    def show_fixed_crop_template(self, visible: bool):
+        self._fixed_crop_template_visible = bool(visible)
+        self._redraw()
+
+    def show_fixed_crop_history(self, visible: bool):
+        self._fixed_crop_history_visible = bool(visible)
+        self._redraw()
+
+    def is_fixed_crop_history_visible(self):
+        return bool(self._fixed_crop_history_visible)
+
+    def set_fixed_crop_history_highlight(self, seq):
+        seq = int(seq) if seq is not None else None
+        if self._fixed_crop_history_highlight_seq == seq:
+            return
+        self._fixed_crop_history_highlight_seq = seq
+        self._update_highlight_artists()
+        self.draw_idle()
+
+    def _cleanup_highlight_artists(self):
+        for artists in list(self._fixed_crop_history_highlight_artists.values()):
+            for artist in artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+        self._fixed_crop_history_highlight_artists.clear()
+
+    def _update_highlight_artists(self):
+        if self._fixed_crop_history_visible:
+            self._cleanup_highlight_artists()
+            return
+        seq = self._fixed_crop_history_highlight_seq
+        if seq is None:
+            self._cleanup_highlight_artists()
+            return
+        active_keys = set()
+        for ax, view in self._ax_view_map.items():
+            key = self._outline_key(view)
+            if key is None:
+                continue
+            entry = next(
+                (entry for entry in self._fixed_crop_history
+                 if entry.get("key") == key and entry.get("sequence") == seq),
+                None,
+            )
+            if entry is None:
+                continue
+            active_keys.add(key)
+            x0, x1, y0, y1 = entry.get("data_bounds") or (0, 0, 0, 0)
+            left, right = min(x0, x1), max(x0, x1)
+            bottom, top = min(y0, y1), max(y0, y1)
+            width = right - left
+            height = top - bottom
+            if width <= 0 or height <= 0:
+                continue
+            artists = self._fixed_crop_history_highlight_artists.get(key)
+            if artists:
+                fill, outline = artists
+                fill.set_xy((left, bottom))
+                fill.set_width(width)
+                fill.set_height(height)
+                outline.set_xy((left, bottom))
+                outline.set_width(width)
+                outline.set_height(height)
+            else:
+                fill = patches.Rectangle(
+                    (left, bottom),
+                    width,
+                    height,
+                    linewidth=0,
+                    edgecolor='none',
+                    facecolor='#ff66ff',
+                    alpha=0.15,
+                    zorder=17,
+                )
+                outline = patches.Rectangle(
+                    (left, bottom),
+                    width,
+                    height,
+                    linewidth=3.0,
+                    edgecolor='#ffffff',
+                    facecolor='none',
+                    alpha=0.7,
+                    linestyle='-',
+                    zorder=19,
+                )
+                ax.add_patch(fill)
+                ax.add_patch(outline)
+                self._fixed_crop_history_highlight_artists[key] = (fill, outline)
+        for key in list(self._fixed_crop_history_highlight_artists.keys()):
+            if key not in active_keys:
+                artists = self._fixed_crop_history_highlight_artists.pop(key, ())
+                for artist in artists:
+                    try:
+                        artist.remove()
+                    except Exception:
+                        pass
+
+    def _axis_coord_to_pixel(self, ax, coord, length, axis_key):
+        if ax is None or coord is None or length <= 0:
+            return 0
+        limits = ax.get_xlim() if axis_key == 'x' else ax.get_ylim()
+        lim0, lim1 = limits
+        denom = max(1, length - 1)
+        frac = (coord - lim0) / (lim1 - lim0) if lim1 != lim0 else 0.0
+        idx = int(round(frac * denom))
+        return int(np.clip(idx, 0, length - 1))
+
+    def _pixel_bounds_to_axis_bounds(self, ax, w, h, c0, c1, r0, r1):
+        if ax is None:
+            return None
+        def _interp(idx, lim, size):
+            denom = max(1, size - 1)
+            frac = idx / denom if denom else 0.0
+            return lim[0] + (lim[1] - lim[0]) * frac
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        left = min(c0, c1)
+        right = max(c0, c1)
+        bottom = min(r0, r1)
+        top = max(r0, r1)
+        return (
+            _interp(left, xlim, w),
+            _interp(right, xlim, w),
+            _interp(bottom, ylim, h),
+            _interp(top, ylim, h),
+        )
+
+    def _compute_crop_extent(self, view, w, h, c0, c1, r0, r1):
+        ext = view.get("extent")
+        if ext is None:
+            return None
+        x_extent0, x_extent1, y_extent1, y_extent0 = ext
+        def _lerp(idx, start, end, denom):
+            return start + (end - start) * (idx / denom) if denom != 0 else start
+        denom_x = max(1, w - 1)
+        denom_y = max(1, h - 1)
+        return (
+            _lerp(c0, x_extent0, x_extent1, denom_x),
+            _lerp(c1, x_extent0, x_extent1, denom_x),
+            _lerp(r1, y_extent0, y_extent1, denom_y),
+            _lerp(r0, y_extent0, y_extent1, denom_y),
+        )
+
+    def _register_crop_entry(self, view, bounds_data, pixel_bounds, square, update_size=True):
+        key = self._outline_key(view)
+        if key is None:
+            return None
+        c0, c1, r0, r1 = pixel_bounds
+        width = max(1, int(abs(c1 - c0) + 1))
+        height = max(1, int(abs(r1 - r0) + 1))
+        seq = self._fixed_crop_sequence
+        real_unit = self._guess_view_unit(view)
+        real_size = (0.0, 0.0)
+        if bounds_data:
+            x0, x1, y0, y1 = bounds_data
+            real_size = (abs(x1 - x0), abs(y1 - y0))
+        entry = {
+            "key": key,
+            "data_bounds": bounds_data,
+            "pixel_bounds": pixel_bounds,
+            "sequence": seq,
+            "square": bool(square),
+            "real_size": real_size,
+            "unit": real_unit,
+            "color": self._crop_color_for_seq(seq),
+        }
+        self._fixed_crop_history.append(entry)
+        self._fixed_crop_sequence = seq + 1
+        if update_size or self._fixed_crop_template is None:
+            self._update_template_from_entry(entry)
+        else:
+            self._fixed_crop_template_bounds = bounds_data
+            self._fixed_crop_template_pixel_bounds = pixel_bounds
+            self._fixed_crop_template_view_key = key
+        if len(self._fixed_crop_history) > _FIXED_CROP_HISTORY_LIMIT:
+            self._fixed_crop_history.pop(0)
+        self._emit_fixed_crop_history_update()
+        return entry
+
+    def _render_history_entry(self, ax, entry, show_label=True):
+        if not entry or ax is None:
+            return
+        data_bounds = entry.get("data_bounds")
+        if not data_bounds:
+            return
+        x0, x1, y0, y1 = data_bounds
+        left, right = min(x0, x1), max(x0, x1)
+        bottom, top = min(y0, y1), max(y0, y1)
+        width = right - left
+        height = top - bottom
+        if width <= 0 or height <= 0:
+            return
+        seq = entry.get("sequence")
+        is_active = seq is not None and seq == self._fixed_crop_history_highlight_seq
+        edge_color = entry.get("color") or ('#ff66ff' if is_active else '#ffd166')
+        line_width = 2.3 if is_active else 1.8
+        alpha = 1.0 if is_active else 0.6
+        if is_active:
+            highlight_fill = patches.Rectangle(
+                (left, bottom),
+                width,
+                height,
+                linewidth=0,
+                edgecolor='none',
+                facecolor=edge_color,
+                alpha=0.15,
+                zorder=17,
+            )
+            ax.add_patch(highlight_fill)
+        rect = patches.Rectangle(
+            (left, bottom),
+            width,
+            height,
+            linewidth=line_width,
+            edgecolor=edge_color,
+            facecolor='none',
+            alpha=alpha,
+            linestyle='-',
+            zorder=18,
+        )
+        ax.add_patch(rect)
+        if is_active:
+            highlight_outline = patches.Rectangle(
+                (left, bottom),
+                width,
+                height,
+                linewidth=max(line_width + 1.2, 3.0),
+                edgecolor='#ffffff',
+                facecolor='none',
+                alpha=0.75,
+                linestyle='-',
+                zorder=19,
+            )
+            ax.add_patch(highlight_outline)
+            # handles
+            handle_size = max(width, height) * 0.02
+            for (cx, cy) in [(left, bottom), (left + width, bottom), (left, bottom + height), (left + width, bottom + height)]:
+                h_rect = patches.Rectangle((cx - handle_size/2, cy - handle_size/2), handle_size, handle_size,
+                                           facecolor=edge_color, edgecolor=edge_color, alpha=0.95, zorder=19)
+                ax.add_patch(h_rect)
+        if not show_label or seq is None:
+            return
+        label_offset_x = width * 0.02 if width > 0 else 0.0
+        label_offset_y = height * 0.02 if height > 0 else 0.0
+        label_x = left + label_offset_x
+        label_y = top - label_offset_y
+        real_size = entry.get("real_size", (0.0, 0.0))
+        unit = entry.get("unit") or self._fixed_crop_template_unit or "nm"
+        pixel_bounds = entry.get("pixel_bounds")
+        px_label = ""
+        if pixel_bounds:
+            px_width = int(abs(pixel_bounds[1] - pixel_bounds[0]) + 1)
+            px_height = int(abs(pixel_bounds[3] - pixel_bounds[2]) + 1)
+            px_label = f"{px_width}×{px_height} px"
+        real_label = ""
+        if any(real_size):
+            real_label = f"{real_size[0]:.2f} {unit} × {real_size[1]:.2f} {unit}"
+        text_lines = [f"#{seq}"]
+        if real_label:
+            text_lines.append(real_label)
+        if not real_label and px_label:
+            text_lines.append(px_label)
+        ax.text(
+            label_x,
+            label_y,
+            "\n".join(text_lines),
+            color=edge_color,
+            fontsize=7,
+            fontweight='bold',
+            verticalalignment='top',
+            horizontalalignment='left',
+            bbox=dict(facecolor='#111111', alpha=0.65, pad=1, edgecolor='none'),
+            zorder=19,
+        )
+
+    def _draw_fixed_crop_history(self, ax, view):
+        key = self._outline_key(view)
+        if key is None:
+            return
+        entries = [entry for entry in self._fixed_crop_history if entry.get("key") == key]
+        if not entries:
+            return
+        if self._fixed_crop_history_visible:
+            for entry in entries:
+                self._render_history_entry(ax, entry)
+        else:
+            highlight_seq = self._fixed_crop_history_highlight_seq
+            if highlight_seq is None:
+                return
+            entry = next((e for e in entries if e.get("sequence") == highlight_seq), None)
+            if entry:
+                self._render_history_entry(ax, entry, show_label=False)
+
+    def _emit_fixed_crop_history_update(self):
+        if callable(self._fixed_crop_history_callback):
+            try:
+                self._fixed_crop_history_callback(list(self._fixed_crop_history))
+            except Exception:
+                pass
+
+    def set_fixed_crop_history_callback(self, cb):
+        self._fixed_crop_history_callback = cb
+
+    def _crop_color_for_seq(self, seq: int):
+        palette = [
+            "#ff66ff", "#66c2ff", "#ffa600", "#00c896",
+            "#c084ff", "#ff6b6b", "#4dd0e1", "#ffd166",
+        ]
+        try:
+            return palette[seq % len(palette)]
+        except Exception:
+            return palette[0]
+
+    def _compute_template_bounds_from_pixels(self, view, ax, width_px, height_px):
+        if view is None or ax is None:
+            return None
+        arr_obj = view.get("arr")
+        if arr_obj is None:
+            return None
+        arr = np.asarray(arr_obj)
+        if arr.size == 0:
+            return None
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        if w == 0 or h == 0:
+            return None
+        width = max(1, min(int(width_px), w))
+        height = max(1, min(int(height_px), h))
+        cx = w / 2.0
+        cy = h / 2.0
+        c0 = int(np.clip(int(round(cx - width / 2.0)), 0, max(0, w - width)))
+        r0 = int(np.clip(int(round(cy - height / 2.0)), 0, max(0, h - height)))
+        c1 = c0 + width - 1
+        r1 = r0 + height - 1
+        bounds = self._pixel_bounds_to_axis_bounds(ax, w, h, c0, c1, r0, r1)
+        return bounds, (c0, c1, r0, r1)
+
+    def _compute_pixels_for_real_size(self, view, ax, real_width, real_height):
+        if view is None or ax is None:
+            return None
+        arr_obj = view.get("arr")
+        if arr_obj is None:
+            return None
+        arr = np.asarray(arr_obj)
+        if arr.size == 0:
+            return None
+        extent = view.get("extent")
+        if not extent:
+            return None
+        x0, x1, y1, y0 = extent
+        x_span = abs(x1 - x0)
+        y_span = abs(y1 - y0)
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        if w == 0 or h == 0:
+            return None
+        denom_x = max(1, w - 1)
+        denom_y = max(1, h - 1)
+        px_width = max(1, int(round((real_width * denom_x) / max(1e-6, x_span))))
+        px_height = max(1, int(round((real_height * denom_y) / max(1e-6, y_span))))
+        return px_width, px_height
+
+    def _update_template_from_entry(self, entry):
+        if not entry:
+            return
+        pixel_bounds = entry.get("pixel_bounds")
+        if not pixel_bounds:
+            return
+        c0, c1, r0, r1 = pixel_bounds
+        width = int(abs(c1 - c0) + 1)
+        height = int(abs(r1 - r0) + 1)
+        self._fixed_crop_template = {
+            "width": width,
+            "height": height,
+            "square": bool(entry.get("square", False)),
+        }
+        self._fixed_crop_template_bounds = entry.get("data_bounds")
+        self._fixed_crop_template_pixel_bounds = pixel_bounds
+        self._fixed_crop_template_view_key = entry.get("key")
+        self._fixed_crop_template_unit = entry.get("unit") or self._fixed_crop_template_unit
+        self._fixed_crop_template_manual_dims = None
+
+    def _maybe_restore_manual_template(self):
+        dims = self._fixed_crop_template_manual_dims
+        if not dims:
+            return False
+        ax = self.main_ax or next(iter(self._ax_view_map.keys()), None)
+        view = self._ax_view_map.get(ax) if ax else None
+        if dims.get("type") == "px":
+            width = dims.get("width")
+            height = dims.get("height")
+            template = self._compute_template_bounds_from_pixels(view, ax, width, height)
+            if template:
+                bounds_data, pixel_bounds = template
+                self._fixed_crop_template = {
+                    "width": width,
+                    "height": height,
+                    "square": bool(self._fixed_crop_template.get("square", False)),
+                }
+                self._fixed_crop_template_bounds = bounds_data
+                self._fixed_crop_template_pixel_bounds = pixel_bounds
+                self._fixed_crop_template_view_key = self._outline_key(view)
+                return True
+        elif dims.get("type") == "real":
+            width = dims.get("width")
+            height = dims.get("height")
+            unit = dims.get("unit") or self._fixed_crop_template_unit
+            px_dims = self._compute_pixels_for_real_size(view, ax, width, height)
+            if not px_dims:
+                return False
+            template = self._compute_template_bounds_from_pixels(view, ax, px_dims[0], px_dims[1])
+            if template:
+                bounds_data, pixel_bounds = template
+                self._fixed_crop_template = {
+                    "width": pixel_bounds[1] - pixel_bounds[0] + 1,
+                    "height": pixel_bounds[3] - pixel_bounds[2] + 1,
+                    "square": bool(self._fixed_crop_template.get("square", False)),
+                }
+                self._fixed_crop_template_bounds = bounds_data
+                self._fixed_crop_template_pixel_bounds = pixel_bounds
+                self._fixed_crop_template_view_key = self._outline_key(view)
+                self._fixed_crop_template_unit = unit
+                return True
+        return False
+
+    def set_fixed_crop_template_size(self, width, height, square=False):
+        width = max(1, int(width))
+        height = max(1, int(height))
+        ax = self.main_ax or next(iter(self._ax_view_map.keys()), None)
+        view = self._ax_view_map.get(ax) if ax else next(iter(self._ax_view_map.values()), None)
+        if view is None or ax is None:
+            return False
+        template = self._compute_template_bounds_from_pixels(view, ax, width, height)
+        if not template:
+            return False
+        bounds_data, pixel_bounds = template
+        self._fixed_crop_template = {
+            "width": width,
+            "height": height,
+            "square": bool(square),
+        }
+        self._fixed_crop_template_bounds = bounds_data
+        self._fixed_crop_template_pixel_bounds = pixel_bounds
+        self._fixed_crop_template_view_key = self._outline_key(view)
+        self._fixed_crop_template_manual_dims = {
+            "type": "px",
+            "width": width,
+            "height": height,
+        }
+        self.draw_idle()
+        return True
+
+    def get_fixed_crop_template_size(self):
+        if not self._fixed_crop_template:
+            return (0, 0)
+        return (int(self._fixed_crop_template.get("width", 0)), int(self._fixed_crop_template.get("height", 0)))
+
+    def get_fixed_crop_template_real_size(self):
+        if not self._fixed_crop_template_bounds:
+            return (0.0, 0.0, self._fixed_crop_template_unit or "nm")
+        x0, x1, y0, y1 = self._fixed_crop_template_bounds
+        return (abs(x1 - x0), abs(y1 - y0), self._fixed_crop_template_unit or "nm")
+
+    def set_fixed_crop_template_real_size(self, real_width, real_height, square=False):
+        real_width = float(real_width)
+        real_height = float(real_height)
+        ax = self.main_ax or next(iter(self._ax_view_map.keys()), None)
+        view = self._ax_view_map.get(ax) if ax else next(iter(self._ax_view_map.values()), None)
+        if view is None or ax is None:
+            return False
+        px_dims = self._compute_pixels_for_real_size(view, ax, real_width, real_height)
+        if not px_dims:
+            return False
+        template = self._compute_template_bounds_from_pixels(view, ax, px_dims[0], px_dims[1])
+        if not template:
+            return False
+        bounds_data, pixel_bounds = template
+        px_width = int(abs(pixel_bounds[1] - pixel_bounds[0]) + 1)
+        px_height = int(abs(pixel_bounds[3] - pixel_bounds[2]) + 1)
+        self._fixed_crop_template = {
+            "width": px_width,
+            "height": px_height,
+            "square": bool(square),
+        }
+        self._fixed_crop_template_bounds = bounds_data
+        self._fixed_crop_template_pixel_bounds = pixel_bounds
+        self._fixed_crop_template_view_key = self._outline_key(view)
+        self._fixed_crop_template_manual_dims = {
+            "type": "real",
+            "width": real_width,
+            "height": real_height,
+            "unit": self._guess_view_unit(view),
+        }
+        self._fixed_crop_template_unit = self._guess_view_unit(view)
+        self.draw_idle()
+        return True
+
+    def get_main_view_shape(self):
+        """Return (height, width) of the current main view array, or (0,0) if unavailable."""
+        ax = self.main_ax or next(iter(self._ax_view_map.keys()), None)
+        view = self._ax_view_map.get(ax) if ax else None
+        if not view:
+            return (0, 0)
+        arr_obj = view.get("arr")
+        if arr_obj is None:
+            return (0, 0)
+        arr = np.asarray(arr_obj)
+        if arr.ndim < 2:
+            return (0, 0)
+        return arr.shape[:2]
+
+    def undo_fixed_crop_entry(self):
+        if not self._fixed_crop_history:
+            return None
+        entry = self._fixed_crop_history[-1]
+        return self.remove_fixed_crop_history_entry(entry.get("sequence"))
+
+    def remove_fixed_crop_history_entry(self, seq):
+        if seq is None:
+            return None
+        idx = None
+        for i, entry in enumerate(self._fixed_crop_history):
+            if entry.get("sequence") == seq:
+                idx = i
+                break
+        if idx is None:
+            return None
+        entry = self._fixed_crop_history.pop(idx)
+        if self._fixed_crop_history:
+            self._update_template_from_entry(self._fixed_crop_history[-1])
+        else:
+            if not self._maybe_restore_manual_template():
+                self._fixed_crop_template = None
+                self._fixed_crop_template_bounds = None
+                self._fixed_crop_template_pixel_bounds = None
+                self._fixed_crop_template_view_key = None
+                self._fixed_crop_history_highlight_seq = None
+        self._emit_fixed_crop_history_update()
+        self.draw_idle()
+        return entry
+
+    def clear_fixed_crop_history(self):
+        if not self._fixed_crop_history:
+            return
+        self._fixed_crop_history.clear()
+        self._fixed_crop_sequence = 1
+        self._fixed_crop_history_highlight_seq = None
+        self._emit_fixed_crop_history_update()
+        if not self._maybe_restore_manual_template():
+            self._fixed_crop_template = None
+            self._fixed_crop_template_bounds = None
+            self._fixed_crop_template_pixel_bounds = None
+            self._fixed_crop_template_view_key = None
+        self._fixed_crop_history_highlight_seq = None
+        self._cleanup_highlight_artists()
+        self.draw_idle()
+
+    def _render_template_overlay(self, ax, view):
+        if not self._fixed_crop_template_visible or ax is None:
+            return
+        if not self._fixed_crop_template_bounds or not self._fixed_crop_template:
+            return
+        key = self._outline_key(view)
+        if key != self._fixed_crop_template_view_key:
+            return
+        x0, x1, y0, y1 = self._fixed_crop_template_bounds
+        left, right = min(x0, x1), max(x0, x1)
+        bottom, top = min(y0, y1), max(y0, y1)
+        width = right - left
+        height = top - bottom
+        if width <= 0 or height <= 0:
+            return
+        rect = patches.Rectangle(
+            (left, bottom),
+            width,
+            height,
+            linewidth=1.2,
+            edgecolor='#ff66ff',
+            facecolor='none',
+            alpha=0.85,
+            linestyle='--',
+            zorder=17,
+        )
+        ax.add_patch(rect)
+        px_width = int(self._fixed_crop_template.get('width', int(width)))
+        px_height = int(self._fixed_crop_template.get('height', int(height)))
+        real_unit = self._fixed_crop_template_unit or "nm"
+        real_label = ""
+        if self._fixed_crop_template_bounds:
+            bx0, bx1, by0, by1 = self._fixed_crop_template_bounds
+            real_dx = abs(bx1 - bx0)
+            real_dy = abs(by1 - by0)
+            real_label = f"{real_dx:.3g} {real_unit} × {real_dy:.3g} {real_unit}"
+        size_label = f"{real_label}\n({px_width}×{px_height} px)" if real_label else f"{px_width}×{px_height} px"
+        ax.text(
+            left + (width * 0.01),
+            top - (height * 0.02),
+            size_label,
+            color='#ff66ff',
+            fontsize=7,
+            weight='medium',
+            verticalalignment='top',
+            horizontalalignment='left',
+            bbox=dict(facecolor='#111111', alpha=0.7, pad=1, edgecolor='none'),
+            zorder=18,
+        )
+
+    def _apply_fixed_crop_quick(self, event, view, ax):
+        template = self._fixed_crop_template
+        if template is None or ax is None:
+            return False
+        arr = np.asarray(view.get("arr"))
+        if arr.size == 0:
+            return False
+        flip = bool(view.get("relative_axes"))
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        if w == 0 or h == 0:
+            return False
+        width = min(max(2, int(template.get("width", 2))), w)
+        height = min(max(2, int(template.get("height", 2))), h)
+        if width <= 0 or height <= 0:
+            return False
+        cx = self._axis_coord_to_pixel(ax, event.xdata, w, 'x')
+        cy = self._axis_coord_to_pixel(ax, event.ydata, h, 'y')
+        max_c0 = max(0, w - width)
+        max_r0 = max(0, h - height)
+        c0 = int(np.clip(cx - width // 2, 0, max_c0))
+        r0 = int(np.clip(cy - height // 2, 0, max_r0))
+        c1 = c0 + width - 1
+        r1 = r0 + height - 1
+        cropped_disp = arr_disp[r0:r1 + 1, c0:c1 + 1]
+        if cropped_disp.size == 0:
+            return False
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        crop_extent = self._compute_crop_extent(view, w, h, c0, c1, r0, r1)
+        bounds_data = self._pixel_bounds_to_axis_bounds(ax, w, h, c0, c1, r0, r1)
+        entry = self._register_crop_entry(view, bounds_data, (c0, c1, r0, r1), template.get("square", False), update_size=False)
+        new_view = dict(view)
+        try:
+            new_view["arr"] = np.array(cropped_arr, copy=True)
+        except Exception:
+            new_view["arr"] = cropped_arr
+        if crop_extent is not None:
+            new_view["extent_raw"] = crop_extent
+            display_extent = self._display_extent_for_view(new_view, crop_extent)
+            if display_extent is not None:
+                new_view["extent"] = display_extent
+            else:
+                new_view.pop("extent", None)
+        else:
+            new_view.pop("extent", None)
+            new_view.pop("extent_raw", None)
+        new_view["title"] = f"{view.get('title') or 'crop'} [crop]"
+        if entry and entry.get("sequence") is not None:
+            new_view["crop_sequence"] = entry["sequence"]
+            entry["view_snapshot"] = dict(new_view)
+        if callable(self._crop_callback):
+            try:
+                self._crop_callback(new_view)
+            except Exception:
+                pass
+        if self._fixed_crop_history_visible and entry:
+            self._render_history_entry(ax, entry)
+        if self._fixed_crop_template_visible:
+            self._render_template_overlay(ax, view)
+        self.draw_idle()
+        return True
 class SafeFigureCanvas(FigureCanvas):
     def draw(self):
         try:
