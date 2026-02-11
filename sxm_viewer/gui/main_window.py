@@ -2054,43 +2054,36 @@ QLabel:hover {{
             pass
 
     def _classify_topography_values(self, vals, tolerance_nm: float | None = None):
-        """Classify topography values into CH/CC using a robust percentile range."""
+        """Simple rule: CH if any full row (finite pixels) is exactly flat; otherwise CC. 1D stays CC unless fully flat."""
         try:
             arr = np.asarray(vals, dtype=float)
-            arr = arr[np.isfinite(arr)]
         except Exception:
             return None
-        if arr.size == 0:
-            return None
-        tol = tolerance_nm if tolerance_nm is not None else CH_RANGE_TOL_NM
-        try:
-            p_low, p_high = np.nanpercentile(arr, [1, 99])
-            prange = float(p_high - p_low)
-        except Exception:
+        if arr.ndim == 2:
+            if arr.shape[0] == 0:
+                return None
+            def _is_flat(row):
+                row_fin = row[np.isfinite(row)]
+                return row_fin.size > 0 and np.ptp(row_fin) == 0.0
+            top_flat = _is_flat(arr[0])
+            bottom_flat = _is_flat(arr[-1])
+            median = float(np.nanmedian(arr))
             prange = float(np.nanmax(arr) - np.nanmin(arr))
-        full_range = float(np.nanmax(arr) - np.nanmin(arr))
-        median = float(np.nanmedian(arr))
-        # Gradient-based check: if trimmed range is small but gradients are large, it's not truly flat.
-        grad_p95 = 0.0
-        try:
-            img = arr
-            if img.ndim == 1:
-                side = int(math.sqrt(img.size))
-                img = img.reshape(side, -1)
-            gy, gx = np.gradient(img)
-            grad_mag = np.sqrt(gx * gx + gy * gy)
-            grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
-        except Exception:
-            grad_p95 = 0.0
-        grad_tol = max(tol * 0.5, 0.01)  # ~10 pm minimum
-        # If most of the image is flat but a small fraction has a large jump (unfinished scan),
-        # or if gradients are significant despite a tiny range, treat as CC.
-        if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
-            tag = 'constant-current'
+            if top_flat and bottom_flat:
+                abs_pm = int(round(median * 1000.0))
+                return {'tag': 'constant-height', 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+            return {'tag': 'constant-current', 'rng_nm': prange, 'median_nm': median}
         else:
-            tag = 'constant-height' if prange <= tol else 'constant-current'
-        abs_pm = int(round(median * 1000.0)) if tag == 'constant-height' else None
-        return {'tag': tag, 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+            arr = arr[np.isfinite(arr)]
+            if arr.size == 0:
+                return None
+            if np.ptp(arr) == 0.0:
+                median = float(np.nanmedian(arr))
+                abs_pm = int(round(median * 1000.0))
+                return {'tag': 'constant-height', 'abs_pm': abs_pm, 'rng_nm': 0.0, 'median_nm': median}
+            median = float(np.nanmedian(arr))
+            prange = float(np.nanmax(arr) - np.nanmin(arr))
+            return {'tag': 'constant-current', 'rng_nm': prange, 'median_nm': median}
 
     def _auto_preview_clim(self, arr):
         """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
@@ -2147,30 +2140,12 @@ QLabel:hover {{
                 continue
 
             fd = fds[topo_idx]
-            vals = None
-            samples = _sample_channel_values_for_tagging(key, hdr, fd, CH_SAMPLE_POINTS)
-            if samples is not None and samples.size:
-                arr_input = samples if samples.ndim > 1 else samples.reshape(1, -1)
-                _, arr_nm = normalize_unit_and_data(arr_input, fd.get('PhysUnit',''))
-                vals = np.asarray(arr_nm, dtype=float).ravel()
-            else:
-                try:
-                    raw_arr = self._get_channel_array(key, topo_idx, hdr, fd)
-                except Exception:
-                    continue
-                _, arr_nm = normalize_unit_and_data(raw_arr, fd.get('PhysUnit',''))
-                vals = np.asarray(arr_nm, dtype=float).ravel()
-            vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
+            try:
+                raw_arr = self._get_channel_array(key, topo_idx, hdr, fd)
+            except Exception:
                 continue
-            sample_count = min(CH_SAMPLE_POINTS, vals.size)
-            if vals.size <= sample_count:
-                samples = vals
-            else:
-                idx = np.linspace(0, vals.size - 1, sample_count, dtype=int)
-                samples = vals[idx]
-
-            tag_info = self._classify_topography_values(samples if samples is not None else vals)
+            _, arr_nm = normalize_unit_and_data(raw_arr, fd.get('PhysUnit',''))
+            tag_info = self._classify_topography_values(arr_nm)
             if not tag_info:
                 continue
             info = {'tag': tag_info['tag'], 'auto': True, 'rng_nm': tag_info.get('rng_nm')}

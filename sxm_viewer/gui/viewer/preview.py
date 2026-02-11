@@ -568,68 +568,57 @@ def _auto_preview_clim(arr):
 
 
 def _classify_topography_values(vals, tolerance_nm: float | None = None):
-    """Classify topography values into CH/CC using a robust percentile range."""
+    """
+    Simple CH/CC classifier: if any row in a 2D topography image is exactly flat
+    (all finite values identical), mark as constant-height; otherwise constant-current.
+    For 1D data, mark CH only if the entire vector is flat.
+    """
     try:
         arr = np.asarray(vals, dtype=float)
-        if arr.ndim == 2:
-            arr = np.where(np.isfinite(arr), arr, np.nan)
-        else:
-            arr = arr[np.isfinite(arr)]
-        if arr.ndim == 2:
-            region = detect_valid_scan_region(arr)
-            if region:
-                r0, r1 = region
-                arr = arr[r0:r1 + 1, :]
-            for row in arr:
-                row_fin = row[np.isfinite(row)]
-                if row_fin.size and (np.ptp(row_fin) == 0.0):
-                    median = float(np.nanmedian(arr))
-                    abs_pm = int(round(median * 1000.0))
-                    prange = float(np.nanmax(arr) - np.nanmin(arr))
-                    return {'tag': 'constant-height', 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
-            arr = arr.ravel()
     except Exception:
         return None
+
+    if arr.ndim == 0:
+        return None
+
+    if arr.ndim == 2:
+        if arr.shape[0] == 0:
+            return None
+        def _is_flat(row):
+            row_fin = row[np.isfinite(row)]
+            return row_fin.size > 0 and np.ptp(row_fin) == 0.0
+        top_flat = _is_flat(arr[0])
+        bottom_flat = _is_flat(arr[-1])
+        median = float(np.nanmedian(arr))
+        prange = float(np.nanmax(arr) - np.nanmin(arr))
+        if top_flat and bottom_flat:
+            return {
+                'tag': 'constant-height',
+                'abs_pm': int(round(median * 1000.0)),
+                'rng_nm': prange,
+                'median_nm': median,
+            }
+        return {
+            'tag': 'constant-current',
+            'abs_pm': None,
+            'rng_nm': prange,
+            'median_nm': median,
+        }
+
+    # 1D fallback
+    arr = arr[np.isfinite(arr)]
     if arr.size == 0:
         return None
-    tol = tolerance_nm if tolerance_nm is not None else CH_RANGE_TOL_NM
-    # Dominant bin check: if 90%+ pixels identical and tiny spread -> CH
-    try:
-        hist, edges = np.histogram(arr, bins=256)
-        idx_max = int(np.argmax(hist))
-        frac_dom = hist[idx_max] / float(arr.size)
-    except Exception:
-        frac_dom = 0.0
-    try:
-        p_low, p_high = np.nanpercentile(arr, [1, 99])
-        prange = float(p_high - p_low)
-    except Exception:
-        prange = float(np.nanmax(arr) - np.nanmin(arr))
-    full_range = float(np.nanmax(arr) - np.nanmin(arr))
-    median = float(np.nanmedian(arr))
-    if frac_dom >= 0.9 and prange <= tol:
-        tag = 'constant-height'
-    else:
-        grad_p95 = 0.0
-        try:
-            img = arr
-            if img.ndim == 1:
-                side = int(math.sqrt(img.size))
-                if side > 0:
-                    img = img.reshape(side, -1)
-            if img.ndim == 2:
-                gy, gx = np.gradient(img)
-                grad_mag = np.sqrt(gx * gx + gy * gy)
-                grad_p95 = float(np.nanpercentile(np.abs(grad_mag), 95))
-        except Exception:
-            grad_p95 = 0.0
-        grad_tol = max(tol * 0.5, 0.01)
-        if (prange <= tol and full_range > tol * 3.0) or (prange <= tol and grad_p95 > grad_tol):
-            tag = 'constant-current'
-        else:
-            tag = 'constant-height' if prange <= tol else 'constant-current'
-    abs_pm = int(round(median * 1000.0)) if tag == 'constant-height' else None
-    return {'tag': tag, 'abs_pm': abs_pm, 'rng_nm': prange, 'median_nm': median}
+    if np.ptp(arr) == 0.0:
+        median = float(np.nanmedian(arr))
+        return {
+            'tag': 'constant-height',
+            'abs_pm': int(round(median * 1000.0)),
+            'rng_nm': 0.0,
+            'median_nm': median,
+        }
+    return {'tag': 'constant-current', 'abs_pm': None, 'rng_nm': float(np.nanmax(arr) - np.nanmin(arr)),
+            'median_nm': float(np.nanmedian(arr))}
 
 
 def _maybe_auto_tag_file(viewer, header_path:Path, header:dict, fds:list, channel_idx:int):
