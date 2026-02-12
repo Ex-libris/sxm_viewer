@@ -2522,6 +2522,17 @@ QLabel:hover {{
         self.relative_axes = bool(checked)
         self.config['relative_axes'] = self.relative_axes
         save_config(self.config)
+        # Prevent restoring stale profile state when switching axes mode
+        self._suppress_profile_restore = True
+        # Clear any active profiles that were built with the previous axis mode
+        try:
+            if getattr(self, 'preview_canvas', None):
+                self.preview_canvas.enable_profile(False)
+                if hasattr(self.preview_canvas, "_clear_saved_profile_artists"):
+                    self.preview_canvas._clear_saved_profile_artists(notify=False)
+                self.preview_canvas.profile_pts = None
+        except Exception:
+            pass
         # Clear cached zoom limits so switching relative axes always recomputes extents
         try:
             if hasattr(self.preview_canvas, "_zoom_reset_limits"):
@@ -4286,8 +4297,17 @@ QLabel:hover {{
         except Exception:
             pass
 
+        # Remember whether profile drawing was active before opening the dialog.
+        profile_was_enabled = bool(getattr(canvas, "profile_enabled", False))
         load_view(0)
         dlg.exec_()
+        # If profiles were not active before, make sure we leave them disabled
+        # (some operations used to trigger a stray profile overlay).
+        if not profile_was_enabled:
+            try:
+                canvas.enable_profile(False)
+            except Exception:
+                pass
 
     def _is_matrix_spec(self, spec) -> bool:
         try:

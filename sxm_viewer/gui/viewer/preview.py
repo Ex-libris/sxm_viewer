@@ -460,6 +460,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     try:
         last = viewer.last_preview[0] if viewer.last_preview else None
         preserve = (
+            not getattr(viewer, '_suppress_profile_restore', False) and
             bool(getattr(viewer, 'preserve_profiles_on_channel_change', False))
             and last == str(header_path)
             and getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE
@@ -467,18 +468,14 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     except Exception:
         preserve = False
     viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
+    if getattr(viewer, '_suppress_profile_restore', False):
+        viewer._suppress_profile_restore = False
     suppress_profile_restart = getattr(viewer, '_suppress_profile_restart', False)
     if suppress_profile_restart:
         viewer._suppress_profile_restart = False
+    # Do NOT auto-start profiles; the user must click the Profile tool explicitly.
     if getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE:
-        try:
-            canvas = getattr(viewer, 'preview_canvas', None)
-            angle_active = bool(canvas and getattr(canvas, 'angle_enabled', False))
-            profile_active = bool(canvas and getattr(canvas, 'profile_enabled', False))
-            if not suppress_profile_restart and not angle_active and not profile_active:
-                viewer._on_start_profile(force_enable=True)
-        except Exception:
-            pass
+        pass
     elif getattr(viewer, '_pending_profile_enable', False):
         viewer._pending_profile_enable = False
     else:
