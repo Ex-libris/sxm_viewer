@@ -2522,8 +2522,34 @@ QLabel:hover {{
         self.relative_axes = bool(checked)
         self.config['relative_axes'] = self.relative_axes
         save_config(self.config)
+        # Clear cached zoom limits so switching relative axes always recomputes extents
+        try:
+            if hasattr(self.preview_canvas, "_zoom_reset_limits"):
+                self.preview_canvas._zoom_reset_limits = {}
+                self.preview_canvas._reset_view_zoom()
+        except Exception:
+            pass
+        # Invalidate cached frames so extents are recalculated
+        try:
+            self._frame_real_pixmap_cache.clear()
+            self._filtered_channel_cache.clear()
+        except Exception:
+            pass
         if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            try:
+                key, idx = self.last_preview
+            except Exception:
+                key = idx = None
+            self.last_preview = None  # force rebuild of current view
+            if key is not None and idx is not None:
+                self.show_file_channel(key, idx)
+                # After the view is rebuilt, reset zoom so the new extent
+                # (relative vs absolute) is applied immediately.
+                try:
+                    if getattr(self, 'preview_canvas', None):
+                        self.preview_canvas._reset_view_zoom()
+                except Exception:
+                    pass
 
     def on_scale_bar_toggled(self, checked: bool):
         self.config['show_scale_bar'] = bool(checked)
