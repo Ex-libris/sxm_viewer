@@ -510,6 +510,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
         copy_data_act = menu.addAction("Copy channel data")
+        copy_all_act = menu.addAction("Copy all traces (table)")
         copy_png_act = menu.addAction("Copy plot as PNG")
         copy_svg_act = menu.addAction("Copy plot as SVG")
         style_menu = menu.addMenu("Plot style")
@@ -559,6 +560,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action == copy_data_act:
             self._copy_channel_to_clipboard()
+        elif action == copy_all_act:
+            self._copy_all_traces_to_clipboard()
         elif action == copy_png_act:
             self._copy_plot_as_png()
         elif action == copy_svg_act:
@@ -627,6 +630,78 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 lines.append(f"{v}\t{val}")
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Spectroscopy copied", self)
+
+    def _copy_all_traces_to_clipboard(self):
+        if not self._curve_entries:
+            QtWidgets.QMessageBox.information(self, "Copy spectroscopy", "No traces to copy.")
+            return
+        rows = []
+        axis_scale = getattr(self, "_axis_plot_scale", 1.0) or 1.0
+        axis_unit = getattr(self, "_axis_plot_unit", self.axis_unit) or ""
+        traces = []
+        for idx, entry in enumerate(self._curve_entries):
+            axis_vals = np.asarray(entry.get("axis_vals", []), dtype=float)
+            values = np.asarray(entry.get("values", []), dtype=float)
+            if axis_vals.size == 0 or values.size == 0:
+                continue
+            traces.append({
+                "label": entry.get("label") or f"Trace {idx+1}",
+                "path": str(Path(entry.get("spec_path") or self.spec.get("path", ""))),
+                "matrix_index": entry.get("matrix_index"),
+                "channel": entry.get("channel") or "",
+                "x_unit": axis_unit,
+                "y_unit": self._channel_unit_for_channel(entry.get("channel")),
+                "x_vals": axis_vals * axis_scale,
+                "y_vals": values,
+                "time": self.spec.get("time"),
+                "pos_x": self.spec.get("x"),
+                "pos_y": self.spec.get("y"),
+            })
+        if not traces:
+            QtWidgets.QMessageBox.information(self, "Copy spectroscopy", "No traces to copy.")
+            return
+        name_row = []
+        pos_row = []
+        unit_row = []
+        max_len = 0
+        for trace in traces:
+            label = trace.get("label") or "trace"
+            acq_raw = trace.get("time")
+            acq = "" if acq_raw is None else str(acq_raw)
+            name_row += [label, acq]
+            px = trace.get("pos_x")
+            py = trace.get("pos_y")
+            pos_row += [
+                "" if px is None else f"{float(px):.4g} nm",
+                "" if py is None else f"{float(py):.4g} nm",
+            ]
+            unit_row += [trace.get("x_unit") or "", trace.get("y_unit") or ""]
+            x_vals = trace.get("x_vals") if trace.get("x_vals") is not None else []
+            y_vals = trace.get("y_vals") if trace.get("y_vals") is not None else []
+            max_len = max(max_len, len(x_vals), len(y_vals))
+            trace["_x_arr"] = x_vals
+            trace["_y_arr"] = y_vals
+        rows.append("\t".join(name_row))
+        rows.append("\t".join(pos_row))
+        rows.append("\t".join(unit_row))
+        for i in range(max_len):
+            line_parts = []
+            for trace in traces:
+                x_vals = trace.get("_x_arr", [])
+                y_vals = trace.get("_y_arr", [])
+                x_val = "" if i >= len(x_vals) else x_vals[i]
+                y_val = "" if i >= len(y_vals) else y_vals[i]
+                try:
+                    line_parts.append("" if x_val == "" else f"{float(x_val):.9g}")
+                except Exception:
+                    line_parts.append(str(x_val))
+                try:
+                    line_parts.append("" if y_val == "" else f"{float(y_val):.9g}")
+                except Exception:
+                    line_parts.append(str(y_val))
+            rows.append("\t".join(line_parts))
+        QtWidgets.QApplication.clipboard().setText("\n".join(rows))
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied all traces", self)
 
     def _copy_plot_as_png(self):
         try:
@@ -2391,6 +2466,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plot_x_log = False
         self._plot_y_log = False
         self._plot_line_width = 1.6
+        self._show_position_inset = True
+        self._position_inset_ax = None
+        self._inset_bbox = None
+        self._minima_artists = []
+        self._inset_dragging = False
+        self._inset_drag_offset = (0.0, 0.0)
+        self._minima_meta = []
+        self._dragging_minima = None
+        self._point_labels = []
+        self._last_mouse_xy = None
         self._build_ui()
         self._populate_list()
         self._populate_channels()
@@ -2516,6 +2601,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.mpl_connect("button_press_event", self._on_compare_canvas_click)
         self.canvas.mpl_connect("motion_notify_event", self._on_compare_canvas_motion)
         self.canvas.mpl_connect("key_press_event", self._on_compare_canvas_keypress)
+        self.canvas.mpl_connect("button_press_event", self._on_inset_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_inset_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_inset_release)
+        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.canvas.mpl_connect("button_press_event", self._on_minima_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_minima_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_minima_release)
+        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.canvas.setAccessibleName("Spectroscopy comparison plot")
         self.canvas.setAccessibleDescription("Interactive plot showing selected spectra")
 
@@ -2531,6 +2624,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.status_label.setAccessibleName("Status information")
         self.status_label.setAccessibleDescription("Shows current selection and plot status")
         center_layout.addWidget(self.status_label)
+        self.mouse_label = QtWidgets.QLabel("x: —   y: —")
+        self.mouse_label.setAccessibleName("Mouse position")
+        self.mouse_label.setAccessibleDescription("Displays current mouse position on the plot")
+        center_layout.addWidget(self.mouse_label)
 
         self.hint_label = QtWidgets.QLabel(self._delta_hint_text)
         self.hint_label.setWordWrap(True)
@@ -2561,6 +2658,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.lines_cb.setChecked(True)
         self.lines_cb.toggled.connect(self._on_visual_toggle)
         vis_row.addWidget(self.lines_cb)
+
+        self.position_inset_cb = QtWidgets.QCheckBox("Position inset")
+        self.position_inset_cb.setToolTip("Show miniature of the acquisition image with spectrum locations")
+        self.position_inset_cb.setChecked(True)
+        self.position_inset_cb.toggled.connect(self._on_visual_toggle)
+        vis_row.addWidget(self.position_inset_cb)
 
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
@@ -3288,6 +3391,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._clear_delta_selection(redraw=False)
         self._line_map.clear()
         self._legend_map.clear()
+        self._clear_minima_annotations()
+        self._clear_point_labels(redraw=False)
         
         waterfall = self.waterfall_cb.isChecked()
         show_points = self.show_points_cb.isChecked()
@@ -3410,9 +3515,191 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
         self.ax.set_xscale("log" if self._plot_x_log else "linear")
         self.ax.set_yscale("log" if self._plot_y_log else "linear")
+        self._update_position_inset_compare()
         self._apply_font_scale()
         # canvas.draw_idle() is called in _apply_font_scale
         self._update_status(plotted)
+
+    def _load_thumbnail_array_for_inset(self, file_key):
+        viewer = getattr(self, "viewer", None)
+        if not viewer or not file_key:
+            return None
+        thumb = None
+        label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
+        if label is not None and label.pixmap():
+            thumb = label.pixmap()
+        if thumb is None:
+            try:
+                width = int(getattr(viewer, "thumb_size_px", 160))
+                height = max(48, int(round(width * 0.75)))
+                cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
+                cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
+                channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
+                thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
+            except Exception:
+                return None
+        if thumb is None:
+            return None
+        qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
+        ptr = qimg.bits()
+        ptr.setsize(qimg.byteCount())
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((qimg.height(), qimg.width(), 4))
+        arr = arr[..., :3] / 255.0
+        gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
+        tinted = np.stack([gray, gray, gray], axis=-1)
+        return tinted
+
+    def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None):
+        viewer = getattr(self, "viewer", None)
+        spec = spec or None
+        if spec is None:
+            items = self._checked_items() or self._selected_items()
+            if items:
+                spec = items[0].data(0, QtCore.Qt.UserRole)
+        file_key = file_key or (str(spec.get("image_key") or "") if spec else "")
+        if not viewer or not file_key or spec is None:
+            return None
+        header, _ = viewer.headers.get(file_key, (None, None))
+        if header is None:
+            return None
+        if dims and len(dims) == 2:
+            width = max(2, int(dims[0]))
+            height = max(2, int(dims[1]))
+        else:
+            width = int(getattr(viewer, "thumb_size_px", 160))
+            height = max(48, int(round(width * 0.75)))
+        try:
+            coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=file_key)
+        except Exception:
+            coords = None
+        return coords
+
+    def _collect_inset_markers_compare(self, base_key, image_dims=None):
+        viewer = getattr(self, "viewer", None)
+        if not viewer or not base_key:
+            return []
+        markers = []
+        width = int(image_dims[0]) if image_dims else int(getattr(viewer, "thumb_size_px", 160))
+        height = int(image_dims[1]) if image_dims else max(48, int(round(width * 0.75)))
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.isHidden():
+                continue
+            if item.checkState(0) != QtCore.Qt.Checked and not item.isSelected():
+                continue
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            key = str(spec.get("image_key") or "")
+            if key != base_key:
+                continue
+            try:
+                header, _ = viewer.headers.get(key, (None, None))
+            except Exception:
+                header = None
+            try:
+                coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=key)
+            except Exception:
+                coords = None
+            if coords is None:
+                continue
+            spec_id = self._spec_id(spec)
+            line = self._line_map.get(spec_id)
+            color = line.get_color() if line else "#d65f5f"
+            markers.append((color, coords))
+        return markers
+
+    def _update_position_inset_compare(self):
+        if self._position_inset_ax is not None:
+            try:
+                self._position_inset_ax.remove()
+            except Exception:
+                pass
+            self._position_inset_ax = None
+        self._show_position_inset = bool(getattr(self, "position_inset_cb", None) and self.position_inset_cb.isChecked())
+        if not self._show_position_inset:
+            return
+        items = self._checked_items() or self._selected_items()
+        if not items:
+            return
+        base_spec = items[0].data(0, QtCore.Qt.UserRole)
+        base_key = str(base_spec.get("image_key") or "") if base_spec else ""
+        image = self._load_thumbnail_array_for_inset(base_key)
+        image_dims = None
+        if image is not None:
+            try:
+                image_dims = (int(image.shape[1]), int(image.shape[0]))
+            except Exception:
+                image_dims = None
+        markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims)
+        if image is None or not markers:
+            return
+        if self._inset_bbox is None:
+            self._inset_bbox = [0.04, 0.04, 0.28, 0.28]
+        self._position_inset_ax = inset_axes(self.ax, width="26%", height="26%", loc="lower left", borderpad=0.8)
+        self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+        self._position_inset_ax.imshow(image, origin="upper")
+        self._position_inset_ax.set_xticks([])
+        self._position_inset_ax.set_yticks([])
+        self._position_inset_ax.set_title("Position", fontsize=7.5 * getattr(self, "_font_scale", 1.0))
+        for color, coords in markers:
+            try:
+                self._position_inset_ax.scatter(
+                    coords[0],
+                    coords[1],
+                    s=50,
+                    facecolors="none",
+                    edgecolors=color,
+                    linewidths=1.5,
+                )
+            except Exception:
+                continue
+
+    def _on_inset_press(self, event):
+        if event is None or event.button != MouseButton.LEFT:
+            return
+        if self._position_inset_ax is None or not self._show_position_inset:
+            return
+        bbox = self._position_inset_ax.bbox
+        if bbox is None:
+            return
+        if bbox.contains(event.x, event.y):
+            self._inset_dragging = True
+            self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
+
+    def _on_inset_motion(self, event):
+        if not self._inset_dragging or self._position_inset_ax is None:
+            return
+        if event.x is None or event.y is None:
+            return
+        bbox = self._position_inset_ax.bbox
+        if bbox is None:
+            return
+        try:
+            inv = self.ax.transAxes.inverted()
+        except Exception:
+            return
+        ax_coords = inv.transform((event.x - self._inset_drag_offset[0], event.y - self._inset_drag_offset[1]))
+        width = self._inset_bbox[2] if self._inset_bbox is not None else 0.26
+        height = self._inset_bbox[3] if self._inset_bbox is not None else 0.26
+        x0 = min(max(ax_coords[0], 0.0), 1.0 - width)
+        y0 = min(max(ax_coords[1], 0.0), 1.0 - height)
+        if self._inset_bbox is None:
+            self._inset_bbox = [x0, y0, width, height]
+        else:
+            self._inset_bbox[0] = x0
+            self._inset_bbox[1] = y0
+        try:
+            self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+        except Exception:
+            pass
+        self.canvas.draw_idle()
+
+    def _on_inset_release(self, event):
+        if event is None or event.button != MouseButton.LEFT:
+            return
+        self._inset_dragging = False
 
     def _validate_log_axes(self):
         if not getattr(self, "_plot_x_log", False) and not getattr(self, "_plot_y_log", False):
@@ -3752,10 +4039,278 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             QtWidgets.QApplication.clipboard().setText("\n".join(rows))
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied table", self)
 
+    def _resolve_minima_overlaps(self):
+        """Simple re-offset of minima labels to reduce overlap."""
+        if not self._minima_meta:
+            return
+        ylim = self.ax.get_ylim()
+        y_span = abs(ylim[1] - ylim[0]) if ylim and len(ylim) == 2 else 1.0
+        for idx, meta in enumerate(self._minima_meta):
+            txt = meta.get("text")
+            if txt is None:
+                continue
+            sign = 1 if (idx % 2) == 0 else -1
+            step = 1 + (idx // 2) * 0.6
+            y_offset = sign * step * 0.04 * y_span
+            pos = txt.get_position()
+            txt.set_position((meta.get("x", pos[0]), pos[1] + y_offset))
+        self.canvas.draw_idle()
+
+    def _add_point_label_at_cursor(self):
+        """Add a user point label at the last mouse position (optionally snapped to nearest curve)."""
+        if self._last_mouse_xy is None:
+            return
+        x, y = self._last_mouse_xy
+        snap_x, snap_y = self._snap_to_nearest_curve(x, y)
+        x_use = snap_x if snap_x is not None else x
+        y_use = snap_y if snap_y is not None else y
+        marker = self.ax.scatter([x_use], [y_use], color="#444", s=24, zorder=7)
+        txt = self.ax.text(
+            x_use, y_use, f"{x_use:.4g}, {y_use:.4g}",
+            fontsize=7 * getattr(self, "_font_scale", 1.0),
+            ha="left",
+            va="bottom",
+            bbox=dict(facecolor="white", edgecolor="#444", alpha=0.8, linewidth=0.6, boxstyle="round,pad=0.2"),
+            zorder=7,
+        )
+        self._point_labels.append({"marker": marker, "text": txt})
+        self.canvas.draw_idle()
+
+    def _clear_point_labels(self, redraw=True):
+        for pl in getattr(self, "_point_labels", []):
+            for art in pl.values():
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+        self._point_labels = []
+        if redraw:
+            self.canvas.draw_idle()
+
+    def _snap_to_nearest_curve(self, x, y):
+        """Find nearest data point among plotted lines (in data space)."""
+        nearest = None
+        best_d2 = None
+        for line in self._line_map.values():
+            try:
+                xs = line.get_xdata(orig=False)
+                ys = line.get_ydata(orig=False)
+                if xs is None or ys is None:
+                    continue
+                xs = np.asarray(xs, dtype=float)
+                ys = np.asarray(ys, dtype=float)
+                if xs.size == 0 or ys.size == 0:
+                    continue
+                d2 = (xs - x) ** 2 + (ys - y) ** 2
+                idx = int(np.nanargmin(d2))
+                val = d2[idx]
+                if best_d2 is None or val < best_d2:
+                    best_d2 = val
+                    nearest = (float(xs[idx]), float(ys[idx]))
+            except Exception:
+                continue
+        return nearest if nearest else (None, None)
+    def _gather_plotted_traces(self):
+        traces = []
+        channel = self.channel_combo.currentText()
+        relative_nm = self.relative_cb.isChecked()
+        waterfall = self.waterfall_cb.isChecked()
+        offset_val = self.offset_spin.value()
+        rel_zero = 0.0
+        if relative_nm:
+            mins = []
+            for item in self._selected_items() or self._checked_items():
+                spec = item.data(0, QtCore.Qt.UserRole)
+                if not spec:
+                    continue
+                axis_vals, _, unit = self._axis_for_spec(spec)
+                if axis_vals.size and unit == "nm":
+                    mins.append(np.nanmin(axis_vals))
+            if mins:
+                rel_zero = min(mins)
+        plotted = 0
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.isHidden():
+                continue
+            if item.checkState(0) != QtCore.Qt.Checked and not item.isSelected():
+                continue
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
+            channels = spec.get("channels") or {}
+            data = channels.get(channel)
+            axis_vals, _, axis_unit = self._axis_for_spec(spec)
+            if data is None or not axis_vals.size:
+                continue
+            bg_spec = self._background_for(spec)
+            y_base = self._subtract_background(axis_vals, data, bg_spec)
+            y_data = y_base + (plotted * offset_val) if waterfall else y_base
+            x_vals = axis_vals
+            if relative_nm and axis_unit == "nm":
+                x_vals = x_vals - rel_zero
+            axis_plot_scale = 1.0
+            axis_unit_plot = axis_unit
+            if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
+                axis_plot_scale = 1000.0
+                axis_unit_plot = "mV"
+                x_vals = x_vals * axis_plot_scale
+            y_unit = self._channel_unit_for_spec(spec, channel)
+            traces.append({
+                "label": self._display_name(spec),
+                "path": spec.get("path"),
+                "matrix_index": spec.get("matrix_index"),
+                "channel": channel,
+                "x_unit": axis_unit_plot,
+                "y_unit": y_unit,
+                "x_vals": np.asarray(x_vals, dtype=float),
+                "y_vals": np.asarray(y_data, dtype=float),
+                "spec_id": spec_id,
+                "time": spec.get("time"),
+                "pos_x": spec.get("x"),
+                "pos_y": spec.get("y"),
+            })
+            plotted += 1
+        return traces
+
+    def _copy_all_traces_to_clipboard(self):
+        traces = self._gather_plotted_traces()
+        if not traces:
+            QtWidgets.QMessageBox.information(self, "Copy spectra", "No spectra to copy.")
+            return
+
+        # Build human-friendly table: per-trace paired columns
+        name_row = []
+        pos_row = []
+        unit_row = []
+        max_len = 0
+        for trace in traces:
+            label = trace.get("label") or Path(trace.get("path") or "").name or "trace"
+            acq_raw = trace.get("time")
+            acq = "" if acq_raw is None else str(acq_raw)
+            name_row += [label, acq]
+            px = trace.get("pos_x")
+            py = trace.get("pos_y")
+            pos_row += [
+                "" if px is None else f"{float(px):.4g} nm",
+                "" if py is None else f"{float(py):.4g} nm",
+            ]
+            unit_row += [trace.get("x_unit") or "", trace.get("y_unit") or ""]
+            x_raw = trace.get("x_vals")
+            y_raw = trace.get("y_vals")
+            x_vals = x_raw if x_raw is not None else []
+            y_vals = y_raw if y_raw is not None else []
+            max_len = max(max_len, len(x_vals), len(y_vals))
+            trace["_x_arr"] = x_vals
+            trace["_y_arr"] = y_vals
+
+        rows = []
+        rows.append("\t".join(name_row))
+        rows.append("\t".join(pos_row))
+        rows.append("\t".join(unit_row))
+        for i in range(max_len):
+            line_parts = []
+            for trace in traces:
+                x_vals = trace.get("_x_arr", [])
+                y_vals = trace.get("_y_arr", [])
+                x_val = "" if i >= len(x_vals) else x_vals[i]
+                y_val = "" if i >= len(y_vals) else y_vals[i]
+                try:
+                    line_parts.append("" if x_val == "" else f"{float(x_val):.9g}")
+                except Exception:
+                    line_parts.append(str(x_val))
+                try:
+                    line_parts.append("" if y_val == "" else f"{float(y_val):.9g}")
+                except Exception:
+                    line_parts.append(str(y_val))
+            rows.append("\t".join(line_parts))
+
+        for trace in traces:
+            file_name = Path(trace.get("path") or "").name
+            point = trace.get("matrix_index")
+            point_txt = "" if point is None else str(point)
+            channel = trace.get("channel") or ""
+            x_unit = trace.get("x_unit") or ""
+            y_unit = trace.get("y_unit") or ""
+            label = trace.get("label") or file_name or "trace"
+        QtWidgets.QApplication.clipboard().setText("\n".join(rows))
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied all traces", self)
+
+    def _clear_minima_annotations(self):
+        """Remove previously drawn minima markers/labels."""
+        if not getattr(self, "_minima_artists", None):
+            self._minima_artists = []
+            return
+        for art in self._minima_artists:
+            try:
+                art.remove()
+            except Exception:
+                pass
+        self._minima_artists = []
+        self._minima_meta = []
+
+    def _annotate_minima(self):
+        """Find and mark the x-position of the minimum for each plotted trace."""
+        traces = self._gather_plotted_traces()
+        self._clear_minima_annotations()
+        if not traces:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "No spectra plotted", self)
+            self.canvas.draw_idle()
+            return
+        artists = []
+        ylim = self.ax.get_ylim()
+        y_span = abs(ylim[1] - ylim[0]) if ylim and len(ylim) == 2 else 1.0
+        for t_idx, trace in enumerate(traces):
+            x_raw = trace.get("x_vals")
+            y_raw = trace.get("y_vals")
+            x_vals = np.asarray([] if x_raw is None else x_raw, dtype=float)
+            y_vals = np.asarray([] if y_raw is None else y_raw, dtype=float)
+            if x_vals.size == 0 or y_vals.size == 0:
+                continue
+            idx = np.nanargmin(y_vals)
+            x_min = x_vals[idx]
+            y_min = y_vals[idx]
+            spec_id = trace.get("spec_id")
+            line = self._line_map.get(spec_id)
+            color = line.get_color() if line else "#d65f5f"
+            lbl = trace.get("label") or "trace"
+            vline = self.ax.axvline(x_min, color=color, linestyle="--", linewidth=1.2, alpha=0.85)
+            marker = self.ax.scatter([x_min], [y_min], color=color, s=26, zorder=6)
+            artists.extend([vline, marker])
+            # Vertical offset to reduce overlap; alternate above/below and increase with index
+            sign = 1 if (t_idx % 2) == 0 else -1
+            step = 1 + (t_idx // 2) * 0.6
+            y_offset = sign * step * 0.04 * y_span
+            try:
+                txt = self.ax.text(
+                    x_min, y_min + y_offset, f"{lbl}\n{float(x_min):.4g} {trace.get('x_unit','')}",
+                    fontsize=7 * getattr(self, "_font_scale", 1.0),
+                    color=color,
+                    ha="center",
+                    va="bottom",
+                    bbox=dict(facecolor="white", edgecolor=color, alpha=0.85, linewidth=0.6, boxstyle="round,pad=0.2"),
+                    picker=True,
+                )
+                artists.append(txt)
+                self._minima_meta.append({"vline": vline, "marker": marker, "text": txt, "x": x_min, "color": color})
+            except Exception:
+                pass
+        self._minima_artists = artists
+        self.canvas.draw_idle()
+
     def _on_compare_canvas_menu(self, pos):
         menu = QtWidgets.QMenu(self)
         copy_png = menu.addAction("Copy plot as PNG")
         copy_svg = menu.addAction("Copy plot as SVG")
+        copy_all = menu.addAction("Copy all traces (table)")
+        menu.addSeparator()
+        minima_act = menu.addAction("Find minima (x-position)")
+        resolve_act = menu.addAction("Resolve minima overlaps")
+        menu.addSeparator()
+        add_point_act = menu.addAction("Add point label here")
+        clear_points_act = menu.addAction("Clear point labels")
         menu.addSeparator()
         save_png = menu.addAction("Save PNG...")
         save_svg = menu.addAction("Save SVG...")
@@ -3805,6 +4360,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._copy_canvas_to_clipboard("png")
         elif action == copy_svg:
             self._copy_canvas_to_clipboard("svg")
+        elif action == copy_all:
+            self._copy_all_traces_to_clipboard()
+        elif action == minima_act:
+            self._annotate_minima()
+        elif action == resolve_act:
+            self._resolve_minima_overlaps()
+        elif action == add_point_act:
+            self._add_point_label_at_cursor()
+        elif action == clear_points_act:
+            self._clear_point_labels()
         elif action == save_png:
             self._save_canvas("png")
         elif action == save_svg:
@@ -3912,6 +4477,24 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._delta_selection = []
 
     def _on_compare_canvas_motion(self, event):
+        # Mouse readout
+        try:
+            x = event.xdata
+            y = event.ydata
+        except Exception:
+            x = y = None
+        if x is not None and y is not None:
+            self._last_mouse_xy = (float(x), float(y))
+        lbl = getattr(self, "mouse_label", None)
+        if lbl is not None:
+            if x is None or y is None:
+                lbl.setText("x: —   y: —")
+            else:
+                try:
+                    lbl.setText(f"x: {float(x):.4g}   y: {float(y):.4g}")
+                except Exception:
+                    lbl.setText(f"x: {x}   y: {y}")
+
         hovered = None
         if event and event.inaxes == self.ax and event.xdata is not None:
             hovered = self._find_nearest_lcpd_line(event.xdata)
@@ -3935,6 +4518,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         else:
             self._set_hint_text()
             self.canvas.setCursor(QtCore.Qt.ArrowCursor)
+        if self._dragging_minima and event and event.inaxes == self.ax and event.ydata is not None:
+            meta = self._dragging_minima
+            txt = meta.get("text")
+            if txt:
+                txt.set_position((meta.get("x", event.xdata), float(event.ydata)))
+                self.canvas.draw_idle()
+
+    # Alias to satisfy mpl connections that refer to _on_mouse_move
+    def _on_mouse_move(self, event):
+        self._on_compare_canvas_motion(event)
 
     def _find_nearest_lcpd_line(self, x_val):
         if not self._lcpd_line_info:
@@ -3950,6 +4543,36 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if dist <= tol and (best is None or dist < best[0]):
                 best = (dist, spec_id, info)
         return (best[1], best[2]) if best else None
+
+    def _on_minima_press(self, event):
+        if event is None or event.inaxes != self.ax or event.button != MouseButton.LEFT:
+            return
+        for meta in self._minima_meta:
+            txt = meta.get("text")
+            if txt is None:
+                continue
+            contains, _ = txt.contains(event)
+            if contains:
+                self._dragging_minima = meta
+                break
+
+    def _on_minima_motion(self, event):
+        if not self._dragging_minima:
+            return
+        if event is None or event.inaxes != self.ax or event.ydata is None:
+            return
+        meta = self._dragging_minima
+        txt = meta.get("text")
+        if txt is None:
+            return
+        x_fixed = meta.get("x", event.xdata)
+        txt.set_position((x_fixed, float(event.ydata)))
+        self.canvas.draw_idle()
+
+    def _on_minima_release(self, event):
+        if event is None or event.button != MouseButton.LEFT:
+            return
+        self._dragging_minima = None
 
     def _clear_delta_annotation(self, redraw=True):
         for art in getattr(self, "_delta_annotation_artists", []):
