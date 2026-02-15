@@ -14,7 +14,7 @@ from matplotlib.backend_bases import MouseButton
 from matplotlib import colors as mcolors
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, AutoMinorLocator, MultipleLocator, MaxNLocator
 from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes, InsetPosition
@@ -2477,6 +2477,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._point_labels = []
         self._point_label_drag = None
         self._last_mouse_xy = None
+        self._curve_styles = {}  # spec_id -> {color, lw, ls}
+        self._legend_loc = "best"
+        self._legend_font = 8
+        self._legend_bg = True
+        self._legend_border = True
+        self._legend_filename_only = False
+        self._grid_major = True
+        self._grid_minor = False
+        self._grid_alpha = 0.25
+        self._grid_lw = 0.8
+        self._grid_ls = "--"
+        self._tick_cfg = {
+            "x": {"direction": "out", "major": None, "minor_count": 0, "length": 6},
+            "y": {"direction": "out", "major": None, "minor_count": 0, "length": 6},
+        }
         self._build_ui()
         self._populate_list()
         self._populate_channels()
@@ -3390,7 +3405,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _update_plot(self):
         channel = self.channel_combo.currentText()
         self.ax.clear()
-        self.ax.grid(self._plot_grid_enabled, alpha=0.25 if self._plot_grid_enabled else 0.0)
+        self._grid_major = bool(self._plot_grid_enabled)
+        # Base grid handled in _apply_grid_and_ticks
+        self.ax.grid(False)
         self._lcpd_line_info.clear()
         self._clear_delta_selection(redraw=False)
         self._line_map.clear()
@@ -3457,6 +3474,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
+            if self._legend_filename_only:
+                try:
+                    label_txt = Path(spec.get("path") or "").name or label_txt
+                except Exception:
+                    pass
             base_width = self._plot_line_width
             line_kwargs = {
                 "color": color,
@@ -3474,6 +3496,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     "markeredgewidth": 0.6,
                 })
             line, = self.ax.plot(x_vals, y_data, **line_kwargs)
+            style = self._curve_styles.get(spec_id)
+            if style:
+                try:
+                    if style.get("color"):
+                        line.set_color(style.get("color"))
+                    if style.get("lw"):
+                        line.set_linewidth(style.get("lw"))
+                    if style.get("ls"):
+                        line.set_linestyle(style.get("ls"))
+                except Exception:
+                    pass
             self._line_map[spec_id] = line
             plotted += 1
             if spec_id in self._fit_results:
@@ -3481,9 +3514,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if plotted == 0:
             self.ax.text(0.5,0.5,"No data for selected items", ha='center', va='center', transform=self.ax.transAxes)
         elif self._plot_legend_enabled:
-            legend = self.ax.legend(loc='best', fontsize=8)
+            legend = self.ax.legend(loc=self._legend_loc or 'best', fontsize=self._legend_font)
             if legend:
                 legend.set_draggable(True)
+                try:
+                    frame = legend.get_frame()
+                    frame.set_alpha(0.9 if self._legend_bg else 0.0)
+                    frame.set_facecolor("white" if self._legend_bg else (0, 0, 0, 0))
+                    frame.set_edgecolor("black" if self._legend_border else (0, 0, 0, 0))
+                    frame.set_linewidth(0.8 if self._legend_border else 0.0)
+                except Exception:
+                    pass
                 for leg_line, text in zip(legend.get_lines(), legend.get_texts()):
                     leg_line.set_picker(True)
                     name = text.get_text()
@@ -3519,6 +3560,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
         self.ax.set_xscale("log" if self._plot_x_log else "linear")
         self.ax.set_yscale("log" if self._plot_y_log else "linear")
+        self._apply_grid_and_ticks()
         self._update_position_inset_compare()
         self._apply_font_scale()
         # canvas.draw_idle() is called in _apply_font_scale
@@ -4351,6 +4393,158 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         add_point_act = menu.addAction("Add point label here")
         clear_points_act = menu.addAction("Clear point labels")
         menu.addSeparator()
+        # Lines submenu (per-curve controls)
+        lines_menu = menu.addMenu("Lines")
+        ls_labels = {"Solid": "-", "Dashed": "--", "Dotted": ":", "Dash-dot": "-."}
+        for spec_id, line in self._line_map.items():
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row); h.setContentsMargins(6, 2, 6, 2); h.setSpacing(6)
+            name_lbl = QtWidgets.QLabel(self._curve_name(spec_id)); name_lbl.setMinimumWidth(90)
+            lw_spin = QtWidgets.QDoubleSpinBox(); lw_spin.setRange(0.5, 5.0); lw_spin.setSingleStep(0.5)
+            lw_spin.setValue(float(line.get_linewidth() or 1.0))
+            ls_combo = QtWidgets.QComboBox(); [ls_combo.addItem(k, v) for k, v in ls_labels.items()]
+            current_ls = line.get_linestyle() or "-"
+            idx = max(0, ls_combo.findData(current_ls))
+            ls_combo.setCurrentIndex(idx)
+            col_btn = QtWidgets.QPushButton(); col_btn.setFixedWidth(36)
+            def _set_btn_color(btn, c):
+                btn.setStyleSheet(f"background:{c};")
+            color = line.get_color() or "#000"
+            _set_btn_color(col_btn, color)
+            col_btn.clicked.connect(lambda _=None, sid=spec_id, btn=col_btn: self._pick_curve_color(sid, btn))
+            lw_spin.valueChanged.connect(lambda val, sid=spec_id: self._set_curve_style(sid, lw=float(val)))
+            ls_combo.currentIndexChanged.connect(lambda _i, sid=spec_id, cb=ls_combo: self._set_curve_style(sid, ls=cb.currentData()))
+            h.addWidget(name_lbl, 1)
+            h.addWidget(QtWidgets.QLabel("Thick"), 0)
+            h.addWidget(lw_spin, 0)
+            h.addWidget(QtWidgets.QLabel("Style"), 0)
+            h.addWidget(ls_combo, 0)
+            h.addWidget(col_btn, 0)
+            act = QtWidgets.QWidgetAction(lines_menu); act.setDefaultWidget(row)
+            lines_menu.addAction(act)
+        lines_menu.addSeparator()
+        # Global apply
+        global_row = QtWidgets.QWidget()
+        gh = QtWidgets.QHBoxLayout(global_row); gh.setContentsMargins(6, 4, 6, 4); gh.setSpacing(6)
+        gh.addWidget(QtWidgets.QLabel("All:"), 0)
+        all_lw = QtWidgets.QDoubleSpinBox(); all_lw.setRange(0.5, 5.0); all_lw.setSingleStep(0.5); all_lw.setValue(self._plot_line_width)
+        all_ls = QtWidgets.QComboBox(); [all_ls.addItem(k, v) for k, v in ls_labels.items()]
+        all_ls.setCurrentIndex(0)
+        apply_all_btn = QtWidgets.QPushButton("Apply")
+        apply_all_btn.clicked.connect(lambda _=None: self._apply_global_line_style(all_lw.value(), all_ls.currentData()))
+        reset_cycle_act = QtWidgets.QPushButton("Reset colors to cycle")
+        reset_cycle_act.clicked.connect(lambda _=None: self._reset_colors_to_cycle())
+        gh.addWidget(QtWidgets.QLabel("Thickness"))
+        gh.addWidget(all_lw)
+        gh.addWidget(QtWidgets.QLabel("Style"))
+        gh.addWidget(all_ls)
+        gh.addWidget(apply_all_btn)
+        gh.addWidget(reset_cycle_act)
+        g_act = QtWidgets.QWidgetAction(lines_menu); g_act.setDefaultWidget(global_row)
+        lines_menu.addAction(g_act)
+        menu.addSeparator()
+        # Legend submenu
+        legend_menu = menu.addMenu("Legend")
+        legend_show_act = QtWidgets.QAction("Show legend", legend_menu, checkable=True, checked=self._plot_legend_enabled)
+        legend_menu.addAction(legend_show_act)
+        pos_combo = QtWidgets.QComboBox(); pos_combo.addItems(["Best", "Top-left", "Top-right", "Bottom-left", "Bottom-right"])
+        pos_map = {"Best": "best", "Top-left": "upper left", "Top-right": "upper right", "Bottom-left": "lower left", "Bottom-right": "lower right"}
+        pos_combo.setCurrentIndex(max(0, pos_combo.findText({
+            "best": "Best",
+            "upper left": "Top-left",
+            "upper right": "Top-right",
+            "lower left": "Bottom-left",
+            "lower right": "Bottom-right",
+        }.get(self._legend_loc, "Best"))))
+        pos_widget = QtWidgets.QWidget(); pos_h = QtWidgets.QHBoxLayout(pos_widget); pos_h.setContentsMargins(6,2,6,2); pos_h.addWidget(QtWidgets.QLabel("Position")); pos_h.addWidget(pos_combo,1)
+        pos_act = QtWidgets.QWidgetAction(legend_menu); pos_act.setDefaultWidget(pos_widget); legend_menu.addAction(pos_act)
+        font_widget = QtWidgets.QWidget(); fw_h = QtWidgets.QHBoxLayout(font_widget); fw_h.setContentsMargins(6,2,6,2)
+        font_spin = QtWidgets.QSpinBox(); font_spin.setRange(6, 18); font_spin.setValue(int(self._legend_font))
+        fw_h.addWidget(QtWidgets.QLabel("Font size")); fw_h.addWidget(font_spin)
+        font_act = QtWidgets.QWidgetAction(legend_menu); font_act.setDefaultWidget(font_widget); legend_menu.addAction(font_act)
+        bg_act = QtWidgets.QAction("Background", legend_menu, checkable=True, checked=self._legend_bg)
+        border_act = QtWidgets.QAction("Border", legend_menu, checkable=True, checked=self._legend_border)
+        fname_act = QtWidgets.QAction("Use filename only", legend_menu, checkable=True, checked=self._legend_filename_only)
+        legend_menu.addActions([bg_act, border_act, fname_act])
+        menu.addSeparator()
+        # Grid & ticks submenu
+        grid_menu = menu.addMenu("Grid / ticks")
+        grid_major_cb = QtWidgets.QCheckBox("Show major grid"); grid_major_cb.setChecked(self._grid_major)
+        grid_minor_cb = QtWidgets.QCheckBox("Show minor grid"); grid_minor_cb.setChecked(self._grid_minor)
+        alpha_spin = QtWidgets.QDoubleSpinBox(); alpha_spin.setRange(0.0, 1.0); alpha_spin.setSingleStep(0.05); alpha_spin.setValue(self._grid_alpha)
+        lw_spin = QtWidgets.QDoubleSpinBox(); lw_spin.setRange(0.2, 2.0); lw_spin.setSingleStep(0.1); lw_spin.setValue(self._grid_lw)
+        ls_combo = QtWidgets.QComboBox(); [ls_combo.addItem(lbl, val) for lbl, val in [("Solid", "-"), ("Dashed", "--"), ("Dotted", ":"), ("Dash-dot", "-.")]]
+        ls_combo.setCurrentIndex(max(0, ls_combo.findData(self._grid_ls)))
+        gm_row = QtWidgets.QWidget(); gm_h = QtWidgets.QHBoxLayout(gm_row); gm_h.setContentsMargins(6,2,6,2); gm_h.addWidget(grid_major_cb); gm_h.addWidget(grid_minor_cb)
+        gm_act = QtWidgets.QWidgetAction(grid_menu); gm_act.setDefaultWidget(gm_row); grid_menu.addAction(gm_act)
+        g2_row = QtWidgets.QWidget(); g2_h = QtWidgets.QHBoxLayout(g2_row); g2_h.setContentsMargins(6,2,6,2)
+        g2_h.addWidget(QtWidgets.QLabel("Alpha")); g2_h.addWidget(alpha_spin)
+        g2_h.addWidget(QtWidgets.QLabel("Width")); g2_h.addWidget(lw_spin)
+        g2_h.addWidget(QtWidgets.QLabel("Style")); g2_h.addWidget(ls_combo)
+        g2_act = QtWidgets.QWidgetAction(grid_menu); g2_act.setDefaultWidget(g2_row); grid_menu.addAction(g2_act)
+        # Tick controls
+        pos_options = ["Outside", "Inside", "Both", "None"]
+        dir_map = {"Outside": "out", "Inside": "in", "Both": "inout", "None": "out"}
+        def tick_section(axis_key):
+            cfg = self._tick_cfg.get(axis_key, {})
+            container = QtWidgets.QWidget(); layout = QtWidgets.QFormLayout(container); layout.setContentsMargins(6,2,6,2)
+            pos_combo = QtWidgets.QComboBox(); pos_combo.addItems(pos_options)
+            current_dir = cfg.get("direction", "out")
+            reverse_map = {"out": "Outside", "in": "Inside", "inout": "Both"}
+            pos_combo.setCurrentText(reverse_map.get(current_dir, "Outside"))
+            maj_spin = QtWidgets.QDoubleSpinBox(); maj_spin.setRange(0.0, 1e6); maj_spin.setDecimals(6); maj_spin.setSingleStep(0.1)
+            if cfg.get("major") is not None:
+                maj_spin.setValue(cfg.get("major"))
+            minor_spin = QtWidgets.QSpinBox(); minor_spin.setRange(0, 10); minor_spin.setValue(int(cfg.get("minor_count") or 0))
+            len_spin = QtWidgets.QSpinBox(); len_spin.setRange(2, 20); len_spin.setValue(int(cfg.get("length") or 6))
+            layout.addRow(f"{axis_key.upper()} position", pos_combo)
+            layout.addRow("Major spacing", maj_spin)
+            layout.addRow("Minor count", minor_spin)
+            layout.addRow("Tick length (px)", len_spin)
+            return container, pos_combo, maj_spin, minor_spin, len_spin
+        x_widget, x_pos_combo, x_maj_spin, x_min_spin, x_len_spin = tick_section("x")
+        y_widget, y_pos_combo, y_maj_spin, y_min_spin, y_len_spin = tick_section("y")
+        x_act = QtWidgets.QWidgetAction(grid_menu); x_act.setDefaultWidget(x_widget); grid_menu.addAction(x_act)
+        y_act = QtWidgets.QWidgetAction(grid_menu); y_act.setDefaultWidget(y_widget); grid_menu.addAction(y_act)
+        both_cb = QtWidgets.QCheckBox("Apply X settings to Y"); both_cb.setChecked(False)
+        both_act = QtWidgets.QWidgetAction(grid_menu); both_act.setDefaultWidget(both_cb); grid_menu.addAction(both_act)
+        # Live legend handlers
+        pos_combo.currentTextChanged.connect(lambda txt: self._set_legend_position(pos_map.get(txt, "best")))
+        font_spin.valueChanged.connect(lambda val: self._set_legend_font(val))
+        bg_act.toggled.connect(lambda checked: self._set_legend_bg(checked))
+        border_act.toggled.connect(lambda checked: self._set_legend_border(checked))
+        fname_act.toggled.connect(lambda checked: self._set_legend_filename_only(checked))
+        # Live grid/tick handlers
+        def apply_ticks():
+            def _apply_axis(ax_key, pos_c, maj_c, min_c, len_c):
+                cfg = self._tick_cfg.get(ax_key, {})
+                cfg["direction"] = dir_map.get(pos_c.currentText(), "out")
+                cfg["length"] = int(len_c.value())
+                val = maj_c.value()
+                cfg["major"] = float(val) if val > 0 else None
+                cfg["minor_count"] = int(min_c.value())
+                self._tick_cfg[ax_key] = cfg
+            _apply_axis("x", x_pos_combo, x_maj_spin, x_min_spin, x_len_spin)
+            if both_cb.isChecked():
+                y_pos_combo.setCurrentText(x_pos_combo.currentText())
+                y_maj_spin.setValue(x_maj_spin.value())
+                y_min_spin.setValue(x_min_spin.value())
+                y_len_spin.setValue(x_len_spin.value())
+            _apply_axis("y", y_pos_combo, y_maj_spin, y_min_spin, y_len_spin)
+            self._update_plot()
+        grid_major_cb.toggled.connect(lambda chk: setattr(self, "_grid_major", bool(chk)) or self._update_plot())
+        grid_minor_cb.toggled.connect(lambda chk: setattr(self, "_grid_minor", bool(chk)) or self._update_plot())
+        alpha_spin.valueChanged.connect(lambda v: setattr(self, "_grid_alpha", float(v)) or self._update_plot())
+        lw_spin.valueChanged.connect(lambda v: setattr(self, "_grid_lw", float(v)) or self._update_plot())
+        ls_combo.currentIndexChanged.connect(lambda _i: setattr(self, "_grid_ls", ls_combo.currentData()) or self._update_plot())
+        x_pos_combo.currentIndexChanged.connect(lambda _i: apply_ticks())
+        y_pos_combo.currentIndexChanged.connect(lambda _i: apply_ticks())
+        x_maj_spin.valueChanged.connect(lambda _v: apply_ticks())
+        y_maj_spin.valueChanged.connect(lambda _v: apply_ticks())
+        x_min_spin.valueChanged.connect(lambda _v: apply_ticks())
+        y_min_spin.valueChanged.connect(lambda _v: apply_ticks())
+        x_len_spin.valueChanged.connect(lambda _v: apply_ticks())
+        y_len_spin.valueChanged.connect(lambda _v: apply_ticks())
         save_png = menu.addAction("Save PNG...")
         save_svg = menu.addAction("Save SVG...")
         menu.addSeparator()
@@ -4409,13 +4603,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._add_point_label_at_cursor()
         elif action == clear_points_act:
             self._clear_point_labels()
+        elif action == legend_show_act:
+            self._plot_legend_enabled = legend_show_act.isChecked()
+            self._update_plot()
+        elif action == grid_act:
+            self._plot_grid_enabled = grid_act.isChecked()
+            self._grid_major = self._plot_grid_enabled
+            self._update_plot()
         elif action == save_png:
             self._save_canvas("png")
         elif action == save_svg:
             self._save_canvas("svg")
-        elif action == grid_act:
-            self._plot_grid_enabled = grid_act.isChecked()
-            self._update_plot()
         elif action == legend_act:
             self._plot_legend_enabled = legend_act.isChecked()
             self._update_plot()
@@ -5067,6 +5265,162 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if txt:
                 txt.set_fontsize(7 * scale)
         self.canvas.draw_idle()
+
+    def _curve_name(self, spec_id):
+        try:
+            for spec in self.specs:
+                if self._spec_id(spec) == spec_id:
+                    return self._display_name(spec)
+        except Exception:
+            pass
+        return str(spec_id)
+
+    def _set_curve_style(self, spec_id, *, lw=None, ls=None, color=None):
+        try:
+            st = self._curve_styles.get(spec_id, {})
+            if lw is not None:
+                st["lw"] = lw
+            if ls is not None:
+                st["ls"] = ls
+            if color is not None:
+                st["color"] = color
+            self._curve_styles[spec_id] = st
+            line = self._line_map.get(spec_id)
+            if line:
+                if lw is not None:
+                    line.set_linewidth(lw)
+                if ls is not None:
+                    line.set_linestyle(ls)
+                if color is not None:
+                    line.set_color(color)
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _reset_colors_to_cycle(self):
+        if not self._line_map:
+            return
+        cycle = list(self._color_cycle) if getattr(self, "_color_cycle", None) else []
+        if not cycle:
+            cycle = get_color_cycle(self._palette_name or DEFAULT_COLOR_CYCLE)
+        if not cycle:
+            return
+        for idx, (spec_id, line) in enumerate(self._line_map.items()):
+            color = cycle[idx % len(cycle)]
+            self._set_curve_style(spec_id, color=color)
+
+    def _apply_global_line_style(self, lw, ls):
+        try:
+            lw = float(lw)
+        except Exception:
+            lw = None
+        for spec_id in list(self._line_map.keys()):
+            self._set_curve_style(spec_id, lw=lw, ls=ls)
+        try:
+            if lw is not None:
+                self._plot_line_width = lw
+        except Exception:
+            pass
+        self.canvas.draw_idle()
+
+    def _pick_curve_color(self, spec_id, btn):
+        current = None
+        try:
+            line = self._line_map.get(spec_id)
+            current = line.get_color() if line else None
+        except Exception:
+            current = None
+        color = QtWidgets.QColorDialog.getColor(QtGui.QColor(current or "#000000"), self, "Select line color")
+        if not color.isValid():
+            return
+        hex_col = color.name()
+        btn.setStyleSheet(f"background:{hex_col};")
+        self._set_curve_style(spec_id, color=hex_col)
+
+    def _apply_legend_settings(self):
+        legend = self.ax.get_legend()
+        if not legend:
+            return
+        try:
+            legend.set_visible(self._plot_legend_enabled)
+            legend._loc = self._legend_loc or legend._loc
+            legend.set_fontsize(self._legend_font)
+            frame = legend.get_frame()
+            frame.set_alpha(0.9 if self._legend_bg else 0.0)
+            frame.set_facecolor("white" if self._legend_bg else (0, 0, 0, 0))
+            frame.set_edgecolor("black" if self._legend_border else (0, 0, 0, 0))
+            frame.set_linewidth(0.8 if self._legend_border else 0.0)
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _apply_grid_and_ticks(self):
+        ax = self.ax
+        try:
+            if self._grid_major:
+                ax.grid(True, which="major", alpha=self._grid_alpha, linewidth=self._grid_lw, linestyle=self._grid_ls)
+            else:
+                ax.grid(False, which="major")
+            if self._grid_minor:
+                ax.grid(True, which="minor", alpha=self._grid_alpha * 0.8, linewidth=max(0.2, self._grid_lw * 0.7), linestyle=self._grid_ls)
+            else:
+                ax.grid(False, which="minor")
+        except Exception:
+            pass
+        # Ticks
+        for axis_key, axis in (("x", ax.xaxis), ("y", ax.yaxis)):
+            cfg = self._tick_cfg.get(axis_key, {})
+            direction = cfg.get("direction", "out")
+            length = int(cfg.get("length", 6))
+            try:
+                ax.tick_params(axis=axis_key, direction=direction, length=length)
+            except Exception:
+                pass
+            major = cfg.get("major")
+            if major and major > 0:
+                try:
+                    axis.set_major_locator(MultipleLocator(major))
+                except Exception:
+                    pass
+            else:
+                try:
+                    axis.set_major_locator(MaxNLocator(nbins='auto'))
+                except Exception:
+                    pass
+            minor_count = int(cfg.get("minor_count", 0))
+            if minor_count > 0:
+                try:
+                    axis.set_minor_locator(AutoMinorLocator(minor_count + 1))
+                except Exception:
+                    pass
+            else:
+                try:
+                    axis.set_minor_locator(AutoMinorLocator())
+                except Exception:
+                    pass
+
+    def _set_legend_position(self, loc):
+        self._legend_loc = loc or "best"
+        self._update_plot()
+
+    def _set_legend_font(self, size):
+        try:
+            self._legend_font = float(size)
+        except Exception:
+            return
+        self._apply_legend_settings()
+
+    def _set_legend_bg(self, enabled):
+        self._legend_bg = bool(enabled)
+        self._apply_legend_settings()
+
+    def _set_legend_border(self, enabled):
+        self._legend_border = bool(enabled)
+        self._apply_legend_settings()
+
+    def _set_legend_filename_only(self, enabled):
+        self._legend_filename_only = bool(enabled)
+        self._update_plot()
 
     def _log(self, text):
         self.log.appendPlainText(text)
