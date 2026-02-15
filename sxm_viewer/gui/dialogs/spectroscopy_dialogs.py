@@ -2475,6 +2475,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._minima_meta = []
         self._dragging_minima = None
         self._point_labels = []
+        self._point_label_drag = None
         self._last_mouse_xy = None
         self._build_ui()
         self._populate_list()
@@ -2609,6 +2610,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.mpl_connect("motion_notify_event", self._on_minima_motion)
         self.canvas.mpl_connect("button_release_event", self._on_minima_release)
         self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.canvas.mpl_connect("button_press_event", self._on_point_label_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_point_label_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_point_label_release)
         self.canvas.setAccessibleName("Spectroscopy comparison plot")
         self.canvas.setAccessibleDescription("Interactive plot showing selected spectra")
 
@@ -4065,6 +4069,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         x_use = snap_x if snap_x is not None else x
         y_use = snap_y if snap_y is not None else y
         marker = self.ax.scatter([x_use], [y_use], color="#444", s=24, zorder=7)
+        vline = self.ax.axvline(x_use, color="#777", linestyle="--", linewidth=0.9, alpha=0.75, zorder=6)
         txt = self.ax.text(
             x_use, y_use, f"{x_use:.4g}, {y_use:.4g}",
             fontsize=7 * getattr(self, "_font_scale", 1.0),
@@ -4073,7 +4078,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             bbox=dict(facecolor="white", edgecolor="#444", alpha=0.8, linewidth=0.6, boxstyle="round,pad=0.2"),
             zorder=7,
         )
-        self._point_labels.append({"marker": marker, "text": txt})
+        self._point_labels.append({"marker": marker, "text": txt, "vline": vline, "x": x_use, "y": y_use})
         self.canvas.draw_idle()
 
     def _clear_point_labels(self, redraw=True):
@@ -4086,6 +4091,40 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._point_labels = []
         if redraw:
             self.canvas.draw_idle()
+
+    def _on_point_label_press(self, event):
+        if not event or event.inaxes != self.ax or event.button != MouseButton.LEFT:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        for pl in getattr(self, "_point_labels", []):
+            txt = pl.get("text")
+            if txt is None:
+                continue
+            contains, _ = txt.contains(event)
+            if contains:
+                tx, ty = txt.get_position()
+                self._point_label_drag = {"pl": pl, "offset": (tx - event.xdata, ty - event.ydata)}
+                break
+
+    def _on_point_label_motion(self, event):
+        if not self._point_label_drag or event.inaxes != self.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        pl = self._point_label_drag.get("pl")
+        txt = pl.get("text") if pl else None
+        if txt is None:
+            self._point_label_drag = None
+            return
+        dx, dy = self._point_label_drag.get("offset", (0.0, 0.0))
+        txt.set_position((event.xdata + dx, event.ydata + dy))
+        self.canvas.draw_idle()
+
+    def _on_point_label_release(self, event):
+        if self._point_label_drag and event and event.inaxes == self.ax:
+            self.canvas.draw_idle()
+        self._point_label_drag = None
 
     def _snap_to_nearest_curve(self, x, y):
         """Find nearest data point among plotted lines (in data space)."""
@@ -5019,6 +5058,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             plt_legend = self.ax.get_legend()
             for text in plt_legend.get_texts():
                 text.set_fontsize(8 * scale)
+        for meta in getattr(self, "_minima_meta", []):
+            txt = meta.get("text")
+            if txt:
+                txt.set_fontsize(7 * scale)
+        for pl in getattr(self, "_point_labels", []):
+            txt = pl.get("text")
+            if txt:
+                txt.set_fontsize(7 * scale)
         self.canvas.draw_idle()
 
     def _log(self, text):
