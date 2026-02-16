@@ -2278,9 +2278,12 @@ class MultiPreviewCanvas(FigureCanvas):
             return None
         try:
             v0 = view if view is not None else self.views[0]
-            arr = np.asarray(v0['arr'], dtype=float)
-            h, w = arr.shape
-            extent = v0.get('extent', None)
+            arr_raw = np.asarray(v0['arr'], dtype=float)
+            flip = bool(v0.get('relative_axes'))
+            arr_src = np.flipud(arr_raw) if flip else arr_raw
+            h, w = arr_src.shape
+            # Use the same extent that is passed to imshow (handles relative axes)
+            extent = self._display_extent_for_view(v0, v0.get('extent', None))
             axis_unit = self._profile_axis_unit()
             x0, y0, x1, y1 = pts
             if extent is None:
@@ -2313,10 +2316,10 @@ class MultiPreviewCanvas(FigureCanvas):
             wy = rr - i0
             wx = cc - j0
             vals = (
-                (1 - wy) * (1 - wx) * arr[i0, j0] +
-                wy * (1 - wx) * arr[i1, j0] +
-                (1 - wy) * wx * arr[i0, j1] +
-                wy * wx * arr[i1, j1]
+                (1 - wy) * (1 - wx) * arr_src[i0, j0] +
+                wy * (1 - wx) * arr_src[i1, j0] +
+                (1 - wy) * wx * arr_src[i0, j1] +
+                wy * wx * arr_src[i1, j1]
             )
             x_px = np.linspace(0.0, float(n - 1), n)
             unit = v0.get('unit', None)
@@ -2359,12 +2362,14 @@ class MultiPreviewCanvas(FigureCanvas):
     def _profile_bounds(self):
         try:
             v0 = self.views[0]
-            extent = v0.get('extent')
             arr = np.asarray(v0['arr'])
             h, w = arr.shape
-            if extent is None:
+            extent_raw = v0.get('extent', None)
+            display_extent = self._display_extent_for_view(v0, extent_raw)
+            extent_use = display_extent if display_extent is not None else (0.0, float(w - 1), 0.0, float(h - 1))
+            if display_extent is None:
                 return (0.0, float(w - 1), 0.0, float(h - 1))
-            x0, x1, y1, y0 = extent
+            x0, x1, y1, y0 = extent_use
             return (min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1))
         except Exception:
             return (-1e6, 1e6, -1e6, 1e6)
@@ -3461,6 +3466,9 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _check_molecule_hit(self, event):
+        # When measurement tools are active, avoid picking/dragging molecules to prevent accidental moves.
+        if self.profile_enabled or self.angle_enabled:
+            return False
         if not self.show_molecules or not self.molecules or event.inaxes is None:
             return False
         
@@ -4080,6 +4088,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 aspect='equal',
                 cmap=cmap,
             )
+        # Ensure axes limits reflect the current extent (important when toggling relative axes)
+        try:
+            ext = display_extent if display_extent is not None else im.get_extent()
+            if ext is not None:
+                x0, x1, y1, y0 = ext
+                ax.set_xlim(x0, x1)
+                ax.set_ylim(y0, y1)
+        except Exception:
+            pass
         ax.set_autoscale_on(False)
         cbar_label = view.get('colorbar_label') or view.get('unit', '')
         cbar = None
@@ -4202,6 +4219,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
                 im = ax.imshow(arr_plot, extent=display_extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+            try:
+                ext = display_extent if display_extent is not None else im.get_extent()
+                if ext is not None:
+                    x0, x1, y1, y0 = ext
+                    ax.set_xlim(x0, x1)
+                    ax.set_ylim(y0, y1)
+            except Exception:
+                pass
             # record base limits for reset before any restore
             try:
                 self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())

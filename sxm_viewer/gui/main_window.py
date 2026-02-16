@@ -1502,15 +1502,15 @@ QLabel:hover {{
         filter_btn.clicked.connect(lambda _: self._open_custom_filter_for_canvas(canvas))
         layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
         popup_state = {"profile_dialog": None}
-        def _update_profile_dialog(active, saved):
+        def _ensure_profile_dialog(active, saved):
             dlg_prof = popup_state.get("profile_dialog")
             if dlg_prof is None:
                 unit = None
                 y_label = None
-                if views:
+                if canvas.views:
                     try:
-                        unit = views[0].get("unit")
-                        y_label = views[0].get("colorbar_label") or views[0].get("unit")
+                        unit = canvas.views[0].get("unit")
+                        y_label = canvas.views[0].get("colorbar_label") or canvas.views[0].get("unit")
                     except Exception:
                         pass
                 dlg_prof = ProfileDialog(active, saved, parent=dlg, unit=unit, y_label=y_label)
@@ -1522,14 +1522,22 @@ QLabel:hover {{
                 dlg_prof.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
                 dlg_prof.finished.connect(lambda _=None: popup_state.__setitem__("profile_dialog", None))
                 popup_state["profile_dialog"] = dlg_prof
-            dlg_prof.update_profiles(active, saved, preserve_profiles=False, label_scale=getattr(canvas, "_view_font_scale", 1.0))
+            dlg_prof.update_profiles(active, saved)
             dlg_prof.show()
-        canvas.profile_callback = _update_profile_dialog
-        def _refresh_profile_dialog_from_canvas():
-            if not getattr(canvas, "profile_enabled", False):
-                return
             try:
-                active = canvas._build_profile_data(canvas.profile_pts, color=getattr(canvas, "_active_profile_color", "#fbc02d"), view=canvas.views[0] if canvas.views else None)
+                dlg_prof.raise_()
+                dlg_prof.activateWindow()
+            except Exception:
+                pass
+
+        def _compute_profiles_from_canvas():
+            active = None
+            try:
+                active = canvas._build_profile_data(
+                    canvas.profile_pts,
+                    color=getattr(canvas, "_active_profile_color", "#fbc02d"),
+                    view=canvas.views[0] if canvas.views else None,
+                )
             except Exception:
                 active = None
             saved = []
@@ -1542,8 +1550,34 @@ QLabel:hover {{
                         saved.append(data)
             except Exception:
                 saved = []
-            _update_profile_dialog(active, saved)
-        canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
+            return active, saved
+
+        def _dispatch_profile_dialog(active=None, saved=None):
+            if active is None and saved is None:
+                active, saved = _compute_profiles_from_canvas()
+            _ensure_profile_dialog(active, saved)
+
+        def _update_profile_dialog(active, saved):
+            _dispatch_profile_dialog(active, saved)
+        try:
+            canvas.set_profile_callback(_dispatch_profile_dialog)
+        except Exception:
+            canvas.profile_callback = _dispatch_profile_dialog
+        def _refresh_profile_dialog_from_canvas():
+            active, saved = _compute_profiles_from_canvas()
+            _dispatch_profile_dialog(active, saved)
+        try:
+            canvas.set_profile_state_callback(lambda _state=None: _refresh_profile_dialog_from_canvas())
+        except Exception:
+            canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
+        # Fallback: ensure dialog is refreshed on mouse releases when profile mode is active
+        try:
+            canvas.mpl_connect(
+                "button_release_event",
+                lambda _evt=None: _refresh_profile_dialog_from_canvas() if getattr(canvas, "profile_enabled", False) and canvas.profile_pts is not None else None,
+            )
+        except Exception:
+            pass
 
         def _toggle_measure(checked):
             def _force_profile_dialog():
@@ -1565,12 +1599,18 @@ QLabel:hover {{
                             saved.append(data)
                 except Exception:
                     saved = []
-                _update_profile_dialog(active, saved)
+                _ensure_profile_dialog(active, saved)
             try:
                 canvas.enable_profile(bool(checked))
                 if not checked and popup_state.get("profile_dialog"):
                     popup_state["profile_dialog"].close()
                 if checked:
+                    # Instantiate the dialog immediately, even before the first emit.
+                    try:
+                        a, s = _compute_profiles_from_canvas()
+                        _dispatch_profile_dialog(a, s)
+                    except Exception:
+                        pass
                     try:
                         canvas._emit_profile()
                     except Exception:
@@ -2522,8 +2562,45 @@ QLabel:hover {{
         self.relative_axes = bool(checked)
         self.config['relative_axes'] = self.relative_axes
         save_config(self.config)
+        # Prevent restoring stale profile state when switching axes mode
+        self._suppress_profile_restore = True
+        # Clear any active profiles that were built with the previous axis mode
+        try:
+            if getattr(self, 'preview_canvas', None):
+                self.preview_canvas.enable_profile(False)
+                if hasattr(self.preview_canvas, "_clear_saved_profile_artists"):
+                    self.preview_canvas._clear_saved_profile_artists(notify=False)
+                self.preview_canvas.profile_pts = None
+        except Exception:
+            pass
+        # Clear cached zoom limits so switching relative axes always recomputes extents
+        try:
+            if hasattr(self.preview_canvas, "_zoom_reset_limits"):
+                self.preview_canvas._zoom_reset_limits = {}
+                self.preview_canvas._reset_view_zoom()
+        except Exception:
+            pass
+        # Invalidate cached frames so extents are recalculated
+        try:
+            self._frame_real_pixmap_cache.clear()
+            self._filtered_channel_cache.clear()
+        except Exception:
+            pass
         if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            try:
+                key, idx = self.last_preview
+            except Exception:
+                key = idx = None
+            self.last_preview = None  # force rebuild of current view
+            if key is not None and idx is not None:
+                self.show_file_channel(key, idx)
+                # After the view is rebuilt, reset zoom so the new extent
+                # (relative vs absolute) is applied immediately.
+                try:
+                    if getattr(self, 'preview_canvas', None):
+                        self.preview_canvas._reset_view_zoom()
+                except Exception:
+                    pass
 
     def on_scale_bar_toggled(self, checked: bool):
         self.config['show_scale_bar'] = bool(checked)
@@ -4260,8 +4337,17 @@ QLabel:hover {{
         except Exception:
             pass
 
+        # Remember whether profile drawing was active before opening the dialog.
+        profile_was_enabled = bool(getattr(canvas, "profile_enabled", False))
         load_view(0)
         dlg.exec_()
+        # If profiles were not active before, make sure we leave them disabled
+        # (some operations used to trigger a stray profile overlay).
+        if not profile_was_enabled:
+            try:
+                canvas.enable_profile(False)
+            except Exception:
+                pass
 
     def _is_matrix_spec(self, spec) -> bool:
         try:
