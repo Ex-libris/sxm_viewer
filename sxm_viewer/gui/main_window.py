@@ -81,6 +81,7 @@ from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
+from .controllers.thumbnail_controller import ThumbnailController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
@@ -787,6 +788,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_export_btn.setToolTip("Export the selected crops (Shift+click) as images")
         self.quick_crop_export_btn.setEnabled(False)
         self.quick_crop_controller = QuickCropController(self)
+        self.thumbnail_controller = ThumbnailController(self)
         self.quick_crop_export_btn.clicked.connect(self.quick_crop_controller.export_selected_crops)
         quick_layout.addWidget(self.quick_crop_export_btn)
         self.quick_crop_tile_btn = QtWidgets.QToolButton()
@@ -2627,45 +2629,14 @@ QLabel:hover {{
             pass
 
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
-        """
-        Thumbnail clicked -> preview.
-        We no longer populate a persistent per-file inspector list (UI removed).
-        Instead we:
-          - show the clicked channel in the main preview,
-          - update the thumb selection highlight,
-          - record the current file header path and channel index so dialogs like
-            "Add channel view" can reuse them via current_inspector_* attributes.
-        """
-        # show preview as before
-        self.show_file_channel(header_path_str, channel_idx)
-        # highlight selection in thumbnails
-        try:
-            self.selected_file_for_thumbs = str(header_path_str)
-            self._refresh_thumb_selection_styles()
-        except Exception:
-            pass
-        # record the header and channel idx for dialogs that expect them
-        key = str(header_path_str)
-        self.current_inspector_header = key
-        self.current_inspector_channel = int(channel_idx)
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_thumbnail_clicked(header_path_str, channel_idx)
 
     def on_thumbnail_double_clicked(self, header_path_str, channel_idx):
-        """
-        Double-click a thumbnail: show it in preview and open a popup window (like preview zoom).
-        """
-        try:
-            self.on_thumbnail_clicked(header_path_str, channel_idx)
-        except Exception:
-            pass
-        try:
-            views = getattr(self.preview_canvas, "views", None)
-            if not views:
-                return
-            copied = [self._copy_view_for_popup(v) for v in views]
-            title = self._friendly_view_title(views[0], default=Path(header_path_str).name if header_path_str else "Preview")
-            self._spawn_preview_popup(copied, title=title)
-        except Exception:
-            pass
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_thumbnail_double_clicked(header_path_str, channel_idx)
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
     # These functions supported the removed per-file inspector UI. The same "show channel"
@@ -4353,115 +4324,31 @@ QLabel:hover {{
         return x, y
 
     def _scroll_to_thumbnail(self, file_key):
-        if not file_key:
-            return
-        widget = self.thumb_widgets.get(str(file_key))
-        if widget is None:
-            return
-        try:
-            self.scroll.ensureWidgetVisible(widget)
-        except Exception:
-            try:
-                bar = self.scroll.verticalScrollBar()
-                if bar is not None:
-                    bar.setValue(widget.y())
-            except Exception:
-                pass
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.scroll_to_thumbnail(file_key)
 
     def _handle_thumbnail_navigation(self, key, modifiers=QtCore.Qt.NoModifier):
-        files = list(getattr(self, 'current_thumb_files', []) or [])
-        if not files:
-            return False
-        cols = max(1, int(getattr(self, 'thumb_grid_columns', 1) or 1))
-        selected = str(getattr(self, 'selected_file_for_thumbs', '') or '')
-        try:
-            current_idx = files.index(selected)
-        except ValueError:
-            current_idx = -1
-
-        if current_idx < 0:
-            new_idx = 0
-        else:
-            new_idx = current_idx
-            if key == QtCore.Qt.Key_Left:
-                if new_idx > 0:
-                    new_idx -= 1
-            elif key == QtCore.Qt.Key_Right:
-                if new_idx < len(files) - 1:
-                    new_idx += 1
-            elif key == QtCore.Qt.Key_Up:
-                if new_idx - cols >= 0:
-                    new_idx -= cols
-                else:
-                    new_idx = 0
-            elif key == QtCore.Qt.Key_Down:
-                if new_idx + cols < len(files):
-                    new_idx += cols
-                else:
-                    new_idx = len(files) - 1
-            else:
-                return False
-        if new_idx == current_idx:
-            # If nothing selected yet, ensure first entry is highlighted.
-            if current_idx == -1:
-                return self._activate_thumbnail_by_index(0)
-            return False
-        return self._activate_thumbnail_by_index(new_idx)
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_navigation(key, modifiers=modifiers)
+        return False
 
     def _activate_thumbnail_by_index(self, index):
-        files = list(getattr(self, 'current_thumb_files', []) or [])
-        if not files or not (0 <= index < len(files)):
-            return False
-        file_key = files[index]
-        current_highlight = getattr(self, '_highlighted_spec', None)
-        if current_highlight:
-            try:
-                highlight_path = str(current_highlight.get('image_key') or current_highlight.get('path') or '')
-            except Exception:
-                highlight_path = ''
-            if highlight_path and highlight_path != file_key:
-                self._highlight_spectrum_entry(None)
-        self._clear_thumb_multi_selection(update_styles=False)
-        label = getattr(self, '_thumb_labels', {}).get(file_key)
-        if label is not None:
-            try:
-                channel_idx = int(label.property("channel_index") or 0)
-            except Exception:
-                channel_idx = self.channel_dropdown.currentIndex()
-        else:
-            channel_idx = self.channel_dropdown.currentIndex()
-        self.on_thumbnail_clicked(file_key, channel_idx)
-        self.last_thumb_anchor = str(file_key)
-        self._scroll_to_thumbnail(file_key)
-        return True
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.activate_thumbnail_by_index(index)
+        return False
 
     def _focus_first_matrix_dataset(self):
-        matrix_files = list(getattr(self, 'files_with_matrix', set()) or [])
-        if not matrix_files:
-            return
-        target = None
-        for path in getattr(self, 'current_thumb_files', []):
-            if path in matrix_files:
-                target = path
-                break
-        if target is None:
-            target = matrix_files[0]
-        self._scroll_to_thumbnail(target)
-        self.selected_file_for_thumbs = target
-        self._refresh_thumb_selection_styles()
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.focus_first_matrix_dataset()
 
     def _update_matrix_summary_banner(self):
-        label = getattr(self, 'matrix_summary_label', None)
-        if label is None:
-            return
-        matrix_count = len(getattr(self, 'matrix_datasets', {}) or {})
-        if matrix_count <= 0:
-            label.hide()
-            return
-        noun = "Matrix dataset" if matrix_count == 1 else "Matrix datasets"
-        label.setText(f"{noun}: {matrix_count} · click to focus")
-        label.setToolTip("Click to jump to the first thumbnail containing a matrix spectroscopy grid.")
-        label.show()
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.update_matrix_summary_banner()
 
     def _handle_spec_marker_click(self, label_widget, event):
         if getattr(event, 'button', None) and event.button() != QtCore.Qt.LeftButton:
