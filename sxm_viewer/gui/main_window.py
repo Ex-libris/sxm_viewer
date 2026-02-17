@@ -82,6 +82,7 @@ from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
 from .controllers.thumbnail_controller import ThumbnailController
+from .controllers.spectro_compare import SpectroCompareController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
@@ -311,6 +312,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
+        self.spectro_compare_controller = SpectroCompareController(self)
         self.thumb_multi_select = set()
         self._batch_export_progress = None
         self._batch_export_worker = None
@@ -3858,41 +3860,9 @@ QLabel:hover {{
             return False
 
     def _on_preview_spec_click(self, spec, event=None):
-        if not spec or not self.show_spectra:
-            return
-        mods = QtCore.Qt.NoModifier
-        try:
-            if event is not None:
-                if hasattr(event, "modifiers"):
-                    mods = event.modifiers()
-                elif getattr(event, "guiEvent", None) is not None and hasattr(event.guiEvent, "modifiers"):
-                    mods = event.guiEvent.modifiers()
-        except Exception:
-            mods = QtCore.Qt.NoModifier
-        file_key = str(spec.get('image_key') or spec.get('path') or '')
-        if mods & QtCore.Qt.ShiftModifier:
-            self._prime_multi_selection_anchor(spec)
-            key = self._spec_identity_key(spec) if spec else None
-            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
-            self._toggle_multi_spec_selection(spec)
-            added = bool(
-                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
-            )
-            if added:
-                self._append_spec_to_single_popup(spec)
-                try:
-                    self._highlight_spectrum_entry(spec)
-                except Exception:
-                    pass
-            return
-        self._clear_multi_spec_selection()
-        self._last_clicked_spec = spec
-        force_matrix = bool(mods & QtCore.Qt.ControlModifier)
-        is_matrix = self._is_matrix_spec(spec) or (force_matrix and spec.get('matrix_index') is not None)
-        if is_matrix and file_key:
-            self._open_matrix_explorer_for_file(file_key)
-        else:
-            self._open_spectroscopy_popup(spec)
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            controller.handle_preview_click(spec, event=event)
 
     def on_manual_tag(self, tag):
         if self.last_preview is None:
@@ -4399,34 +4369,12 @@ QLabel:hover {{
             except Exception:
                 mods = QtCore.Qt.NoModifier
         spec = hit_info.get('spec')
-        if mods & QtCore.Qt.ShiftModifier:
-            self._prime_multi_selection_anchor(spec)
-            key = self._spec_identity_key(spec) if spec else None
-            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
-            self._toggle_multi_spec_selection(spec)
-            added = bool(
-                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
-            )
-            if added:
-                self._append_spec_to_single_popup(spec)
-                try:
-                    self._highlight_spectrum_entry(spec)
-                except Exception:
-                    pass
-            return True
-        self._clear_multi_spec_selection()
-        self._last_clicked_spec = spec
-        force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
-        is_matrix = hit_info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
-        if (is_matrix or force_matrix) and file_key:
-            self._open_matrix_explorer_for_file(file_key)
-        else:
-            self._open_spectroscopy_popup(spec)
-        try:
-            self._highlight_spectrum_entry(spec)
-        except Exception:
-            pass
-        return True
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            is_matrix = hit_info.get('kind') == 'matrix'
+            if controller.handle_marker_click(spec, file_key, is_matrix, mods):
+                return True
+        return False
 
     def _handle_spec_hover(self, label_widget, event):
         if not self.show_spectra:
@@ -4463,12 +4411,17 @@ QLabel:hover {{
         return False
 
     def _open_spectroscopy_popup(self, spec):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.open_single_popup(spec)
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(self, spec)
 
     def _ensure_single_spectro_popup(self, spec):
-        """Raise an existing single spectroscopy popup or open a new one."""
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.ensure_single_popup(spec)
         if not spec:
             return None
         key = self._spec_identity_key(spec)
@@ -4484,68 +4437,15 @@ QLabel:hover {{
                     return dlg
         return self._open_spectroscopy_popup(spec)
 
-    def _single_popup_for_key(self, key):
-        if not key or not getattr(self, "_spectro_popups", None):
-            return None
-        for dlg in list(self._spectro_popups):
-            dlg_spec = getattr(dlg, "spec", None)
-            if dlg_spec and self._spec_identity_key(dlg_spec) == key:
-                if getattr(dlg, "isVisible", None):
-                    try:
-                        if dlg.isVisible():
-                            return dlg
-                    except Exception:
-                        continue
-                else:
-                    return dlg
-        return None
-
-    def _active_single_popup(self):
-        anchor = getattr(self, "_multi_single_popup_anchor", None)
-        if not anchor:
-            return None
-        dlg = self._single_popup_for_key(anchor)
-        if dlg is None:
-            self._multi_single_popup_anchor = None
-        return dlg
-
     def _append_spec_to_single_popup(self, spec):
-        if not spec:
-            return
-        key = self._spec_identity_key(spec)
-        if not key:
-            return
-        dlg = self._active_single_popup()
-        if dlg is None:
-            dlg = self._ensure_single_spectro_popup(spec)
-            if dlg:
-                self._multi_single_popup_anchor = key
-            return
-        if key == self._multi_single_popup_anchor:
-            return
-        if hasattr(dlg, "add_external_spectrum"):
-            try:
-                dlg.add_external_spectrum(spec)
-            except Exception:
-                pass
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.append_spec_to_single_popup(spec)
 
     def _prime_multi_selection_anchor(self, current_spec):
-        """If user previously clicked a spec without Shift, use it as the first multi selection."""
-        if self._multi_spec_selection or not getattr(self, "_last_clicked_spec", None):
-            return
-        candidate = self._last_clicked_spec
-        if candidate is None:
-            return
-        if current_spec and self._spec_identity_key(candidate) == self._spec_identity_key(current_spec):
-            return
-        key = self._spec_identity_key(candidate)
-        if not key or key in getattr(self, "_multi_spec_selection_keys", set()):
-            self._last_clicked_spec = None
-            return
-        self._multi_spec_selection.append(candidate)
-        self._multi_spec_selection_keys.add(key)
-        self._update_spec_selection_label()
-        self._last_clicked_spec = None
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.prime_multi_selection_anchor(current_spec)
 
     def _highlight_spectrum_entry(self, spec):
         if not getattr(self, "spectro_highlight_glow", True):
@@ -4775,6 +4675,9 @@ QLabel:hover {{
         return viewer_thumb_ui._clear_thumb_multi_selection(self, update_styles=update_styles)
 
     def _spec_identity_key(self, spec):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.spec_identity_key(spec)
         if not spec:
             return None
         base = spec.get('path')
@@ -4800,38 +4703,19 @@ QLabel:hover {{
         return base
 
     def _toggle_multi_spec_selection(self, spec):
-        if not spec:
-            return
-        key = self._spec_identity_key(spec) or str(Path(spec.get('path')))
-        if key in self._multi_spec_selection_keys:
-            self._multi_spec_selection = [s for s in self._multi_spec_selection if self._spec_identity_key(s) != key]
-            self._multi_spec_selection_keys.remove(key)
-        else:
-            self._multi_spec_selection.append(spec)
-            self._multi_spec_selection_keys.add(key)
-        self._update_spec_selection_label()
-        if not self._multi_spec_selection:
-            self._multi_single_popup_anchor = None
-        if len(self._multi_spec_selection) >= 2:
-            self._open_multi_spectroscopy_popup()
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.toggle_multi_spec_selection(spec)
 
     def _update_spec_selection_label(self):
-        count = len(self._multi_spec_selection)
-        if hasattr(self, 'spec_selection_label'):
-            self.spec_selection_label.setText(f"Spectra selected: {count}")
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.update_spec_selection_label()
 
     def _clear_multi_spec_selection(self):
-        self._multi_spec_selection = []
-        self._multi_spec_selection_keys = set()
-        self._multi_single_popup_anchor = None
-        self._last_clicked_spec = None
-        for dlg in list(self._multi_spectro_popups):
-            try:
-                dlg.close()
-            except Exception:
-                pass
-        self._multi_spectro_popups = []
-        self._update_spec_selection_label()
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.clear_multi_spec_selection()
 
     def _on_drift_correct(self, paths):
         if not paths:
@@ -5641,6 +5525,9 @@ QLabel:hover {{
         self._clear_multi_spec_selection()
 
     def _open_multi_spectroscopy_popup(self):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.open_multi_popup()
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(self)
