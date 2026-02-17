@@ -80,6 +80,7 @@ from .viewer import measurement as viewer_measurement
 from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
+from .controllers.quick_crop import QuickCropController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
@@ -225,10 +226,6 @@ class SXMGridViewer(QtWidgets.QWidget):
             'show_crop_history_overlay': False,
         }
         self._popup_canvases = []
-        self._crop_history_entries = []
-        self._crop_popup_stack = []
-        self._active_crop_sequence = None
-        self._selected_crop_sequences = []
         c_single = self.config.get('spectro_marker_color_single')
         if c_single:
             self.spectro_marker_color_single = QtGui.QColor(c_single)
@@ -738,7 +735,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_btn = QtWidgets.QPushButton("Quick crop: Off")
         self.quick_crop_btn.setCheckable(True)
         self.quick_crop_btn.setToolTip("Toggle quick crop mode (Ctrl+Shift+C). Shift+drag to size, click to spawn crops.")
-        self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         quick_layout.addWidget(self.quick_crop_btn)
         quick_layout.addWidget(QtWidgets.QLabel("Real W"))
         self.quick_crop_real_width_spin = QtWidgets.QDoubleSpinBox()
@@ -790,25 +786,27 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_export_btn.setText("Export selection")
         self.quick_crop_export_btn.setToolTip("Export the selected crops (Shift+click) as images")
         self.quick_crop_export_btn.setEnabled(False)
-        self.quick_crop_export_btn.clicked.connect(self._export_selected_crops)
+        self.quick_crop_controller = QuickCropController(self)
+        self.quick_crop_export_btn.clicked.connect(self.quick_crop_controller.export_selected_crops)
         quick_layout.addWidget(self.quick_crop_export_btn)
         self.quick_crop_tile_btn = QtWidgets.QToolButton()
         self.quick_crop_tile_btn.setText("Tile pop-outs")
         self.quick_crop_tile_btn.setToolTip("Arrange all open pop-out windows on screen")
         self.quick_crop_tile_btn.setEnabled(False)
-        self.quick_crop_tile_btn.clicked.connect(self._arrange_crop_popups)
+        self.quick_crop_tile_btn.clicked.connect(self.quick_crop_controller.arrange_popups)
         quick_layout.addWidget(self.quick_crop_tile_btn)
         quick_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
         quick_layout.addWidget(self.quick_crop_hint_lbl)
         preview_panel_layout.addWidget(self.quick_crop_controls)
-        self.quick_crop_undo_btn.clicked.connect(self._on_quick_crop_undo)
-        self.quick_crop_close_btn.clicked.connect(self._on_quick_crop_close)
-        self.quick_crop_clear_btn.clicked.connect(self._on_quick_crop_clear)
-        self.quick_crop_square_cb.toggled.connect(lambda _: self._apply_quick_crop_template_from_controls())
-        self.quick_crop_real_width_spin.valueChanged.connect(self._on_quick_crop_real_spin_changed)
-        self.quick_crop_real_height_spin.valueChanged.connect(self._on_quick_crop_real_spin_changed)
-        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self._on_quick_crop_real_spin_changed())
+        self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
+        self.quick_crop_undo_btn.clicked.connect(self.quick_crop_controller.undo_last_crop)
+        self.quick_crop_close_btn.clicked.connect(self.quick_crop_controller.close_latest_popup)
+        self.quick_crop_clear_btn.clicked.connect(self.quick_crop_controller.clear_history)
+        self.quick_crop_square_cb.toggled.connect(lambda _: self.quick_crop_controller.apply_template_from_controls())
+        self.quick_crop_real_width_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_width_spin))
+        self.quick_crop_real_height_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_height_spin))
+        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self.quick_crop_controller.on_real_spin_changed())
 
         self.crop_history_panel = QtWidgets.QWidget()
         crop_hist_layout = QtWidgets.QVBoxLayout(self.crop_history_panel)
@@ -893,13 +891,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_undo_shortcut.activated.connect(self._on_quick_crop_undo)
+        self.quick_crop_undo_shortcut.activated.connect(self.quick_crop_controller.undo_last_crop)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_close_shortcut.activated.connect(self._on_quick_crop_close)
+        self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
         self.quick_crop_real_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+R"), self)
         self.quick_crop_real_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_real_shortcut.activated.connect(self._apply_quick_crop_template_from_controls)
+        self.quick_crop_real_shortcut.activated.connect(self.quick_crop_controller.apply_template_from_controls)
         self.quick_crop_history_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+H"), self)
         self.quick_crop_history_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_history_shortcut.activated.connect(lambda: self.on_show_crop_history_overlay_toggled(not self.show_crop_history_overlay))
@@ -947,7 +945,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         self._layout_sizes = {}
         self._set_quick_crop_mode(self.quick_crop_mode, save=False)
-        self._refresh_crop_history_panel()
+        if hasattr(self, "quick_crop_controller"):
+            self.quick_crop_controller.refresh_history_panel()
 
         # Prevent panes from collapsing to zero width when the user drags the splitter.
         # This avoids the left inspector disappearing when the user expands the thumbnails.
@@ -5740,7 +5739,9 @@ QLabel:hover {{
     def _create_virtual_copy_from_history(self, seq):
         if seq is None:
             return
-        entry = next((e for e in self._crop_history_entries if e.get("sequence") == seq), None)
+        entry = None
+        if hasattr(self, "quick_crop_controller"):
+            entry = self.quick_crop_controller.get_history_entry(seq)
         if not entry:
             return
         view_snapshot = entry.get("view_snapshot")
@@ -6204,519 +6205,49 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(self.show_crop_history_overlay)
             act.blockSignals(False)
-        self._update_quick_crop_hint()
-        self._refresh_crop_history_panel()
-        self._update_active_crop_sequence_from_stack()
+        if hasattr(self, "quick_crop_controller"):
+            self.quick_crop_controller.update_hint()
+            self.quick_crop_controller.refresh_history_panel()
+            self.quick_crop_controller.update_active_sequence_from_stack()
 
     def _set_quick_crop_mode(self, enabled: bool, save: bool = True):
-        enabled = bool(enabled)
-        self.quick_crop_mode = enabled
-        if save:
-            self.config['quick_crop_mode'] = self.quick_crop_mode; save_config(self.config)
-        act = getattr(self, 'fixed_crop_quick_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.quick_crop_mode)
-            act.blockSignals(False)
-        if hasattr(self, 'quick_crop_btn'):
-            self.quick_crop_btn.blockSignals(True)
-            self.quick_crop_btn.setChecked(self.quick_crop_mode)
-            self.quick_crop_btn.setText("Quick crop: On" if self.quick_crop_mode else "Quick crop: Off")
-            self.quick_crop_btn.blockSignals(False)
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.enable_fixed_crop_quick_mode(self.quick_crop_mode)
-                except Exception:
-                    continue
-        if self.quick_crop_mode:
-            self._apply_quick_crop_template_from_controls()
-        self._update_quick_crop_hint()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller is None:
+            self.quick_crop_mode = bool(enabled)
+            if save:
+                self.config['quick_crop_mode'] = self.quick_crop_mode
+                save_config(self.config)
+            return
+        controller.set_mode(enabled, save=save)
 
     def _update_quick_crop_hint(self):
-        if not hasattr(self, 'quick_crop_hint_lbl'):
-            return
-        overlay_state = "visible" if self.show_crop_history_overlay else "hidden"
-        if self.quick_crop_mode:
-            text = (
-                "Shift+drag to size, click to spawn crops. "
-                "Ctrl+Z undo, Ctrl+Shift+W close latest pop-out. "
-                f"History overlay is {overlay_state}. "
-                "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+H toggles history overlay, Ctrl+Shift+T toggles template overlay."
-            )
-        else:
-            text = "Quick crop mode is off. Press Ctrl+Shift+C to toggle."
-        self.quick_crop_hint_lbl.setText(text)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.update_hint()
 
     def _sync_quick_crop_template_controls(self):
-        if not hasattr(self, 'quick_crop_real_width_spin'):
-            return
-        try:
-            real_width, real_height, real_unit = self.preview_canvas.get_fixed_crop_template_real_size()
-        except Exception:
-            real_width = real_height = 0.0
-            real_unit = "nm"
-        if getattr(self, 'quick_crop_real_width_spin', None):
-            self.quick_crop_real_width_spin.blockSignals(True)
-            if real_width > 0:
-                self.quick_crop_real_width_spin.setValue(real_width)
-            self.quick_crop_real_width_spin.blockSignals(False)
-        if getattr(self, 'quick_crop_real_height_spin', None):
-            self.quick_crop_real_height_spin.blockSignals(True)
-            if real_height > 0:
-                self.quick_crop_real_height_spin.setValue(real_height)
-            self.quick_crop_real_height_spin.blockSignals(False)
-        if real_width > 0 and real_height > 0:
-            self._quick_crop_aspect = real_width / max(0.001, real_height)
-        if getattr(self, 'quick_crop_real_unit_lbl', None):
-            self.quick_crop_real_unit_lbl.setText(real_unit or "nm")
-        if getattr(self, 'quick_crop_real_px_info_lbl', None):
-            px_dims = self.preview_canvas.get_fixed_crop_template_size()
-            if len(px_dims) == 2 and px_dims[0] and px_dims[1]:
-                self.quick_crop_real_px_info_lbl.setText(
-                    f"W: {real_width:.3f} {real_unit} ({px_dims[0]} px)  |  H: {real_height:.3f} {real_unit} ({px_dims[1]} px)")
-            else:
-                self.quick_crop_real_px_info_lbl.setText("")
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.sync_template_controls()
 
     def _on_quick_crop_real_spin_changed(self, _=None):
-        # Keep aspect if requested
         try:
             sender = self.sender()
         except Exception:
             sender = None
-        if getattr(self, 'quick_crop_lock_aspect_cb', None) and self.quick_crop_lock_aspect_cb.isChecked():
-            aspect = self._quick_crop_aspect or 1.0
-            if sender is self.quick_crop_real_width_spin:
-                new_w = self.quick_crop_real_width_spin.value()
-                new_h = max(0.01, new_w / max(0.001, aspect))
-                self.quick_crop_real_height_spin.blockSignals(True)
-                self.quick_crop_real_height_spin.setValue(new_h)
-                self.quick_crop_real_height_spin.blockSignals(False)
-            elif sender is self.quick_crop_real_height_spin:
-                new_h = self.quick_crop_real_height_spin.value()
-                new_w = max(0.01, new_h * aspect)
-                self.quick_crop_real_width_spin.blockSignals(True)
-                self.quick_crop_real_width_spin.setValue(new_w)
-                self.quick_crop_real_width_spin.blockSignals(False)
-        # Square overrides aspect
-        if getattr(self, 'quick_crop_square_cb', None) and self.quick_crop_square_cb.isChecked():
-            val = self.quick_crop_real_width_spin.value()
-            self.quick_crop_real_height_spin.blockSignals(True)
-            self.quick_crop_real_height_spin.setValue(val)
-            self.quick_crop_real_height_spin.blockSignals(False)
-        self._apply_quick_crop_template_from_controls()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_real_spin_changed(sender)
 
     def _apply_quick_crop_template_from_controls(self):
-        if not hasattr(self, 'quick_crop_real_width_spin'):
-            return
-        square = False
-        if getattr(self, 'quick_crop_square_cb', None):
-            square = bool(self.quick_crop_square_cb.isChecked())
-        real_w = self.quick_crop_real_width_spin.value()
-        real_h = self.quick_crop_real_height_spin.value()
-        success = self.preview_canvas.set_fixed_crop_template_real_size(real_w, real_h, square=square)
-        if not success:
-            # Fallback: if real-space conversion failed (extent unavailable), try a pixel-based template
-            try:
-                h, w = self.preview_canvas.get_main_view_shape()
-            except Exception:
-                h = w = 0
-            if w > 0 and h > 0:
-                aspect = real_h / real_w if real_w not in (0, None) else 1.0
-                base_w = max(2, min(int(max(2, w * 0.25)), w))
-                if square:
-                    base_h = base_w
-                else:
-                    base_h = max(2, min(int(round(base_w * aspect)), h))
-                success = self.preview_canvas.set_fixed_crop_template_size(base_w, base_h, square=square)
-        if success:
-            self._quick_crop_last_real_size = [real_w, real_h]
-            if real_w > 0 and real_h > 0:
-                self._quick_crop_aspect = real_w / max(0.001, real_h)
-            self._sync_quick_crop_template_controls()
-
-    def _set_active_crop_sequence(self, seq, keep_selected=True):
-        self._active_crop_sequence = seq
-        if not keep_selected:
-            self._selected_crop_sequences = []
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.set_fixed_crop_history_highlight(seq)
-                except Exception:
-                    continue
-
-    def _update_active_crop_sequence_from_stack(self):
-        seq = None
-        if self._crop_popup_stack:
-            seq = self._crop_popup_stack[-1].get("seq")
-        self._set_active_crop_sequence(seq)
-
-    def _focus_history_entry(self, seq, multi=False):
-        if seq is None:
-            return
-        self._update_selected_crop_sequences(seq, multi=multi)
-        self._set_active_crop_sequence(seq, keep_selected=True)
-        for entry in self._crop_popup_stack:
-            if entry.get("seq") == seq:
-                dlg = entry.get("dialog")
-                if dlg:
-                    try:
-                        state = dlg.windowState()
-                        if state & QtCore.Qt.WindowMinimized:
-                            dlg.setWindowState(state & ~QtCore.Qt.WindowMinimized)
-                        dlg.raise_()
-                        dlg.activateWindow()
-                    except Exception:
-                        pass
-                break
-        self._refresh_crop_history_panel()
-
-    def _focus_history_entry_with_shift(self, seq):
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
-        multi = bool(modifiers & QtCore.Qt.ShiftModifier)
-        self._focus_history_entry(seq, multi=multi)
-
-    def _update_selected_crop_sequences(self, seq, multi=False):
-        if seq is None:
-            self._selected_crop_sequences = []
-            return
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if not multi:
-            selected = [seq]
-        else:
-            if seq in selected:
-                selected.remove(seq)
-            else:
-                selected.append(seq)
-        self._selected_crop_sequences = selected
-
-    def _finalize_removed_crop(self, seq):
-        if seq is None:
-            return
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if seq in selected:
-            selected.remove(seq)
-            self._selected_crop_sequences = selected
-        entry = self.preview_canvas.remove_fixed_crop_history_entry(seq)
-        if entry:
-            self._update_active_crop_sequence_from_stack()
-        else:
-            self._refresh_crop_history_panel()
-
-    def _on_quick_crop_undo(self):
-        entry = self.preview_canvas.undo_fixed_crop_entry()
-        if entry:
-            seq = entry.get("sequence")
-            if seq is not None:
-                self._close_crop_popup(seq)
-
-    def _on_quick_crop_close(self):
-        self._close_crop_popup()
-
-    def _on_quick_crop_clear(self):
-        self.preview_canvas.clear_fixed_crop_history()
-        self._close_all_crop_popups()
-
-    def _close_crop_popup(self, seq=None):
-        target = None
-        if seq is None:
-            if self._crop_popup_stack:
-                target = self._crop_popup_stack[-1]
-        else:
-            for entry in reversed(self._crop_popup_stack):
-                if entry.get("seq") == seq:
-                    target = entry
-                    break
-        if target is None:
-            return False
-        dlg = target.get("dialog")
-        try:
-            dlg.close()
-        except Exception:
-            pass
-        self._unregister_crop_popup(dlg)
-        return True
-
-    def _close_all_crop_popups(self):
-        stack = list(self._crop_popup_stack)
-        for entry in stack:
-            dlg = entry.get("dialog")
-            if dlg:
-                try:
-                    dlg.close()
-                except Exception:
-                    pass
-        self._crop_popup_stack.clear()
-        self._set_active_crop_sequence(None, keep_selected=False)
-        self._refresh_crop_history_panel()
-        if hasattr(self, '_update_crop_popup_actions'):
-            self._update_crop_popup_actions()
-
-    def _register_crop_popup(self, seq, dlg):
-        entry = {"seq": seq, "dialog": dlg}
-        self._crop_popup_stack.append(entry)
-        dlg.finished.connect(lambda _=None, d=dlg: self._unregister_crop_popup(d))
-        close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+W"), dlg)
-        close_shortcut.setContext(QtCore.Qt.WidgetShortcut)
-        close_shortcut.activated.connect(dlg.close)
-        dlg._quick_crop_close_shortcut = close_shortcut
-        self._update_active_crop_sequence_from_stack()
-
-    def _unregister_crop_popup(self, dlg):
-        if dlg is None:
-            return
-        changed = False
-        seq_removed = None
-        new_stack = []
-        for entry in self._crop_popup_stack:
-            if entry.get("dialog") is dlg:
-                changed = True
-                seq_removed = entry.get("seq")
-                continue
-            new_stack.append(entry)
-        if changed:
-            self._crop_popup_stack = new_stack
-            if seq_removed is not None:
-                self._finalize_removed_crop(seq_removed)
-            else:
-                self._refresh_crop_history_panel()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.apply_template_from_controls()
 
     def _on_fixed_crop_history_updated(self, entries):
-        self._crop_history_entries = list(entries or [])
-        self._refresh_crop_history_panel()
-        width, height = self.preview_canvas.get_fixed_crop_template_size()
-        if width and height:
-            self._sync_quick_crop_template_controls()
-        self._update_active_crop_sequence_from_stack()
-
-    def _refresh_crop_history_panel(self):
-        if not hasattr(self, 'crop_history_layout'):
-            return
-        while self.crop_history_layout.count():
-            item = self.crop_history_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        entries = self._crop_history_entries or []
-        selected_seqs = self._cleanup_selected_crop_sequences()
-        if getattr(self, 'crop_history_label', None):
-            label_text = "Crop history"
-            if entries:
-                label_text = f"{label_text} ({len(entries)})"
-            self.crop_history_label.setText(label_text)
-        display = entries[-12:]
-        active_seq = selected_seqs[-1] if selected_seqs else getattr(self, '_active_crop_sequence', None)
-        for entry in reversed(display):
-            seq = entry.get("sequence")
-            entry_widget = QtWidgets.QFrame()
-            entry_widget.setFrameShape(QtWidgets.QFrame.StyledPanel)
-            entry_widget.setFrameShadow(QtWidgets.QFrame.Raised)
-            entry_layout = QtWidgets.QHBoxLayout(entry_widget)
-            entry_layout.setContentsMargins(6, 4, 6, 4)
-            entry_layout.setSpacing(8)
-            color = entry.get("color") or self._crop_color_for_seq(seq)
-            real_size = entry.get("real_size", (0.0, 0.0))
-            unit = entry.get("unit") or "nm"
-            if any(real_size):
-                size_text = f"{real_size[0]:.2f} × {real_size[1]:.2f} {unit}"
-            else:
-                pixel_bounds = entry.get("pixel_bounds")
-                if pixel_bounds:
-                    px_width = int(abs(pixel_bounds[1] - pixel_bounds[0]) + 1)
-                    px_height = int(abs(pixel_bounds[3] - pixel_bounds[2]) + 1)
-                    size_text = f"{px_width} × {px_height} px"
-                else:
-                    size_text = "Unknown size"
-            label = QtWidgets.QLabel(f"#{seq} — {size_text}")
-            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            entry_layout.addWidget(label)
-            select_btn = QtWidgets.QToolButton()
-            select_btn.setText("Select")
-            select_btn.setCheckable(True)
-            select_btn.setChecked(seq in selected_seqs)
-            select_btn.setToolTip("Shift+click to multiselect, click to highlight")
-            select_btn.clicked.connect(partial(self._focus_history_entry_with_shift, seq))
-            entry_layout.addWidget(select_btn)
-            virtual_btn = QtWidgets.QToolButton()
-            virtual_btn.setText("Virtual copy")
-            virtual_btn.setToolTip("Add this crop snapshot as a virtual thumbnail")
-            virtual_btn.setEnabled(bool(entry.get("view_snapshot")))
-            virtual_btn.clicked.connect(partial(self._create_virtual_copy_from_history, seq))
-            entry_layout.addWidget(virtual_btn)
-            statuses = []
-            if seq == active_seq:
-                statuses.append("Active")
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; background-color: rgba(255, 102, 255, 0.08); }}")
-            elif seq in selected_seqs:
-                statuses.append("Selected")
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; background-color: rgba(143, 223, 255, 0.08); }}")
-            else:
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; }}")
-            if self._has_popup_for_seq(seq):
-                statuses.append("Open")
-            if statuses:
-                icons = []
-                if "Active" in statuses:
-                    icons.append("✓")
-                if "Open" in statuses:
-                    icons.append("●")
-                status_lbl = QtWidgets.QLabel(" ".join(icons) or " ")
-                status_lbl.setToolTip(", ".join(statuses))
-                status_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
-                entry_layout.addWidget(status_lbl)
-            entry_layout.addStretch(1)
-            close_btn = QtWidgets.QToolButton()
-            close_btn.setText("Close view")
-            close_btn.setToolTip("Close the pop-out that corresponds to this crop")
-            close_btn.clicked.connect(lambda _, s=seq: self._close_crop_popup(s))
-            entry_layout.addWidget(close_btn)
-            remove_btn = QtWidgets.QToolButton()
-            remove_btn.setText("Remove overlay")
-            remove_btn.setToolTip("Drop this crop and its overlay from the preview")
-            remove_btn.clicked.connect(lambda _, s=seq: self._remove_crop_history_entry(s))
-            entry_layout.addWidget(remove_btn)
-            self.crop_history_layout.addWidget(entry_widget)
-        self.crop_history_layout.addStretch(1)
-        self.crop_history_panel.setVisible(bool(entries) or self.show_crop_history_overlay)
-        self.quick_crop_undo_btn.setEnabled(bool(entries))
-        self.quick_crop_clear_btn.setEnabled(bool(entries))
-        self.quick_crop_close_btn.setEnabled(bool(self._crop_popup_stack))
-        if hasattr(self, 'quick_crop_export_btn'):
-            self.quick_crop_export_btn.setEnabled(bool(selected_seqs))
-        if hasattr(self, 'quick_crop_tile_btn'):
-            self._update_crop_popup_actions()
-
-    def _cleanup_selected_crop_sequences(self):
-        entries = self._crop_history_entries or []
-        valid = {entry.get("sequence") for entry in entries if entry.get("sequence") is not None}
-        selected = [seq for seq in getattr(self, '_selected_crop_sequences', []) if seq in valid]
-        if selected != getattr(self, '_selected_crop_sequences', []):
-            self._selected_crop_sequences = selected
-        return selected
-
-    def _has_popup_for_seq(self, seq):
-        if seq is None:
-            return False
-        for entry in self._crop_popup_stack:
-            if entry.get("seq") == seq:
-                dlg = entry.get("dialog")
-                if dlg and dlg.isVisible():
-                    return True
-        return False
-
-    def _update_crop_popup_actions(self):
-        if not hasattr(self, 'quick_crop_tile_btn'):
-            return
-        alive = []
-        cleaned = []
-        for dlg in list(getattr(self, '_popup_refs', [])):
-            if dlg is None:
-                continue
-            try:
-                # isVisible() raises if the C++ object is already deleted
-                if dlg.isVisible():
-                    alive.append(dlg)
-                cleaned.append(dlg)
-            except RuntimeError:
-                # drop dead dialogs
-                continue
-        self._popup_refs = cleaned
-        popups = alive
-        self.quick_crop_tile_btn.setEnabled(bool(popups))
-
-    def _crop_color_for_seq(self, seq: int):
-        palette = [
-            "#ff66ff", "#66c2ff", "#ffa600", "#00c896",
-            "#c084ff", "#ff6b6b", "#4dd0e1", "#ffd166",
-        ]
-        try:
-            return palette[seq % len(palette)]
-        except Exception:
-            return palette[0]
-
-    def _arrange_crop_popups(self):
-        popups = [dlg for dlg in getattr(self, '_popup_refs', []) if dlg and dlg.isVisible()]
-        if not popups:
-            return
-        screen = QtWidgets.QApplication.primaryScreen()
-        if screen:
-            geom = screen.availableGeometry()
-        else:
-            geom = QtWidgets.QApplication.desktop().availableGeometry()
-        cols = int(math.ceil(math.sqrt(len(popups))))
-        rows = int(math.ceil(len(popups) / cols))
-        tile_w = max(280, geom.width() // cols)
-        tile_h = max(240, geom.height() // rows)
-        for idx, dlg in enumerate(popups):
-            row, col = divmod(idx, cols)
-            x = geom.left() + col * tile_w
-            y = geom.top() + row * tile_h
-            dlg.setGeometry(x + 10, y + 10, tile_w - 20, tile_h - 20)
-            dlg.raise_()
-            dlg.activateWindow()
-
-    def _export_selected_crops(self):
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if not selected:
-            QtWidgets.QMessageBox.information(self, "Export crops", "Select one or more crops from the history first.")
-            return
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Export crops")
-        if not directory:
-            return
-        fmt, ok = QtWidgets.QInputDialog.getItem(
-            self,
-            "Export format",
-            "Format:",
-            ["PNG", "SVG"],
-            0,
-            False,
-        )
-        if not ok or not fmt:
-            return
-        fmt = fmt.lower()
-        dpi = 300 if fmt == "png" else 150
-        saved = []
-        failed = []
-        for seq in selected:
-            entry = next((e for e in self._crop_history_entries if e.get("sequence") == seq), None)
-            if entry is None:
-                failed.append(seq)
-                continue
-            fig = self.preview_canvas.render_crop_entry_figure(entry)
-            if fig is None:
-                failed.append(seq)
-                continue
-            title = self._sanitize_filename_component(entry.get("title") or f"crop_{seq}") or f"crop_{seq}"
-            path = Path(directory) / f"{title}_{seq}.{fmt}"
-            try:
-                fig.savefig(str(path), format=fmt, dpi=dpi, bbox_inches="tight", pad_inches=0.02)
-                saved.append(str(path))
-            except Exception:
-                failed.append(seq)
-            finally:
-                try:
-                    import matplotlib.pyplot as _plt
-                    _plt.close(fig)
-                except Exception:
-                    pass
-        summary = []
-        if saved:
-            summary.append(f"Saved {len(saved)} file{'s' if len(saved) != 1 else ''}.")
-        if failed:
-            summary.append(f"Could not render crops: {', '.join(f'#{s}' for s in failed)}.")
-        if not summary:
-            summary.append("No crops exported.")
-        QtWidgets.QMessageBox.information(self, "Export crops", "\n".join(summary))
-
-    def _remove_crop_history_entry(self, seq):
-        if seq is None:
-            return
-        if not self._close_crop_popup(seq):
-            self._finalize_removed_crop(seq)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_history_updated(entries)
 
     def on_export_selected_same_view(self):
         return viewer_export.on_export_selected_same_view(self)

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from ..._shared import QtWidgets, QtCore
 from ..canvases.detail_preview_canvas import MultiPreviewCanvas
-from ..dialogs.profile_dialog import ProfileDialog
 from ...processing.filters import FILTER_DEFINITIONS, _gaussian_available
+from .profile import PopupProfileController
 
 
 def spawn_preview_popup(owner, views, title=None):
@@ -86,7 +86,8 @@ def spawn_preview_popup(owner, views, title=None):
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
     seq = views[0].get("crop_sequence") if views else None
-    owner._register_crop_popup(seq, dlg)
+    if hasattr(owner, "quick_crop_controller"):
+        owner.quick_crop_controller.register_popup(seq, dlg)
     canvas.enable_fixed_crop_quick_mode(owner.quick_crop_mode)
     canvas.show_fixed_crop_template(owner.show_crop_template_overlay)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
@@ -97,14 +98,16 @@ def spawn_preview_popup(owner, views, title=None):
     except Exception:
         pass
 
-    measure_initial = bool(getattr(owner.preview_canvas, "_profile_user_enabled", getattr(owner.preview_canvas, "profile_enabled", False)))
+    measure_initial = bool(
+        getattr(owner.preview_canvas, "_profile_user_enabled", getattr(owner.preview_canvas, "profile_enabled", False))
+    )
     angle_initial = getattr(owner.preview_canvas, "angle_enabled", False)
-    canvas.enable_profile(measure_initial)
+    profile_controller = PopupProfileController(owner, canvas, title or "Profile")
+    profile_controller.set_initial_state(measure_initial)
     canvas.enable_angle(angle_initial)
     measure_btn.setChecked(measure_initial)
     angle_btn.setChecked(angle_initial)
     scale_btn.setChecked(owner.scale_bar_cb.isChecked())
-
     hist_menu = QtWidgets.QMenu(hist_btn)
     hist_menu.addAction("Adjust…", lambda: owner._open_histogram_dialog(canvas))
     hist_menu.addAction("Auto (1–99%)", lambda: owner._auto_contrast(canvas))
@@ -127,127 +130,6 @@ def spawn_preview_popup(owner, views, title=None):
     filter_btn.clicked.connect(lambda _: owner._open_custom_filter_for_canvas(canvas))
 
     layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
-    popup_state = {"profile_dialog": None}
-
-    def _ensure_profile_dialog(active, saved):
-        dlg_prof = popup_state.get("profile_dialog")
-        if dlg_prof is None:
-            unit = None
-            y_label = None
-            if canvas.views:
-                try:
-                    unit = canvas.views[0].get("unit")
-                    y_label = canvas.views[0].get("colorbar_label") or canvas.views[0].get("unit")
-                except Exception:
-                    pass
-            dlg_prof = ProfileDialog(active, saved, parent=dlg, unit=unit, y_label=y_label)
-            dlg_prof.setWindowTitle((title or "Profile") + " (popup)")
-            try:
-                dlg_prof.set_context_source(canvas, dark=owner.detail_dark_view, grid=owner.detail_grid_view)
-            except Exception:
-                pass
-            dlg_prof.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-            dlg_prof.finished.connect(lambda _=None: popup_state.__setitem__("profile_dialog", None))
-            popup_state["profile_dialog"] = dlg_prof
-        dlg_prof.update_profiles(active, saved)
-        dlg_prof.show()
-        try:
-            dlg_prof.raise_()
-            dlg_prof.activateWindow()
-        except Exception:
-            pass
-
-    def _compute_profiles_from_canvas():
-        active = None
-        try:
-            active = canvas._build_profile_data(
-                canvas.profile_pts,
-                color=getattr(canvas, "_active_profile_color", "#fbc02d"),
-                view=canvas.views[0] if canvas.views else None,
-            )
-        except Exception:
-            active = None
-        saved = []
-        try:
-            for entry in getattr(canvas, "_saved_profiles", []):
-                data = entry.get("data")
-                if data is None:
-                    data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
-                if data:
-                    saved.append(data)
-        except Exception:
-            saved = []
-        return active, saved
-
-    def _dispatch_profile_dialog(active=None, saved=None):
-        if not getattr(canvas, "_profile_user_enabled", False):
-            return
-        if active is None and saved is None:
-            active, saved = _compute_profiles_from_canvas()
-        if not active and not saved:
-            return
-        _ensure_profile_dialog(active, saved)
-
-    def _refresh_profile_dialog_from_canvas():
-        if not getattr(canvas, "_profile_user_enabled", False):
-            return
-        active, saved = _compute_profiles_from_canvas()
-        if not active and not saved:
-            return
-        _dispatch_profile_dialog(active, saved)
-
-    try:
-        canvas.set_profile_callback(_dispatch_profile_dialog)
-    except Exception:
-        canvas.profile_callback = _dispatch_profile_dialog
-    try:
-        canvas.set_profile_state_callback(lambda _state=None: _refresh_profile_dialog_from_canvas())
-    except Exception:
-        canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
-
-    def _toggle_measure(checked):
-        def _force_profile_dialog():
-            try:
-                active = canvas._build_profile_data(
-                    canvas.profile_pts,
-                    color=getattr(canvas, "_active_profile_color", "#fbc02d"),
-                    view=canvas.views[0] if canvas.views else None,
-                )
-            except Exception:
-                active = None
-            saved = []
-            try:
-                for entry in getattr(canvas, "_saved_profiles", []):
-                    data = entry.get("data")
-                    if data is None:
-                        data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
-                    if data:
-                        saved.append(data)
-            except Exception:
-                saved = []
-            if getattr(canvas, "_profile_user_enabled", False) and (active or saved):
-                _ensure_profile_dialog(active, saved)
-
-        try:
-            canvas.enable_profile(bool(checked))
-            canvas._profile_user_enabled = bool(checked)
-            if not checked and popup_state.get("profile_dialog"):
-                popup_state["profile_dialog"].close()
-            if checked:
-                try:
-                    a, s = _compute_profiles_from_canvas()
-                    _dispatch_profile_dialog(a, s)
-                except Exception:
-                    pass
-                try:
-                    canvas._emit_profile()
-                except Exception:
-                    _force_profile_dialog()
-                else:
-                    _force_profile_dialog()
-            _refresh_profile_dialog_from_canvas()
-        except Exception:
-            pass
 
     def _toggle_angle(checked):
         try:
@@ -265,7 +147,7 @@ def spawn_preview_popup(owner, views, title=None):
     def _toggle_layout(text):
         canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
 
-    measure_btn.toggled.connect(_toggle_measure)
+    measure_btn.toggled.connect(profile_controller.toggle_measure)
     angle_btn.toggled.connect(_toggle_angle)
     scale_btn.toggled.connect(_toggle_scale)
     layout_cb.currentTextChanged.connect(_toggle_layout)
@@ -312,14 +194,15 @@ def spawn_preview_popup(owner, views, title=None):
     dlg.resize(760, 620)
     dlg.show()
     owner._popup_refs.append(dlg)
-    if hasattr(owner, "_update_crop_popup_actions"):
-        owner._update_crop_popup_actions()
+    if hasattr(owner, "quick_crop_controller"):
+        owner.quick_crop_controller.update_popup_actions()
 
     def _on_popup_closed(_=None):
         if dlg in owner._popup_refs:
             owner._popup_refs.remove(dlg)
-        if hasattr(owner, "_update_crop_popup_actions"):
-            owner._update_crop_popup_actions()
+        if hasattr(owner, "quick_crop_controller"):
+            owner.quick_crop_controller.update_popup_actions()
+        profile_controller.dispose()
 
     def _remove_popup_canvas(_=None):
         if canvas in getattr(owner, "_popup_canvases", []):
