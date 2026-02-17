@@ -1480,7 +1480,7 @@ QLabel:hover {{
         except Exception:
             pass
         # Sync initial tool states
-        measure_initial = getattr(self.preview_canvas, "profile_enabled", False)
+        measure_initial = bool(getattr(self.preview_canvas, "_profile_user_enabled", getattr(self.preview_canvas, "profile_enabled", False)))
         angle_initial = getattr(self.preview_canvas, "angle_enabled", False)
         canvas.enable_profile(measure_initial)
         canvas.enable_angle(angle_initial)
@@ -1553,18 +1553,30 @@ QLabel:hover {{
             return active, saved
 
         def _dispatch_profile_dialog(active=None, saved=None):
+            if not getattr(canvas, "_profile_user_enabled", False):
+                return
             if active is None and saved is None:
                 active, saved = _compute_profiles_from_canvas()
+            if not active and not saved:
+                return
             _ensure_profile_dialog(active, saved)
 
         def _update_profile_dialog(active, saved):
+            if not getattr(canvas, "_profile_user_enabled", False):
+                return
+            if not active and not saved:
+                return
             _dispatch_profile_dialog(active, saved)
         try:
             canvas.set_profile_callback(_dispatch_profile_dialog)
         except Exception:
             canvas.profile_callback = _dispatch_profile_dialog
         def _refresh_profile_dialog_from_canvas():
+            if not getattr(canvas, "_profile_user_enabled", False):
+                return
             active, saved = _compute_profiles_from_canvas()
+            if not active and not saved:
+                return
             _dispatch_profile_dialog(active, saved)
         try:
             canvas.set_profile_state_callback(lambda _state=None: _refresh_profile_dialog_from_canvas())
@@ -1599,9 +1611,11 @@ QLabel:hover {{
                             saved.append(data)
                 except Exception:
                     saved = []
-                _ensure_profile_dialog(active, saved)
+                if getattr(canvas, "_profile_user_enabled", False) and (active or saved):
+                    _ensure_profile_dialog(active, saved)
             try:
                 canvas.enable_profile(bool(checked))
+                canvas._profile_user_enabled = bool(checked)
                 if not checked and popup_state.get("profile_dialog"):
                     popup_state["profile_dialog"].close()
                 if checked:
