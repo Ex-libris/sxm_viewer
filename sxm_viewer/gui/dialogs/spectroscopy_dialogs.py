@@ -5391,7 +5391,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if spec_id in self._fit_results:
                 self._fit_results.pop(spec_id, None)
             row = self.spec_list.indexOfTopLevelItem(item)
-            self.spec_list.takeItem(row)
+            if row >= 0:
+                self.spec_list.takeTopLevelItem(row)
             removed = True
         if removed:
             self._update_plot()
