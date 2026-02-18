@@ -3161,6 +3161,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._update_angle_artists()
 
     def _emit_profile(self):
+        if not getattr(self, "profile_enabled", False) or self.profile_pts is None:
+            self._emit_profile_state()
+            return
         if not callable(self.profile_callback):
             self._emit_profile_state()
             return

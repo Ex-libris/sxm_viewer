@@ -78,6 +78,12 @@ from .detail_panels import (
 from .spectroscopy.summary_dialog import SpectroSummaryDialog
 from .viewer import measurement as viewer_measurement
 from .viewer import thumbnails as viewer_thumbnails
+from .controllers.preview_popup import spawn_preview_popup
+from .controllers.histogram import open_histogram_dialog
+from .controllers.quick_crop import QuickCropController
+from .controllers.thumbnail_controller import ThumbnailController
+from .controllers.spectro_compare import SpectroCompareController
+from .controllers.session import SessionController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
@@ -193,6 +199,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.config.get("preserve_profiles_on_channel_change", True)
         )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
+        self.session_controller = SessionController(self)
         self.frame_map_entries = []
         self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
         self.hidden_frame_keys = set()
@@ -223,10 +230,6 @@ class SXMGridViewer(QtWidgets.QWidget):
             'show_crop_history_overlay': False,
         }
         self._popup_canvases = []
-        self._crop_history_entries = []
-        self._crop_popup_stack = []
-        self._active_crop_sequence = None
-        self._selected_crop_sequences = []
         c_single = self.config.get('spectro_marker_color_single')
         if c_single:
             self.spectro_marker_color_single = QtGui.QColor(c_single)
@@ -311,6 +314,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
+        self.spectro_compare_controller = SpectroCompareController(self)
         self.thumb_multi_select = set()
         self._batch_export_progress = None
         self._batch_export_worker = None
@@ -736,7 +740,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_btn = QtWidgets.QPushButton("Quick crop: Off")
         self.quick_crop_btn.setCheckable(True)
         self.quick_crop_btn.setToolTip("Toggle quick crop mode (Ctrl+Shift+C). Shift+drag to size, click to spawn crops.")
-        self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         quick_layout.addWidget(self.quick_crop_btn)
         quick_layout.addWidget(QtWidgets.QLabel("Real W"))
         self.quick_crop_real_width_spin = QtWidgets.QDoubleSpinBox()
@@ -788,25 +791,28 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_export_btn.setText("Export selection")
         self.quick_crop_export_btn.setToolTip("Export the selected crops (Shift+click) as images")
         self.quick_crop_export_btn.setEnabled(False)
-        self.quick_crop_export_btn.clicked.connect(self._export_selected_crops)
+        self.quick_crop_controller = QuickCropController(self)
+        self.thumbnail_controller = ThumbnailController(self)
+        self.quick_crop_export_btn.clicked.connect(self.quick_crop_controller.export_selected_crops)
         quick_layout.addWidget(self.quick_crop_export_btn)
         self.quick_crop_tile_btn = QtWidgets.QToolButton()
         self.quick_crop_tile_btn.setText("Tile pop-outs")
         self.quick_crop_tile_btn.setToolTip("Arrange all open pop-out windows on screen")
         self.quick_crop_tile_btn.setEnabled(False)
-        self.quick_crop_tile_btn.clicked.connect(self._arrange_crop_popups)
+        self.quick_crop_tile_btn.clicked.connect(self.quick_crop_controller.arrange_popups)
         quick_layout.addWidget(self.quick_crop_tile_btn)
         quick_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
         quick_layout.addWidget(self.quick_crop_hint_lbl)
         preview_panel_layout.addWidget(self.quick_crop_controls)
-        self.quick_crop_undo_btn.clicked.connect(self._on_quick_crop_undo)
-        self.quick_crop_close_btn.clicked.connect(self._on_quick_crop_close)
-        self.quick_crop_clear_btn.clicked.connect(self._on_quick_crop_clear)
-        self.quick_crop_square_cb.toggled.connect(lambda _: self._apply_quick_crop_template_from_controls())
-        self.quick_crop_real_width_spin.valueChanged.connect(self._on_quick_crop_real_spin_changed)
-        self.quick_crop_real_height_spin.valueChanged.connect(self._on_quick_crop_real_spin_changed)
-        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self._on_quick_crop_real_spin_changed())
+        self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
+        self.quick_crop_undo_btn.clicked.connect(self.quick_crop_controller.undo_last_crop)
+        self.quick_crop_close_btn.clicked.connect(self.quick_crop_controller.close_latest_popup)
+        self.quick_crop_clear_btn.clicked.connect(self.quick_crop_controller.clear_history)
+        self.quick_crop_square_cb.toggled.connect(lambda _: self.quick_crop_controller.apply_template_from_controls())
+        self.quick_crop_real_width_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_width_spin))
+        self.quick_crop_real_height_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_height_spin))
+        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self.quick_crop_controller.on_real_spin_changed())
 
         self.crop_history_panel = QtWidgets.QWidget()
         crop_hist_layout = QtWidgets.QVBoxLayout(self.crop_history_panel)
@@ -891,13 +897,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_undo_shortcut.activated.connect(self._on_quick_crop_undo)
+        self.quick_crop_undo_shortcut.activated.connect(self.quick_crop_controller.undo_last_crop)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_close_shortcut.activated.connect(self._on_quick_crop_close)
+        self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
         self.quick_crop_real_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+R"), self)
         self.quick_crop_real_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_real_shortcut.activated.connect(self._apply_quick_crop_template_from_controls)
+        self.quick_crop_real_shortcut.activated.connect(self.quick_crop_controller.apply_template_from_controls)
         self.quick_crop_history_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+H"), self)
         self.quick_crop_history_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_history_shortcut.activated.connect(lambda: self.on_show_crop_history_overlay_toggled(not self.show_crop_history_overlay))
@@ -945,7 +951,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         self._layout_sizes = {}
         self._set_quick_crop_mode(self.quick_crop_mode, save=False)
-        self._refresh_crop_history_panel()
+        if hasattr(self, "quick_crop_controller"):
+            self.quick_crop_controller.refresh_history_panel()
 
         # Prevent panes from collapsing to zero width when the user drags the splitter.
         # This avoids the left inspector disappearing when the user expands the thumbnails.
@@ -1395,296 +1402,7 @@ QLabel:hover {{
         return new_view
 
     def _spawn_preview_popup(self, views, title=None):
-        if not views:
-            return
-        dlg = QtWidgets.QDialog(self)
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowMinimizeButtonHint | QtCore.Qt.WindowMaximizeButtonHint)
-        dlg.setWindowTitle(title or "Preview")
-        layout = QtWidgets.QVBoxLayout(dlg)
-        controls_bar = QtWidgets.QHBoxLayout()
-        controls_bar.setContentsMargins(6, 6, 6, 6)
-        controls_bar.setSpacing(10)
-        def _tool_button(label, tooltip):
-            btn = QtWidgets.QToolButton()
-            btn.setText(label)
-            btn.setCheckable(True)
-            btn.setAutoRaise(False)
-            btn.setToolTip(tooltip)
-            return btn
-        measure_btn = _tool_button("Profile", "Toggle profile measurement (drag line)")
-        angle_btn = _tool_button("Angle", "Toggle angle tool (Ctrl+Shift+click to add vertex)")
-        scale_btn = _tool_button("Scale", "Toggle scale bar")
-        clear_btn = QtWidgets.QToolButton()
-        clear_btn.setText("Clear overlays")
-        clear_btn.setToolTip("Clear profiles, angles and related overlays")
-        filter_btn = QtWidgets.QToolButton()
-        filter_btn.setText("Filter")
-        filter_btn.setToolTip("Apply scan-level filters (flatten, plane, etc.)")
-        filter_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
-        hist_btn = QtWidgets.QToolButton()
-        hist_btn.setText("Histogram")
-        hist_btn.setToolTip("Show histogram and adjust display range")
-        hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
-        hist_menu = QtWidgets.QMenu(hist_btn)
-        hist_menu.addAction("Adjust…", lambda: self._open_histogram_dialog(canvas))
-        hist_menu.addAction("Auto (1–99%)", lambda: self._auto_contrast(canvas))
-        hist_menu.addAction("Reset range", lambda: self._reset_contrast(canvas))
-        hist_btn.setMenu(hist_menu)
-        hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(canvas))
-        layout_cb = QtWidgets.QComboBox()
-        layout_cb.addItems(["Grid", "Stacked"])
-        controls_bar.addWidget(measure_btn)
-        controls_bar.addWidget(angle_btn)
-        controls_bar.addWidget(scale_btn)
-        controls_bar.addWidget(filter_btn)
-        controls_bar.addWidget(hist_btn)
-        controls_bar.addWidget(clear_btn)
-        controls_bar.addSpacing(6)
-        controls_bar.addWidget(QtWidgets.QLabel("Layout"))
-        controls_bar.addWidget(layout_cb)
-        controls_bar.addStretch(1)
-        canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
-        try:
-            canvas.set_show_title(getattr(self, "show_preview_title", True))
-        except Exception:
-            pass
-        try:
-            canvas.set_show_molecules(getattr(self, "show_molecules", True))
-        except Exception:
-            pass
-        canvas.set_view_layout(getattr(self.preview_canvas, "_view_layout", "grid"))
-        canvas.set_views([self._copy_view_for_popup(v) for v in views])
-        canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
-        canvas._detail_dark = bool(self.detail_dark_view)
-        canvas._detail_grid = bool(self.detail_grid_view)
-        canvas.set_crop_callback(lambda v: self._spawn_preview_popup([self._copy_view_for_popup(v)], title=self._friendly_view_title(v, default="Cropped view")))
-        canvas.set_double_click_callback(
-            lambda v=None: self._spawn_preview_popup(
-                [self._copy_view_for_popup(v)] if v else [],
-                title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
-            )
-        )
-        canvas.set_filter_menu_callback(lambda menu, view, c=canvas: self._populate_canvas_filter_menu(menu, c, view))
-        seq = None
-        if views:
-            seq = views[0].get("crop_sequence")
-        self._register_crop_popup(seq, dlg)
-        canvas.enable_fixed_crop_quick_mode(self.quick_crop_mode)
-        canvas.show_fixed_crop_template(self.show_crop_template_overlay)
-        canvas.show_fixed_crop_history(self.show_crop_history_overlay)
-        try:
-            canvas.set_molecule_palette(self.molecule_palette, notify=False)
-            canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
-            self._popup_canvases.append(canvas)
-        except Exception:
-            pass
-        # Sync initial tool states
-        measure_initial = getattr(self.preview_canvas, "profile_enabled", False)
-        angle_initial = getattr(self.preview_canvas, "angle_enabled", False)
-        canvas.enable_profile(measure_initial)
-        canvas.enable_angle(angle_initial)
-        measure_btn.setChecked(measure_initial)
-        angle_btn.setChecked(angle_initial)
-        scale_btn.setChecked(self.scale_bar_cb.isChecked())
-        filter_menu = QtWidgets.QMenu(filter_btn)
-        for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(info['label'], filter_menu)
-            if info.get('needs_gaussian') and not _gaussian_available():
-                act.setEnabled(False)
-                act.setToolTip("Requires scipy or OpenCV.")
-            act.triggered.connect(lambda _, k=key: self._apply_filter_to_canvas(canvas, filter_key=k))
-            filter_menu.addAction(act)
-        filter_menu.addSeparator()
-        filter_menu.addAction("Custom pipeline...", lambda: self._open_custom_filter_for_canvas(canvas))
-        filter_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
-        filter_btn.setMenu(filter_menu)
-        filter_btn.clicked.connect(lambda _: self._open_custom_filter_for_canvas(canvas))
-        layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
-        popup_state = {"profile_dialog": None}
-        def _ensure_profile_dialog(active, saved):
-            dlg_prof = popup_state.get("profile_dialog")
-            if dlg_prof is None:
-                unit = None
-                y_label = None
-                if canvas.views:
-                    try:
-                        unit = canvas.views[0].get("unit")
-                        y_label = canvas.views[0].get("colorbar_label") or canvas.views[0].get("unit")
-                    except Exception:
-                        pass
-                dlg_prof = ProfileDialog(active, saved, parent=dlg, unit=unit, y_label=y_label)
-                dlg_prof.setWindowTitle((title or "Profile") + " (popup)")
-                try:
-                    dlg_prof.set_context_source(canvas, dark=self.detail_dark_view, grid=self.detail_grid_view)
-                except Exception:
-                    pass
-                dlg_prof.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-                dlg_prof.finished.connect(lambda _=None: popup_state.__setitem__("profile_dialog", None))
-                popup_state["profile_dialog"] = dlg_prof
-            dlg_prof.update_profiles(active, saved)
-            dlg_prof.show()
-            try:
-                dlg_prof.raise_()
-                dlg_prof.activateWindow()
-            except Exception:
-                pass
-
-        def _compute_profiles_from_canvas():
-            active = None
-            try:
-                active = canvas._build_profile_data(
-                    canvas.profile_pts,
-                    color=getattr(canvas, "_active_profile_color", "#fbc02d"),
-                    view=canvas.views[0] if canvas.views else None,
-                )
-            except Exception:
-                active = None
-            saved = []
-            try:
-                for entry in getattr(canvas, "_saved_profiles", []):
-                    data = entry.get("data")
-                    if data is None:
-                        data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
-                    if data:
-                        saved.append(data)
-            except Exception:
-                saved = []
-            return active, saved
-
-        def _dispatch_profile_dialog(active=None, saved=None):
-            if active is None and saved is None:
-                active, saved = _compute_profiles_from_canvas()
-            _ensure_profile_dialog(active, saved)
-
-        def _update_profile_dialog(active, saved):
-            _dispatch_profile_dialog(active, saved)
-        try:
-            canvas.set_profile_callback(_dispatch_profile_dialog)
-        except Exception:
-            canvas.profile_callback = _dispatch_profile_dialog
-        def _refresh_profile_dialog_from_canvas():
-            active, saved = _compute_profiles_from_canvas()
-            _dispatch_profile_dialog(active, saved)
-        try:
-            canvas.set_profile_state_callback(lambda _state=None: _refresh_profile_dialog_from_canvas())
-        except Exception:
-            canvas._profile_state_callback = lambda _state=None: _refresh_profile_dialog_from_canvas()
-        # Fallback: ensure dialog is refreshed on mouse releases when profile mode is active
-        try:
-            canvas.mpl_connect(
-                "button_release_event",
-                lambda _evt=None: _refresh_profile_dialog_from_canvas() if getattr(canvas, "profile_enabled", False) and canvas.profile_pts is not None else None,
-            )
-        except Exception:
-            pass
-
-        def _toggle_measure(checked):
-            def _force_profile_dialog():
-                try:
-                    active = canvas._build_profile_data(
-                        canvas.profile_pts,
-                        color=getattr(canvas, "_active_profile_color", "#fbc02d"),
-                        view=canvas.views[0] if canvas.views else None,
-                    )
-                except Exception:
-                    active = None
-                saved = []
-                try:
-                    for entry in getattr(canvas, "_saved_profiles", []):
-                        data = entry.get("data")
-                        if data is None:
-                            data = canvas._build_profile_data(entry.get("pts"), color=entry.get("color"), view=canvas.views[0] if canvas.views else None)
-                        if data:
-                            saved.append(data)
-                except Exception:
-                    saved = []
-                _ensure_profile_dialog(active, saved)
-            try:
-                canvas.enable_profile(bool(checked))
-                if not checked and popup_state.get("profile_dialog"):
-                    popup_state["profile_dialog"].close()
-                if checked:
-                    # Instantiate the dialog immediately, even before the first emit.
-                    try:
-                        a, s = _compute_profiles_from_canvas()
-                        _dispatch_profile_dialog(a, s)
-                    except Exception:
-                        pass
-                    try:
-                        canvas._emit_profile()
-                    except Exception:
-                        _force_profile_dialog()
-                    else:
-                        _force_profile_dialog()
-                _refresh_profile_dialog_from_canvas()
-            except Exception:
-                pass
-        def _toggle_angle(checked):
-            try:
-                canvas.enable_angle(bool(checked))
-            except Exception:
-                pass
-        def _toggle_scale(checked):
-            canvas.enable_scale_bar(bool(checked))
-            try:
-                canvas._redraw()
-            except Exception:
-                pass
-        def _toggle_layout(text):
-            canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
-        measure_btn.toggled.connect(_toggle_measure)
-        angle_btn.toggled.connect(_toggle_angle)
-        scale_btn.toggled.connect(_toggle_scale)
-        layout_cb.currentTextChanged.connect(_toggle_layout)
-        def _clear_overlays():
-            try:
-                canvas.clear_angle_measurement()
-                canvas._clear_profile_artists()
-                canvas._clear_saved_profile_artists(notify=False)
-                canvas.profile_pts = None
-                canvas._emit_profile_state()
-                canvas.draw_idle()
-            except Exception:
-                pass
-        clear_btn.clicked.connect(_clear_overlays)
-        layout.addLayout(controls_bar)
-        layout.addWidget(canvas, 1)
-        canvas.setFocus()
-        # Simple event filter to support Ctrl+D duplication inside pop-outs
-        class _PopupKeyFilter(QtCore.QObject):
-            def __init__(self, outer, cvs):
-                super().__init__(cvs)
-                self.outer = outer
-                self.canvas = cvs
-            def eventFilter(self, obj, event):
-                if event.type() == QtCore.QEvent.KeyPress:
-                    if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() == QtCore.Qt.Key_D:
-                        try:
-                            self.outer._spawn_preview_popup([self.outer._copy_view_for_popup(v) for v in self.canvas.views], title="Preview copy")
-                        except Exception:
-                            pass
-                        event.accept()
-                        return True
-                return False
-        key_filter = _PopupKeyFilter(self, canvas)
-        dlg.installEventFilter(key_filter)
-        canvas.installEventFilter(key_filter)
-        dlg.resize(760, 620)
-        dlg.show()
-        self._popup_refs.append(dlg)
-        if hasattr(self, '_update_crop_popup_actions'):
-            self._update_crop_popup_actions()
-        def _on_popup_closed(_=None):
-            if dlg in self._popup_refs:
-                self._popup_refs.remove(dlg)
-            if hasattr(self, '_update_crop_popup_actions'):
-                self._update_crop_popup_actions()
-        def _remove_popup_canvas(_=None):
-            if canvas in self._popup_canvases:
-                self._popup_canvases.remove(canvas)
-        dlg.finished.connect(_on_popup_closed)
-        dlg.finished.connect(_remove_popup_canvas)
+        return spawn_preview_popup(self, views, title=title)
 
     def _on_molecule_palette_changed(self, palette: str):
         palette = (palette or "cpk").lower()
@@ -2915,45 +2633,14 @@ QLabel:hover {{
             pass
 
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
-        """
-        Thumbnail clicked -> preview.
-        We no longer populate a persistent per-file inspector list (UI removed).
-        Instead we:
-          - show the clicked channel in the main preview,
-          - update the thumb selection highlight,
-          - record the current file header path and channel index so dialogs like
-            "Add channel view" can reuse them via current_inspector_* attributes.
-        """
-        # show preview as before
-        self.show_file_channel(header_path_str, channel_idx)
-        # highlight selection in thumbnails
-        try:
-            self.selected_file_for_thumbs = str(header_path_str)
-            self._refresh_thumb_selection_styles()
-        except Exception:
-            pass
-        # record the header and channel idx for dialogs that expect them
-        key = str(header_path_str)
-        self.current_inspector_header = key
-        self.current_inspector_channel = int(channel_idx)
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_thumbnail_clicked(header_path_str, channel_idx)
 
     def on_thumbnail_double_clicked(self, header_path_str, channel_idx):
-        """
-        Double-click a thumbnail: show it in preview and open a popup window (like preview zoom).
-        """
-        try:
-            self.on_thumbnail_clicked(header_path_str, channel_idx)
-        except Exception:
-            pass
-        try:
-            views = getattr(self.preview_canvas, "views", None)
-            if not views:
-                return
-            copied = [self._copy_view_for_popup(v) for v in views]
-            title = self._friendly_view_title(views[0], default=Path(header_path_str).name if header_path_str else "Preview")
-            self._spawn_preview_popup(copied, title=title)
-        except Exception:
-            pass
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_thumbnail_double_clicked(header_path_str, channel_idx)
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
     # These functions supported the removed per-file inspector UI. The same "show channel"
@@ -3086,317 +2773,13 @@ QLabel:hover {{
             return arr
         return self._apply_filter_pipeline(arr, spec.get('steps', []))
 
-    def _jsonify(self, obj):
-        if isinstance(obj, dict):
-            return {str(k): self._jsonify(v) for k, v in obj.items()}
-        if isinstance(obj, (list, tuple)):
-            return [self._jsonify(v) for v in obj]
-        if isinstance(obj, set):
-            return [self._jsonify(v) for v in sorted(obj)]
-        if isinstance(obj, Path):
-            return str(obj)
-        try:
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-        except Exception:
-            pass
-        try:
-            if isinstance(obj, np.generic):
-                return obj.item()
-        except Exception:
-            pass
-        return obj
-
-    def _collect_session_state(self, session_path: Path):
-        data_dir = session_path.parent / f"{session_path.stem}_data"
-        processed_dir = data_dir / "processed"
-        os.makedirs(processed_dir, exist_ok=True)
-        processed = {}
-        try:
-            if self.last_preview:
-                self._store_molecule_overlay(self.last_preview[0])
-        except Exception:
-            pass
-        for key, data in (self._processed_views or {}).items():
-            arr_files = {}
-            arr_by_channel = data.get("arr_by_channel") or {}
-            for ch_idx, arr in arr_by_channel.items():
-                fname = f"{key}_ch{ch_idx}.npy"
-                np.save(processed_dir / fname, np.asarray(arr))
-                arr_files[str(ch_idx)] = str(Path("processed") / fname)
-            processed[key] = {
-                "source": data.get("source"),
-                "op": data.get("op"),
-                "label": data.get("label"),
-                "channel_idx": data.get("channel_idx"),
-                "header": data.get("header"),
-                "fds": data.get("fds"),
-                "arr_files": arr_files,
-            }
-        preview_state = {}
-        if getattr(self, "preview_canvas", None):
-            try:
-                preview_state["profile"] = self.preview_canvas.export_profile_state()
-            except Exception:
-                preview_state["profile"] = None
-            try:
-                preview_state["angle"] = self.preview_canvas.export_angle_state()
-            except Exception:
-                preview_state["angle"] = None
-            try:
-                preview_state["molecules"] = self.preview_canvas.export_molecule_state()
-            except Exception:
-                preview_state["molecules"] = None
-            try:
-                preview_state["scale_bar_pos"] = list(getattr(self.preview_canvas, "_scale_bar_pos", (0.94, 0.06)))
-                preview_state["scale_bar_settings"] = dict(getattr(self.preview_canvas, "_scale_bar_settings", {}) or {})
-            except Exception:
-                pass
-            preview_state["view_layout"] = getattr(self.preview_canvas, "_view_layout", "grid")
-        canvas_state = None
-        win = self._canvas_window_ref()
-        if win is not None and win.isVisible():
-            try:
-                canvas_state = win._capture_state()
-            except Exception:
-                canvas_state = None
-        ui_state = {
-            "thumb_size_px": getattr(self, "thumb_size_px", 160),
-            "thumb_sort": self.thumb_sort_combo.currentText() if hasattr(self, "thumb_sort_combo") else None,
-            "thumb_filter": self.thumb_filter_combo.currentText() if hasattr(self, "thumb_filter_combo") else None,
-            "thumb_cmap": self.thumb_cmap_combo.currentText() if hasattr(self, "thumb_cmap_combo") else None,
-            "preview_cmap": self.preview_cmap_combo.currentText() if hasattr(self, "preview_cmap_combo") else None,
-            "channel_index": int(self.channel_dropdown.currentIndex()) if hasattr(self, "channel_dropdown") else 0,
-            "mode": int(getattr(self, "current_mode", self.MODE_BROWSE)),
-            "show_preview_title": bool(getattr(self, "show_preview_title", True)),
-            "show_spectra": bool(getattr(self, "show_spectra", True)),
-            "show_preview_spectra": bool(getattr(self, "show_preview_spectra", True)),
-            "show_matrix_markers": bool(getattr(self, "show_matrix_markers", True)),
-            "show_single_markers": bool(getattr(self, "show_single_markers", True)),
-            "compact_markers": bool(getattr(self, "compact_markers", True)),
-            "detail_dark_view": bool(getattr(self, "detail_dark_view", False)),
-            "detail_grid_view": bool(getattr(self, "detail_grid_view", False)),
-            "show_molecules": bool(getattr(self, "show_molecules", True)),
-            "relative_axes": bool(getattr(self, "relative_axes", False)),
-            "display_units_relative": bool(getattr(self, "display_units_relative", False)),
-            "display_units_si": bool(getattr(self, "display_units_si", False)),
-            "scale_bar": bool(self.scale_bar_cb.isChecked()) if hasattr(self, "scale_bar_cb") else False,
-            "preview_locked": bool(getattr(self, "preview_locked", False)),
-        }
-        payload = {
-            "version": 1,
-            "image_folder": str(getattr(self, "last_dir", "") or ""),
-            "spectra_folder": str(getattr(self, "spec_folder_path", "") or ""),
-            "files": [str(p) for p in (self.files or [])],
-            "processed": processed,
-            "image_adjustments": self.image_adjustments,
-            "thumbnail_filters": self.thumbnail_filters,
-            "per_file_channel_cmap": self.per_file_channel_cmap,
-            "extra_view_specs": self.extra_view_specs,
-            "tags": self.tags,
-            "molecule_overlays": self.molecule_overlays,
-            "thumb_multi_select": list(getattr(self, "thumb_multi_select", set()) or []),
-            "selected_file_for_thumbs": getattr(self, "selected_file_for_thumbs", None),
-            "last_preview": self.last_preview,
-            "ui": ui_state,
-            "preview_state": preview_state,
-            "canvas_state": canvas_state,
-            "data_dir": data_dir.name,
-        }
-        return self._jsonify(payload)
-
     def on_save_session(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save session",
-            str(Path(getattr(self, "last_dir", ".")).joinpath("sxm_session.json")),
-            "SXM Session (*.json)",
-        )
-        if not path:
-            return
-        session_path = Path(path)
-        if session_path.suffix.lower() != ".json":
-            session_path = session_path.with_suffix(".json")
-        try:
-            payload = self._collect_session_state(session_path)
-            session_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(session_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-            log_status(f"Saved session to {session_path}")
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Save session", f"Unable to save session: {exc}")
-
-    def _apply_session_state(self, payload: dict, session_path: Path):
-        if not isinstance(payload, dict):
-            return False
-        image_folder = payload.get("image_folder") or ""
-        if image_folder:
-            try:
-                self.load_folder(Path(image_folder))
-            except Exception:
-                pass
-        spectra_folder = payload.get("spectra_folder") or ""
-        if spectra_folder:
-            try:
-                self._set_spec_folder(Path(spectra_folder))
-            except Exception:
-                pass
-        data_dir = payload.get("data_dir") or ""
-        data_dir = session_path.parent / data_dir if data_dir else session_path.parent
-        processed_dir = data_dir / "processed"
-        self._processed_views = {}
-        for key, entry in (payload.get("processed") or {}).items():
-            try:
-                arr_by_channel = {}
-                for ch_idx, rel_path in (entry.get("arr_files") or {}).items():
-                    arr_path = processed_dir / Path(rel_path).name
-                    if arr_path.exists():
-                        arr_by_channel[int(ch_idx)] = np.load(arr_path, allow_pickle=False)
-                header = entry.get("header") or {}
-                fds = entry.get("fds") or []
-                self._processed_views[str(key)] = {
-                    "arr_by_channel": arr_by_channel,
-                    "header": header,
-                    "fds": fds,
-                    "channel_idx": entry.get("channel_idx"),
-                    "source": entry.get("source"),
-                    "label": entry.get("label"),
-                    "op": entry.get("op"),
-                }
-                self.headers[str(key)] = (header, fds)
-            except Exception:
-                continue
-        session_files = []
-        for fp in payload.get("files", []) or []:
-            if self._is_processed_key(str(fp)) and str(fp) in self._processed_views:
-                session_files.append(Path(str(fp)))
-            elif Path(str(fp)).exists():
-                session_files.append(Path(str(fp)))
-        if session_files:
-            self.files = session_files
-        self.image_adjustments = payload.get("image_adjustments") or {}
-        self.thumbnail_filters = payload.get("thumbnail_filters") or {}
-        self.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
-        self.extra_view_specs = payload.get("extra_view_specs") or []
-        self.tags = payload.get("tags") or {}
-        self.molecule_overlays = payload.get("molecule_overlays") or {}
-        self.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
-        self.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
-        pending_preview = payload.get("last_preview")
-        self.last_preview = None
-        ui = payload.get("ui") or {}
-        if hasattr(self, "thumb_sort_combo") and ui.get("thumb_sort"):
-            self.thumb_sort_combo.setCurrentText(ui.get("thumb_sort"))
-        if hasattr(self, "thumb_filter_combo") and ui.get("thumb_filter"):
-            self.thumb_filter_combo.setCurrentText(ui.get("thumb_filter"))
-        if hasattr(self, "thumb_cmap_combo") and ui.get("thumb_cmap"):
-            self.thumb_cmap_combo.setCurrentText(ui.get("thumb_cmap"))
-            try:
-                self.on_thumb_cmap_changed(self.thumb_cmap_combo.currentIndex())
-            except Exception:
-                pass
-        if hasattr(self, "preview_cmap_combo") and ui.get("preview_cmap"):
-            self.preview_cmap_combo.setCurrentText(ui.get("preview_cmap"))
-            try:
-                self.on_preview_cmap_changed(self.preview_cmap_combo.currentIndex())
-            except Exception:
-                pass
-        if hasattr(self, "channel_dropdown"):
-            idx = int(ui.get("channel_index", self.channel_dropdown.currentIndex()))
-            self.channel_dropdown.setCurrentIndex(max(0, idx))
-        try:
-            self._apply_mode(int(ui.get("mode", self.MODE_BROWSE)), remember=False)
-        except Exception:
-            pass
-        try:
-            self.on_show_spectra_toggled(bool(ui.get("show_spectra", True)))
-            self.on_show_preview_spectra_toggled(bool(ui.get("show_preview_spectra", True)))
-            self.on_show_matrix_markers_toggled(bool(ui.get("show_matrix_markers", True)))
-            self.on_show_single_markers_toggled(bool(ui.get("show_single_markers", True)))
-            self.on_compact_markers_toggled(bool(ui.get("compact_markers", True)))
-            self.on_detail_dark_toggled(bool(ui.get("detail_dark_view", False)))
-            self.on_detail_grid_toggled(bool(ui.get("detail_grid_view", False)))
-            self.on_show_molecules_toggled(bool(ui.get("show_molecules", True)))
-            self.on_relative_axes_toggled(bool(ui.get("relative_axes", False)))
-            self.on_unit_relative_toggled(bool(ui.get("display_units_relative", False)))
-            self.on_unit_display_toggled(bool(ui.get("display_units_si", False)))
-            self.on_scale_bar_toggled(bool(ui.get("scale_bar", False)))
-            self._on_toggle_preview_title(bool(ui.get("show_preview_title", True)))
-        except Exception:
-            pass
-        try:
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        except Exception:
-            pass
-        if pending_preview:
-            try:
-                self.show_file_channel(pending_preview[0], pending_preview[1])
-            except Exception:
-                pass
-        preview_state = payload.get("preview_state") or {}
-        if getattr(self, "preview_canvas", None):
-            try:
-                if preview_state.get("view_layout"):
-                    self.preview_canvas.set_view_layout(preview_state.get("view_layout"))
-            except Exception:
-                pass
-            try:
-                if preview_state.get("profile"):
-                    self.preview_canvas.import_profile_state(preview_state.get("profile"), emit=False)
-            except Exception:
-                pass
-            try:
-                if preview_state.get("angle"):
-                    self.preview_canvas.import_angle_state(preview_state.get("angle"))
-            except Exception:
-                pass
-            try:
-                if preview_state.get("molecules") and not self.molecule_overlays:
-                    self.preview_canvas.import_molecule_state(preview_state.get("molecules"))
-            except Exception:
-                pass
-            try:
-                if preview_state.get("scale_bar_pos"):
-                    self.preview_canvas._scale_bar_pos = tuple(preview_state.get("scale_bar_pos"))
-                if preview_state.get("scale_bar_settings"):
-                    self.preview_canvas._scale_bar_settings = dict(preview_state.get("scale_bar_settings") or {})
-            except Exception:
-                pass
-        try:
-            if preview_state.get("molecules") and self.last_preview:
-                key = str(self.last_preview[0])
-                if key not in self.molecule_overlays:
-                    self.molecule_overlays[key] = preview_state.get("molecules")
-        except Exception:
-            pass
-        canvas_state = payload.get("canvas_state")
-        if canvas_state:
-            try:
-                self._on_open_canvas()
-                win = self._canvas_window_ref()
-                if win:
-                    win._restore_state(canvas_state)
-            except Exception:
-                pass
-        return True
+        """Legacy hook delegating to SessionController for compatibility."""
+        self.session_controller.save_session()
 
     def on_load_session(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Load session",
-            str(Path(getattr(self, "last_dir", "."))),
-            "SXM Session (*.json)",
-        )
-        if not path:
-            return
-        session_path = Path(path)
-        try:
-            with open(session_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if self._apply_session_state(payload, session_path):
-                log_status(f"Loaded session from {session_path}")
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Load session", f"Unable to load session: {exc}")
+        """Legacy hook delegating to SessionController for compatibility."""
+        self.session_controller.load_session()
 
     def _view_source_path(self, view):
         if not view:
@@ -4160,194 +3543,7 @@ QLabel:hover {{
         self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):
-        if canvas is None or not getattr(canvas, "views", None):
-            QtWidgets.QMessageBox.information(self, "Histogram", "No image loaded in preview.")
-            return
-        views = list(canvas.views)
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Histogram & Range")
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        layout = QtWidgets.QVBoxLayout(dlg)
-
-        selector = None
-        if len(views) > 1:
-            selector = QtWidgets.QComboBox()
-            for v in views:
-                title = v.get("title") or Path(str(v.get("path",""))).name
-                selector.addItem(title)
-            layout.addWidget(selector)
-
-        fig = Figure(figsize=(4.5, 3))
-        canvas_hist = FigureCanvas(fig)
-        ax = fig.add_subplot(111)
-        layout.addWidget(canvas_hist)
-
-        spins_layout = QtWidgets.QHBoxLayout()
-        spins_layout.addWidget(QtWidgets.QLabel("Min:"))
-        spin_lo = QtWidgets.QDoubleSpinBox()
-        spin_lo.setDecimals(6); spin_lo.setMinimum(-1e12); spin_lo.setMaximum(1e12)
-        spins_layout.addWidget(spin_lo, 1)
-        spins_layout.addWidget(QtWidgets.QLabel("Max:"))
-        spin_hi = QtWidgets.QDoubleSpinBox()
-        spin_hi.setDecimals(6); spin_hi.setMinimum(-1e12); spin_hi.setMaximum(1e12)
-        spins_layout.addWidget(spin_hi, 1)
-        layout.addLayout(spins_layout)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        auto_btn = QtWidgets.QPushButton("Auto (1-99%)")
-        reset_btn = QtWidgets.QPushButton("Reset")
-        live_cb = QtWidgets.QCheckBox("Live preview")
-        live_cb.setChecked(True)
-        apply_btn = QtWidgets.QPushButton("Apply")
-        btn_row.addWidget(auto_btn); btn_row.addWidget(reset_btn); btn_row.addWidget(live_cb); btn_row.addStretch(1); btn_row.addWidget(apply_btn)
-        layout.addLayout(btn_row)
-
-        state = {"view_idx": 0, "lines": (None, None), "finite": None, "dragging": None}
-
-        def load_view(idx: int):
-            idx = max(0, min(idx, len(views)-1))
-            state["view_idx"] = idx
-            view = views[idx]
-            vmin, vmax, finite = self._view_finite_values(view)
-            state["finite"] = finite
-            ax.clear()
-            if finite is None:
-                ax.set_title("No finite data")
-                canvas_hist.draw_idle()
-                return
-            hist, edges = np.histogram(finite, bins=256)
-            ax.plot(edges[:-1], hist, color="#4a90e2")
-            ax.set_xlabel("Value"); ax.set_ylabel("Count")
-            lo, hi = view.get("clim", (vmin, vmax))
-            spin_lo.blockSignals(True); spin_hi.blockSignals(True)
-            spin_lo.setMinimum(vmin); spin_hi.setMinimum(vmin)
-            spin_lo.setMaximum(vmax); spin_hi.setMaximum(vmax)
-            spin_lo.setValue(lo); spin_hi.setValue(hi)
-            spin_lo.blockSignals(False); spin_hi.blockSignals(False)
-            l0 = ax.axvline(lo, color="#d81b60", linestyle="--")
-            l1 = ax.axvline(hi, color="#d81b60", linestyle="--")
-            state["lines"] = (l0, l1)
-            ax.set_title(view.get("title") or Path(str(view.get("path",""))).name)
-            canvas_hist.draw_idle()
-
-        def update_lines():
-            l0, l1 = state.get("lines", (None, None))
-            if l0 is None or l1 is None:
-                return
-            lo = spin_lo.value(); hi = spin_hi.value()
-            l0.set_xdata([lo, lo]); l1.set_xdata([hi, hi])
-            canvas_hist.draw_idle()
-
-        def apply_current(close=False):
-            idx = state.get("view_idx", 0)
-            view = views[idx]
-            lo, hi = spin_lo.value(), spin_hi.value()
-            if lo > hi:
-                lo, hi = hi, lo
-            self._apply_clim_to_view(canvas, view, lo, hi)
-            if close:
-                dlg.accept()
-
-        def on_apply():
-            apply_current(close=True)
-
-        def on_auto():
-            finite = state.get("finite", None)
-            if finite is None:
-                return
-            try:
-                lo, hi = np.percentile(finite, [1, 99])
-            except Exception:
-                return
-            spin_lo.setValue(float(lo)); spin_hi.setValue(float(hi))
-            update_lines()
-
-        def on_reset():
-            view = views[state.get("view_idx", 0)]
-            vmin, vmax, _ = self._view_finite_values(view)
-            if vmin is None:
-                return
-            _set_spin_values(vmin, vmax, block=True)
-            update_lines()
-
-        def _set_spin_values(lo, hi, block=False):
-            if block:
-                spin_lo.blockSignals(True); spin_hi.blockSignals(True)
-            spin_lo.setValue(lo); spin_hi.setValue(hi)
-            if block:
-                spin_lo.blockSignals(False); spin_hi.blockSignals(False)
-
-        def _on_press(event):
-            if event.button != 1:
-                return
-            if event.xdata is None:
-                return
-            l0, l1 = state.get("lines", (None, None))
-            if l0 is None or l1 is None:
-                return
-            lo_val = spin_lo.value(); hi_val = spin_hi.value()
-            span = max(abs(hi_val - lo_val), 1e-12)
-            tol = span * 0.01
-            if abs(event.xdata - lo_val) < tol:
-                state["dragging"] = "lo"
-            elif abs(event.xdata - hi_val) < tol:
-                state["dragging"] = "hi"
-            else:
-                state["dragging"] = None
-
-        def _on_motion(event):
-            if state.get("dragging") is None:
-                return
-            if event.xdata is None:
-                return
-            x = float(event.xdata)
-            lo_val = spin_lo.value(); hi_val = spin_hi.value()
-            if state["dragging"] == "lo":
-                lo_val = min(x, hi_val)
-            elif state["dragging"] == "hi":
-                hi_val = max(x, lo_val)
-            _set_spin_values(lo_val, hi_val, block=True)
-            update_lines()
-            maybe_live_apply()
-
-        def _on_release(event):
-            if state.get("dragging") is None:
-                return
-            state["dragging"] = None
-            maybe_live_apply()
-
-        spin_lo.valueChanged.connect(update_lines)
-        spin_hi.valueChanged.connect(update_lines)
-        def maybe_live_apply():
-            if live_cb.isChecked():
-                apply_current(close=False)
-        spin_lo.valueChanged.connect(maybe_live_apply)
-        spin_hi.valueChanged.connect(maybe_live_apply)
-        apply_btn.clicked.connect(on_apply)
-        auto_btn.clicked.connect(on_auto)
-        reset_btn.clicked.connect(on_reset)
-        if selector:
-            selector.currentIndexChanged.connect(load_view)
-
-        try:
-            cid_press = canvas_hist.mpl_connect("button_press_event", _on_press)
-            cid_motion = canvas_hist.mpl_connect("motion_notify_event", _on_motion)
-            cid_release = canvas_hist.mpl_connect("button_release_event", _on_release)
-            fig.canvas.setProperty("hist_cids", (cid_press, cid_motion, cid_release))
-        except Exception:
-            pass
-
-        # Remember whether profile drawing was active before opening the dialog.
-        profile_was_enabled = bool(getattr(canvas, "profile_enabled", False))
-        load_view(0)
-        dlg.exec_()
-        # If profiles were not active before, make sure we leave them disabled
-        # (some operations used to trigger a stray profile overlay).
-        if not profile_was_enabled:
-            try:
-                canvas.enable_profile(False)
-            except Exception:
-                pass
+        open_histogram_dialog(self, canvas)
 
     def _is_matrix_spec(self, spec) -> bool:
         try:
@@ -4362,41 +3558,9 @@ QLabel:hover {{
             return False
 
     def _on_preview_spec_click(self, spec, event=None):
-        if not spec or not self.show_spectra:
-            return
-        mods = QtCore.Qt.NoModifier
-        try:
-            if event is not None:
-                if hasattr(event, "modifiers"):
-                    mods = event.modifiers()
-                elif getattr(event, "guiEvent", None) is not None and hasattr(event.guiEvent, "modifiers"):
-                    mods = event.guiEvent.modifiers()
-        except Exception:
-            mods = QtCore.Qt.NoModifier
-        file_key = str(spec.get('image_key') or spec.get('path') or '')
-        if mods & QtCore.Qt.ShiftModifier:
-            self._prime_multi_selection_anchor(spec)
-            key = self._spec_identity_key(spec) if spec else None
-            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
-            self._toggle_multi_spec_selection(spec)
-            added = bool(
-                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
-            )
-            if added:
-                self._append_spec_to_single_popup(spec)
-                try:
-                    self._highlight_spectrum_entry(spec)
-                except Exception:
-                    pass
-            return
-        self._clear_multi_spec_selection()
-        self._last_clicked_spec = spec
-        force_matrix = bool(mods & QtCore.Qt.ControlModifier)
-        is_matrix = self._is_matrix_spec(spec) or (force_matrix and spec.get('matrix_index') is not None)
-        if is_matrix and file_key:
-            self._open_matrix_explorer_for_file(file_key)
-        else:
-            self._open_spectroscopy_popup(spec)
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            controller.handle_preview_click(spec, event=event)
 
     def on_manual_tag(self, tag):
         if self.last_preview is None:
@@ -4828,115 +3992,31 @@ QLabel:hover {{
         return x, y
 
     def _scroll_to_thumbnail(self, file_key):
-        if not file_key:
-            return
-        widget = self.thumb_widgets.get(str(file_key))
-        if widget is None:
-            return
-        try:
-            self.scroll.ensureWidgetVisible(widget)
-        except Exception:
-            try:
-                bar = self.scroll.verticalScrollBar()
-                if bar is not None:
-                    bar.setValue(widget.y())
-            except Exception:
-                pass
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.scroll_to_thumbnail(file_key)
 
     def _handle_thumbnail_navigation(self, key, modifiers=QtCore.Qt.NoModifier):
-        files = list(getattr(self, 'current_thumb_files', []) or [])
-        if not files:
-            return False
-        cols = max(1, int(getattr(self, 'thumb_grid_columns', 1) or 1))
-        selected = str(getattr(self, 'selected_file_for_thumbs', '') or '')
-        try:
-            current_idx = files.index(selected)
-        except ValueError:
-            current_idx = -1
-
-        if current_idx < 0:
-            new_idx = 0
-        else:
-            new_idx = current_idx
-            if key == QtCore.Qt.Key_Left:
-                if new_idx > 0:
-                    new_idx -= 1
-            elif key == QtCore.Qt.Key_Right:
-                if new_idx < len(files) - 1:
-                    new_idx += 1
-            elif key == QtCore.Qt.Key_Up:
-                if new_idx - cols >= 0:
-                    new_idx -= cols
-                else:
-                    new_idx = 0
-            elif key == QtCore.Qt.Key_Down:
-                if new_idx + cols < len(files):
-                    new_idx += cols
-                else:
-                    new_idx = len(files) - 1
-            else:
-                return False
-        if new_idx == current_idx:
-            # If nothing selected yet, ensure first entry is highlighted.
-            if current_idx == -1:
-                return self._activate_thumbnail_by_index(0)
-            return False
-        return self._activate_thumbnail_by_index(new_idx)
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.handle_navigation(key, modifiers=modifiers)
+        return False
 
     def _activate_thumbnail_by_index(self, index):
-        files = list(getattr(self, 'current_thumb_files', []) or [])
-        if not files or not (0 <= index < len(files)):
-            return False
-        file_key = files[index]
-        current_highlight = getattr(self, '_highlighted_spec', None)
-        if current_highlight:
-            try:
-                highlight_path = str(current_highlight.get('image_key') or current_highlight.get('path') or '')
-            except Exception:
-                highlight_path = ''
-            if highlight_path and highlight_path != file_key:
-                self._highlight_spectrum_entry(None)
-        self._clear_thumb_multi_selection(update_styles=False)
-        label = getattr(self, '_thumb_labels', {}).get(file_key)
-        if label is not None:
-            try:
-                channel_idx = int(label.property("channel_index") or 0)
-            except Exception:
-                channel_idx = self.channel_dropdown.currentIndex()
-        else:
-            channel_idx = self.channel_dropdown.currentIndex()
-        self.on_thumbnail_clicked(file_key, channel_idx)
-        self.last_thumb_anchor = str(file_key)
-        self._scroll_to_thumbnail(file_key)
-        return True
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.activate_thumbnail_by_index(index)
+        return False
 
     def _focus_first_matrix_dataset(self):
-        matrix_files = list(getattr(self, 'files_with_matrix', set()) or [])
-        if not matrix_files:
-            return
-        target = None
-        for path in getattr(self, 'current_thumb_files', []):
-            if path in matrix_files:
-                target = path
-                break
-        if target is None:
-            target = matrix_files[0]
-        self._scroll_to_thumbnail(target)
-        self.selected_file_for_thumbs = target
-        self._refresh_thumb_selection_styles()
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.focus_first_matrix_dataset()
 
     def _update_matrix_summary_banner(self):
-        label = getattr(self, 'matrix_summary_label', None)
-        if label is None:
-            return
-        matrix_count = len(getattr(self, 'matrix_datasets', {}) or {})
-        if matrix_count <= 0:
-            label.hide()
-            return
-        noun = "Matrix dataset" if matrix_count == 1 else "Matrix datasets"
-        label.setText(f"{noun}: {matrix_count} · click to focus")
-        label.setToolTip("Click to jump to the first thumbnail containing a matrix spectroscopy grid.")
-        label.show()
+        controller = getattr(self, "thumbnail_controller", None)
+        if controller:
+            return controller.update_matrix_summary_banner()
 
     def _handle_spec_marker_click(self, label_widget, event):
         if getattr(event, 'button', None) and event.button() != QtCore.Qt.LeftButton:
@@ -4987,34 +4067,12 @@ QLabel:hover {{
             except Exception:
                 mods = QtCore.Qt.NoModifier
         spec = hit_info.get('spec')
-        if mods & QtCore.Qt.ShiftModifier:
-            self._prime_multi_selection_anchor(spec)
-            key = self._spec_identity_key(spec) if spec else None
-            already_selected = bool(key and key in getattr(self, "_multi_spec_selection_keys", set()))
-            self._toggle_multi_spec_selection(spec)
-            added = bool(
-                spec and key and not already_selected and key in getattr(self, "_multi_spec_selection_keys", set())
-            )
-            if added:
-                self._append_spec_to_single_popup(spec)
-                try:
-                    self._highlight_spectrum_entry(spec)
-                except Exception:
-                    pass
-            return True
-        self._clear_multi_spec_selection()
-        self._last_clicked_spec = spec
-        force_matrix = bool(mods & QtCore.Qt.ControlModifier) and spec and spec.get('matrix_index') is not None
-        is_matrix = hit_info.get('kind') == 'matrix' or self._is_matrix_spec(spec)
-        if (is_matrix or force_matrix) and file_key:
-            self._open_matrix_explorer_for_file(file_key)
-        else:
-            self._open_spectroscopy_popup(spec)
-        try:
-            self._highlight_spectrum_entry(spec)
-        except Exception:
-            pass
-        return True
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            is_matrix = hit_info.get('kind') == 'matrix'
+            if controller.handle_marker_click(spec, file_key, is_matrix, mods):
+                return True
+        return False
 
     def _handle_spec_hover(self, label_widget, event):
         if not self.show_spectra:
@@ -5051,12 +4109,17 @@ QLabel:hover {{
         return False
 
     def _open_spectroscopy_popup(self, spec):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.open_single_popup(spec)
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(self, spec)
 
     def _ensure_single_spectro_popup(self, spec):
-        """Raise an existing single spectroscopy popup or open a new one."""
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.ensure_single_popup(spec)
         if not spec:
             return None
         key = self._spec_identity_key(spec)
@@ -5072,68 +4135,15 @@ QLabel:hover {{
                     return dlg
         return self._open_spectroscopy_popup(spec)
 
-    def _single_popup_for_key(self, key):
-        if not key or not getattr(self, "_spectro_popups", None):
-            return None
-        for dlg in list(self._spectro_popups):
-            dlg_spec = getattr(dlg, "spec", None)
-            if dlg_spec and self._spec_identity_key(dlg_spec) == key:
-                if getattr(dlg, "isVisible", None):
-                    try:
-                        if dlg.isVisible():
-                            return dlg
-                    except Exception:
-                        continue
-                else:
-                    return dlg
-        return None
-
-    def _active_single_popup(self):
-        anchor = getattr(self, "_multi_single_popup_anchor", None)
-        if not anchor:
-            return None
-        dlg = self._single_popup_for_key(anchor)
-        if dlg is None:
-            self._multi_single_popup_anchor = None
-        return dlg
-
     def _append_spec_to_single_popup(self, spec):
-        if not spec:
-            return
-        key = self._spec_identity_key(spec)
-        if not key:
-            return
-        dlg = self._active_single_popup()
-        if dlg is None:
-            dlg = self._ensure_single_spectro_popup(spec)
-            if dlg:
-                self._multi_single_popup_anchor = key
-            return
-        if key == self._multi_single_popup_anchor:
-            return
-        if hasattr(dlg, "add_external_spectrum"):
-            try:
-                dlg.add_external_spectrum(spec)
-            except Exception:
-                pass
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.append_spec_to_single_popup(spec)
 
     def _prime_multi_selection_anchor(self, current_spec):
-        """If user previously clicked a spec without Shift, use it as the first multi selection."""
-        if self._multi_spec_selection or not getattr(self, "_last_clicked_spec", None):
-            return
-        candidate = self._last_clicked_spec
-        if candidate is None:
-            return
-        if current_spec and self._spec_identity_key(candidate) == self._spec_identity_key(current_spec):
-            return
-        key = self._spec_identity_key(candidate)
-        if not key or key in getattr(self, "_multi_spec_selection_keys", set()):
-            self._last_clicked_spec = None
-            return
-        self._multi_spec_selection.append(candidate)
-        self._multi_spec_selection_keys.add(key)
-        self._update_spec_selection_label()
-        self._last_clicked_spec = None
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.prime_multi_selection_anchor(current_spec)
 
     def _highlight_spectrum_entry(self, spec):
         if not getattr(self, "spectro_highlight_glow", True):
@@ -5363,6 +4373,9 @@ QLabel:hover {{
         return viewer_thumb_ui._clear_thumb_multi_selection(self, update_styles=update_styles)
 
     def _spec_identity_key(self, spec):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.spec_identity_key(spec)
         if not spec:
             return None
         base = spec.get('path')
@@ -5388,38 +4401,19 @@ QLabel:hover {{
         return base
 
     def _toggle_multi_spec_selection(self, spec):
-        if not spec:
-            return
-        key = self._spec_identity_key(spec) or str(Path(spec.get('path')))
-        if key in self._multi_spec_selection_keys:
-            self._multi_spec_selection = [s for s in self._multi_spec_selection if self._spec_identity_key(s) != key]
-            self._multi_spec_selection_keys.remove(key)
-        else:
-            self._multi_spec_selection.append(spec)
-            self._multi_spec_selection_keys.add(key)
-        self._update_spec_selection_label()
-        if not self._multi_spec_selection:
-            self._multi_single_popup_anchor = None
-        if len(self._multi_spec_selection) >= 2:
-            self._open_multi_spectroscopy_popup()
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.toggle_multi_spec_selection(spec)
 
     def _update_spec_selection_label(self):
-        count = len(self._multi_spec_selection)
-        if hasattr(self, 'spec_selection_label'):
-            self.spec_selection_label.setText(f"Spectra selected: {count}")
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.update_spec_selection_label()
 
     def _clear_multi_spec_selection(self):
-        self._multi_spec_selection = []
-        self._multi_spec_selection_keys = set()
-        self._multi_single_popup_anchor = None
-        self._last_clicked_spec = None
-        for dlg in list(self._multi_spectro_popups):
-            try:
-                dlg.close()
-            except Exception:
-                pass
-        self._multi_spectro_popups = []
-        self._update_spec_selection_label()
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.clear_multi_spec_selection()
 
     def _on_drift_correct(self, paths):
         if not paths:
@@ -6214,7 +5208,9 @@ QLabel:hover {{
     def _create_virtual_copy_from_history(self, seq):
         if seq is None:
             return
-        entry = next((e for e in self._crop_history_entries if e.get("sequence") == seq), None)
+        entry = None
+        if hasattr(self, "quick_crop_controller"):
+            entry = self.quick_crop_controller.get_history_entry(seq)
         if not entry:
             return
         view_snapshot = entry.get("view_snapshot")
@@ -6227,6 +5223,9 @@ QLabel:hover {{
         self._clear_multi_spec_selection()
 
     def _open_multi_spectroscopy_popup(self):
+        controller = getattr(self, "spectro_compare_controller", None)
+        if controller:
+            return controller.open_multi_popup()
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(self)
@@ -6678,519 +5677,49 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(self.show_crop_history_overlay)
             act.blockSignals(False)
-        self._update_quick_crop_hint()
-        self._refresh_crop_history_panel()
-        self._update_active_crop_sequence_from_stack()
+        if hasattr(self, "quick_crop_controller"):
+            self.quick_crop_controller.update_hint()
+            self.quick_crop_controller.refresh_history_panel()
+            self.quick_crop_controller.update_active_sequence_from_stack()
 
     def _set_quick_crop_mode(self, enabled: bool, save: bool = True):
-        enabled = bool(enabled)
-        self.quick_crop_mode = enabled
-        if save:
-            self.config['quick_crop_mode'] = self.quick_crop_mode; save_config(self.config)
-        act = getattr(self, 'fixed_crop_quick_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.quick_crop_mode)
-            act.blockSignals(False)
-        if hasattr(self, 'quick_crop_btn'):
-            self.quick_crop_btn.blockSignals(True)
-            self.quick_crop_btn.setChecked(self.quick_crop_mode)
-            self.quick_crop_btn.setText("Quick crop: On" if self.quick_crop_mode else "Quick crop: Off")
-            self.quick_crop_btn.blockSignals(False)
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.enable_fixed_crop_quick_mode(self.quick_crop_mode)
-                except Exception:
-                    continue
-        if self.quick_crop_mode:
-            self._apply_quick_crop_template_from_controls()
-        self._update_quick_crop_hint()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller is None:
+            self.quick_crop_mode = bool(enabled)
+            if save:
+                self.config['quick_crop_mode'] = self.quick_crop_mode
+                save_config(self.config)
+            return
+        controller.set_mode(enabled, save=save)
 
     def _update_quick_crop_hint(self):
-        if not hasattr(self, 'quick_crop_hint_lbl'):
-            return
-        overlay_state = "visible" if self.show_crop_history_overlay else "hidden"
-        if self.quick_crop_mode:
-            text = (
-                "Shift+drag to size, click to spawn crops. "
-                "Ctrl+Z undo, Ctrl+Shift+W close latest pop-out. "
-                f"History overlay is {overlay_state}. "
-                "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+H toggles history overlay, Ctrl+Shift+T toggles template overlay."
-            )
-        else:
-            text = "Quick crop mode is off. Press Ctrl+Shift+C to toggle."
-        self.quick_crop_hint_lbl.setText(text)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.update_hint()
 
     def _sync_quick_crop_template_controls(self):
-        if not hasattr(self, 'quick_crop_real_width_spin'):
-            return
-        try:
-            real_width, real_height, real_unit = self.preview_canvas.get_fixed_crop_template_real_size()
-        except Exception:
-            real_width = real_height = 0.0
-            real_unit = "nm"
-        if getattr(self, 'quick_crop_real_width_spin', None):
-            self.quick_crop_real_width_spin.blockSignals(True)
-            if real_width > 0:
-                self.quick_crop_real_width_spin.setValue(real_width)
-            self.quick_crop_real_width_spin.blockSignals(False)
-        if getattr(self, 'quick_crop_real_height_spin', None):
-            self.quick_crop_real_height_spin.blockSignals(True)
-            if real_height > 0:
-                self.quick_crop_real_height_spin.setValue(real_height)
-            self.quick_crop_real_height_spin.blockSignals(False)
-        if real_width > 0 and real_height > 0:
-            self._quick_crop_aspect = real_width / max(0.001, real_height)
-        if getattr(self, 'quick_crop_real_unit_lbl', None):
-            self.quick_crop_real_unit_lbl.setText(real_unit or "nm")
-        if getattr(self, 'quick_crop_real_px_info_lbl', None):
-            px_dims = self.preview_canvas.get_fixed_crop_template_size()
-            if len(px_dims) == 2 and px_dims[0] and px_dims[1]:
-                self.quick_crop_real_px_info_lbl.setText(
-                    f"W: {real_width:.3f} {real_unit} ({px_dims[0]} px)  |  H: {real_height:.3f} {real_unit} ({px_dims[1]} px)")
-            else:
-                self.quick_crop_real_px_info_lbl.setText("")
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.sync_template_controls()
 
     def _on_quick_crop_real_spin_changed(self, _=None):
-        # Keep aspect if requested
         try:
             sender = self.sender()
         except Exception:
             sender = None
-        if getattr(self, 'quick_crop_lock_aspect_cb', None) and self.quick_crop_lock_aspect_cb.isChecked():
-            aspect = self._quick_crop_aspect or 1.0
-            if sender is self.quick_crop_real_width_spin:
-                new_w = self.quick_crop_real_width_spin.value()
-                new_h = max(0.01, new_w / max(0.001, aspect))
-                self.quick_crop_real_height_spin.blockSignals(True)
-                self.quick_crop_real_height_spin.setValue(new_h)
-                self.quick_crop_real_height_spin.blockSignals(False)
-            elif sender is self.quick_crop_real_height_spin:
-                new_h = self.quick_crop_real_height_spin.value()
-                new_w = max(0.01, new_h * aspect)
-                self.quick_crop_real_width_spin.blockSignals(True)
-                self.quick_crop_real_width_spin.setValue(new_w)
-                self.quick_crop_real_width_spin.blockSignals(False)
-        # Square overrides aspect
-        if getattr(self, 'quick_crop_square_cb', None) and self.quick_crop_square_cb.isChecked():
-            val = self.quick_crop_real_width_spin.value()
-            self.quick_crop_real_height_spin.blockSignals(True)
-            self.quick_crop_real_height_spin.setValue(val)
-            self.quick_crop_real_height_spin.blockSignals(False)
-        self._apply_quick_crop_template_from_controls()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_real_spin_changed(sender)
 
     def _apply_quick_crop_template_from_controls(self):
-        if not hasattr(self, 'quick_crop_real_width_spin'):
-            return
-        square = False
-        if getattr(self, 'quick_crop_square_cb', None):
-            square = bool(self.quick_crop_square_cb.isChecked())
-        real_w = self.quick_crop_real_width_spin.value()
-        real_h = self.quick_crop_real_height_spin.value()
-        success = self.preview_canvas.set_fixed_crop_template_real_size(real_w, real_h, square=square)
-        if not success:
-            # Fallback: if real-space conversion failed (extent unavailable), try a pixel-based template
-            try:
-                h, w = self.preview_canvas.get_main_view_shape()
-            except Exception:
-                h = w = 0
-            if w > 0 and h > 0:
-                aspect = real_h / real_w if real_w not in (0, None) else 1.0
-                base_w = max(2, min(int(max(2, w * 0.25)), w))
-                if square:
-                    base_h = base_w
-                else:
-                    base_h = max(2, min(int(round(base_w * aspect)), h))
-                success = self.preview_canvas.set_fixed_crop_template_size(base_w, base_h, square=square)
-        if success:
-            self._quick_crop_last_real_size = [real_w, real_h]
-            if real_w > 0 and real_h > 0:
-                self._quick_crop_aspect = real_w / max(0.001, real_h)
-            self._sync_quick_crop_template_controls()
-
-    def _set_active_crop_sequence(self, seq, keep_selected=True):
-        self._active_crop_sequence = seq
-        if not keep_selected:
-            self._selected_crop_sequences = []
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.set_fixed_crop_history_highlight(seq)
-                except Exception:
-                    continue
-
-    def _update_active_crop_sequence_from_stack(self):
-        seq = None
-        if self._crop_popup_stack:
-            seq = self._crop_popup_stack[-1].get("seq")
-        self._set_active_crop_sequence(seq)
-
-    def _focus_history_entry(self, seq, multi=False):
-        if seq is None:
-            return
-        self._update_selected_crop_sequences(seq, multi=multi)
-        self._set_active_crop_sequence(seq, keep_selected=True)
-        for entry in self._crop_popup_stack:
-            if entry.get("seq") == seq:
-                dlg = entry.get("dialog")
-                if dlg:
-                    try:
-                        state = dlg.windowState()
-                        if state & QtCore.Qt.WindowMinimized:
-                            dlg.setWindowState(state & ~QtCore.Qt.WindowMinimized)
-                        dlg.raise_()
-                        dlg.activateWindow()
-                    except Exception:
-                        pass
-                break
-        self._refresh_crop_history_panel()
-
-    def _focus_history_entry_with_shift(self, seq):
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
-        multi = bool(modifiers & QtCore.Qt.ShiftModifier)
-        self._focus_history_entry(seq, multi=multi)
-
-    def _update_selected_crop_sequences(self, seq, multi=False):
-        if seq is None:
-            self._selected_crop_sequences = []
-            return
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if not multi:
-            selected = [seq]
-        else:
-            if seq in selected:
-                selected.remove(seq)
-            else:
-                selected.append(seq)
-        self._selected_crop_sequences = selected
-
-    def _finalize_removed_crop(self, seq):
-        if seq is None:
-            return
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if seq in selected:
-            selected.remove(seq)
-            self._selected_crop_sequences = selected
-        entry = self.preview_canvas.remove_fixed_crop_history_entry(seq)
-        if entry:
-            self._update_active_crop_sequence_from_stack()
-        else:
-            self._refresh_crop_history_panel()
-
-    def _on_quick_crop_undo(self):
-        entry = self.preview_canvas.undo_fixed_crop_entry()
-        if entry:
-            seq = entry.get("sequence")
-            if seq is not None:
-                self._close_crop_popup(seq)
-
-    def _on_quick_crop_close(self):
-        self._close_crop_popup()
-
-    def _on_quick_crop_clear(self):
-        self.preview_canvas.clear_fixed_crop_history()
-        self._close_all_crop_popups()
-
-    def _close_crop_popup(self, seq=None):
-        target = None
-        if seq is None:
-            if self._crop_popup_stack:
-                target = self._crop_popup_stack[-1]
-        else:
-            for entry in reversed(self._crop_popup_stack):
-                if entry.get("seq") == seq:
-                    target = entry
-                    break
-        if target is None:
-            return False
-        dlg = target.get("dialog")
-        try:
-            dlg.close()
-        except Exception:
-            pass
-        self._unregister_crop_popup(dlg)
-        return True
-
-    def _close_all_crop_popups(self):
-        stack = list(self._crop_popup_stack)
-        for entry in stack:
-            dlg = entry.get("dialog")
-            if dlg:
-                try:
-                    dlg.close()
-                except Exception:
-                    pass
-        self._crop_popup_stack.clear()
-        self._set_active_crop_sequence(None, keep_selected=False)
-        self._refresh_crop_history_panel()
-        if hasattr(self, '_update_crop_popup_actions'):
-            self._update_crop_popup_actions()
-
-    def _register_crop_popup(self, seq, dlg):
-        entry = {"seq": seq, "dialog": dlg}
-        self._crop_popup_stack.append(entry)
-        dlg.finished.connect(lambda _=None, d=dlg: self._unregister_crop_popup(d))
-        close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+W"), dlg)
-        close_shortcut.setContext(QtCore.Qt.WidgetShortcut)
-        close_shortcut.activated.connect(dlg.close)
-        dlg._quick_crop_close_shortcut = close_shortcut
-        self._update_active_crop_sequence_from_stack()
-
-    def _unregister_crop_popup(self, dlg):
-        if dlg is None:
-            return
-        changed = False
-        seq_removed = None
-        new_stack = []
-        for entry in self._crop_popup_stack:
-            if entry.get("dialog") is dlg:
-                changed = True
-                seq_removed = entry.get("seq")
-                continue
-            new_stack.append(entry)
-        if changed:
-            self._crop_popup_stack = new_stack
-            if seq_removed is not None:
-                self._finalize_removed_crop(seq_removed)
-            else:
-                self._refresh_crop_history_panel()
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.apply_template_from_controls()
 
     def _on_fixed_crop_history_updated(self, entries):
-        self._crop_history_entries = list(entries or [])
-        self._refresh_crop_history_panel()
-        width, height = self.preview_canvas.get_fixed_crop_template_size()
-        if width and height:
-            self._sync_quick_crop_template_controls()
-        self._update_active_crop_sequence_from_stack()
-
-    def _refresh_crop_history_panel(self):
-        if not hasattr(self, 'crop_history_layout'):
-            return
-        while self.crop_history_layout.count():
-            item = self.crop_history_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        entries = self._crop_history_entries or []
-        selected_seqs = self._cleanup_selected_crop_sequences()
-        if getattr(self, 'crop_history_label', None):
-            label_text = "Crop history"
-            if entries:
-                label_text = f"{label_text} ({len(entries)})"
-            self.crop_history_label.setText(label_text)
-        display = entries[-12:]
-        active_seq = selected_seqs[-1] if selected_seqs else getattr(self, '_active_crop_sequence', None)
-        for entry in reversed(display):
-            seq = entry.get("sequence")
-            entry_widget = QtWidgets.QFrame()
-            entry_widget.setFrameShape(QtWidgets.QFrame.StyledPanel)
-            entry_widget.setFrameShadow(QtWidgets.QFrame.Raised)
-            entry_layout = QtWidgets.QHBoxLayout(entry_widget)
-            entry_layout.setContentsMargins(6, 4, 6, 4)
-            entry_layout.setSpacing(8)
-            color = entry.get("color") or self._crop_color_for_seq(seq)
-            real_size = entry.get("real_size", (0.0, 0.0))
-            unit = entry.get("unit") or "nm"
-            if any(real_size):
-                size_text = f"{real_size[0]:.2f} × {real_size[1]:.2f} {unit}"
-            else:
-                pixel_bounds = entry.get("pixel_bounds")
-                if pixel_bounds:
-                    px_width = int(abs(pixel_bounds[1] - pixel_bounds[0]) + 1)
-                    px_height = int(abs(pixel_bounds[3] - pixel_bounds[2]) + 1)
-                    size_text = f"{px_width} × {px_height} px"
-                else:
-                    size_text = "Unknown size"
-            label = QtWidgets.QLabel(f"#{seq} — {size_text}")
-            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            entry_layout.addWidget(label)
-            select_btn = QtWidgets.QToolButton()
-            select_btn.setText("Select")
-            select_btn.setCheckable(True)
-            select_btn.setChecked(seq in selected_seqs)
-            select_btn.setToolTip("Shift+click to multiselect, click to highlight")
-            select_btn.clicked.connect(partial(self._focus_history_entry_with_shift, seq))
-            entry_layout.addWidget(select_btn)
-            virtual_btn = QtWidgets.QToolButton()
-            virtual_btn.setText("Virtual copy")
-            virtual_btn.setToolTip("Add this crop snapshot as a virtual thumbnail")
-            virtual_btn.setEnabled(bool(entry.get("view_snapshot")))
-            virtual_btn.clicked.connect(partial(self._create_virtual_copy_from_history, seq))
-            entry_layout.addWidget(virtual_btn)
-            statuses = []
-            if seq == active_seq:
-                statuses.append("Active")
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; background-color: rgba(255, 102, 255, 0.08); }}")
-            elif seq in selected_seqs:
-                statuses.append("Selected")
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; background-color: rgba(143, 223, 255, 0.08); }}")
-            else:
-                entry_widget.setStyleSheet(f"QFrame {{ border: 1px solid {color}; }}")
-            if self._has_popup_for_seq(seq):
-                statuses.append("Open")
-            if statuses:
-                icons = []
-                if "Active" in statuses:
-                    icons.append("✓")
-                if "Open" in statuses:
-                    icons.append("●")
-                status_lbl = QtWidgets.QLabel(" ".join(icons) or " ")
-                status_lbl.setToolTip(", ".join(statuses))
-                status_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
-                entry_layout.addWidget(status_lbl)
-            entry_layout.addStretch(1)
-            close_btn = QtWidgets.QToolButton()
-            close_btn.setText("Close view")
-            close_btn.setToolTip("Close the pop-out that corresponds to this crop")
-            close_btn.clicked.connect(lambda _, s=seq: self._close_crop_popup(s))
-            entry_layout.addWidget(close_btn)
-            remove_btn = QtWidgets.QToolButton()
-            remove_btn.setText("Remove overlay")
-            remove_btn.setToolTip("Drop this crop and its overlay from the preview")
-            remove_btn.clicked.connect(lambda _, s=seq: self._remove_crop_history_entry(s))
-            entry_layout.addWidget(remove_btn)
-            self.crop_history_layout.addWidget(entry_widget)
-        self.crop_history_layout.addStretch(1)
-        self.crop_history_panel.setVisible(bool(entries) or self.show_crop_history_overlay)
-        self.quick_crop_undo_btn.setEnabled(bool(entries))
-        self.quick_crop_clear_btn.setEnabled(bool(entries))
-        self.quick_crop_close_btn.setEnabled(bool(self._crop_popup_stack))
-        if hasattr(self, 'quick_crop_export_btn'):
-            self.quick_crop_export_btn.setEnabled(bool(selected_seqs))
-        if hasattr(self, 'quick_crop_tile_btn'):
-            self._update_crop_popup_actions()
-
-    def _cleanup_selected_crop_sequences(self):
-        entries = self._crop_history_entries or []
-        valid = {entry.get("sequence") for entry in entries if entry.get("sequence") is not None}
-        selected = [seq for seq in getattr(self, '_selected_crop_sequences', []) if seq in valid]
-        if selected != getattr(self, '_selected_crop_sequences', []):
-            self._selected_crop_sequences = selected
-        return selected
-
-    def _has_popup_for_seq(self, seq):
-        if seq is None:
-            return False
-        for entry in self._crop_popup_stack:
-            if entry.get("seq") == seq:
-                dlg = entry.get("dialog")
-                if dlg and dlg.isVisible():
-                    return True
-        return False
-
-    def _update_crop_popup_actions(self):
-        if not hasattr(self, 'quick_crop_tile_btn'):
-            return
-        alive = []
-        cleaned = []
-        for dlg in list(getattr(self, '_popup_refs', [])):
-            if dlg is None:
-                continue
-            try:
-                # isVisible() raises if the C++ object is already deleted
-                if dlg.isVisible():
-                    alive.append(dlg)
-                cleaned.append(dlg)
-            except RuntimeError:
-                # drop dead dialogs
-                continue
-        self._popup_refs = cleaned
-        popups = alive
-        self.quick_crop_tile_btn.setEnabled(bool(popups))
-
-    def _crop_color_for_seq(self, seq: int):
-        palette = [
-            "#ff66ff", "#66c2ff", "#ffa600", "#00c896",
-            "#c084ff", "#ff6b6b", "#4dd0e1", "#ffd166",
-        ]
-        try:
-            return palette[seq % len(palette)]
-        except Exception:
-            return palette[0]
-
-    def _arrange_crop_popups(self):
-        popups = [dlg for dlg in getattr(self, '_popup_refs', []) if dlg and dlg.isVisible()]
-        if not popups:
-            return
-        screen = QtWidgets.QApplication.primaryScreen()
-        if screen:
-            geom = screen.availableGeometry()
-        else:
-            geom = QtWidgets.QApplication.desktop().availableGeometry()
-        cols = int(math.ceil(math.sqrt(len(popups))))
-        rows = int(math.ceil(len(popups) / cols))
-        tile_w = max(280, geom.width() // cols)
-        tile_h = max(240, geom.height() // rows)
-        for idx, dlg in enumerate(popups):
-            row, col = divmod(idx, cols)
-            x = geom.left() + col * tile_w
-            y = geom.top() + row * tile_h
-            dlg.setGeometry(x + 10, y + 10, tile_w - 20, tile_h - 20)
-            dlg.raise_()
-            dlg.activateWindow()
-
-    def _export_selected_crops(self):
-        selected = list(getattr(self, '_selected_crop_sequences', []))
-        if not selected:
-            QtWidgets.QMessageBox.information(self, "Export crops", "Select one or more crops from the history first.")
-            return
-        directory = QtWidgets.QFileDialog.getExistingDirectory(self, "Export crops")
-        if not directory:
-            return
-        fmt, ok = QtWidgets.QInputDialog.getItem(
-            self,
-            "Export format",
-            "Format:",
-            ["PNG", "SVG"],
-            0,
-            False,
-        )
-        if not ok or not fmt:
-            return
-        fmt = fmt.lower()
-        dpi = 300 if fmt == "png" else 150
-        saved = []
-        failed = []
-        for seq in selected:
-            entry = next((e for e in self._crop_history_entries if e.get("sequence") == seq), None)
-            if entry is None:
-                failed.append(seq)
-                continue
-            fig = self.preview_canvas.render_crop_entry_figure(entry)
-            if fig is None:
-                failed.append(seq)
-                continue
-            title = self._sanitize_filename_component(entry.get("title") or f"crop_{seq}") or f"crop_{seq}"
-            path = Path(directory) / f"{title}_{seq}.{fmt}"
-            try:
-                fig.savefig(str(path), format=fmt, dpi=dpi, bbox_inches="tight", pad_inches=0.02)
-                saved.append(str(path))
-            except Exception:
-                failed.append(seq)
-            finally:
-                try:
-                    import matplotlib.pyplot as _plt
-                    _plt.close(fig)
-                except Exception:
-                    pass
-        summary = []
-        if saved:
-            summary.append(f"Saved {len(saved)} file{'s' if len(saved) != 1 else ''}.")
-        if failed:
-            summary.append(f"Could not render crops: {', '.join(f'#{s}' for s in failed)}.")
-        if not summary:
-            summary.append("No crops exported.")
-        QtWidgets.QMessageBox.information(self, "Export crops", "\n".join(summary))
-
-    def _remove_crop_history_entry(self, seq):
-        if seq is None:
-            return
-        if not self._close_crop_popup(seq):
-            self._finalize_removed_crop(seq)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_history_updated(entries)
 
     def on_export_selected_same_view(self):
         return viewer_export.on_export_selected_same_view(self)

@@ -50,6 +50,10 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+try:
+    from scipy import signal as _scipy_signal
+except Exception:  # pragma: no cover
+    _scipy_signal = None
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -2492,6 +2496,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             "x": {"direction": "out", "major": None, "minor_count": 0, "length": 6},
             "y": {"direction": "out", "major": None, "minor_count": 0, "length": 6},
         }
+        self._filter_controls = {}
+        self._filter_cfg = {
+            "gaussian": {"enabled": False, "sigma": 1.0},
+            "savgol": {"enabled": False, "window": 11, "poly": 3},
+            "median": {"enabled": False, "size": 3},
+            "fft": {"enabled": False, "cutoff": 0.15},
+            "notch": {"enabled": False, "freq": 50.0, "width": 5.0},
+            "derive": {"enabled": False, "window": 11, "poly": 3},
+        }
         self._build_ui()
         self._populate_list()
         self._populate_channels()
@@ -2776,6 +2789,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         viz_layout.addWidget(self.palette_swatches)
 
         right_layout.addWidget(viz_group)
+        filters_panel = self._build_filter_panel()
+        if filters_panel:
+            right_layout.addWidget(filters_panel)
 
         # Analysis Group
         analysis_group = QtWidgets.QGroupBox("Analysis")
@@ -3443,6 +3459,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
         # Plot both checked items AND selected items (even if unchecked) for quick preview
         root = self.spec_list.invisibleRootItem()
+        y_units_after_filters = []
         for i in range(root.childCount()):
             item = root.child(i)
             if item.isHidden(): continue
@@ -3471,6 +3488,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 axis_plot_scale = 1000.0
                 axis_unit_plot = "mV"
                 x_vals = x_vals * axis_plot_scale
+            y_unit_raw = self._channel_unit_for_spec(spec, channel)
+            y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_data, y_unit_raw, axis_unit_plot)
+            y_units_after_filters.append(y_unit_final or y_unit_raw)
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
@@ -3495,7 +3515,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     "markeredgecolor": color,
                     "markeredgewidth": 0.6,
                 })
-            line, = self.ax.plot(x_vals, y_data, **line_kwargs)
+            line, = self.ax.plot(x_vals, y_filtered, **line_kwargs)
             style = self._curve_styles.get(spec_id)
             if style:
                 try:
@@ -3550,12 +3570,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     break
         self.ax.set_xlabel(xlabel)
         unit = None
-        # Find a representative unit for the y-axis label
-        for item in self._checked_items() or self._selected_items():
-            spec = item.data(0, QtCore.Qt.UserRole)
-            if spec:
-                unit = self._channel_unit_for_spec(spec, channel)
-            if unit:
+        for val in y_units_after_filters:
+            if val:
+                unit = val
                 break
         self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
         self.ax.set_xscale("log" if self._plot_x_log else "linear")
@@ -4191,6 +4208,370 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             except Exception:
                 continue
         return nearest if nearest else (None, None)
+
+    def _apply_data_filters(self, x_vals, y_vals, y_unit, x_unit):
+        """Apply any enabled data filters/derivatives."""
+        data = np.asarray(y_vals, dtype=float)
+        x_arr = np.asarray(x_vals, dtype=float) if np.size(x_vals) == data.size else np.linspace(0, data.size - 1, data.size)
+        if data.size == 0:
+            return data, y_unit
+        cfg = getattr(self, "_filter_cfg", {})
+        result = data.copy()
+        dx = float(np.nanmean(np.diff(x_arr))) if x_arr.size > 1 else 1.0
+        if not math.isfinite(dx) or dx == 0:
+            dx = 1.0
+
+        def _odd(value, minimum):
+            v = max(minimum, int(value) or minimum)
+            return v + 1 if v % 2 == 0 else v
+
+        # Gaussian smoothing
+        gauss = cfg.get("gaussian", {})
+        if gauss.get("enabled"):
+            sigma = max(0.1, float(gauss.get("sigma", 1.0)))
+            if _scipy_ndimage is not None:
+                result = _scipy_ndimage.gaussian_filter1d(result, sigma=max(0.05, sigma), mode="nearest")
+            else:
+                radius = max(1, int(3 * sigma))
+                xs = np.arange(-radius, radius + 1)
+                kernel = np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
+                kernel /= kernel.sum() or 1.0
+                result = np.convolve(result, kernel, mode="same")
+
+        # Median filtering
+        median = cfg.get("median", {})
+        if median.get("enabled"):
+            size = _odd(median.get("size", 3), 3)
+            if _scipy_ndimage is not None:
+                result = _scipy_ndimage.median_filter(result, size=size, mode="nearest")
+            else:
+                pad = size // 2
+                padded = np.pad(result, pad, mode="edge")
+                out = np.empty_like(result)
+                for i in range(result.size):
+                    window = padded[i:i + size]
+                    out[i] = np.median(window)
+                result = out
+
+        # Savitzky-Golay smoothing
+        sav_cfg = cfg.get("savgol", {})
+        if sav_cfg.get("enabled"):
+            window = _odd(sav_cfg.get("window", 11), 5)
+            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
+            window = max(5, window if window % 2 == 1 else window - 1)
+            poly = max(2, min(int(sav_cfg.get("poly", 3)), window - 1))
+            if window >= 3 and window <= result.size:
+                if _scipy_signal is not None:
+                    result = _scipy_signal.savgol_filter(result, window, poly, mode="interp")
+                else:
+                    kernel = np.ones(window) / float(window)
+                    result = np.convolve(result, kernel, mode="same")
+
+        # FFT low-pass
+        fft_cfg = cfg.get("fft", {})
+        if fft_cfg.get("enabled") and result.size >= 8:
+            cutoff = float(fft_cfg.get("cutoff", 0.15))
+            cutoff = min(max(cutoff, 0.0), 0.5)
+            if cutoff > 0.0:
+                centered = result - np.nanmean(result)
+                freq = np.fft.rfftfreq(result.size, d=dx)
+                spectrum = np.fft.rfft(centered)
+                nyquist = 0.5 / dx
+                thresh = cutoff * nyquist
+                mask = np.abs(freq) <= thresh
+                spectrum *= mask
+                recovered = np.fft.irfft(spectrum, n=result.size)
+                result = recovered + np.nanmean(result)
+
+        # Notch filter
+        notch = cfg.get("notch", {})
+        if notch.get("enabled") and result.size >= 8:
+            freq = abs(float(notch.get("freq", 50.0)))
+            width = max(0.0001, abs(float(notch.get("width", 5.0))))
+            if freq > 0.0:
+                centered = result - np.nanmean(result)
+                spectrum = np.fft.rfft(centered)
+                freqs = np.fft.rfftfreq(result.size, d=dx)
+                mask = np.ones_like(freqs, dtype=bool)
+                notch_region = np.abs(freqs - freq) < width
+                mask[notch_region] = False
+                spectrum *= mask
+                recovered = np.fft.irfft(spectrum, n=result.size)
+                result = recovered + np.nanmean(result)
+
+        # Derivative (dY/dX)
+        deriv = cfg.get("derive", {})
+        unit = y_unit
+        if deriv.get("enabled"):
+            window = _odd(deriv.get("window", 11), 5)
+            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
+            window = max(5, window if window % 2 == 1 else window - 1)
+            poly = max(2, min(int(deriv.get("poly", 3)), window - 1))
+            if _scipy_signal is not None and window >= 5 and window <= result.size:
+                result = _scipy_signal.savgol_filter(result, window, poly, deriv=1, delta=dx, mode="interp")
+            else:
+                result = np.gradient(result, x_arr)
+            denom = x_unit or "x"
+            unit = f"d({unit or 'arb'})/d({denom})"
+
+        return result, unit
+
+    def _register_filter_control(self, section, key, widget):
+        self._filter_controls.setdefault(section, {})[key] = widget
+
+    def _sync_filter_controls(self, section):
+        refs = self._filter_controls.get(section)
+        if not refs:
+            return
+        cfg = self._filter_cfg.get(section, {})
+        for key, widget in refs.items():
+            if widget is None:
+                continue
+            blocker = getattr(widget, "blockSignals", None)
+            if callable(blocker):
+                blocker(True)
+            try:
+                if key == "enabled" and isinstance(widget, QtWidgets.QAbstractButton):
+                    widget.setChecked(bool(cfg.get("enabled")))
+                elif hasattr(widget, "setValue"):
+                    value = cfg.get(key)
+                    if value is not None:
+                        widget.setValue(value)
+            finally:
+                if callable(blocker):
+                    blocker(False)
+
+    def _set_filter_enabled(self, section, enabled):
+        self._filter_cfg.setdefault(section, {})["enabled"] = bool(enabled)
+        self._sync_filter_controls(section)
+        self._update_plot()
+
+    def _set_filter_value(self, section, key, value):
+        cfg = self._filter_cfg.setdefault(section, {})
+        cfg[key] = value
+        self._sync_filter_controls(section)
+        self._update_plot()
+
+    def _build_filter_menu(self, menu):
+        cfg = self._filter_cfg
+        def widget_action(widget):
+            act = QtWidgets.QWidgetAction(menu)
+            act.setDefaultWidget(widget)
+            menu.addAction(act)
+        # Gaussian
+        g_row = QtWidgets.QWidget()
+        g_layout = QtWidgets.QHBoxLayout(g_row); g_layout.setContentsMargins(6,2,6,2); g_layout.setSpacing(6)
+        g_cb = QtWidgets.QCheckBox("Gaussian σ")
+        g_cb.setChecked(cfg.get("gaussian", {}).get("enabled", False))
+        g_spin = QtWidgets.QDoubleSpinBox(); g_spin.setRange(0.1, 10.0); g_spin.setSingleStep(0.1)
+        g_spin.setValue(float(cfg.get("gaussian", {}).get("sigma", 1.0)))
+        g_cb.toggled.connect(lambda chk: self._set_filter_enabled("gaussian", chk))
+        g_spin.valueChanged.connect(lambda val: self._set_filter_value("gaussian", "sigma", float(val)))
+        g_layout.addWidget(g_cb); g_layout.addWidget(g_spin)
+        widget_action(g_row)
+        # Savitzky-Golay smoothing
+        sg_row = QtWidgets.QWidget(); sg_layout = QtWidgets.QHBoxLayout(sg_row); sg_layout.setContentsMargins(6,2,6,2); sg_layout.setSpacing(6)
+        sg_cb = QtWidgets.QCheckBox("Savitzky-Golay")
+        sg_cb.setChecked(cfg.get("savgol", {}).get("enabled", False))
+        sg_win = QtWidgets.QSpinBox(); sg_win.setRange(5, 201); sg_win.setSingleStep(2); sg_win.setValue(int(cfg.get("savgol", {}).get("window", 11)))
+        sg_poly = QtWidgets.QSpinBox(); sg_poly.setRange(2, 10); sg_poly.setValue(int(cfg.get("savgol", {}).get("poly", 3)))
+        sg_cb.toggled.connect(lambda chk: self._set_filter_enabled("savgol", chk))
+        sg_win.valueChanged.connect(lambda val: self._set_filter_value("savgol", "window", int(val)))
+        sg_poly.valueChanged.connect(lambda val: self._set_filter_value("savgol", "poly", int(val)))
+        sg_layout.addWidget(sg_cb); sg_layout.addWidget(QtWidgets.QLabel("Window")); sg_layout.addWidget(sg_win)
+        sg_layout.addWidget(QtWidgets.QLabel("Poly")); sg_layout.addWidget(sg_poly)
+        widget_action(sg_row)
+        # Median
+        med_row = QtWidgets.QWidget(); med_layout = QtWidgets.QHBoxLayout(med_row); med_layout.setContentsMargins(6,2,6,2); med_layout.setSpacing(6)
+        med_cb = QtWidgets.QCheckBox("Median")
+        med_cb.setChecked(cfg.get("median", {}).get("enabled", False))
+        med_spin = QtWidgets.QSpinBox(); med_spin.setRange(3, 51); med_spin.setSingleStep(2); med_spin.setValue(int(cfg.get("median", {}).get("size", 3)))
+        med_cb.toggled.connect(lambda chk: self._set_filter_enabled("median", chk))
+        med_spin.valueChanged.connect(lambda val: self._set_filter_value("median", "size", int(val)))
+        med_layout.addWidget(med_cb); med_layout.addWidget(QtWidgets.QLabel("Size")); med_layout.addWidget(med_spin)
+        widget_action(med_row)
+        # FFT low-pass
+        fft_row = QtWidgets.QWidget(); fft_layout = QtWidgets.QHBoxLayout(fft_row); fft_layout.setContentsMargins(6,2,6,2); fft_layout.setSpacing(6)
+        fft_cb = QtWidgets.QCheckBox("FFT low-pass")
+        fft_cb.setChecked(cfg.get("fft", {}).get("enabled", False))
+        fft_cut = QtWidgets.QDoubleSpinBox(); fft_cut.setRange(0.01, 0.5); fft_cut.setSingleStep(0.01); fft_cut.setDecimals(3)
+        fft_cut.setValue(float(cfg.get("fft", {}).get("cutoff", 0.15)))
+        fft_cb.toggled.connect(lambda chk: self._set_filter_enabled("fft", chk))
+        fft_cut.valueChanged.connect(lambda val: self._set_filter_value("fft", "cutoff", float(val)))
+        fft_layout.addWidget(fft_cb); fft_layout.addWidget(QtWidgets.QLabel("Cutoff (Nyquist frac)")); fft_layout.addWidget(fft_cut)
+        widget_action(fft_row)
+        # Notch
+        notch_row = QtWidgets.QWidget(); notch_layout = QtWidgets.QHBoxLayout(notch_row); notch_layout.setContentsMargins(6,2,6,2); notch_layout.setSpacing(6)
+        notch_cb = QtWidgets.QCheckBox("Notch")
+        notch_cb.setChecked(cfg.get("notch", {}).get("enabled", False))
+        notch_freq = QtWidgets.QDoubleSpinBox(); notch_freq.setRange(0.1, 5000.0); notch_freq.setSingleStep(1.0); notch_freq.setDecimals(3)
+        notch_freq.setValue(float(cfg.get("notch", {}).get("freq", 50.0)))
+        notch_width = QtWidgets.QDoubleSpinBox(); notch_width.setRange(0.001, 500.0); notch_width.setSingleStep(0.5); notch_width.setDecimals(3)
+        notch_width.setValue(float(cfg.get("notch", {}).get("width", 5.0)))
+        notch_cb.toggled.connect(lambda chk: self._set_filter_enabled("notch", chk))
+        notch_freq.valueChanged.connect(lambda val: self._set_filter_value("notch", "freq", float(val)))
+        notch_width.valueChanged.connect(lambda val: self._set_filter_value("notch", "width", float(val)))
+        notch_layout.addWidget(notch_cb); notch_layout.addWidget(QtWidgets.QLabel("Freq")); notch_layout.addWidget(notch_freq)
+        notch_layout.addWidget(QtWidgets.QLabel("Width")); notch_layout.addWidget(notch_width)
+        widget_action(notch_row)
+        # Derivative
+        deriv_row = QtWidgets.QWidget(); deriv_layout = QtWidgets.QHBoxLayout(deriv_row); deriv_layout.setContentsMargins(6,2,6,2); deriv_layout.setSpacing(6)
+        deriv_cb = QtWidgets.QCheckBox("dY/dX (SG)")
+        deriv_cb.setChecked(cfg.get("derive", {}).get("enabled", False))
+        deriv_win = QtWidgets.QSpinBox(); deriv_win.setRange(5, 201); deriv_win.setSingleStep(2); deriv_win.setValue(int(cfg.get("derive", {}).get("window", 11)))
+        deriv_poly = QtWidgets.QSpinBox(); deriv_poly.setRange(2, 10); deriv_poly.setValue(int(cfg.get("derive", {}).get("poly", 3)))
+        deriv_cb.toggled.connect(lambda chk: self._set_filter_enabled("derive", chk))
+        deriv_win.valueChanged.connect(lambda val: self._set_filter_value("derive", "window", int(val)))
+        deriv_poly.valueChanged.connect(lambda val: self._set_filter_value("derive", "poly", int(val)))
+        deriv_layout.addWidget(deriv_cb); deriv_layout.addWidget(QtWidgets.QLabel("Window")); deriv_layout.addWidget(deriv_win)
+        deriv_layout.addWidget(QtWidgets.QLabel("Poly")); deriv_layout.addWidget(deriv_poly)
+        widget_action(deriv_row)
+        reset_btn = QtWidgets.QPushButton("Disable all filters")
+        reset_btn.clicked.connect(lambda _=None: self._reset_filters())
+        widget_action(reset_btn)
+
+    def _reset_filters(self):
+        for name, section in self._filter_cfg.items():
+            section["enabled"] = False
+            self._sync_filter_controls(name)
+        self._update_plot()
+
+    def _build_filter_panel(self):
+        group = QtWidgets.QGroupBox("Filters")
+        layout = QtWidgets.QVBoxLayout(group)
+        cfg = self._filter_cfg
+
+        def add_row(widget):
+            layout.addWidget(widget)
+
+        def make_checkbox(label, section, tooltip):
+            cb = QtWidgets.QCheckBox(label)
+            cb.setToolTip(tooltip)
+            cb.setChecked(cfg.get(section, {}).get("enabled", False))
+            cb.toggled.connect(lambda chk, sec=section: self._set_filter_enabled(sec, chk))
+            self._register_filter_control(section, "enabled", cb)
+            return cb
+
+        # Gaussian
+        g_widget = QtWidgets.QWidget()
+        g_layout = QtWidgets.QHBoxLayout(g_widget); g_layout.setContentsMargins(0,0,0,0); g_layout.setSpacing(6)
+        g_cb = make_checkbox("Gaussian", "gaussian", "Apply Gaussian smoothing (σ controls blur)")
+        g_spin = QtWidgets.QDoubleSpinBox()
+        g_spin.setRange(0.1, 10.0); g_spin.setSingleStep(0.1); g_spin.setDecimals(2)
+        g_spin.setToolTip("Gaussian σ (points)")
+        g_spin.setValue(float(cfg.get("gaussian", {}).get("sigma", 1.0)))
+        g_spin.valueChanged.connect(lambda val: self._set_filter_value("gaussian", "sigma", float(val)))
+        self._register_filter_control("gaussian", "sigma", g_spin)
+        g_layout.addWidget(g_cb)
+        g_layout.addWidget(QtWidgets.QLabel("σ:"))
+        g_layout.addWidget(g_spin, 1)
+        add_row(g_widget)
+
+        # Savitzky-Golay
+        sg_widget = QtWidgets.QWidget()
+        sg_layout = QtWidgets.QHBoxLayout(sg_widget); sg_layout.setContentsMargins(0,0,0,0); sg_layout.setSpacing(6)
+        sg_cb = make_checkbox("Savitzky-Golay", "savgol", "Polynomial smoothing filter")
+        sg_win = QtWidgets.QSpinBox(); sg_win.setRange(5, 201); sg_win.setSingleStep(2)
+        sg_win.setValue(int(cfg.get("savgol", {}).get("window", 11)))
+        sg_win.setToolTip("Window length (odd)")
+        sg_poly = QtWidgets.QSpinBox(); sg_poly.setRange(2, 10); sg_poly.setValue(int(cfg.get("savgol", {}).get("poly", 3)))
+        sg_poly.setToolTip("Polynomial order")
+        sg_win.valueChanged.connect(lambda val: self._set_filter_value("savgol", "window", int(val)))
+        sg_poly.valueChanged.connect(lambda val: self._set_filter_value("savgol", "poly", int(val)))
+        self._register_filter_control("savgol", "window", sg_win)
+        self._register_filter_control("savgol", "poly", sg_poly)
+        sg_layout.addWidget(sg_cb)
+        sg_layout.addWidget(QtWidgets.QLabel("Window"))
+        sg_layout.addWidget(sg_win)
+        sg_layout.addWidget(QtWidgets.QLabel("Poly"))
+        sg_layout.addWidget(sg_poly)
+        add_row(sg_widget)
+
+        # Median
+        med_widget = QtWidgets.QWidget()
+        med_layout = QtWidgets.QHBoxLayout(med_widget); med_layout.setContentsMargins(0,0,0,0); med_layout.setSpacing(6)
+        med_cb = make_checkbox("Median", "median", "Median filter (spike removal)")
+        med_spin = QtWidgets.QSpinBox(); med_spin.setRange(3, 51); med_spin.setSingleStep(2)
+        med_spin.setValue(int(cfg.get("median", {}).get("size", 3)))
+        med_spin.setToolTip("Window size (odd)")
+        med_spin.valueChanged.connect(lambda val: self._set_filter_value("median", "size", int(val)))
+        self._register_filter_control("median", "size", med_spin)
+        med_layout.addWidget(med_cb)
+        med_layout.addWidget(QtWidgets.QLabel("Size"))
+        med_layout.addWidget(med_spin)
+        add_row(med_widget)
+
+        # FFT low-pass
+        fft_widget = QtWidgets.QWidget()
+        fft_layout = QtWidgets.QHBoxLayout(fft_widget); fft_layout.setContentsMargins(0,0,0,0); fft_layout.setSpacing(6)
+        fft_cb = make_checkbox("FFT low-pass", "fft", "Low-pass frequency filtering (fraction of Nyquist)")
+        fft_spin = QtWidgets.QDoubleSpinBox(); fft_spin.setRange(0.01, 0.5); fft_spin.setSingleStep(0.01); fft_spin.setDecimals(3)
+        fft_spin.setValue(float(cfg.get("fft", {}).get("cutoff", 0.15)))
+        fft_spin.setToolTip("Cutoff (0-0.5 of Nyquist)")
+        fft_spin.valueChanged.connect(lambda val: self._set_filter_value("fft", "cutoff", float(val)))
+        self._register_filter_control("fft", "cutoff", fft_spin)
+        fft_layout.addWidget(fft_cb)
+        fft_layout.addWidget(QtWidgets.QLabel("Cutoff"))
+        fft_layout.addWidget(fft_spin)
+        add_row(fft_widget)
+
+        # Notch
+        notch_widget = QtWidgets.QWidget()
+        notch_layout = QtWidgets.QHBoxLayout(notch_widget); notch_layout.setContentsMargins(0,0,0,0); notch_layout.setSpacing(6)
+        notch_cb = make_checkbox("Notch", "notch", "Remove a narrow frequency band (e.g., mains noise)")
+        notch_freq = QtWidgets.QDoubleSpinBox(); notch_freq.setRange(0.1, 5000.0); notch_freq.setDecimals(2); notch_freq.setSingleStep(1.0)
+        notch_freq.setValue(float(cfg.get("notch", {}).get("freq", 50.0)))
+        notch_freq.setToolTip("Notch frequency (Hz or axis units)")
+        notch_width = QtWidgets.QDoubleSpinBox(); notch_width.setRange(0.001, 500.0); notch_width.setDecimals(3); notch_width.setSingleStep(0.5)
+        notch_width.setValue(float(cfg.get("notch", {}).get("width", 5.0)))
+        notch_width.setToolTip("Notch width")
+        notch_freq.valueChanged.connect(lambda val: self._set_filter_value("notch", "freq", float(val)))
+        notch_width.valueChanged.connect(lambda val: self._set_filter_value("notch", "width", float(val)))
+        self._register_filter_control("notch", "freq", notch_freq)
+        self._register_filter_control("notch", "width", notch_width)
+        notch_layout.addWidget(notch_cb)
+        notch_layout.addWidget(QtWidgets.QLabel("Freq"))
+        notch_layout.addWidget(notch_freq)
+        notch_layout.addWidget(QtWidgets.QLabel("Width"))
+        notch_layout.addWidget(notch_width)
+        add_row(notch_widget)
+
+        # Derivative
+        deriv_widget = QtWidgets.QWidget()
+        deriv_layout = QtWidgets.QHBoxLayout(deriv_widget); deriv_layout.setContentsMargins(0,0,0,0); deriv_layout.setSpacing(6)
+        deriv_cb = make_checkbox("Derivative (dY/dX)", "derive", "Numerical derivative using Savitzky-Golay")
+        deriv_win = QtWidgets.QSpinBox(); deriv_win.setRange(5, 201); deriv_win.setSingleStep(2)
+        deriv_win.setValue(int(cfg.get("derive", {}).get("window", 11)))
+        deriv_win.setToolTip("Window length (odd)")
+        deriv_poly = QtWidgets.QSpinBox(); deriv_poly.setRange(2, 10); deriv_poly.setValue(int(cfg.get("derive", {}).get("poly", 3)))
+        deriv_poly.setToolTip("Polynomial order")
+        deriv_win.valueChanged.connect(lambda val: self._set_filter_value("derive", "window", int(val)))
+        deriv_poly.valueChanged.connect(lambda val: self._set_filter_value("derive", "poly", int(val)))
+        self._register_filter_control("derive", "window", deriv_win)
+        self._register_filter_control("derive", "poly", deriv_poly)
+        deriv_layout.addWidget(deriv_cb)
+        deriv_layout.addWidget(QtWidgets.QLabel("Window"))
+        deriv_layout.addWidget(deriv_win)
+        deriv_layout.addWidget(QtWidgets.QLabel("Poly"))
+        deriv_layout.addWidget(deriv_poly)
+        add_row(deriv_widget)
+
+        reset_btn = QtWidgets.QPushButton("Disable all filters")
+        reset_btn.clicked.connect(self._reset_filters)
+        layout.addWidget(reset_btn)
+        return group
+
+    def _toggle_position_inset_from_menu(self, checked):
+        checked = bool(checked)
+        if hasattr(self, "position_inset_cb") and self.position_inset_cb:
+            block = self.position_inset_cb.blockSignals
+            try:
+                block(True)
+                self.position_inset_cb.setChecked(checked)
+            finally:
+                block(False)
+        self._show_position_inset = checked
+        self._update_position_inset_compare()
     def _gather_plotted_traces(self):
         traces = []
         channel = self.channel_combo.currentText()
@@ -4239,15 +4620,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 axis_unit_plot = "mV"
                 x_vals = x_vals * axis_plot_scale
             y_unit = self._channel_unit_for_spec(spec, channel)
+            y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_data, y_unit, axis_unit_plot)
             traces.append({
                 "label": self._display_name(spec),
                 "path": spec.get("path"),
                 "matrix_index": spec.get("matrix_index"),
                 "channel": channel,
                 "x_unit": axis_unit_plot,
-                "y_unit": y_unit,
+                "y_unit": y_unit_final,
                 "x_vals": np.asarray(x_vals, dtype=float),
-                "y_vals": np.asarray(y_data, dtype=float),
+                "y_vals": np.asarray(y_filtered, dtype=float),
                 "spec_id": spec_id,
                 "time": spec.get("time"),
                 "pos_x": spec.get("x"),
@@ -4392,6 +4774,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         menu.addSeparator()
         add_point_act = menu.addAction("Add point label here")
         clear_points_act = menu.addAction("Clear point labels")
+        inset_act = menu.addAction("Show position inset")
+        inset_act.setCheckable(True)
+        inset_act.setChecked(self._show_position_inset)
+        inset_act.toggled.connect(self._toggle_position_inset_from_menu)
         menu.addSeparator()
         # Lines submenu (per-curve controls)
         lines_menu = menu.addMenu("Lines")
@@ -4442,6 +4828,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         gh.addWidget(reset_cycle_act)
         g_act = QtWidgets.QWidgetAction(lines_menu); g_act.setDefaultWidget(global_row)
         lines_menu.addAction(g_act)
+        menu.addSeparator()
+        filters_menu = menu.addMenu("Filters")
+        self._build_filter_menu(filters_menu)
         menu.addSeparator()
         # Legend submenu
         legend_menu = menu.addMenu("Legend")

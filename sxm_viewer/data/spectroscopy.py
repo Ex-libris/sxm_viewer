@@ -674,6 +674,15 @@ def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], Mat
             x_inverse, y_inverse = x_inv, y_inv
             grid_cols, grid_rows = cols, rows
             break
+    # Fallback: treat 1×1 “matrices” as single-point traces instead of failing.
+    if (grid_cols <= 0 or grid_rows <= 0 or x_unique is None or y_unique is None) and x_arr.size == 1:
+        grid_cols = grid_rows = 1
+        x_unique = np.array([x_arr[0]])
+        y_unique = np.array([y_arr[0]])
+        x_quant = np.array([x_arr[0]])
+        y_quant = np.array([y_arr[0]])
+        x_inverse = np.array([0], dtype=int)
+        y_inverse = np.array([0], dtype=int)
     if grid_cols <= 0 or grid_rows <= 0 or x_unique is None or y_unique is None:
         raise MatrixDatError(path, "Unable to reconstruct grid dimensions from coordinates.")
     if grid_cols * grid_rows != x_arr.size:
