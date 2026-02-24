@@ -54,10 +54,16 @@ def supported_python_version(info):
 
 
 def assert_supported_runtime():
-    if not supported_python_version(sys.version_info):
+    runtime = sys.version_info[:2]
+    if runtime < MIN_PY:
         raise RuntimeError(
             f"Unsupported Python {sys.version_info.major}.{sys.version_info.minor}. "
-            f"Please use a Python between {MIN_PY[0]}.{MIN_PY[1]} and {MAX_PY[0]}.{MAX_PY[1]}."
+            f"Please use Python {MIN_PY[0]}.{MIN_PY[1]} or newer."
+        )
+    if runtime > MAX_PY:
+        print(
+            f"[install] Warning: running installer via Python {sys.version_info.major}.{sys.version_info.minor}, "
+            f"which is newer than the supported runtime range ({MIN_PY[0]}.{MIN_PY[1]}-{MAX_PY[0]}.{MAX_PY[1]})."
         )
 
 
@@ -85,7 +91,7 @@ def find_system_python() -> Path | None:
         program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
         
         # 1. Check python.org installations (most likely to have SSL)
-        for version in ["312", "311", "310", "39"]:
+        for version in ["313", "312", "311", "310", "39"]:
             # Per-user install
             candidates.append(Path(local_appdata) / "Programs" / "Python" / f"Python{version}" / "python.exe")
             # All users install
@@ -132,7 +138,7 @@ def find_system_python() -> Path | None:
         
     else:
         # Unix-like systems
-        for cmd in ["python3.12", "python3.11", "python3.10", "python3.9", "python3", "python"]:
+        for cmd in ["python3.13", "python3.12", "python3.11", "python3.10", "python3.9", "python3", "python"]:
             exe = shutil.which(cmd)
             if exe:
                 candidates.append(Path(exe))
@@ -171,33 +177,94 @@ def find_system_python() -> Path | None:
 
 def pick_base_python(args):
     """Pick the best Python interpreter to use."""
-    candidates: list[Path] = []
+    Candidate = tuple[Path, str, bool]
+    candidates: list[Candidate] = []
+    current_runtime = Path(sys.executable).resolve()
+    seen: set[Path] = set()
+    
+    def add_candidate(path: str | os.PathLike[str] | Path | None, label: str, strict: bool = False):
+        if not path:
+            return
+        candidate_path = Path(path)
+        try:
+            resolved = candidate_path.resolve()
+        except Exception:
+            resolved = candidate_path
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append((resolved, label, strict))
     
     # Priority 1: Explicit --python flag
     if args.python:
-        candidates.append(Path(args.python))
+        add_candidate(args.python, "--python flag", strict=True)
     
     # Priority 2: PYTHON environment variable
     env_py = os.environ.get("PYTHON")
     if env_py:
-        candidates.append(Path(env_py))
+        add_candidate(env_py, "PYTHON environment", strict=True)
     
     # Priority 3: Current interpreter (but check SSL)
-    candidates.append(Path(sys.executable))
+    add_candidate(current_runtime, "current interpreter")
     
     # Priority 4: Search for system Python with SSL
     system_py = find_system_python()
     if system_py:
-        candidates.append(system_py)
+        add_candidate(system_py, "system search")
     
-    for cand in candidates:
-        try:
-            if cand.exists():
-                return cand
-        except Exception:
+    last_error: str | None = None
+    for cand, label, strict in candidates:
+        if not cand.exists():
+            last_error = f"{label}: {cand} (not found)"
+            if strict:
+                raise RuntimeError(f"{label} points to missing interpreter: {cand}")
             continue
+        
+        try:
+            major, minor = read_python_version(cand)
+        except Exception as exc:
+            last_error = f"{label}: {cand} (unable to read version: {exc})"
+            if strict:
+                raise RuntimeError(f"{label} points to unusable interpreter: {cand} ({exc})")
+            print(f"[install] Skipping {cand} (cannot read version)")
+            continue
+        
+        if not supported_python_version((major, minor, 0)):
+            msg = (
+                f"Python {major}.{minor} outside supported range "
+                f"{MIN_PY[0]}.{MIN_PY[1]}-{MAX_PY[0]}.{MAX_PY[1]}"
+            )
+            last_error = f"{label}: {cand} ({msg})"
+            if strict:
+                raise RuntimeError(
+                    f"{label} points to unsupported Python {major}.{minor}. "
+                    f"Use a Python between {MIN_PY[0]}.{MIN_PY[1]} and {MAX_PY[0]}.{MAX_PY[1]}."
+                )
+            print(f"[install] Skipping {cand} ({msg})")
+            continue
+        
+        if not check_ssl_support(cand):
+            last_error = f"{label}: {cand} (no SSL support)"
+            if strict:
+                raise RuntimeError(
+                    f"{label} interpreter {cand} lacks SSL support. "
+                    "Install Python from python.org and re-run with --reset."
+                )
+            print(f"[install] Skipping {cand} (no SSL support)")
+            continue
+        
+        if cand != current_runtime:
+            print(f"[install] Using {cand} from {label}")
+        return cand
     
-    return Path(sys.executable)
+    error = "Unable to locate a usable Python interpreter."
+    if last_error:
+        error += f" Last checked candidate: {last_error}"
+    error += (
+        f"\nInstall Python {MIN_PY[0]}.{MIN_PY[1]}-{MAX_PY[0]}.{MAX_PY[1]} from https://www.python.org/downloads/ "
+        "or pass --python to point to a supported interpreter."
+    )
+    raise RuntimeError(error)
 
 
 def read_python_version(py_path: Path) -> tuple[int, int]:
@@ -355,10 +422,10 @@ def install_requirements():
             print("1. Download Python from https://www.python.org/downloads/")
             print("   (Make sure to check 'Add Python to PATH' during installation)")
             print("2. Set PYTHON environment variable to point to the new Python:")
-            print("   set PYTHON=C:\\Python312\\python.exe")
+            print("   set PYTHON=C:\\Python313\\python.exe")
             print("3. Re-run this installer with --reset")
             print("\nExample:")
-            print("   set PYTHON=C:\\Python312\\python.exe")
+            print("   set PYTHON=C:\\Python313\\python.exe")
             print("   python install.py --reset")
         else:
             print("\nTry running with --reset to start fresh:")
@@ -422,7 +489,7 @@ def main():
             print("    conda install openssl certifi")
             print("  Then re-run this installer with --reset")
             print("\nOption 3: Manually specify working Python")
-            print("  set PYTHON=C:\\Python312\\python.exe")
+            print("  set PYTHON=C:\\Python313\\python.exe")
             print("  install_sxm_viewer.bat --reset")
             print("="*70 + "\n")
             print("[install] Cannot continue with broken Python. Aborting.")
