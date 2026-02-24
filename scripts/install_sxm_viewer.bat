@@ -22,7 +22,7 @@ if defined PYTHON (
 REM Priority 2: Look for Python from python.org (with SSL support)
 if not defined PYTHON_EXE (
     echo Searching for Python installations...
-    for %%V in (312 311 310 39) do (
+for %%V in (313 312 311 310 39) do (
         REM Check LocalAppData (standard python.org install for current user)
         if exist "%LocalAppData%\Programs\Python\Python%%V\python.exe" (
             set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python%%V\python.exe"
@@ -125,7 +125,7 @@ if not defined PYTHON_EXE (
     echo.
     echo ERROR: No Python installation found!
     echo.
-    echo Please install Python 3.9-3.12 from:
+    echo Please install Python 3.9-3.13 from:
     echo   https://www.python.org/downloads/
     echo.
     echo Make sure to check "Add Python to PATH" during installation.
