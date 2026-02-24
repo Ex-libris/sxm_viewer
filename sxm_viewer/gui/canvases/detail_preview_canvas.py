@@ -221,7 +221,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_blit_active = False
         self._profile_animation_enabled = False
         # Molecule palette
-        self.molecule_palette = "cpk"
+        self.molecule_palette = "pymol"
         self._molecule_palette_cb = None
         self._zoom_reset_limits = {}
         # Pan/zoom state
@@ -4097,7 +4097,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if ext is not None:
                 x0, x1, y1, y0 = ext
                 ax.set_xlim(x0, x1)
-                ax.set_ylim(y0, y1)
+                if flip:
+                    ax.set_ylim(y0, y1)
+                else:
+                    ax.set_ylim(y1, y0)
         except Exception:
             pass
         ax.set_autoscale_on(False)
@@ -4221,13 +4224,23 @@ class MultiPreviewCanvas(FigureCanvas):
             if display_extent is None:
                 im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
             else:
-                im = ax.imshow(arr_plot, extent=display_extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmap)
+                im = ax.imshow(
+                    arr_plot,
+                    extent=display_extent,
+                    origin=origin,
+                    interpolation='nearest',
+                    aspect='equal',
+                    cmap=cmap,
+                )
             try:
                 ext = display_extent if display_extent is not None else im.get_extent()
                 if ext is not None:
                     x0, x1, y1, y0 = ext
                     ax.set_xlim(x0, x1)
-                    ax.set_ylim(y0, y1)
+                    if flip:
+                        ax.set_ylim(y0, y1)
+                    else:
+                        ax.set_ylim(y1, y0)
             except Exception:
                 pass
             # record base limits for reset before any restore
