@@ -429,12 +429,15 @@ def _scan_spectros(viewer, folder:Path):
         dataset_key, display_label = matrix_dataset_key(base, channel_code)
         stem_base = _matrix_base_name(path_obj.stem)
         has_grid = grid_rows and grid_cols and (grid_rows * grid_cols == len(spec_list))
+        single_point_matrix = bool(has_grid and grid_rows == 1 and grid_cols == 1 and len(spec_list) == 1)
         has_matrix_meta = any(
             (s.get('matrix_dataset') or (s.get('grid_cols') and s.get('grid_rows')))
             for s in spec_list
         )
         is_named_matrix = "matrix" in path_obj.name.lower()
         if force_single_mode:
+            is_matrix = False
+        elif single_point_matrix:
             is_matrix = False
         elif has_matrix_meta:
             is_matrix = True

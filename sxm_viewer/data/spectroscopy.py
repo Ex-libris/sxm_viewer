@@ -691,12 +691,15 @@ def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], Mat
     x_axis = _axis_values(x_arr, x_quant, x_unique)
     y_axis = _axis_values(y_arr, y_quant, y_unique)
 
-    cube = np.empty((bias_axis.size, grid_rows, grid_cols), dtype=float)
-    cube.fill(np.nan)
-    for col in range(data.shape[1]):
-        cube[:, y_inverse[col], x_inverse[col]] = data[:, col]
-    if np.isnan(cube).any():
-        raise MatrixDatError(path, "Incomplete data grid (NaNs present after cube reconstruction).")
+    cube = None
+    is_single_point_matrix = grid_cols == 1 and grid_rows == 1
+    if not is_single_point_matrix:
+        cube = np.empty((bias_axis.size, grid_rows, grid_cols), dtype=float)
+        cube.fill(np.nan)
+        for col in range(data.shape[1]):
+            cube[:, y_inverse[col], x_inverse[col]] = data[:, col]
+        if np.isnan(cube).any():
+            raise MatrixDatError(path, "Incomplete data grid (NaNs present after cube reconstruction).")
 
     specs: List[Dict[str, object]] = []
     for col in range(data.shape[1]):
@@ -733,23 +736,31 @@ def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], Mat
         }
         if unit:
             entry["unit"] = unit
+        if is_single_point_matrix:
+            entry["matrix_file"] = False
+            entry["matrix_dataset"] = None
+            entry["matrix_index"] = None
+            entry["grid_cols"] = 1
+            entry["grid_rows"] = 1
         specs.append(entry)
-    cube_metadata = {
-        "channel_code": channel_code,
-        "axis_label": axis_label,
-        "axis_unit": axis_unit,
-        "time": _mtime(path),
-    }
-    matrix_cube = MatrixDataCube(
-        path=str(path),
-        dataset_key=dataset_key or base or Path(path).stem,
-        channel=channel_display,
-        bias=bias_axis.copy(),
-        x=x_axis,
-        y=y_axis,
-        data=cube,
-        metadata=cube_metadata,
-    )
+    matrix_cube = None
+    if not is_single_point_matrix:
+        cube_metadata = {
+            "channel_code": channel_code,
+            "axis_label": axis_label,
+            "axis_unit": axis_unit,
+            "time": _mtime(path),
+        }
+        matrix_cube = MatrixDataCube(
+            path=str(path),
+            dataset_key=dataset_key or base or Path(path).stem,
+            channel=channel_display,
+            bias=bias_axis.copy(),
+            x=x_axis,
+            y=y_axis,
+            data=cube,
+            metadata=cube_metadata,
+        )
     return specs, matrix_cube
 
 

@@ -5391,7 +5391,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if spec_id in self._fit_results:
                 self._fit_results.pop(spec_id, None)
             row = self.spec_list.indexOfTopLevelItem(item)
-            self.spec_list.takeItem(row)
+            if row >= 0:
+                self.spec_list.takeTopLevelItem(row)
             removed = True
         if removed:
             self._update_plot()
@@ -5768,9 +5769,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             major = cfg.get("major")
             if major and major > 0:
                 try:
-                    axis.set_major_locator(MultipleLocator(major))
+                    if abs(major) < 1e-12:
+                        major = None
+                    else:
+                        data_lim = axis.get_view_interval()
+                        span = abs(data_lim[1] - data_lim[0])
+                        if np.isfinite(span) and span / major > 2000:
+                            raise ValueError("Too many major ticks requested.")
+                        axis.set_major_locator(MultipleLocator(major))
                 except Exception:
-                    pass
+                    try:
+                        axis.set_major_locator(MaxNLocator(nbins='auto'))
+                    except Exception:
+                        pass
             else:
                 try:
                     axis.set_major_locator(MaxNLocator(nbins='auto'))
@@ -5779,6 +5790,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             minor_count = int(cfg.get("minor_count", 0))
             if minor_count > 0:
                 try:
+                    minor_count = max(1, min(10, minor_count))
                     axis.set_minor_locator(AutoMinorLocator(minor_count + 1))
                 except Exception:
                     pass

@@ -140,7 +140,7 @@ class Molecule:
         self.mirror_y = False
         self.z_height_scale = 1.0 # For visual depth cue
         self.bonds = [] # List of (index1, index2)
-        self.display_mode = 'Atoms + Bonds'
+        self.display_mode = 'Bonds Only'
         self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire | sticks | skeletal
         self.bond_style = 'default'    # default | thin | thick
         self.atom_color_override = None  # Hex string or None (use palette)
