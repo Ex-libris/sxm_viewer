@@ -1285,6 +1285,27 @@ QLabel:hover {{
     def _header_extent(self, header):
         return main_window_spectro.header_extent(self, header)
 
+    def _header_scan_angle(self, header):
+        """Return the configured scan angle (degrees) for a header, defaulting to 0.0."""
+        if not header:
+            return 0.0
+        for key in ("Angle", "ScanAngle", "scan_angle", "Scan_Angle"):
+            if key not in header:
+                continue
+            val = header.get(key)
+            if val in (None, ""):
+                continue
+            try:
+                return float(val)
+            except Exception:
+                try:
+                    parsed = _safe_float(val)
+                    if parsed is not None:
+                        return float(parsed)
+                except Exception:
+                    continue
+        return 0.0
+
     def _display_extent(self, extent, header=None):
         return main_window_spectro.display_extent(self, extent, header=header)
 
@@ -3790,8 +3811,22 @@ QLabel:hover {{
                 col, row = grid_fallback
                 return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
             return None
-        frac_x = (x - x0) / xspan
-        frac_y = (y1 - y) / yspan  # invert so larger y appears lower on the pixmap
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        dx_norm = (x - cx) / xspan
+        dy_norm = (y - cy) / yspan
+        angle_deg = self._header_scan_angle(header)
+        if angle_deg:
+            theta = math.radians(angle_deg)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            u = dx_norm * cos_t + dy_norm * sin_t
+            v = -dx_norm * sin_t + dy_norm * cos_t
+        else:
+            u = dx_norm
+            v = dy_norm
+        frac_x = (u + 0.5)
+        frac_y = (0.5 - v)
         if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
             # try spectroscopy cloud extent before clamping/grid
             fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)

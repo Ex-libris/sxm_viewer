@@ -130,9 +130,26 @@ def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: 
     extent = viewer._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
     x0, x1, y1, y0 = extent
     xspan = x1 - x0 if x1 != x0 else 1.0
-    yspan = y0 - y1 if y0 != y1 else 1.0
-    sx = x0 + (px / float(max(1, w - 1))) * xspan
-    sy = y1 + ((py / float(max(1, h - 1))) * -yspan)
+    yspan = y1 - y0 if y1 != y0 else 1.0
+    cols = max(1, w - 1)
+    rows = max(1, h - 1)
+    frac_x = px / float(cols)
+    frac_y = py / float(rows)
+    u = frac_x - 0.5
+    v = 0.5 - frac_y
+    angle_deg = viewer._header_scan_angle(header) if header is not None and hasattr(viewer, "_header_scan_angle") else 0.0
+    if angle_deg:
+        theta = math.radians(angle_deg)
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        u_rot = u * cos_t - v * sin_t
+        v_rot = u * sin_t + v * cos_t
+    else:
+        u_rot, v_rot = u, v
+    cx = 0.5 * (x0 + x1)
+    cy = 0.5 * (y0 + y1)
+    sx = cx + u_rot * xspan
+    sy = cy + v_rot * yspan
     hits = []
     for s in entries:
         sx_e = s.get('x'); sy_e = s.get('y')

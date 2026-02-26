@@ -1,9 +1,0 @@
-temp_edit.py path=Path('sxm_viewer/gui/main_window.py')
-temp_edit.py text=path.read_text(encoding='utf-8')
-temp_edit.py old_start='    def _spawn_preview_popup(self, views, title=None):'
-temp_edit.py old_end='    def _on_molecule_palette_changed(self, palette: str):'
-temp_edit.py start_idx=text.index(old_start)
-temp_edit.py end_idx=text.index(old_end)
-temp_edit.py new_block='    def _spawn_preview_popup(self, views, title=None):\n        return spawn_preview_popup(self, views, title=title)\n\n'
-temp_edit.py text=text[:start_idx]+new_block+text[end_idx:]
-temp_edit.py path.write_text(text, encoding='utf-8')
