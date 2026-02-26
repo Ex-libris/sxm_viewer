@@ -72,6 +72,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.views = []
         self._ax_view_map = {}
+        self._image_meta = {}
         self._copy_feedback_handler = None
         self._views_callback = None
         self._drag_candidate = None  # (view, QPoint start, QImage cache)
@@ -407,6 +408,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
         self.fig.clf()
         self._ax_view_map = {}
+        self._image_meta = {}
         # reset zoom baselines for new axes
         self._zoom_reset_limits = {}
         self._scale_bar_artists = []
@@ -462,6 +464,18 @@ class MultiPreviewCanvas(FigureCanvas):
                     aspect='equal',
                     cmap=cmap,
                 )
+            try:
+                self._image_meta[ax] = {
+                    'extent': im.get_extent(),
+                    'origin': origin,
+                    'shape': arr_plot.shape,
+                }
+            except Exception:
+                self._image_meta[ax] = {
+                    'extent': display_extent,
+                    'origin': origin,
+                    'shape': arr_plot.shape,
+                }
             clim = v.get('clim')
             if clim:
                 try:
@@ -711,38 +725,53 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         raw_extent = view.get('extent_raw')
         rel = bool(view.get('relative_axes'))
-        # Bounds for fallback placement when coordinates are missing
+        arr_vals = np.asarray(view.get('arr'))
+        try:
+            arr_h, arr_w = arr_vals.shape
+        except Exception:
+            arr_h = arr_w = 0
+        meta = self._image_meta.get(ax, {})
+        extent_used = meta.get('extent')
+        origin = meta.get('origin', 'upper')
+        shape = meta.get('shape')
+        if shape and len(shape) == 2:
+            arr_h, arr_w = shape
+        extent = extent_used or (view.get('extent') or raw_extent)
         if raw_extent:
             x0, x1, y1, y0 = raw_extent
         else:
             x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
-        flip_y = False
-        y_min = y_max = None
-        extent = view.get('extent') or raw_extent
-        if extent and not rel:
-            try:
-                y_bottom = float(extent[2])
-                y_top = float(extent[3])
-                if y_bottom > y_top:
-                    flip_y = True
-                    y_min = y_top
-                    y_max = y_bottom
-            except Exception:
-                flip_y = False
-        def _to_rel(x, y):
-            if not rel or not raw_extent:
-                return x, y
-            try:
-                x_rel = x - float(x0)
-                y_min = min(float(y0), float(y1))
-                y_rel = y - y_min
-                return x_rel, y_rel
-            except Exception:
-                return x, y
-        def _map_y(y):
-            if flip_y and y_min is not None and y_max is not None:
-                return (y_min + y_max - y)
-            return y
+        if extent:
+            vals = list(extent)
+            if len(vals) == 4:
+                ex0, ex1, ey0, ey1 = vals
+            else:
+                ex0, ex1, ey0, ey1 = x0, x1, y1, y0
+        else:
+            ex0, ex1 = 0.0, float(max(arr_w - 1, 1))
+            ey0, ey1 = 0.0, float(max(arr_h - 1, 1))
+        cols = max(arr_w - 1, 1)
+        rows = max(arr_h - 1, 1)
+        def _axis_from_pixel(col, row):
+            if extent_used is not None and meta.get('shape'):
+                xmin, xmax, ymin, ymax = extent_used
+                span_x = xmax - xmin
+                span_y = ymax - ymin
+                if cols == 0:
+                    x_axis = xmin
+                else:
+                    x_axis = xmin + (col / float(cols)) * span_x
+                if rows == 0:
+                    y_axis = ymax if str(origin).lower() == 'upper' else ymin
+                else:
+                    if str(origin).lower() == 'upper':
+                        y_axis = ymax - (row / float(rows)) * span_y
+                    else:
+                        y_axis = ymin + (row / float(rows)) * span_y
+                return x_axis, y_axis
+            x_axis = ex0 if cols == 0 else ex0 + (col / float(cols)) * (ex1 - ex0)
+            y_axis = ey0 if rows == 0 else ey0 + (row / float(rows)) * (ey1 - ey0)
+            return x_axis, y_axis
         normal_xs = []
         normal_ys = []
         highlight_xs = []
@@ -751,13 +780,13 @@ class MultiPreviewCanvas(FigureCanvas):
         missing_specs = []
         highlight_spec = view.get('highlight_spec')
         pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
+        pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
         for idx, s in enumerate(specs):
-            sx, sy = s.get('x'), s.get('y')
-            if sx is None or sy is None:
+            coords = pixel_lookup.get(id(s))
+            if coords is None:
                 missing_specs.append(s)
                 continue
-            x, y = _to_rel(float(sx), float(sy))
-            y = _map_y(y)
+            x, y = _axis_from_pixel(coords[0], coords[1])
             points.append((x, y, s))
             if highlight_spec is not None and s is highlight_spec:
                 highlight_xs.append(x); highlight_ys.append(y)
@@ -775,8 +804,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 c = i % cols
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
-                fx, fy = _to_rel(fx, fy)
-                fy = _map_y(fy)
                 points.append((fx, fy, spec))
                 if highlight_spec is not None and spec is highlight_spec:
                     highlight_xs.append(fx); highlight_ys.append(fy)
