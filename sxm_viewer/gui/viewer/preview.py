@@ -41,6 +41,37 @@ from ..thumbnail_render import detect_valid_scan_region
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)
 
+def _build_spec_transform(header, xpix, ypix):
+    if not header:
+        return None
+    try:
+        xc = float(header.get('xCenter'))
+        yc = float(header.get('yCenter'))
+        xr = float(header.get('XScanRange'))
+        yr = float(header.get('YScanRange'))
+    except Exception:
+        return None
+    if xr == 0.0 or yr == 0.0:
+        return None
+    try:
+        xp = int(xpix)
+        yp = int(ypix)
+    except Exception:
+        xp = yp = None
+    try:
+        angle = float(header.get('Angle', 0.0))
+    except Exception:
+        angle = 0.0
+    return {
+        'x_center': xc,
+        'y_center': yc,
+        'x_range': xr,
+        'y_range': yr,
+        'angle': angle,
+        'xpix': xp,
+        'ypix': yp,
+    }
+
 def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel_idx:int,
                          unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
     """Return HTML for the metadata pane with clearer styling and sections."""
@@ -402,6 +433,15 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'channel_index': int(channel_idx),
     }
     clim_main = _auto_preview_clim(display_arr)
+    spec_pixels = []
+    for spec in overlay_specs:
+        coords = None
+        try:
+            coords = viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key=str(header_path))
+        except Exception:
+            coords = None
+        if coords is not None:
+            spec_pixels.append((spec, float(coords[0]), float(coords[1])))
     main = {
         'arr': display_arr,
         'extent': display_extent,
@@ -415,6 +455,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'meta': meta,
         'spectra': overlay_specs,
         'highlight_spec': highlight_spec,
+        'spec_pixels': list(spec_pixels),
     }
     if clim_main:
         main['clim'] = clim_main
@@ -448,7 +489,8 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
                      'cmap': cmap2, 'unit': unit2_display, 'title': title2,
                      'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
-                     'relative_axes': bool(viewer.relative_axes), 'meta': meta2}
+                     'relative_axes': bool(viewer.relative_axes), 'meta': meta2,
+                     'spec_pixels': list(spec_pixels)}
             if clim2:
                 vdict['clim'] = clim2
             views.append(vdict)
