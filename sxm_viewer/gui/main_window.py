@@ -2325,6 +2325,11 @@ QLabel:hover {{
             self._filtered_channel_cache.clear()
         except Exception:
             pass
+        try:
+            if getattr(self, 'preview_canvas', None):
+                self.preview_canvas.set_relative_axes_override(self.relative_axes)
+        except Exception:
+            pass
         if self.last_preview:
             try:
                 key, idx = self.last_preview
@@ -2332,6 +2337,11 @@ QLabel:hover {{
                 key = idx = None
             self.last_preview = None  # force rebuild of current view
             if key is not None and idx is not None:
+                try:
+                    if getattr(self, 'preview_canvas', None):
+                        self.preview_canvas.suspend_zoom_restore()
+                except Exception:
+                    pass
                 self.show_file_channel(key, idx)
                 # After the view is rebuilt, reset zoom so the new extent
                 # (relative vs absolute) is applied immediately.

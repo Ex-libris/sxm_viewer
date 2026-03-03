@@ -45,6 +45,7 @@ def spawn_preview_popup(owner, views, title=None):
     hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
     layout_cb = QtWidgets.QComboBox()
     layout_cb.addItems(["Grid", "Stacked"])
+    relative_cb = QtWidgets.QCheckBox("Relative axes")
     controls_bar.addWidget(measure_btn)
     controls_bar.addWidget(angle_btn)
     controls_bar.addWidget(scale_btn)
@@ -54,6 +55,7 @@ def spawn_preview_popup(owner, views, title=None):
     controls_bar.addSpacing(6)
     controls_bar.addWidget(QtWidgets.QLabel("Layout"))
     controls_bar.addWidget(layout_cb)
+    controls_bar.addWidget(relative_cb)
     controls_bar.addStretch(1)
 
     canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
@@ -130,6 +132,9 @@ def spawn_preview_popup(owner, views, title=None):
     filter_btn.clicked.connect(lambda _: owner._open_custom_filter_for_canvas(canvas))
 
     layout_cb.setCurrentText("Stacked" if canvas._view_layout == "stacked" else "Grid")
+    rel_initial = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
+    relative_cb.setChecked(rel_initial)
+    canvas.set_relative_axes_override(rel_initial)
 
     def _toggle_angle(checked):
         try:
@@ -151,6 +156,7 @@ def spawn_preview_popup(owner, views, title=None):
     angle_btn.toggled.connect(_toggle_angle)
     scale_btn.toggled.connect(_toggle_scale)
     layout_cb.currentTextChanged.connect(_toggle_layout)
+    relative_cb.toggled.connect(lambda checked: canvas.set_relative_axes_override(bool(checked)))
 
     def _clear_overlays():
         try:
