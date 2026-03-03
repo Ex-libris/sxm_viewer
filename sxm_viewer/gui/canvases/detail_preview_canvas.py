@@ -72,6 +72,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.views = []
         self._ax_view_map = {}
+        self._relative_axes_override = None
+        self._suspend_zoom_restore = False
         self._image_meta = {}
         self._copy_feedback_handler = None
         self._views_callback = None
@@ -285,6 +287,32 @@ class MultiPreviewCanvas(FigureCanvas):
         self._view_layout = layout
         self._redraw()
 
+    def set_relative_axes_override(self, value):
+        """Force all views to use relative axes (True/False) or None to defer to view settings."""
+        if value is None:
+            new_val = None
+        else:
+            new_val = bool(value)
+        if self._relative_axes_override == new_val:
+            return
+        self._relative_axes_override = new_val
+        self.suspend_zoom_restore()
+        self._redraw()
+
+    def suspend_zoom_restore(self):
+        self._suspend_zoom_restore = True
+
+    def _use_relative_axes(self, view):
+        if self._relative_axes_override is not None:
+            return bool(self._relative_axes_override)
+        return bool(view.get('relative_axes'))
+
+    def _axis_meta_for_view(self, view):
+        for ax, v in self._ax_view_map.items():
+            if v is view:
+                return ax, self._image_meta.get(ax, {})
+        return None, {}
+
     def clear_views(self):
         self.views = []
         self._redraw()
@@ -397,14 +425,18 @@ class MultiPreviewCanvas(FigureCanvas):
     def _redraw(self):
         # Preserve current zoom/limits per view before clearing
         current_limits = {}
-        try:
-            for ax, v in list(self._ax_view_map.items()):
-                try:
-                    current_limits[self._outline_key(v)] = (ax.get_xlim(), ax.get_ylim())
-                except Exception:
-                    continue
-        except Exception:
-            current_limits = {}
+        preserve_zoom = not getattr(self, "_suspend_zoom_restore", False)
+        if preserve_zoom:
+            try:
+                for ax, v in list(self._ax_view_map.items()):
+                    try:
+                        current_limits[self._outline_key(v)] = (ax.get_xlim(), ax.get_ylim())
+                    except Exception:
+                        continue
+            except Exception:
+                current_limits = {}
+        else:
+            self._suspend_zoom_restore = False
 
         self.fig.clf()
         self._ax_view_map = {}
@@ -442,7 +474,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if i == 0:
                 self.main_ax = ax
             arr = np.asarray(v['arr'])
-            flip = bool(v.get('relative_axes'))
+            flip = self._use_relative_axes(v)
             if flip:
                 arr_plot = np.flipud(arr)
             else:
@@ -514,13 +546,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 ax.set_xticks([])
                 ax.set_yticks([])
             # Restore previous zoom if available
-            prev_lim = current_limits.get(self._outline_key(v))
-            if prev_lim:
-                try:
-                    ax.set_xlim(prev_lim[0])
-                    ax.set_ylim(prev_lim[1])
-                except Exception:
-                    pass
+            if preserve_zoom:
+                prev_lim = current_limits.get(self._outline_key(v))
+                if prev_lim:
+                    try:
+                        ax.set_xlim(prev_lim[0])
+                        ax.set_ylim(prev_lim[1])
+                    except Exception:
+                        pass
             if self.scale_bar_enabled:
                 try:
                     self._add_scale_bar(ax, v)
@@ -724,7 +757,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._spectra_points[ax] = []
             return
         raw_extent = view.get('extent_raw')
-        rel = bool(view.get('relative_axes'))
+        rel = self._use_relative_axes(view)
         arr_vals = np.asarray(view.get('arr'))
         try:
             arr_h, arr_w = arr_vals.shape
@@ -2306,11 +2339,18 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             v0 = view if view is not None else self.views[0]
             arr_raw = np.asarray(v0['arr'], dtype=float)
-            flip = bool(v0.get('relative_axes'))
+            flip = self._use_relative_axes(v0)
             arr_src = np.flipud(arr_raw) if flip else arr_raw
             h, w = arr_src.shape
-            # Use the same extent that is passed to imshow (handles relative axes)
-            extent = self._display_extent_for_view(v0, v0.get('extent', None))
+            ax, meta = self._axis_meta_for_view(v0)
+            extent_meta = meta.get('extent')
+            origin_meta = meta.get('origin', 'upper')
+            # Use the same extent/origin that imshow used (handles overrides & relative axes)
+            if extent_meta is not None:
+                extent = extent_meta
+            else:
+                extent = self._display_extent_for_view(v0, v0.get('extent', None))
+                origin_meta = 'lower' if flip else 'upper'
             axis_unit = self._profile_axis_unit()
             x0, y0, x1, y1 = pts
             if extent is None:
@@ -2320,11 +2360,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 xmin, xmax = extent[0], extent[1]
                 ymin, ymax = extent[2], extent[3]
                 xr = (xmax - xmin) if (xmax is not None and xmin is not None) else 1.0
-                yr = (ymin - ymax) if (ymin is not None and ymax is not None) else 1.0
-                c0 = (x0 - xmin) / (xr + 1e-12) * (w - 1)
-                c1 = (x1 - xmin) / (xr + 1e-12) * (w - 1)
-                r0 = (y0 - ymax) / (ymin - ymax + 1e-12) * (h - 1)
-                r1 = (y1 - ymax) / (ymin - ymax + 1e-12) * (h - 1)
+                yr = (ymax - ymin) if (ymax is not None and ymin is not None) else 1.0
+                c0 = (x0 - xmin) / (xr + 1e-12) * max(w - 1, 1)
+                c1 = (x1 - xmin) / (xr + 1e-12) * max(w - 1, 1)
+                if str(origin_meta).lower() == 'upper':
+                    r0 = (ymax - y0) / (yr + 1e-12) * max(h - 1, 1)
+                    r1 = (ymax - y1) / (yr + 1e-12) * max(h - 1, 1)
+                else:
+                    r0 = (y0 - ymin) / (yr + 1e-12) * max(h - 1, 1)
+                    r1 = (y1 - ymin) / (yr + 1e-12) * max(h - 1, 1)
                 try:
                     dx_nm = (x1 - x0); dy_nm = (y1 - y0)
                     length_nm = float(math.hypot(dx_nm, dy_nm))
@@ -2371,7 +2415,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 'distance_unit': distance_unit if x_phys is not None else 'px',
                 'color': color,
                 'label': self._format_profile_label(pts),
-                'relative_axes': bool(v0.get('relative_axes')),
+                'relative_axes': self._use_relative_axes(v0),
                 'meta': meta,
             }
         except Exception:
@@ -4071,7 +4115,7 @@ class MultiPreviewCanvas(FigureCanvas):
         """Return the extent that should be passed to matplotlib based on relative axes."""
         if extent is None:
             return None
-        if not bool(view.get('relative_axes')):
+        if not self._use_relative_axes(view):
             return self._normalize_extent(extent)
         try:
             x0, x1, y1, y0 = extent
@@ -4079,7 +4123,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return self._normalize_extent(extent)
         width = max(abs(x1 - x0), 1e-6)
         height = max(abs(y0 - y1), 1e-6)
-        return self._normalize_extent((0.0, width, height, 0.0))
+        return self._normalize_extent((0.0, width, 0.0, height))
 
     def _normalize_extent(self, extent):
         if not extent or len(extent) != 4:
@@ -4096,7 +4140,7 @@ class MultiPreviewCanvas(FigureCanvas):
         fig = Figure(figsize=(6, 6))
         ax = fig.add_subplot(1, 1, 1)
         arr = np.asarray(view.get('arr'))
-        flip = bool(view.get('relative_axes'))
+        flip = self._use_relative_axes(view)
         if flip:
             arr_plot = np.flipud(arr)
         else:
@@ -4240,7 +4284,7 @@ class MultiPreviewCanvas(FigureCanvas):
         for i, view in enumerate(views, 1):
             ax = fig.add_subplot(rows, cols, i)
             arr = np.asarray(view.get('arr'))
-            flip = bool(view.get('relative_axes'))
+            flip = self._use_relative_axes(view)
             arr_plot = np.flipud(arr) if flip else arr
             raw_extent = view.get('extent_raw')
             if raw_extent is None:
