@@ -295,6 +295,30 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return f"{base} ({unit})"
         return base
 
+    def _channel_unit_for_channel(self, name):
+        """Return the best-known unit string for a given spectroscopy channel."""
+        if not name:
+            return ""
+        spec = None
+        for entry in self._curve_entries or []:
+            if entry.get("channel") == name and entry.get("spec"):
+                spec = entry.get("spec")
+                break
+        if spec is None:
+            spec = getattr(self, "spec", None)
+        unit = ""
+        if spec:
+            unit = self._channel_unit_for_spec(spec, name) or ""
+        if not unit:
+            unit = (self.spec.get('unit_map', {}) or {}).get(name, "") if getattr(self, "spec", None) else ""
+        if not unit:
+            unit = guess_channel_unit(name) or ""
+        if not unit:
+            match = re.search(r"\(([^)]+)\)", str(name))
+            if match:
+                unit = match.group(1).strip()
+        return unit
+
     def _axis_display_name(self, axis):
         label = axis.get("label") or "Axis"
         unit = axis.get("unit") or ""
