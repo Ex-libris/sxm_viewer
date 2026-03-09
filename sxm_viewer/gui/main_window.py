@@ -876,6 +876,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_filter_menu_callback(
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
+        self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
         # Seed molecule recents from config and listen for updates
         try:
@@ -4288,6 +4289,9 @@ QLabel:hover {{
         export_xyz_act = QtWidgets.QAction("Export XYZ...", menu)
         export_xyz_act.triggered.connect(self.on_export_xyz_files)
         menu.addAction(export_xyz_act)
+        export_stp_act = QtWidgets.QAction("Export WSxM STP...", menu)
+        export_stp_act.triggered.connect(self.on_export_stp_files)
+        menu.addAction(export_stp_act)
         adjust_act = QtWidgets.QAction("Adjust image...", menu)
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
@@ -5768,6 +5772,11 @@ QLabel:hover {{
 
     def on_export_selected_same_view(self):
         return viewer_export.on_export_selected_same_view(self)
+    def on_export_stp_files(self):
+        return viewer_export.on_export_wsxm_stp_files(self)
+
+    def _export_view_as_stp(self, view):
+        return viewer_export.export_view_as_stp(self, view)
 
     def _on_batch_export_progress(self, current, total, path):
         return viewer_export._on_batch_export_progress(self, current, total, path)

@@ -87,6 +87,7 @@ def spawn_preview_popup(owner, views, title=None):
         )
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
+    canvas.set_stp_export_callback(owner._export_view_as_stp)
     seq = views[0].get("crop_sequence") if views else None
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)

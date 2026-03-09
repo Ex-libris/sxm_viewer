@@ -74,6 +74,16 @@ from ...data.spectroscopy import (
     _read_text,
 )
 from ..detail_panels import BatchExportSignals, BatchExportWorker
+from ...utils.units import _safe_float
+from ..wsxm_stp import save_wsxm_stp
+
+try:  # Late imports to avoid circular references in stripped-down builds
+    from ..thumbnail_render import convert_to_si, _value_in_nm
+except Exception:  # pragma: no cover - fallback for testing
+    convert_to_si = None
+
+    def _value_in_nm(val, unit):
+        return None
 
 def _collect_channel_exports(viewer, header_path_str, main_channel_idx=None):
     header_path = Path(header_path_str)
@@ -264,6 +274,94 @@ def on_export_xyz_files(viewer):
             preview += "\n..."
         QtWidgets.QMessageBox.information(viewer, "Export", f"Exported {len(exported)} XYZ file(s) to {out_dir}:\n{preview}")
 
+def on_export_wsxm_stp_files(viewer):
+    targets = list(getattr(viewer, 'thumb_multi_select', set()))
+    if not targets:
+        focus = getattr(viewer, 'selected_file_for_thumbs', None)
+        if focus:
+            targets = [focus]
+        elif viewer.last_preview:
+            targets = [viewer.last_preview[0]]
+    if not targets:
+        QtWidgets.QMessageBox.information(viewer, "Export", "No thumbnails selected.")
+        return
+    out_dir = QtWidgets.QFileDialog.getExistingDirectory(
+        viewer, "Select folder for WSxM STP export", str(viewer.last_dir)
+    )
+    if not out_dir:
+        return
+    out_path = Path(out_dir)
+    try:
+        out_path.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, "Export", f"Cannot create folder: {exc}")
+        return
+    channel_idx = viewer.channel_dropdown.currentIndex()
+    exported = []
+    errors = []
+    for file_key in targets:
+        header, exports = viewer._collect_channel_exports(file_key, channel_idx)
+        if header is None or not exports:
+            errors.append(f"{Path(file_key).name}: no channel data available")
+            continue
+        for item in exports:
+            try:
+                arr, meta = _prepare_stp_payload(viewer, file_key, item, header)
+                fname = _build_stp_filename(viewer, file_key, item)
+                save_wsxm_stp(out_path / fname, arr, **meta)
+                exported.append(str(out_path / fname))
+            except Exception as exc:
+                errors.append(f"{Path(file_key).name}: {exc}")
+    if not exported and errors:
+        QtWidgets.QMessageBox.warning(viewer, "Export", "\n".join(errors[:5]))
+        return
+    summary = f"Exported {len(exported)} STP file(s) to {out_path}"
+    if errors:
+        summary += f"\nErrors ({len(errors)}):\n" + "\n".join(errors[:5])
+    QtWidgets.QMessageBox.information(viewer, "Export", summary)
+
+def export_view_as_stp(viewer, view: dict | None):
+    if not view:
+        QtWidgets.QMessageBox.information(viewer, "Export", "No view selected.")
+        return
+    meta = view.get('meta') or {}
+    file_path = meta.get('file_path')
+    chan_idx = meta.get('channel_index')
+    if not file_path or chan_idx is None:
+        QtWidgets.QMessageBox.warning(viewer, "Export", "View metadata missing file reference.")
+        return
+    header, _fds = viewer.headers.get(str(file_path), (None, None))
+    if header is None:
+        QtWidgets.QMessageBox.warning(viewer, "Export", "Header information unavailable.")
+        return
+    item = {
+        'arr': np.asarray(view.get('arr')),
+        'unit': view.get('unit'),
+        'caption': meta.get('channel') or view.get('colorbar_label'),
+        'idx': chan_idx,
+        'extent': view.get('extent') or view.get('extent_raw'),
+    }
+    try:
+        arr, meta_params = _prepare_stp_payload(viewer, file_path, item, header)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, "Export", f"Cannot prepare STP export: {exc}")
+        return
+    default_name = _build_stp_filename(viewer, file_path, item)
+    out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        viewer,
+        "Export view as WSxM STP",
+        str(Path(viewer.last_dir) / default_name),
+        "WSxM STP (*.stp)",
+    )
+    if not out_path:
+        return
+    try:
+        save_wsxm_stp(out_path, arr, **meta_params)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, "Export", f"Failed to save STP file:\n{exc}")
+        return
+    QtWidgets.QMessageBox.information(viewer, "Export", f"Saved STP file to\n{out_path}")
+
 
 def on_export_selected_same_view(viewer):
     targets = list(getattr(viewer, 'thumb_multi_select', set()))
@@ -319,11 +417,174 @@ def _on_batch_export_finished(viewer, saved_paths, errors, cancelled):
     if errors:
         msg_lines.append("Errors:\n" + "\n".join(errors[:10]))
     QtWidgets.QMessageBox.information(viewer, "Batch export", "\n".join(msg_lines))
+
+
+def _normalize_stp_array(arr, unit):
+    data = np.asarray(arr, dtype=np.float64)
+    converter = convert_to_si
+    if callable(converter):
+        try:
+            data_si, base_unit = converter(data, unit)
+        except Exception:
+            data_si, base_unit = data, unit
+    else:
+        data_si, base_unit = data, unit
+    base_unit = base_unit or (unit or "arb.")
+    data_si = np.asarray(data_si, dtype=np.float64)
+    if base_unit == "m":
+        return data_si / 1e-9, "nm"
+    return data_si, base_unit
+
+
+def _convert_scalar_to_unit(value, unit, target_unit):
+    if value in (None, ""):
+        return None
+    try:
+        arr = np.array([float(value)], dtype=np.float64)
+    except Exception:
+        return None
+    converter = convert_to_si
+    if callable(converter):
+        try:
+            arr_si, base_unit = converter(arr, unit)
+        except Exception:
+            arr_si, base_unit = arr, unit
+    else:
+        arr_si, base_unit = arr, unit
+    val = float(arr_si[0])
+    base = (base_unit or unit or target_unit or "").lower()
+    if target_unit and target_unit.lower() == "pa":
+        if base == "a":
+            return val * 1e12
+        if base == "pa":
+            return val
+    if target_unit and target_unit.lower() == "v":
+        return val
+    return val
+
+
+def _range_nm_from_header(header, axis, extent):
+    key = f"{axis}ScanRange"
+    unit_key = f"{axis}PhysUnit"
+    rng = _value_in_nm(header.get(key), header.get(unit_key) or header.get("PhysUnit"))
+    if rng is None:
+        rng = _value_in_nm(header.get("ScanRange"), header.get("PhysUnit"))
+    if rng is None and extent is not None:
+        idx = (0, 1) if axis == "X" else (2, 3)
+        try:
+            rng = abs(float(extent[idx[1]]) - float(extent[idx[0]]))
+        except Exception:
+            rng = None
+    return rng
+
+
+def _build_stp_comment(file_key, caption, header, x_nm, y_nm):
+    now_txt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"Exported from SXM Viewer on {now_txt}",
+        f"Source: {Path(file_key).name}",
+        f"Channel: {caption}",
+    ]
+    date = str(header.get("Date", "") or "").strip()
+    time_txt = str(header.get("Time", "") or "").strip()
+    acquired = " ".join(t for t in (date, time_txt) if t).strip()
+    if acquired:
+        lines.append(f"Acquired: {acquired}")
+    if x_nm is not None and y_nm is not None:
+        lines.append(f"Scan size: {x_nm:.3f} nm × {y_nm:.3f} nm")
+    bias = header.get("Bias")
+    bias_unit = header.get("BiasPhysUnit", "")
+    if bias not in (None, ""):
+        lines.append(f"Bias (raw): {bias} {bias_unit}".strip())
+    setp = header.get("SetPoint")
+    setp_unit = header.get("SetPointPhysUnit", "")
+    if setp not in (None, ""):
+        lines.append(f"Setpoint (raw): {setp} {setp_unit}".strip())
+    user = header.get("UserName")
+    if user:
+        lines.append(f"Operator: {user}")
+    return "\n".join(lines)[:1800]
+
+
+def _build_wsxm_comment_block(header_path):
+    """Return a WSxM-style comment block (escaped newlines) using the source header."""
+    try:
+        raw = Path(header_path).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        try:
+            raw = Path(header_path).read_text(encoding="cp1252", errors="ignore")
+        except Exception:
+            raw = ""
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return None
+    prefix = "Converted from SXM Viewer files\n\nHEADER DUMP:\n"
+    return prefix + raw
+
+
+def _prepare_stp_payload(viewer, file_key, item, header):
+    arr = item.get('arr')
+    if arr is None:
+        raise ValueError("Missing image data")
+    arr_norm, z_unit = _normalize_stp_array(arr, item.get('unit'))
+    if arr_norm.ndim != 2:
+        raise ValueError("WSxM export expects 2-D data")
+    extent = item.get('extent') or item.get('extent_raw')
+    x_nm = _range_nm_from_header(header, "X", extent)
+    y_nm = _range_nm_from_header(header, "Y", extent)
+    if x_nm is None:
+        x_nm = float(np.shape(arr_norm)[1])
+    if y_nm is None:
+        y_nm = float(np.shape(arr_norm)[0])
+    setpoint_pa = _convert_scalar_to_unit(header.get('SetPoint'), header.get('SetPointPhysUnit'), 'pA')
+    bias_v = _convert_scalar_to_unit(header.get('Bias'), header.get('BiasPhysUnit'), 'V')
+    angle = _safe_float(header.get('Angle'), 0.0)
+    timestamp_txt = " ".join(
+        t for t in (
+            str(header.get('Date', '') or '').strip(),
+            str(header.get('Time', '') or '').strip(),
+        ) if t
+    ).strip()
+    if not timestamp_txt:
+        timestamp_txt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    head_type = header.get('HeadType') or header.get('Head type') or header.get('Head') or 'STM'
+    caption = item.get('caption') or Path(file_key).name
+    z_gain_val = _safe_float(header.get('ZGain'), None)
+    z_gain = z_gain_val if z_gain_val is not None else 1.0
+    comment_block = _build_wsxm_comment_block(file_key)
+    comment = _build_stp_comment(file_key, caption, header, x_nm, y_nm)
+    meta = {
+        'channel': caption,
+        'x_nm': x_nm,
+        'y_nm': y_nm,
+        'z_unit': z_unit or 'arb.',
+        'setpoint_pa': setpoint_pa,
+        'bias_v': bias_v,
+        'angle_deg': angle,
+        'comment': comment,
+        'comment_block': comment_block,
+        'head_type': head_type,
+        'timestamp': timestamp_txt,
+        'z_gain': z_gain,
+        'name': Path(file_key).name,
+    }
+    return arr_norm, meta
+
+
+def _build_stp_filename(viewer, file_key, item):
+    chan = viewer._sanitize_filename_component(item.get('caption') or f"chan{item.get('idx', 0)}")
+    base = viewer._sanitize_filename_component(Path(file_key).stem)
+    parts = [p for p in (chan, base) if p]
+    if not parts:
+        parts = ["export"]
+    return "__".join(parts) + ".stp"
 __all__ = [
     "_collect_channel_exports",
     "on_export_pngs",
     "on_export_xyz_files",
+    "on_export_wsxm_stp_files",
     "on_export_selected_same_view",
+    "export_view_as_stp",
     "_on_batch_export_progress",
     "_on_batch_export_finished",
 ]
