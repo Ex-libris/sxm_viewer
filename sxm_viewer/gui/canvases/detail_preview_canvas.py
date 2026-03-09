@@ -101,6 +101,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_history_highlight_artists = {}
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
+        self._stp_export_callback = None
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -331,6 +332,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_filter_menu_callback(self, cb):
         """Provide a callback to populate filter actions on the context menu."""
         self._filter_menu_callback = cb
+
+    def set_stp_export_callback(self, cb):
+        """Register callback for WSxM STP export requests."""
+        self._stp_export_callback = cb
 
     def export_molecule_state(self):
         return [mol.to_dict() for mol in (self.molecules or [])]
@@ -3847,6 +3852,7 @@ class MultiPreviewCanvas(FigureCanvas):
         save_act = menu.addAction("Save image as...")
         save_svg_act = menu.addAction("Save view as SVG...")
         save_pdf_act = menu.addAction("Save view as PDF...")
+        export_stp_act = menu.addAction("Export as WSxM STP...")
         
         menu.addSeparator()
         reset_zoom_act = menu.addAction("Reset Zoom")
@@ -3910,6 +3916,12 @@ class MultiPreviewCanvas(FigureCanvas):
             self._save_view_vector(view, "svg")
         elif chosen == save_pdf_act:
             self._save_view_vector(view, "pdf")
+        elif chosen == export_stp_act:
+            if callable(self._stp_export_callback):
+                try:
+                    self._stp_export_callback(view)
+                except Exception:
+                    pass
         elif chosen == reset_zoom_act:
             self._reset_view_zoom()
         elif chosen == toggle_cbar_act:
