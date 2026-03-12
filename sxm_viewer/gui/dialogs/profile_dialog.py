@@ -128,6 +128,11 @@ class ProfileDialog(QtWidgets.QDialog):
                  add_overlay_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
+        self.setWindowFlags(
+            self.windowFlags()
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowSystemMenuHint
+        )
         self.resize(900, 600)
         self.setMinimumSize(700, 450)
         self._unit = unit

@@ -799,7 +799,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_tile_btn.setText("Tile pop-outs")
         self.quick_crop_tile_btn.setToolTip("Arrange all open pop-out windows on screen")
         self.quick_crop_tile_btn.setEnabled(False)
-        self.quick_crop_tile_btn.clicked.connect(self.quick_crop_controller.arrange_popups)
+        self.quick_crop_tile_btn.clicked.connect(self.on_arrange_popouts)
         quick_layout.addWidget(self.quick_crop_tile_btn)
         quick_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
@@ -877,6 +877,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
+        self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
         # Seed molecule recents from config and listen for updates
         try:
@@ -2812,6 +2813,12 @@ QLabel:hover {{
     def on_load_session(self):
         """Legacy hook delegating to SessionController for compatibility."""
         self.session_controller.load_session()
+
+    def on_arrange_popouts(self):
+        """Tile all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.arrange_popups()
 
     def _view_source_path(self, view):
         if not view:

@@ -14,7 +14,12 @@ def spawn_preview_popup(owner, views, title=None):
 
     dlg = QtWidgets.QDialog(owner)
     dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-    dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowMinimizeButtonHint | QtCore.Qt.WindowMaximizeButtonHint)
+    dlg.setWindowFlags(
+        dlg.windowFlags()
+        | QtCore.Qt.WindowMinimizeButtonHint
+        | QtCore.Qt.WindowMaximizeButtonHint
+        | QtCore.Qt.WindowSystemMenuHint
+    )
     dlg.setWindowTitle(title or "Preview")
     layout = QtWidgets.QVBoxLayout(dlg)
     controls_bar = QtWidgets.QHBoxLayout()
@@ -88,6 +93,7 @@ def spawn_preview_popup(owner, views, title=None):
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
     canvas.set_stp_export_callback(owner._export_view_as_stp)
+    canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     seq = views[0].get("crop_sequence") if views else None
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)

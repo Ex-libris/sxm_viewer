@@ -102,6 +102,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._stp_export_callback = None
+        self._arrange_windows_callback = None
         self._value_callback = None
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
@@ -336,6 +337,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
         self._stp_export_callback = cb
+
+    def set_window_arrange_callback(self, cb):
+        """Register callback invoked when the user requests window tiling."""
+        self._arrange_windows_callback = cb
 
     def export_molecule_state(self):
         return [mol.to_dict() for mol in (self.molecules or [])]
@@ -3901,6 +3906,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 recent_actions[act] = p
         clear_mols_act = menu.addAction("Clear Molecules")
 
+        arrange_act = None
+        if callable(self._arrange_windows_callback):
+            menu.addSeparator()
+            arrange_act = menu.addAction("Arrange pop-outs")
+
         chosen = menu.exec_(event.guiEvent.globalPos())
         if chosen == copy_act:
             self._copy_view_to_clipboard(view)
@@ -3936,6 +3946,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self.add_molecule(recent_actions[chosen])
         elif chosen == clear_mols_act:
             self._clear_molecules()
+        elif arrange_act and chosen == arrange_act:
+            try:
+                self._arrange_windows_callback()
+            except Exception:
+                pass
         elif angle_style_act and chosen == angle_style_act:
             checked = angle_style_act.isChecked()
             self._update_active_angle_style('arrows' if checked else 'dots')
