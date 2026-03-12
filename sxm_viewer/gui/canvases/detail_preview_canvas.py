@@ -4123,6 +4123,93 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return False
 
+    def _session_signature_for_view(self, view):
+        meta = view.get("meta") or {}
+        file_path = meta.get("file_path") or meta.get("path") or ""
+        channel = meta.get("channel_index")
+        try:
+            channel = int(channel) if channel is not None else None
+        except Exception:
+            channel = None
+        return {
+            "file": str(file_path),
+            "channel": channel,
+            "crop_sequence": view.get("crop_sequence"),
+            "title": view.get("title"),
+        }
+
+    @staticmethod
+    def _signature_key(signature):
+        if not signature:
+            return None
+        return (
+            signature.get("file"),
+            signature.get("channel"),
+            signature.get("crop_sequence"),
+            signature.get("title"),
+        )
+
+    def export_zoom_states(self):
+        states = []
+        for ax, view in self._ax_view_map.items():
+            sig = self._session_signature_for_view(view)
+            key = self._signature_key(sig)
+            if key is None:
+                continue
+            try:
+                cur_xlim = tuple(ax.get_xlim())
+                cur_ylim = tuple(ax.get_ylim())
+            except Exception:
+                continue
+            base_xlim, base_ylim = self._zoom_reset_limits.get(ax, (cur_xlim, cur_ylim))
+            states.append(
+                {
+                    "signature": sig,
+                    "xlim": cur_xlim,
+                    "ylim": cur_ylim,
+                    "base_xlim": tuple(base_xlim),
+                    "base_ylim": tuple(base_ylim),
+                }
+            )
+        return states
+
+    def apply_zoom_states(self, states):
+        if not states:
+            return
+        lookup = {}
+        for ax, view in self._ax_view_map.items():
+            sig = self._session_signature_for_view(view)
+            key = self._signature_key(sig)
+            if key is not None:
+                lookup[key] = ax
+        updated = False
+        for entry in states:
+            key = self._signature_key(entry.get("signature"))
+            if key is None:
+                continue
+            ax = lookup.get(key)
+            if ax is None:
+                continue
+            xlim = entry.get("xlim")
+            ylim = entry.get("ylim")
+            try:
+                if xlim:
+                    ax.set_xlim(float(xlim[0]), float(xlim[1]))
+                if ylim:
+                    ax.set_ylim(float(ylim[0]), float(ylim[1]))
+            except Exception:
+                continue
+            base_xlim = entry.get("base_xlim")
+            base_ylim = entry.get("base_ylim")
+            if base_xlim and base_ylim:
+                try:
+                    self._zoom_reset_limits[ax] = (tuple(base_xlim), tuple(base_ylim))
+                except Exception:
+                    pass
+            updated = True
+        if updated:
+            self.draw_idle()
+
     def _display_extent_for_view(self, view, extent):
         """Return the extent that should be passed to matplotlib based on relative axes."""
         if extent is None:

@@ -341,7 +341,9 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
 
 
 def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=False):
-    viewer.last_preview = (str(header_path_str), int(channel_idx))
+    current_path_str = str(header_path_str)
+    prev_preview = getattr(viewer, "last_preview", None)
+    viewer.last_preview = (current_path_str, int(channel_idx))
     if hasattr(viewer, 'adjust_image_btn'):
         viewer.adjust_image_btn.setEnabled(True)
     viewer._update_toolbar_actions(True)
@@ -500,11 +502,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
 
     preserve = False
     try:
-        last = viewer.last_preview[0] if viewer.last_preview else None
+        last = prev_preview[0] if prev_preview else None
         preserve = (
             not getattr(viewer, '_suppress_profile_restore', False) and
             bool(getattr(viewer, 'preserve_profiles_on_channel_change', False))
-            and last == str(header_path)
+            and last == current_path_str
             and getattr(viewer, 'current_mode', viewer.MODE_BROWSE) == viewer.MODE_MEASURE
         )
     except Exception:

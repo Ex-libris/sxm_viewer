@@ -64,7 +64,9 @@ class SessionController:
         viewer = self.viewer
         data_dir = session_path.parent / f"{session_path.stem}_data"
         processed_dir = data_dir / "processed"
+        views_dir = data_dir / "views"
         os.makedirs(processed_dir, exist_ok=True)
+        os.makedirs(views_dir, exist_ok=True)
         processed = {}
         try:
             if viewer.last_preview:
@@ -109,6 +111,12 @@ class SessionController:
             except Exception:
                 pass
             preview_state["view_layout"] = getattr(preview, "_view_layout", "grid")
+        preview_canvas_snapshot = self._capture_canvas_snapshot(
+            preview,
+            views_dir,
+            prefix="preview",
+            include_arrays=False,
+        )
         win = viewer._canvas_window_ref()
         if win is not None and win.isVisible():
             try:
@@ -155,8 +163,10 @@ class SessionController:
             "last_preview": getattr(viewer, "last_preview", None),
             "ui": ui_state,
             "preview_state": preview_state,
+            "preview_canvas_snapshot": preview_canvas_snapshot,
             "canvas_state": canvas_state,
             "data_dir": data_dir.name,
+            "popup_canvases": self._capture_popup_snapshots(views_dir),
         }
         return self._jsonify(payload)
 
@@ -180,6 +190,7 @@ class SessionController:
         data_dir = payload.get("data_dir") or ""
         data_dir = session_path.parent / data_dir if data_dir else session_path.parent
         processed_dir = data_dir / "processed"
+        views_dir = data_dir / "views"
         viewer._processed_views = {}
         for key, entry in (payload.get("processed") or {}).items():
             try:
@@ -304,6 +315,15 @@ class SessionController:
                     viewer.molecule_overlays[key] = preview_state.get("molecules")
         except Exception:
             pass
+        preview_snapshot = payload.get("preview_canvas_snapshot")
+        if preview_snapshot:
+            self._restore_canvas_snapshot(
+                preview,
+                preview_snapshot,
+                views_dir,
+                viewer=viewer,
+                require_view_match=True,
+            )
         canvas_state = payload.get("canvas_state")
         if canvas_state:
             try:
@@ -313,7 +333,358 @@ class SessionController:
                     win._restore_state(canvas_state)
             except Exception:
                 pass
+        popup_defs = payload.get("popup_canvases") or []
+        if popup_defs:
+            self._restore_popup_canvases(popup_defs, views_dir)
         return True
+
+    # ------------------------------------------------------------------
+    def _capture_popup_snapshots(self, views_dir: Path):
+        viewer = self.viewer
+        canvases = list(getattr(viewer, "_popup_canvases", []) or [])
+        snapshots = []
+        for idx, canvas in enumerate(canvases):
+            snap = self._capture_canvas_snapshot(canvas, views_dir, prefix=f"popup{idx}", include_arrays=True)
+            if not snap:
+                continue
+            dlg = None
+            try:
+                dlg = canvas.parent()
+            except Exception:
+                dlg = None
+            if dlg is not None:
+                try:
+                    if hasattr(dlg, "isVisible") and not dlg.isVisible():
+                        continue
+                except Exception:
+                    pass
+                try:
+                    geo = dlg.geometry()
+                    snap["window_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
+                except Exception:
+                    pass
+                try:
+                    snap["window_title"] = dlg.windowTitle()
+                except Exception:
+                    pass
+            snapshots.append(snap)
+        return snapshots
+
+    def _capture_canvas_snapshot(self, canvas, views_dir: Path, prefix: str, include_arrays: bool):
+        if canvas is None:
+            return None
+        snapshot = {
+            "view_layout": getattr(canvas, "_view_layout", "grid"),
+            "relative_axes_override": getattr(canvas, "_relative_axes_override", None),
+            "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
+            "show_title": bool(getattr(canvas, "_show_title", True)),
+            "profile_state": self._safe_canvas_call(canvas, "export_profile_state"),
+            "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
+            "molecule_state": self._safe_canvas_call(canvas, "export_molecule_state"),
+            "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
+            "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
+            "views": [],
+            "zoom": [],
+        }
+        pipeline, label = self._view_filter_spec(canvas)
+        snapshot["filter_pipeline"] = pipeline
+        snapshot["filter_label"] = label
+        for idx, view in enumerate(getattr(canvas, "views", []) or []):
+            serialized = self._serialize_view_for_session(view, views_dir, f"{prefix}_v{idx}", include_arrays)
+            snapshot["views"].append(serialized)
+        try:
+            snapshot["zoom"] = canvas.export_zoom_states()
+        except Exception:
+            snapshot["zoom"] = []
+        return snapshot
+
+    @staticmethod
+    def _view_filter_spec(canvas):
+        pipeline = None
+        label = None
+        for view in getattr(canvas, "views", []) or []:
+            steps = view.get("filter_steps")
+            if steps:
+                pipeline = steps
+                label = view.get("filter_label")
+                break
+        return pipeline, label
+
+    def _serialize_view_for_session(self, view: dict, views_dir: Path, label: str, include_arrays: bool):
+        if not view:
+            return {}
+        state = {}
+        arr = view.get("arr")
+        if include_arrays:
+            arr_name = f"{label}.npy"
+            if arr is not None:
+                try:
+                    np.save(views_dir / arr_name, np.asarray(arr), allow_pickle=False)
+                    state["arr_file"] = arr_name
+                except Exception:
+                    state["arr_file"] = None
+            else:
+                state["arr_file"] = None
+        for key, val in view.items():
+            if key == "arr":
+                continue
+            if isinstance(key, str) and key.startswith("_"):
+                continue
+            state[key] = val
+        state["session_signature"] = self._view_signature(view)
+        return state
+
+    @staticmethod
+    def _view_signature(view: dict):
+        meta = (view or {}).get("meta") or {}
+        file_path = meta.get("file_path") or meta.get("path") or ""
+        channel = meta.get("channel_index")
+        try:
+            channel = int(channel) if channel is not None else None
+        except Exception:
+            channel = None
+        return {
+            "file": str(file_path),
+            "channel": channel,
+            "crop_sequence": view.get("crop_sequence"),
+            "title": view.get("title"),
+        }
+
+    @staticmethod
+    def _session_signature_key(signature):
+        if not signature:
+            return None
+        return (
+            signature.get("file"),
+            signature.get("channel"),
+            signature.get("crop_sequence"),
+            signature.get("title"),
+        )
+
+    @staticmethod
+    def _safe_canvas_call(canvas, method_name: str):
+        if canvas is None:
+            return None
+        try:
+            method = getattr(canvas, method_name)
+        except AttributeError:
+            return None
+        try:
+            return method()
+        except Exception:
+            return None
+
+    def _restore_canvas_snapshot(
+        self,
+        canvas,
+        snapshot: dict,
+        views_dir: Path,
+        viewer=None,
+        require_view_match: bool = False,
+    ):
+        if canvas is None or not snapshot:
+            return
+        layout = snapshot.get("view_layout")
+        if layout:
+            try:
+                canvas.set_view_layout(layout)
+            except Exception:
+                pass
+        rel_axes = snapshot.get("relative_axes_override")
+        try:
+            canvas.set_relative_axes_override(rel_axes)
+        except Exception:
+            pass
+        show_title = snapshot.get("show_title")
+        if show_title is not None:
+            try:
+                canvas.set_show_title(bool(show_title))
+            except Exception:
+                pass
+        scale_bar_enabled = snapshot.get("scale_bar_enabled")
+        if scale_bar_enabled is not None:
+            try:
+                canvas.enable_scale_bar(bool(scale_bar_enabled))
+            except Exception:
+                pass
+        sb_pos = snapshot.get("scale_bar_pos")
+        if sb_pos:
+            try:
+                canvas._scale_bar_pos = tuple(sb_pos)
+            except Exception:
+                pass
+        sb_settings = snapshot.get("scale_bar_settings")
+        if sb_settings:
+            try:
+                canvas._scale_bar_settings = dict(sb_settings)
+            except Exception:
+                pass
+        snapshot_views = snapshot.get("views") or []
+        permit_view_state = True
+        if require_view_match:
+            permit_view_state = self._canvas_views_match_snapshot(canvas, snapshot_views)
+        if permit_view_state:
+            prof = snapshot.get("profile_state")
+            if prof:
+                try:
+                    canvas.import_profile_state(prof, emit=False)
+                except Exception:
+                    pass
+            angle_state = snapshot.get("angle_state")
+            if angle_state:
+                try:
+                    canvas.import_angle_state(angle_state)
+                except Exception:
+                    pass
+            molecules = snapshot.get("molecule_state")
+            if molecules:
+                try:
+                    canvas.import_molecule_state(molecules)
+                except Exception:
+                    pass
+            pipeline = snapshot.get("filter_pipeline")
+            if pipeline and viewer is not None:
+                try:
+                    viewer._apply_filter_to_canvas(canvas, pipeline=pipeline, label=snapshot.get("filter_label"))
+                except Exception:
+                    pass
+            self._restore_view_specific_state(canvas, snapshot_views)
+            zoom_state = snapshot.get("zoom")
+            if zoom_state:
+                try:
+                    canvas.apply_zoom_states(zoom_state)
+                except Exception:
+                    pass
+
+    def _restore_view_specific_state(self, canvas, entries):
+        if not entries or canvas is None:
+            return
+        if not hasattr(canvas, "_session_signature_for_view"):
+            return
+        try:
+            key_fn = canvas._signature_key
+        except AttributeError:
+            return
+        view_map = {}
+        for view in getattr(canvas, "views", []) or []:
+            try:
+                sig = canvas._session_signature_for_view(view)
+                key = key_fn(sig)
+            except Exception:
+                key = None
+            if key is None:
+                continue
+            view_map[key] = view
+        changed = False
+        for entry in entries:
+            sig = entry.get("session_signature")
+            if not sig:
+                continue
+            key = key_fn(sig)
+            target = view_map.get(key)
+            if not target:
+                continue
+            clim = entry.get("clim")
+            if clim:
+                try:
+                    target["clim"] = tuple(clim)
+                    changed = True
+                except Exception:
+                    pass
+            if entry.get("relative_axes") is not None:
+                target["relative_axes"] = bool(entry.get("relative_axes"))
+        if changed:
+            try:
+                canvas._redraw()
+            except Exception:
+                canvas.draw_idle()
+
+    def _canvas_view_keys(self, canvas):
+        if canvas is None or not hasattr(canvas, "_session_signature_for_view"):
+            return set()
+        try:
+            key_fn = canvas._signature_key
+        except AttributeError:
+            return set()
+        keys = set()
+        for view in getattr(canvas, "views", []) or []:
+            try:
+                sig = canvas._session_signature_for_view(view)
+                key = key_fn(sig)
+            except Exception:
+                key = None
+            if key is not None:
+                keys.add(key)
+        return keys
+
+    def _canvas_views_match_snapshot(self, canvas, snapshot_views):
+        if not snapshot_views:
+            return True
+        current = self._canvas_view_keys(canvas)
+        if not current:
+            return False
+        snapshot_keys = set()
+        for entry in snapshot_views:
+            key = self._session_signature_key(entry.get("session_signature"))
+            if key is not None:
+                snapshot_keys.add(key)
+        if not snapshot_keys:
+            return False
+        return not current.isdisjoint(snapshot_keys)
+
+    def _build_view_from_snapshot_entry(self, entry: dict, views_dir: Path):
+        if not entry:
+            return None
+        view = {}
+        for key, val in entry.items():
+            if key in ("arr_file", "session_signature"):
+                continue
+            view[key] = val
+        arr_file = entry.get("arr_file")
+        if arr_file:
+            arr_path = views_dir / arr_file
+            if not arr_path.exists():
+                return None
+            try:
+                view["arr"] = np.load(arr_path, allow_pickle=False)
+            except Exception:
+                return None
+        return view
+
+    def _restore_popup_canvases(self, popup_defs, views_dir: Path):
+        if not popup_defs:
+            return
+        viewer = self.viewer
+        for snap in popup_defs:
+            entries = snap.get("views") or []
+            built_views = []
+            for entry in entries:
+                built = self._build_view_from_snapshot_entry(entry, views_dir)
+                if built is None:
+                    built_views = []
+                    break
+                built_views.append(built)
+            if not built_views:
+                continue
+            try:
+                dlg = viewer._spawn_preview_popup(built_views, title=snap.get("window_title") or "Preview")
+            except Exception:
+                continue
+            canvas = None
+            try:
+                canvases = getattr(viewer, "_popup_canvases", [])
+                canvas = canvases[-1] if canvases else None
+            except Exception:
+                canvas = None
+            if canvas:
+                self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
+            geom = snap.get("window_geometry")
+            if dlg and geom and len(geom) == 4:
+                try:
+                    x, y, w, h = [int(v) for v in geom]
+                    dlg.setGeometry(x, y, w, h)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -337,4 +708,3 @@ class SessionController:
         except Exception:
             pass
         return obj
-
