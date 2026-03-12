@@ -3839,7 +3839,7 @@ class MultiPreviewCanvas(FigureCanvas):
         return array_to_qimage(arr, cmap_name=cmap)
 
     def _show_context_menu(self, event, view):
-        if view is None or getattr(event, 'guiEvent', None) is None:
+        if view is None:
             return
         menu = QtWidgets.QMenu(self)
         # theme-aware styling
@@ -3911,7 +3911,18 @@ class MultiPreviewCanvas(FigureCanvas):
             menu.addSeparator()
             arrange_act = menu.addAction("Arrange pop-outs")
 
-        chosen = menu.exec_(event.guiEvent.globalPos())
+        global_pos = None
+        if event is not None:
+            gui_event = getattr(event, "guiEvent", None)
+            if gui_event is not None:
+                try:
+                    global_pos = gui_event.globalPos()
+                except Exception:
+                    global_pos = None
+        if global_pos is None:
+            global_pos = QtGui.QCursor.pos()
+
+        chosen = menu.exec_(global_pos)
         if chosen == copy_act:
             self._copy_view_to_clipboard(view)
         elif chosen == copy_svg_act:
