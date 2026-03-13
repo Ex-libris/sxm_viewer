@@ -1511,6 +1511,7 @@ QLabel:hover {{
             "<li><b>Shift+Click</b> spectroscopy marker = multi-select</li>"
             "<li><b>Ctrl+Drag</b> thumbnails = reorder export selection</li>"
             "<li><b>Ctrl+C</b> over preview = copy current image</li>"
+            "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 overlays</li>"
             "</ul>"
         ) % color
 

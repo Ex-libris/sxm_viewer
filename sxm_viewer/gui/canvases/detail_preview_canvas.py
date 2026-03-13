@@ -120,6 +120,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_history_highlight_artists = {}
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
+        self._histogram_dialog_callback = None
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._value_callback = None
@@ -149,6 +150,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_state_callback = None
         self._profile_state_syncing = False
         self._profile_state_deferred = False
+        self._profile_user_enabled = False
         self._profile_update_timer = QtCore.QTimer(self)
         self._profile_update_timer.setSingleShot(True)
         self._profile_update_timer.setInterval(50)
@@ -176,6 +178,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_colorbar = True
         self._show_title = True
         self._show_acquisition_overlay = False
+        self._show_profile_overlays = True
+        self._show_angle_overlays = True
+        self._show_shortcut_hint = True
         self._fit_to_canvas = False
         self._frame_fill_mode = False
         self._frame_fill_prev_state = None
@@ -266,6 +271,7 @@ class MultiPreviewCanvas(FigureCanvas):
         """Toggle rendering of title/date overlays in views."""
         self._show_title = bool(show)
         self._redraw()
+        self._notify_views_callback()
 
     def set_show_acquisition_overlay(self, show: bool):
         """Toggle acquisition metadata HUD in the top-right image corner."""
@@ -276,6 +282,55 @@ class MultiPreviewCanvas(FigureCanvas):
         """Toggle rendering of molecular overlays in views."""
         self.show_molecules = bool(show)
         self._redraw()
+
+    def set_profile_tool_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        self._profile_user_enabled = enabled
+        self.enable_profile(enabled)
+        if enabled:
+            try:
+                self._emit_profile()
+            except Exception:
+                pass
+
+    def set_angle_tool_enabled(self, enabled: bool):
+        self.enable_angle(bool(enabled))
+
+    def clear_measurement_overlays(self):
+        try:
+            self.clear_angle_measurement()
+            self._clear_profile_artists()
+            self._clear_saved_profile_artists(notify=False)
+            self.profile_pts = None
+            self._emit_profile_state()
+            self.draw_idle()
+        except Exception:
+            pass
+
+    def apply_display_preset(self, preset: str):
+        preset = (preset or "").strip().lower()
+        if preset == "focus":
+            self._show_ticks = False
+            self._show_colorbar = False
+            self._show_title = False
+            self.set_show_profile_overlays(False)
+            self.set_show_angle_overlays(False)
+        elif preset == "analysis":
+            self._show_ticks = True
+            self._show_colorbar = True
+            self._show_title = True
+            self.set_show_profile_overlays(True)
+            self.set_show_angle_overlays(True)
+        elif preset == "publication":
+            self._show_ticks = False
+            self._show_colorbar = True
+            self._show_title = True
+            self.set_show_profile_overlays(False)
+            self.set_show_angle_overlays(False)
+        else:
+            return
+        self._redraw()
+        self._notify_views_callback()
 
     def set_fit_to_canvas(self, enabled: bool):
         """If enabled, stretch view axes to fill the available canvas area."""
@@ -379,6 +434,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self._view_layout = layout
         self._redraw()
+        self._notify_views_callback()
 
     def set_relative_axes_override(self, value):
         """Force all views to use relative axes (True/False) or None to defer to view settings."""
@@ -391,6 +447,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._relative_axes_override = new_val
         self.suspend_zoom_restore()
         self._redraw()
+        self._notify_views_callback()
 
     def suspend_zoom_restore(self):
         self._suspend_zoom_restore = True
@@ -413,6 +470,13 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_views_callback(self, cb):
         self._views_callback = cb
 
+    def _notify_views_callback(self):
+        if callable(self._views_callback):
+            try:
+                self._views_callback(self.views)
+            except Exception:
+                pass
+
     def set_crop_callback(self, cb):
         """Register a callback to receive cropped views created via drag-crop."""
         self._crop_callback = cb
@@ -425,6 +489,10 @@ class MultiPreviewCanvas(FigureCanvas):
         """Provide a callback to populate filter actions on the context menu."""
         self._filter_menu_callback = cb
 
+    def set_histogram_dialog_callback(self, cb):
+        """Register callback to open the histogram dialog for this canvas."""
+        self._histogram_dialog_callback = cb
+
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
         self._stp_export_callback = cb
@@ -432,6 +500,22 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_arrange_callback(self, cb):
         """Register callback invoked when the user requests window tiling."""
         self._arrange_windows_callback = cb
+
+    def set_show_profile_overlays(self, show: bool):
+        self._show_profile_overlays = bool(show)
+        self._apply_profile_visibility()
+        self.draw_idle()
+        self._notify_views_callback()
+
+    def set_show_angle_overlays(self, show: bool):
+        self._show_angle_overlays = bool(show)
+        self._update_angle_artists()
+        self._notify_views_callback()
+
+    def set_show_shortcut_hint(self, show: bool):
+        self._show_shortcut_hint = bool(show)
+        self._redraw()
+        self._notify_views_callback()
 
     def export_molecule_state(self):
         return [mol.to_dict() for mol in (self.molecules or [])]
@@ -692,6 +776,8 @@ class MultiPreviewCanvas(FigureCanvas):
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
             self._draw_acquisition_overlay(ax, v)
+            if ax is self.main_ax:
+                self._draw_shortcut_hint(ax)
             if not self._show_ticks:
                 ax.set_xticks([])
                 ax.set_yticks([])
@@ -735,6 +821,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._emit_profile()
         if self.angle_enabled:
             self._ensure_angle_frames()
+            self._apply_angle_visibility()
+        self._apply_profile_visibility()
         self._update_highlight_artists()
         self.draw()
 
@@ -1080,6 +1168,7 @@ class MultiPreviewCanvas(FigureCanvas):
         else:
             self._disconnect_scale_bar_events()
         self._redraw()
+        self._notify_views_callback()
 
     def _connect_scale_bar_events(self):
         if self._scale_bar_cids:
@@ -1641,6 +1730,32 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
 
     def keyPressEvent(self, event):
+        if event is not None:
+            try:
+                mods = event.modifiers()
+                key = event.key()
+            except Exception:
+                mods = QtCore.Qt.NoModifier
+                key = None
+            if mods & QtCore.Qt.ControlModifier:
+                if key == QtCore.Qt.Key_1:
+                    self.set_show_profile_overlays(not self._show_profile_overlays)
+                    return
+                if key == QtCore.Qt.Key_2:
+                    self.set_show_angle_overlays(not self._show_angle_overlays)
+                    return
+                if key == QtCore.Qt.Key_3:
+                    self.set_show_molecules(not self.show_molecules)
+                    return
+                if key == QtCore.Qt.Key_4:
+                    self.enable_scale_bar(not self.scale_bar_enabled)
+                    return
+                if key == QtCore.Qt.Key_5:
+                    self.set_show_acquisition_overlay(not self._show_acquisition_overlay)
+                    return
+                if key == QtCore.Qt.Key_H:
+                    self.set_show_shortcut_hint(not self._show_shortcut_hint)
+                    return
         if self.profile_enabled and event is not None:
             try:
                 if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
@@ -1727,6 +1842,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._profile_echo_artists.append({'line': l, 'p0': p0, 'p1': p1})
             except Exception:
                 pass
+        self._apply_profile_visibility()
 
     def _ensure_angle_frames(self):
         if self.main_ax is None:
@@ -1868,10 +1984,54 @@ class MultiPreviewCanvas(FigureCanvas):
                 arrows[0].set_visible(style == 'arrows')
                 arrows[1].set_visible(style == 'arrows')
             self._update_frame_label(frame)
+        self._apply_angle_visibility()
         if self._angle_blit_active and self._angle_background is not None:
             self._blit_angle_frames()
         else:
             self.draw_idle()
+
+    def _apply_angle_visibility(self):
+        visible = bool(self._show_angle_overlays)
+        for frame in self._angle_frames or []:
+            style = frame.get("style", "dots")
+            for art in frame.get("lines", []) or []:
+                if art is None:
+                    continue
+                try:
+                    art.set_visible(visible and style == "dots")
+                except Exception:
+                    pass
+            for art in frame.get("markers", []) or []:
+                if art is None:
+                    continue
+                try:
+                    art.set_visible(visible and style == "dots")
+                except Exception:
+                    pass
+            for art in frame.get("arrows", []) or []:
+                if art is None:
+                    continue
+                try:
+                    art.set_visible(visible and style == "arrows")
+                except Exception:
+                    pass
+            label = frame.get("label")
+            if label is not None:
+                try:
+                    label.set_visible(visible)
+                except Exception:
+                    pass
+            patch = frame.get("patch")
+            if patch is not None:
+                try:
+                    patch.set_visible(visible)
+                except Exception:
+                    pass
+            for lbl in frame.get("len_labels", []) or []:
+                try:
+                    lbl.set_visible(visible)
+                except Exception:
+                    pass
 
     def _update_frame_label(self, frame):
         angle_info = self._compute_angle_info(frame=frame)
@@ -2105,6 +2265,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._blit_profile_artists()
         else:
             self.draw_idle()
+        self._apply_profile_visibility()
         if self._dragging is None:
             self._emit_profile()
 
@@ -2118,8 +2279,35 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_p0.set_data([x0], [y0])
         self._profile_p1.set_data([x1], [y1])
         self._update_profile_labels()
+        self._apply_profile_visibility()
         if draw:
             self.draw_idle()
+
+    def _apply_profile_visibility(self):
+        visible = bool(self._show_profile_overlays)
+        artists = [
+            self._profile_line,
+            self._profile_p0,
+            self._profile_p1,
+            self._profile_ticks,
+            self._profile_info_text,
+            self._profile_label,
+            self._profile_hud_text,
+        ]
+        artists.extend(list(self._profile_endpoint_labels or []))
+        artists.extend(list(self._profile_marker_artists or []))
+        for echo in self._profile_echo_artists or []:
+            if isinstance(echo, dict):
+                artists.extend(echo.values())
+        for entry in self._saved_profiles or []:
+            artists.extend(entry.get("artists", []) or [])
+        for art in artists:
+            if art is None:
+                continue
+            try:
+                art.set_visible(visible)
+            except Exception:
+                continue
 
     def _schedule_profile_update(self):
         if not self._profile_update_timer.isActive():
@@ -2343,6 +2531,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._update_profile_marker_artists()
         self._update_profile_labels()
         self._update_profile_hud()
+        self._apply_profile_visibility()
 
     def _update_profile_labels(self):
         if self.profile_pts is None or self.main_ax is None:
@@ -2735,6 +2924,7 @@ class MultiPreviewCanvas(FigureCanvas):
             entry['label_base_size'] = base_size
         self._saved_profiles.append(entry)
         self._refresh_overlay_labels()
+        self._apply_profile_visibility()
         self.draw_idle()
         self._emit_profile()
 
@@ -3571,6 +3761,45 @@ class MultiPreviewCanvas(FigureCanvas):
         alt_pressed = bool(mods_qt & QtCore.Qt.AltModifier) or 'alt' in str(getattr(event, "key", "")).lower() or bool(getattr(self, "outline_mode", False))
         want_square = (event.button == 1) and (mods_qt & QtCore.Qt.ControlModifier) and (mods_qt & QtCore.Qt.ShiftModifier)
         want_rect = (event.button == 1) and (mods_qt & QtCore.Qt.ShiftModifier)
+        quick_profile = (
+            event.button == 1
+            and ax is self.main_ax
+            and bool(mods_qt & QtCore.Qt.ControlModifier)
+            and not bool(mods_qt & QtCore.Qt.AltModifier)
+            and not bool(mods_qt & QtCore.Qt.ShiftModifier)
+        )
+        quick_angle = (
+            event.button == 1
+            and ax is self.main_ax
+            and bool(mods_qt & QtCore.Qt.ControlModifier)
+            and bool(mods_qt & QtCore.Qt.AltModifier)
+            and not bool(mods_qt & QtCore.Qt.ShiftModifier)
+        )
+        if quick_angle:
+            try:
+                if self.profile_enabled:
+                    self.set_profile_tool_enabled(False)
+                if not self.angle_enabled:
+                    self.set_angle_tool_enabled(True)
+                if event.xdata is not None and event.ydata is not None:
+                    self._add_angle_frame_at(event.xdata, event.ydata)
+            except Exception:
+                pass
+            return
+        if quick_profile:
+            try:
+                if self.angle_enabled:
+                    self.set_angle_tool_enabled(False)
+                was_enabled = bool(self.profile_enabled)
+                if not self.profile_enabled:
+                    self.set_profile_tool_enabled(True)
+                if not was_enabled:
+                    # Start the first profile drag immediately when the tool
+                    # is activated via Ctrl+Click.
+                    self._on_press(event)
+            except Exception:
+                pass
+            return
         # Allow outlining via Alt+left click OR middle click as a fallback shortcut
         want_outline = ((event.button == 1 and alt_pressed) or event.button == 2) and not want_rect and not want_square
         if want_outline and view is not None:
@@ -4060,47 +4289,95 @@ class MultiPreviewCanvas(FigureCanvas):
                 menu.setStyleSheet("")
         except Exception:
             pass
-        copy_act = menu.addAction("Copy image")
-        copy_svg_act = menu.addAction("Copy view as SVG (vector)")
-        copy_disp_png = menu.addAction("Copy displayed (PNG)")
-        copy_disp_svg = menu.addAction("Copy displayed (SVG)")
-        save_act = menu.addAction("Save image as...")
-        save_svg_act = menu.addAction("Save view as SVG...")
-        save_pdf_act = menu.addAction("Save view as PDF...")
-        export_stp_act = menu.addAction("Export as WSxM STP...")
-        
-        menu.addSeparator()
-        reset_zoom_act = menu.addAction("Reset Zoom")
-        
-        cbar_text = "Horizontal Colorbar" if self._colorbar_orientation == 'vertical' else "Vertical Colorbar"
-        toggle_cbar_act = menu.addAction(cbar_text)
+        # Quick tools (no top toolbar required)
+        quick_menu = menu.addMenu("Quick tools")
+        profile_tool_act = quick_menu.addAction("Profile tool  (Ctrl+Click)")
+        profile_tool_act.setCheckable(True)
+        profile_tool_act.setChecked(bool(self.profile_enabled))
+        angle_tool_act = quick_menu.addAction("Angle tool  (Ctrl+Alt+Click)")
+        angle_tool_act.setCheckable(True)
+        angle_tool_act.setChecked(bool(self.angle_enabled))
+        clear_overlays_act = quick_menu.addAction("Clear profile/angle overlays")
+        histogram_act = quick_menu.addAction("Histogram...")
+        histogram_act.setEnabled(callable(self._histogram_dialog_callback))
 
-        menu.addSeparator()
-        show_ticks_act = menu.addAction("Show Ticks")
+        display_menu = menu.addMenu("Display")
+        presets_menu = display_menu.addMenu("Preset")
+        preset_focus_act = presets_menu.addAction("Focus")
+        preset_analysis_act = presets_menu.addAction("Analysis")
+        preset_publication_act = presets_menu.addAction("Publication")
+        display_menu.addSeparator()
+        show_scale_act = display_menu.addAction("Show Scale bar")
+        show_scale_act.setCheckable(True)
+        show_scale_act.setChecked(bool(self.scale_bar_enabled))
+        show_ticks_act = display_menu.addAction("Show Ticks")
         show_ticks_act.setCheckable(True)
-        show_ticks_act.setChecked(self._show_ticks)
-        show_cbar_act = menu.addAction("Show Colorbar")
+        show_ticks_act.setChecked(bool(self._show_ticks))
+        show_cbar_act = display_menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
-        show_cbar_act.setChecked(self._show_colorbar)
+        show_cbar_act.setChecked(bool(self._show_colorbar))
+        show_title_act = display_menu.addAction("Show Title")
+        show_title_act.setCheckable(True)
+        show_title_act.setChecked(bool(self._show_title))
+        acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
+        acq_overlay_act.setCheckable(True)
+        acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
+        hint_act = display_menu.addAction("Show Shortcut Hint")
+        hint_act.setCheckable(True)
+        hint_act.setChecked(bool(self._show_shortcut_hint))
+        frame_fill_act = display_menu.addAction("Frame fill")
+        frame_fill_act.setCheckable(True)
+        frame_fill_act.setChecked(bool(self._frame_fill_mode))
+        rel_axes_act = display_menu.addAction("Relative axes")
+        rel_axes_act.setCheckable(True)
+        rel_axes_act.setChecked(bool(self._use_relative_axes(view)))
 
+        layout_menu = display_menu.addMenu("Layout")
+        layout_grid_act = layout_menu.addAction("Grid")
+        layout_grid_act.setCheckable(True)
+        layout_grid_act.setChecked(self._view_layout == "grid")
+        layout_stack_act = layout_menu.addAction("Stacked")
+        layout_stack_act.setCheckable(True)
+        layout_stack_act.setChecked(self._view_layout == "stacked")
+
+        overlays_menu = menu.addMenu("Overlays")
+        show_profile_overlay_act = overlays_menu.addAction("Show Profiles  (Ctrl+1)")
+        show_profile_overlay_act.setCheckable(True)
+        show_profile_overlay_act.setChecked(bool(self._show_profile_overlays))
+        show_angle_overlay_act = overlays_menu.addAction("Show Angles  (Ctrl+2)")
+        show_angle_overlay_act.setCheckable(True)
+        show_angle_overlay_act.setChecked(bool(self._show_angle_overlays))
+        show_molecule_overlay_act = overlays_menu.addAction("Show Molecules  (Ctrl+3)")
+        show_molecule_overlay_act.setCheckable(True)
+        show_molecule_overlay_act.setChecked(bool(self.show_molecules))
+
+        analysis_menu = menu.addMenu("Analysis")
         # Filters (provided by parent viewer)
         if callable(self._filter_menu_callback):
-            menu.addSeparator()
             try:
-                self._filter_menu_callback(menu, view, self)
+                self._filter_menu_callback(analysis_menu, view, self)
             except Exception:
                 pass
-        
         angle_style_act = None
         if self.angle_enabled and self._angle_frames:
-            menu.addSeparator()
-            angle_style_act = menu.addAction("Use arrowheads for active angle")
+            angle_style_act = analysis_menu.addAction("Use arrowheads for active angle")
             angle_style_act.setCheckable(True)
             active = self._get_active_angle_frame()
             angle_style_act.setChecked(active and active.get('style', 'dots') == 'arrows')
 
-        menu.addSeparator()
-        load_mol_act = menu.addAction("Load Molecule (XYZ/PDB)...")
+        export_menu = menu.addMenu("Copy / Export")
+        copy_act = export_menu.addAction("Copy image")
+        copy_svg_act = export_menu.addAction("Copy view as SVG (vector)")
+        copy_disp_png = export_menu.addAction("Copy displayed (PNG)")
+        copy_disp_svg = export_menu.addAction("Copy displayed (SVG)")
+        export_menu.addSeparator()
+        save_act = export_menu.addAction("Save image as...")
+        save_svg_act = export_menu.addAction("Save view as SVG...")
+        save_pdf_act = export_menu.addAction("Save view as PDF...")
+        export_stp_act = export_menu.addAction("Export as WSxM STP...")
+
+        molecules_menu = menu.addMenu("Molecules")
+        load_mol_act = molecules_menu.addAction("Load Molecule (XYZ/PDB)...")
         recent_menu = None
         recent_actions = {}
         recent_all = []
@@ -4109,17 +4386,21 @@ class MultiPreviewCanvas(FigureCanvas):
                 if p not in recent_all:
                     recent_all.append(p)
         if recent_all:
-            recent_menu = menu.addMenu("Load Recent")
+            recent_menu = molecules_menu.addMenu("Load Recent")
             for p in recent_all[:8]:
                 act = recent_menu.addAction(Path(p).name)
                 act.setToolTip(p)
                 recent_actions[act] = p
-        clear_mols_act = menu.addAction("Clear Molecules")
+        clear_mols_act = molecules_menu.addAction("Clear Molecules")
 
+        view_menu = menu.addMenu("View")
+        reset_zoom_act = view_menu.addAction("Reset Zoom")
+        cbar_text = "Horizontal Colorbar" if self._colorbar_orientation == 'vertical' else "Vertical Colorbar"
+        toggle_cbar_act = view_menu.addAction(cbar_text)
         arrange_act = None
         if callable(self._arrange_windows_callback):
-            menu.addSeparator()
-            arrange_act = menu.addAction("Arrange pop-outs")
+            view_menu.addSeparator()
+            arrange_act = view_menu.addAction("Arrange pop-outs")
 
         global_pos = None
         if event is not None:
@@ -4157,10 +4438,51 @@ class MultiPreviewCanvas(FigureCanvas):
             self._reset_view_zoom()
         elif chosen == toggle_cbar_act:
             self._toggle_colorbar_orientation()
+        elif chosen == profile_tool_act:
+            self.set_profile_tool_enabled(profile_tool_act.isChecked())
+        elif chosen == angle_tool_act:
+            self.set_angle_tool_enabled(angle_tool_act.isChecked())
+        elif chosen == clear_overlays_act:
+            self.clear_measurement_overlays()
+        elif chosen == histogram_act and callable(self._histogram_dialog_callback):
+            try:
+                self._histogram_dialog_callback(self)
+            except Exception:
+                pass
+        elif chosen == preset_focus_act:
+            self.apply_display_preset("focus")
+        elif chosen == preset_analysis_act:
+            self.apply_display_preset("analysis")
+        elif chosen == preset_publication_act:
+            self.apply_display_preset("publication")
+        elif chosen == show_scale_act:
+            self.enable_scale_bar(show_scale_act.isChecked())
+            self._notify_views_callback()
         elif chosen == show_ticks_act:
             self._toggle_ticks()
         elif chosen == show_cbar_act:
             self._toggle_colorbar()
+        elif chosen == show_title_act:
+            self.set_show_title(show_title_act.isChecked())
+        elif chosen == acq_overlay_act:
+            self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
+        elif chosen == hint_act:
+            self.set_show_shortcut_hint(hint_act.isChecked())
+        elif chosen == frame_fill_act:
+            self.set_frame_fill_mode(frame_fill_act.isChecked())
+            self._notify_views_callback()
+        elif chosen == rel_axes_act:
+            self.set_relative_axes_override(rel_axes_act.isChecked())
+        elif chosen == layout_grid_act:
+            self.set_view_layout("grid")
+        elif chosen == layout_stack_act:
+            self.set_view_layout("stacked")
+        elif chosen == show_profile_overlay_act:
+            self.set_show_profile_overlays(show_profile_overlay_act.isChecked())
+        elif chosen == show_angle_overlay_act:
+            self.set_show_angle_overlays(show_angle_overlay_act.isChecked())
+        elif chosen == show_molecule_overlay_act:
+            self.set_show_molecules(show_molecule_overlay_act.isChecked())
         elif chosen == load_mol_act:
             self._load_molecule_dialog()
         elif recent_menu and chosen in recent_actions:
@@ -4175,8 +4497,6 @@ class MultiPreviewCanvas(FigureCanvas):
         elif angle_style_act and chosen == angle_style_act:
             checked = angle_style_act.isChecked()
             self._update_active_angle_style('arrows' if checked else 'dots')
-        elif chosen == reset_zoom_act:
-            self._reset_view_zoom()
 
     def _save_view_to_file(self, view):
         try:
@@ -4282,14 +4602,17 @@ class MultiPreviewCanvas(FigureCanvas):
     def _toggle_colorbar_orientation(self):
         self._colorbar_orientation = 'horizontal' if self._colorbar_orientation == 'vertical' else 'vertical'
         self._redraw()
+        self._notify_views_callback()
 
     def _toggle_ticks(self):
         self._show_ticks = not self._show_ticks
         self._redraw()
+        self._notify_views_callback()
 
     def _toggle_colorbar(self):
         self._show_colorbar = not self._show_colorbar
         self._redraw()
+        self._notify_views_callback()
 
     def _on_scroll_zoom(self, event):
         """Mouse wheel zoom centered at cursor."""
@@ -4741,6 +5064,30 @@ class MultiPreviewCanvas(FigureCanvas):
                 "boxstyle": "round,pad=0.22",
             },
             zorder=26,
+        )
+
+    def _draw_shortcut_hint(self, ax):
+        if not self._show_shortcut_hint or ax is None:
+            return
+        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        fontsize = max(6.5, 7.0 * scale)
+        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | Ctrl+1/2/3 overlays"
+        ax.text(
+            0.012,
+            0.012,
+            hint,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=fontsize,
+            color="#f3f5f9",
+            bbox={
+                "facecolor": "black",
+                "alpha": 0.32,
+                "edgecolor": "none",
+                "boxstyle": "round,pad=0.18",
+            },
+            zorder=24,
         )
 
     def _style_export_figure(self, fig, ax, cbar):
