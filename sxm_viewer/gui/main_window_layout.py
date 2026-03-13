@@ -167,6 +167,11 @@ def _ensure_display_menu(viewer):
     viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
     viewer.molecules_act.setToolTip("Toggle molecular overlays in the preview")
     viewer.molecules_act.toggled.connect(viewer.on_show_molecules_toggled)
+    viewer.acquisition_overlay_act = viewer.display_menu.addAction("Show acquisition overlay")
+    viewer.acquisition_overlay_act.setCheckable(True)
+    viewer.acquisition_overlay_act.setChecked(getattr(viewer, "show_acquisition_overlay", False))
+    viewer.acquisition_overlay_act.setToolTip("Show CC/CH acquisition parameters in the top-right of preview and pop-ups")
+    viewer.acquisition_overlay_act.toggled.connect(viewer.on_show_acquisition_overlay_toggled)
     viewer.fixed_crop_quick_act = viewer.display_menu.addAction("Quick crop mode")
     viewer.fixed_crop_quick_act.setCheckable(True)
     viewer.fixed_crop_quick_act.setChecked(getattr(viewer, "quick_crop_mode", False))
@@ -182,6 +187,24 @@ def _ensure_display_menu(viewer):
     viewer.crop_history_act.setChecked(getattr(viewer, "show_crop_history_overlay", False))
     viewer.crop_history_act.setToolTip("Draw markers/labels for each crop")
     viewer.crop_history_act.toggled.connect(viewer.on_show_crop_history_overlay_toggled)
+    viewer.display_menu.addSeparator()
+    viewer.profile_label_menu = viewer.display_menu.addMenu("Profile labels")
+    viewer.profile_label_group = QtWidgets.QActionGroup(viewer.profile_label_menu)
+    viewer.profile_label_group.setExclusive(True)
+    viewer.profile_label_actions = {}
+    label_modes = [
+        ("Length only", "length"),
+        ("Full (L, dx, dy)", "full"),
+        ("Hidden", "hidden"),
+    ]
+    current_mode = str(getattr(viewer, "profile_label_mode", "length") or "length").lower()
+    for label_text, mode_key in label_modes:
+        act = viewer.profile_label_menu.addAction(label_text)
+        act.setCheckable(True)
+        act.setChecked(current_mode == mode_key)
+        act.triggered.connect(lambda checked, m=mode_key: checked and viewer.on_profile_label_mode_changed(m))
+        viewer.profile_label_group.addAction(act)
+        viewer.profile_label_actions[mode_key] = act
     viewer.display_menu.addSeparator()
     
     markers_menu = viewer.display_menu.addMenu("Marker Style")
@@ -215,6 +238,9 @@ def _ensure_display_menu(viewer):
     load_session_act = viewer.display_menu.addAction("Load session...")
     load_session_act.setToolTip("Restore a previously saved viewer session")
     load_session_act.triggered.connect(viewer.on_load_session)
+    arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
+    arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
+    arrange_act.triggered.connect(viewer.on_arrange_popouts)
     return viewer.display_menu
 
 

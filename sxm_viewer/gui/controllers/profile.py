@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, List
 
-from ..._shared import QtCore
+from ..._shared import QtCore, QtWidgets
 from ..dialogs.profile_dialog import ProfileDialog
 
 
@@ -38,6 +38,7 @@ class PopupProfileController:
     def dispose(self):
         if self._dialog:
             try:
+                self._deregister_dialog(self._dialog)
                 self._dialog.close()
             except Exception:
                 pass
@@ -146,12 +147,14 @@ class PopupProfileController:
                 )
             except Exception:
                 pass
+            self._register_dialog(dlg)
             dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
             dlg.finished.connect(lambda _=None: self._clear_dialog())
             self._dialog = dlg
         else:
             dlg.update_profiles(active, saved)
         dlg.show()
+        self._dock_dialog_near_canvas(dlg)
         try:
             dlg.raise_()
             dlg.activateWindow()
@@ -159,6 +162,62 @@ class PopupProfileController:
             pass
 
     def _clear_dialog(self):
+        self._deregister_dialog(self._dialog)
         self._dialog = None
+
+    def _register_dialog(self, dlg):
+        if dlg is None:
+            return
+        refs = getattr(self.owner, "_popup_refs", None)
+        if refs is not None and dlg not in refs:
+            refs.append(dlg)
+        controller = getattr(self.owner, "quick_crop_controller", None)
+        if controller:
+            controller.update_popup_actions()
+
+    def _deregister_dialog(self, dlg):
+        if dlg is None:
+            return
+        refs = getattr(self.owner, "_popup_refs", None)
+        if refs and dlg in refs:
+            refs.remove(dlg)
+        controller = getattr(self.owner, "quick_crop_controller", None)
+        if controller:
+            controller.update_popup_actions()
+
+    def _dock_dialog_near_canvas(self, dlg):
+        if dlg is None:
+            return
+        try:
+            source_window = self.canvas.window()
+        except Exception:
+            source_window = None
+        if source_window is None or source_window is self.owner:
+            return
+        if not source_window.isVisible():
+            return
+        try:
+            src_geo = source_window.frameGeometry()
+        except Exception:
+            return
+        target = QtCore.QPoint(int(src_geo.right() + 16), int(src_geo.top()))
+        width = dlg.frameGeometry().width()
+        height = dlg.frameGeometry().height()
+        screen = None
+        try:
+            screen = QtWidgets.QApplication.screenAt(src_geo.center())
+        except Exception:
+            screen = None
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        bounds = screen.availableGeometry() if screen else None
+        if bounds:
+            max_x = bounds.right() - width
+            max_y = bounds.bottom() - height
+            new_x = min(max(bounds.left(), target.x()), max_x)
+            new_y = min(max(bounds.top(), target.y()), max_y)
+            dlg.move(new_x, new_y)
+        else:
+            dlg.move(target)
 
 """__all__ is intentionally omitted; controller used via class import."""

@@ -67,6 +67,9 @@ Static reference:
   overlays directly on top of images.
 - **Build figures**: publication canvas for arranging selected views; export
   PNGs/XYZ from toolbar groups (file/layout/export/tools/theme).
+- **Export WSxM STP**: right-click thumbnails or preview/popup canvases to
+  create `.stp` files with WSxM-compatible headers, ready for Omicron or
+  Nanonis workflows.
 
 ## Highlights
 - Disk-backed caches for Nanonis conversions, headers, and spectroscopies for
