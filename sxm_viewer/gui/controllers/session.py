@@ -140,6 +140,7 @@ class SessionController:
             "detail_dark_view": bool(getattr(viewer, "detail_dark_view", False)),
             "detail_grid_view": bool(getattr(viewer, "detail_grid_view", False)),
             "show_molecules": bool(getattr(viewer, "show_molecules", True)),
+            "profile_label_mode": str(getattr(viewer, "profile_label_mode", "length") or "length"),
             "relative_axes": bool(getattr(viewer, "relative_axes", False)),
             "display_units_relative": bool(getattr(viewer, "display_units_relative", False)),
             "display_units_si": bool(getattr(viewer, "display_units_si", False)),
@@ -262,6 +263,7 @@ class SessionController:
             viewer.on_detail_dark_toggled(bool(ui.get("detail_dark_view", False)))
             viewer.on_detail_grid_toggled(bool(ui.get("detail_grid_view", False)))
             viewer.on_show_molecules_toggled(bool(ui.get("show_molecules", True)))
+            viewer.on_profile_label_mode_changed(ui.get("profile_label_mode", "length"))
             viewer.on_relative_axes_toggled(bool(ui.get("relative_axes", False)))
             viewer.on_unit_relative_toggled(bool(ui.get("display_units_relative", False)))
             viewer.on_unit_display_toggled(bool(ui.get("display_units_si", False)))
@@ -378,6 +380,7 @@ class SessionController:
             "relative_axes_override": getattr(canvas, "_relative_axes_override", None),
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "show_title": bool(getattr(canvas, "_show_title", True)),
+            "profile_label_mode": str(getattr(canvas, "_profile_label_mode", "length") or "length"),
             "profile_state": self._safe_canvas_call(canvas, "export_profile_state"),
             "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
             "molecule_state": self._safe_canvas_call(canvas, "export_molecule_state"),
@@ -499,6 +502,12 @@ class SessionController:
         if show_title is not None:
             try:
                 canvas.set_show_title(bool(show_title))
+            except Exception:
+                pass
+        profile_label_mode = snapshot.get("profile_label_mode")
+        if profile_label_mode is not None:
+            try:
+                canvas.set_profile_label_mode(profile_label_mode)
             except Exception:
                 pass
         scale_bar_enabled = snapshot.get("scale_bar_enabled")

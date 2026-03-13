@@ -6,6 +6,7 @@ import itertools
 import json
 import math
 import time
+import warnings
 from typing import List
 from pathlib import Path
 
@@ -69,6 +70,24 @@ class MultiPreviewCanvas(FigureCanvas):
         super().__init__(self.fig)
         if parent is not None:
             self.setParent(parent)
+        # Allow the canvas (and any parent dialog) to shrink freely
+        # instead of being constrained by the initial figure size.
+        try:
+            self.setMinimumSize(0, 0)
+            self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        except Exception:
+            pass
+        self._compact_size_hints = False
+        self._resize_reflow_threshold_px = 3
+        self._last_resize_size = QtCore.QSize(-1, -1)
+        self._resize_draft_timer = QtCore.QTimer(self)
+        self._resize_draft_timer.setSingleShot(True)
+        self._resize_draft_timer.setInterval(45)
+        self._resize_draft_timer.timeout.connect(self._reflow_after_resize)
+        self._resize_settle_timer = QtCore.QTimer(self)
+        self._resize_settle_timer.setSingleShot(True)
+        self._resize_settle_timer.setInterval(140)
+        self._resize_settle_timer.timeout.connect(self._finalize_after_resize)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.views = []
         self._ax_view_map = {}
@@ -150,11 +169,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self.profile_callback = None  # callable(active_dataset, saved_datasets)
         self._profile_highlight_cb = None
         self._profile_label_scale = 1.0
+        self._profile_label_mode = "length"
         self._view_font_scale = 1.0
         self._colorbar_orientation = 'vertical'
         self._show_ticks = True
         self._show_colorbar = True
         self._show_title = True
+        self._fit_to_canvas = False
+        self._frame_fill_mode = False
+        self._frame_fill_prev_state = None
         self._detail_dark = False
         self._detail_grid = False
         self._colorbars = []
@@ -248,12 +271,74 @@ class MultiPreviewCanvas(FigureCanvas):
         self.show_molecules = bool(show)
         self._redraw()
 
+    def set_fit_to_canvas(self, enabled: bool):
+        """If enabled, stretch view axes to fill the available canvas area."""
+        self._fit_to_canvas = bool(enabled)
+        self._redraw()
+
+    def set_frame_fill_mode(self, enabled: bool):
+        """Toggle a minimalist full-frame display mode for popups."""
+        enabled = bool(enabled)
+        if enabled == self._frame_fill_mode:
+            return
+        if enabled:
+            self._frame_fill_prev_state = {
+                "show_ticks": bool(self._show_ticks),
+                "show_colorbar": bool(self._show_colorbar),
+                "show_title": bool(self._show_title),
+                "fit_to_canvas": bool(self._fit_to_canvas),
+            }
+            self._show_ticks = False
+            self._show_colorbar = False
+            self._show_title = False
+            # Keep geometric fidelity: frame-fill hides decorations
+            # but still preserves equal aspect (no stretching).
+            self._fit_to_canvas = False
+        else:
+            prev = self._frame_fill_prev_state or {}
+            self._show_ticks = bool(prev.get("show_ticks", True))
+            self._show_colorbar = bool(prev.get("show_colorbar", True))
+            self._show_title = bool(prev.get("show_title", True))
+            self._fit_to_canvas = bool(prev.get("fit_to_canvas", False))
+            self._frame_fill_prev_state = None
+        self._frame_fill_mode = enabled
+        self._redraw()
+
     def draw(self):
         try:
             super().draw()
         except np.linalg.LinAlgError:
             # Ignore transient singular transforms during layout updates.
             return
+
+    def set_compact_size_hints(self, enabled: bool = True):
+        self._compact_size_hints = bool(enabled)
+        try:
+            self.updateGeometry()
+        except Exception:
+            pass
+
+    def minimumSizeHint(self):
+        if getattr(self, "_compact_size_hints", False):
+            return QtCore.QSize(24, 24)
+        try:
+            return super().minimumSizeHint()
+        except Exception:
+            return QtCore.QSize(160, 120)
+
+    def sizeHint(self):
+        if getattr(self, "_compact_size_hints", False):
+            try:
+                dpi = float(self.fig.get_dpi())
+                width_px = int(max(220.0, min(900.0, float(self.fig.get_figwidth()) * dpi)))
+                height_px = int(max(160.0, min(720.0, float(self.fig.get_figheight()) * dpi)))
+                return QtCore.QSize(width_px, height_px)
+            except Exception:
+                return QtCore.QSize(420, 320)
+        try:
+            return super().sizeHint()
+        except Exception:
+            return QtCore.QSize(420, 320)
 
     def set_views(self, views, preserve_profiles: bool = False):
         state = None
@@ -426,11 +511,52 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             super().resizeEvent(event)
         except ValueError:
-            fallback = QtGui.QResizeEvent(QtCore.QSize(max(10, safe_size.width()), max(10, safe_size.height())), event.oldSize())
+            fallback = QtGui.QResizeEvent(
+                QtCore.QSize(max(10, safe_size.width()), max(10, safe_size.height())),
+                event.oldSize(),
+            )
             try:
                 super().resizeEvent(fallback)
             except ValueError:
                 pass
+        # Resize should stay lightweight during dragging and only
+        # do a full redraw after resize settles.
+        try:
+            if getattr(self, "views", None):
+                prev_size = self._last_resize_size
+                if prev_size.width() <= 0 or prev_size.height() <= 0:
+                    prev_size = event.oldSize()
+                dw = abs(safe_size.width() - max(0, prev_size.width()))
+                dh = abs(safe_size.height() - max(0, prev_size.height()))
+                self._last_resize_size = QtCore.QSize(safe_size.width(), safe_size.height())
+                if max(dw, dh) >= int(self._resize_reflow_threshold_px):
+                    self._resize_draft_timer.start()
+                self._resize_settle_timer.start()
+        except Exception:
+            pass
+
+    def _reflow_after_resize(self):
+        try:
+            if getattr(self, "views", None):
+                scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+                self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+                self.draw_idle()
+        except Exception:
+            pass
+
+    def _finalize_after_resize(self):
+        try:
+            if getattr(self, "views", None):
+                try:
+                    if QtWidgets.QApplication.mouseButtons() != QtCore.Qt.NoButton:
+                        self._resize_settle_timer.start()
+                        return
+                except Exception:
+                    pass
+                self._resize_draft_timer.stop()
+                self._redraw()
+        except Exception:
+            pass
 
     def _redraw(self):
         # Preserve current zoom/limits per view before clearing
@@ -495,15 +621,22 @@ class MultiPreviewCanvas(FigureCanvas):
             cmap = v.get('cmap', 'viridis')
             origin = 'lower' if flip else 'upper'
             display_extent = self._display_extent_for_view(v, raw_extent)
+            aspect_mode = "auto" if self._fit_to_canvas else "equal"
             if display_extent is None:
-                im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmap)
+                im = ax.imshow(
+                    arr_plot,
+                    origin=origin,
+                    interpolation='nearest',
+                    aspect=aspect_mode,
+                    cmap=cmap,
+                )
             else:
                 im = ax.imshow(
                     arr_plot,
                     extent=display_extent,
                     origin=origin,
                     interpolation='nearest',
-                    aspect='equal',
+                    aspect=aspect_mode,
                     cmap=cmap,
                 )
             try:
@@ -586,8 +719,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._render_template_overlay(ax, v)
             except Exception:
                 pass
-        try: self.fig.tight_layout()
-        except Exception: pass
+        self._apply_tight_layout_safe(pad=0.25)
         self._apply_view_theme()
         self._apply_view_font_scale()
         # if profile mode is enabled, (re)create artists on main ax
@@ -1380,7 +1512,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 sb.txt_label.get_children()[0].set_fontsize(10 * scale)
             except Exception:
                 pass
-        self.draw_idle()
         for frame in self._angle_frames:
             label = frame.get('label')
             if label is not None:
@@ -1393,6 +1524,55 @@ class MultiPreviewCanvas(FigureCanvas):
                     lbl.set_fontsize(8 * scale)
                 except Exception:
                     pass
+        self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+        self.draw_idle()
+
+    def set_profile_label_mode(self, mode: str):
+        mode = (mode or "").strip().lower()
+        if mode not in ("length", "full", "hidden"):
+            mode = "length"
+        if mode == self._profile_label_mode:
+            return
+        self._profile_label_mode = mode
+        self._update_profile_markers()
+        for entry in self._saved_profiles:
+            text = entry.get("label_artist")
+            pts = entry.get("pts")
+            if text is None or pts is None:
+                continue
+            try:
+                label_text = self._format_profile_label(pts)
+                text.set_text(label_text or "")
+                text.set_visible(bool(label_text))
+            except Exception:
+                continue
+        self.draw_idle()
+
+    def _apply_tight_layout_safe(self, pad: float = 0.25):
+        """Apply tight layout without warning spam; fallback when it cannot fit."""
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", UserWarning)
+                self.fig.tight_layout(pad=float(max(0.05, pad)))
+            tight_layout_failed = any(
+                "Tight layout not applied" in str(w.message)
+                for w in (caught or [])
+            )
+            if not tight_layout_failed:
+                return
+            scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+            extra = min(0.06, 0.012 * max(0.0, scale - 1.0))
+            margin = min(0.18, 0.07 + extra)
+            self.fig.subplots_adjust(
+                left=margin,
+                right=0.985,
+                bottom=margin,
+                top=0.965,
+                wspace=0.14,
+                hspace=0.18,
+            )
+        except Exception:
+            pass
 
     def _emit_angle(self):
         if not callable(self.angle_callback):
@@ -2103,7 +2283,12 @@ class MultiPreviewCanvas(FigureCanvas):
         dy = abs(float(y1) - float(y0))
         length = float(math.hypot(dx, dy))
         unit = self._profile_axis_unit()
-        return f"L={length:.3g} {unit} | dx={dx:.3g} {unit} | dy={dy:.3g} {unit}"
+        mode = getattr(self, "_profile_label_mode", "length")
+        if mode == "hidden":
+            return ""
+        if mode == "full":
+            return f"L={length:.3g} {unit} | dx={dx:.3g} {unit} | dy={dy:.3g} {unit}"
+        return f"L={length:.3g} {unit}"
 
     def _create_ticks_and_label(self, pts, color, alpha=0.85, base_size=9):
         size = base_size * getattr(self, '_profile_label_scale', 1.0)
@@ -2122,11 +2307,13 @@ class MultiPreviewCanvas(FigureCanvas):
             label_text = self._format_profile_label(pts)
             xm = pts[0] + (pts[2] - pts[0]) * 0.5
             ym = pts[1] + (pts[3] - pts[1]) * 0.5
-            text = self.main_ax.text(
-                xm, ym, label_text, color=color, fontsize=size,
-                ha='center', va='center',
-                bbox={'facecolor': 'black', 'alpha': 0.35, 'edgecolor': 'none', 'pad': 2},
-                zorder=11)
+            text = None
+            if label_text:
+                text = self.main_ax.text(
+                    xm, ym, label_text, color=color, fontsize=size,
+                    ha='center', va='center',
+                    bbox={'facecolor': 'black', 'alpha': 0.28, 'edgecolor': 'none', 'pad': 1.5},
+                    zorder=11)
         except Exception:
             return None, None
         return ticks, text
@@ -2911,6 +3098,20 @@ class MultiPreviewCanvas(FigureCanvas):
         color_act = menu.addAction("Change Color")
         thicker_act = menu.addAction("Thicker")
         thinner_act = menu.addAction("Thinner")
+        menu.addSeparator()
+        label_menu = menu.addMenu("Label detail")
+        label_modes = [
+            ("Length only", "length"),
+            ("Full (L, dx, dy)", "full"),
+            ("Hidden", "hidden"),
+        ]
+        label_actions = {}
+        current_mode = getattr(self, "_profile_label_mode", "length")
+        for label_txt, mode_key in label_modes:
+            act = label_menu.addAction(label_txt)
+            act.setCheckable(True)
+            act.setChecked(current_mode == mode_key)
+            label_actions[act] = mode_key
         
         if overlay_idx is not None:
             menu.addSeparator()
@@ -2924,6 +3125,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._change_profile_width(overlay_idx, active, 0.5)
         elif action == thinner_act:
             self._change_profile_width(overlay_idx, active, -0.5)
+        elif action in label_actions:
+            self.set_profile_label_mode(label_actions[action])
         elif overlay_idx is not None and action == delete_act:
             self._remove_saved_profile(overlay_idx)
 

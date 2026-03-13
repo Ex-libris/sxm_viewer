@@ -20,11 +20,15 @@ def spawn_preview_popup(owner, views, title=None):
         | QtCore.Qt.WindowMaximizeButtonHint
         | QtCore.Qt.WindowSystemMenuHint
     )
+    dlg.setMinimumSize(0, 0)
     dlg.setWindowTitle(title or "Preview")
     layout = QtWidgets.QVBoxLayout(dlg)
-    controls_bar = QtWidgets.QHBoxLayout()
-    controls_bar.setContentsMargins(6, 6, 6, 6)
-    controls_bar.setSpacing(10)
+    layout.setContentsMargins(6, 6, 6, 6)
+    controls_grid = QtWidgets.QGridLayout()
+    controls_grid.setContentsMargins(4, 4, 4, 4)
+    controls_grid.setHorizontalSpacing(6)
+    controls_grid.setVerticalSpacing(4)
+    layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
 
     def _tool_button(label, tooltip):
         btn = QtWidgets.QToolButton()
@@ -51,19 +55,30 @@ def spawn_preview_popup(owner, views, title=None):
     layout_cb = QtWidgets.QComboBox()
     layout_cb.addItems(["Grid", "Stacked"])
     relative_cb = QtWidgets.QCheckBox("Relative axes")
-    controls_bar.addWidget(measure_btn)
-    controls_bar.addWidget(angle_btn)
-    controls_bar.addWidget(scale_btn)
-    controls_bar.addWidget(filter_btn)
-    controls_bar.addWidget(hist_btn)
-    controls_bar.addWidget(clear_btn)
-    controls_bar.addSpacing(6)
-    controls_bar.addWidget(QtWidgets.QLabel("Layout"))
-    controls_bar.addWidget(layout_cb)
-    controls_bar.addWidget(relative_cb)
-    controls_bar.addStretch(1)
+    frame_fill_cb = QtWidgets.QCheckBox("Frame fill")
+    frame_fill_cb.setToolTip("Hide title/axes ticks/colorbar and fill the frame to the window")
+    controls_grid.addWidget(measure_btn, 0, 0)
+    controls_grid.addWidget(angle_btn, 0, 1)
+    controls_grid.addWidget(scale_btn, 0, 2)
+    controls_grid.addWidget(filter_btn, 0, 3)
+    controls_grid.addWidget(hist_btn, 0, 4)
+    controls_grid.addWidget(clear_btn, 1, 0)
+    controls_grid.addWidget(QtWidgets.QLabel("Layout"), 1, 1)
+    controls_grid.addWidget(layout_cb, 1, 2)
+    controls_grid.addWidget(relative_cb, 1, 3, 1, 2)
+    controls_grid.addWidget(frame_fill_cb, 1, 5)
+    controls_grid.setColumnStretch(6, 1)
 
-    canvas = MultiPreviewCanvas(dlg, figsize=(6, 5))
+    # Use a default that we immediately adapt to the
+    # aspect ratio of the underlying image so the popup
+    # is created snugly around the content.
+    canvas = MultiPreviewCanvas(dlg, figsize=(4, 3))
+    try:
+        canvas.set_compact_size_hints(True)
+        canvas.setMinimumSize(0, 0)
+        canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+    except Exception:
+        pass
     try:
         canvas.set_show_title(getattr(owner, "show_preview_title", True))
     except Exception:
@@ -72,8 +87,130 @@ def spawn_preview_popup(owner, views, title=None):
         canvas.set_show_molecules(getattr(owner, "show_molecules", True))
     except Exception:
         pass
+    try:
+        canvas.set_profile_label_mode(getattr(owner, "profile_label_mode", "length"))
+    except Exception:
+        pass
+    try:
+        # Keep data undistorted in popups; combined with square canvas sizing
+        # this prevents rectangular stretching while still using available area.
+        canvas.set_fit_to_canvas(False)
+    except Exception:
+        pass
     canvas.set_view_layout(getattr(owner.preview_canvas, "_view_layout", "grid"))
+    _square_resize_busy = {"active": False}
+    _popup_resize_threshold_px = 2
+    _last_square_target = {"w": -1, "h": -1}
+    _mode_state = {"frame_fill": False}
+    resize_sync_timer = QtCore.QTimer(dlg)
+    resize_sync_timer.setSingleShot(True)
+    resize_sync_timer.setInterval(45)
+    resize_settle_timer = QtCore.QTimer(dlg)
+    resize_settle_timer.setSingleShot(True)
+    resize_settle_timer.setInterval(180)
+
+    def _enforce_square_dialog():
+        if _square_resize_busy["active"]:
+            return
+        try:
+            if dlg.isMaximized() or dlg.isFullScreen():
+                return
+        except Exception:
+            return
+        try:
+            _square_resize_busy["active"] = True
+            layout.activate()
+            margins = layout.contentsMargins()
+            controls_w = max(controls_grid.sizeHint().width(), 1)
+            controls_h = max(controls_grid.sizeHint().height(), 1)
+            canvas_min = canvas.minimumSizeHint()
+            min_side = max(controls_w, canvas_min.width(), canvas_min.height(), 1)
+            avail_w = max(1, dlg.width() - margins.left() - margins.right())
+            avail_h = max(1, dlg.height() - margins.top() - margins.bottom() - controls_h)
+            side = min(avail_w, avail_h)
+            side = max(side, min_side)
+            target_w = side + margins.left() + margins.right()
+            target_h = side + controls_h + margins.top() + margins.bottom()
+            dlg_min = dlg.minimumSizeHint()
+            target_w = max(target_w, dlg_min.width())
+            target_h = max(target_h, dlg_min.height())
+            if (
+                target_w == _last_square_target["w"]
+                and target_h == _last_square_target["h"]
+                and abs(target_w - dlg.width()) <= 1
+                and abs(target_h - dlg.height()) <= 1
+            ):
+                return
+            if abs(target_w - dlg.width()) > 1 or abs(target_h - dlg.height()) > 1:
+                _last_square_target["w"] = int(target_w)
+                _last_square_target["h"] = int(target_h)
+                dlg.resize(target_w, target_h)
+        except Exception:
+            pass
+        finally:
+            _square_resize_busy["active"] = False
+
+    def _resize_to_canvas(force=False):
+        try:
+            layout.activate()
+            if force:
+                dlg.adjustSize()
+                # Allow shrinking after the initial tight fit.
+                dlg.setMinimumSize(0, 0)
+                _enforce_square_dialog()
+        except Exception:
+            pass
+
+    def _enforce_square_when_idle():
+        try:
+            if QtWidgets.QApplication.mouseButtons() != QtCore.Qt.NoButton:
+                resize_settle_timer.start()
+                return
+        except Exception:
+            pass
+        _enforce_square_dialog()
+
+    def _schedule_resize(force=False):
+        if force:
+            QtCore.QTimer.singleShot(0, lambda: _resize_to_canvas(force=True))
+            return
+        try:
+            resize_sync_timer.start()
+            resize_settle_timer.start()
+        except Exception:
+            QtCore.QTimer.singleShot(0, lambda: _resize_to_canvas(force=False))
+
+    resize_sync_timer.timeout.connect(lambda: _resize_to_canvas(force=False))
+    resize_settle_timer.timeout.connect(_enforce_square_when_idle)
+
+    # Try to adapt the canvas figure size to the image aspect
+    # so that `adjustSize()` produces a tight dialog around the
+    # displayed frame (axes + colorbar).
+    try:
+        base = 5.0
+        v0 = views[0]
+        arr0 = v0.get("arr")
+        if arr0 is not None:
+            import numpy as _np
+            a = _np.asarray(arr0)
+            if a.ndim >= 2 and a.shape[0] > 0:
+                h, w = a.shape[0], a.shape[1]
+                aspect = float(w) / float(h) if h else 1.0
+                if aspect >= 1.0:
+                    fig_w = base * aspect
+                    fig_h = base
+                else:
+                    fig_w = base
+                    fig_h = base / aspect
+                try:
+                    canvas.fig.set_size_inches(fig_w, fig_h, forward=True)
+                except Exception:
+                    canvas.fig.set_size_inches(fig_w, fig_h)
+    except Exception:
+        pass
+
     canvas.set_views([owner._copy_view_for_popup(v) for v in views])
+    canvas.set_views_callback(lambda _=None: _schedule_resize(force=False))
     canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
     canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
     canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
@@ -142,6 +279,7 @@ def spawn_preview_popup(owner, views, title=None):
     rel_initial = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
     relative_cb.setChecked(rel_initial)
     canvas.set_relative_axes_override(rel_initial)
+    frame_fill_cb.setChecked(False)
 
     def _toggle_angle(checked):
         try:
@@ -158,12 +296,28 @@ def spawn_preview_popup(owner, views, title=None):
 
     def _toggle_layout(text):
         canvas.set_view_layout("stacked" if text.lower().startswith("stacked") else "grid")
+        _schedule_resize(force=False)
+
+    def _toggle_frame_fill(checked):
+        _mode_state["frame_fill"] = bool(checked)
+        try:
+            canvas.set_frame_fill_mode(_mode_state["frame_fill"])
+        except Exception:
+            pass
+        _last_square_target["w"] = -1
+        _last_square_target["h"] = -1
+        _schedule_resize(force=False)
 
     measure_btn.toggled.connect(profile_controller.toggle_measure)
     angle_btn.toggled.connect(_toggle_angle)
     scale_btn.toggled.connect(_toggle_scale)
     layout_cb.currentTextChanged.connect(_toggle_layout)
-    relative_cb.toggled.connect(lambda checked: canvas.set_relative_axes_override(bool(checked)))
+    frame_fill_cb.toggled.connect(_toggle_frame_fill)
+    def _toggle_relative(checked):
+        canvas.set_relative_axes_override(bool(checked))
+        _schedule_resize(force=False)
+
+    relative_cb.toggled.connect(_toggle_relative)
 
     def _clear_overlays():
         try:
@@ -177,7 +331,9 @@ def spawn_preview_popup(owner, views, title=None):
             pass
 
     clear_btn.clicked.connect(_clear_overlays)
-    layout.addLayout(controls_bar)
+    controls_widget = QtWidgets.QWidget(dlg)
+    controls_widget.setLayout(controls_grid)
+    layout.addWidget(controls_widget, 0)
     layout.addWidget(canvas, 1)
     canvas.setFocus()
 
@@ -187,6 +343,24 @@ def spawn_preview_popup(owner, views, title=None):
             self.canvas = cvs
 
         def eventFilter(self, obj, event):
+            if event.type() == QtCore.QEvent.Resize:
+                try:
+                    new_size = event.size()
+                    old_size = event.oldSize()
+                    dw = abs(int(new_size.width()) - int(old_size.width()))
+                    dh = abs(int(new_size.height()) - int(old_size.height()))
+                    if max(dw, dh) >= _popup_resize_threshold_px:
+                        _schedule_resize(force=False)
+                except Exception:
+                    _schedule_resize(force=False)
+                return False
+            if event.type() == QtCore.QEvent.Wheel:
+                try:
+                    if event.modifiers() & QtCore.Qt.ControlModifier:
+                        _schedule_resize(force=False)
+                except Exception:
+                    pass
+                return False
             if event.type() == QtCore.QEvent.KeyPress:
                 if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() == QtCore.Qt.Key_D:
                     try:
@@ -204,7 +378,7 @@ def spawn_preview_popup(owner, views, title=None):
     key_filter = _PopupKeyFilter(canvas)
     dlg.installEventFilter(key_filter)
     canvas.installEventFilter(key_filter)
-    dlg.resize(760, 620)
+    _schedule_resize(force=True)
     dlg.show()
     owner._popup_refs.append(dlg)
     if hasattr(owner, "quick_crop_controller"):

@@ -214,6 +214,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
+        self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
+        if self.profile_label_mode not in {"length", "full", "hidden"}:
+            self.profile_label_mode = "length"
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
@@ -226,6 +229,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
             'show_molecules': True,
+            'profile_label_mode': "length",
             'show_crop_template_overlay': False,
             'show_crop_history_overlay': False,
         }
@@ -852,6 +856,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.preview_canvas.set_show_molecules(self.show_molecules)
         except Exception:
             pass
+        try:
+            self.preview_canvas.set_profile_label_mode(self.profile_label_mode)
+        except Exception:
+            pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         try:
             self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
@@ -1276,6 +1284,7 @@ QLabel:hover {{
         for action, state in action_pairs:
             if action is not None:
                 action.setChecked(state)
+        self.on_profile_label_mode_changed(defaults.get("profile_label_mode", "length"))
 
     def _update_spectro_stats_label(self, stats=None):
         return main_window_spectro.update_spectro_stats_label(self, stats=stats)
@@ -5698,6 +5707,28 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(self.show_molecules)
             act.blockSignals(False)
+
+    def on_profile_label_mode_changed(self, mode: str):
+        mode = str(mode or "length").strip().lower()
+        if mode not in {"length", "full", "hidden"}:
+            mode = "length"
+        self.profile_label_mode = mode
+        self.config["profile_label_mode"] = mode
+        save_config(self.config)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                canv.set_profile_label_mode(mode)
+            except Exception:
+                continue
+        for key, action in (getattr(self, "profile_label_actions", {}) or {}).items():
+            if action is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(key == mode)
+            action.blockSignals(False)
 
     def on_fixed_crop_quick_toggled(self, checked: bool):
         self._set_quick_crop_mode(checked)
