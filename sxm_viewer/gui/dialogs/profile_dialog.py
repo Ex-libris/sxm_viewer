@@ -167,6 +167,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self._marker_domain_by_key = {}
         self._current_marker_key = None
         self._last_saved_count = 0
+        self._toggle_buttons = []
+        self._advanced_controls_visible = False
         v = QtWidgets.QVBoxLayout()
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
@@ -231,62 +233,103 @@ class ProfileDialog(QtWidgets.QDialog):
         self.marker_info = QtWidgets.QLabel("")
         self.marker_info.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
         info_layout.addWidget(self.marker_info)
-        toggle_layout = QtWidgets.QHBoxLayout()
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        self.marker_toggle = QtWidgets.QCheckBox("Show measurement markers")
-        self.marker_toggle.setChecked(True)
+        controls_hint = QtWidgets.QLabel(
+            "Shortcuts: V markers, G grid, L lines, P points, Del remove overlay, Ctrl+Wheel font size"
+        )
+        controls_hint.setObjectName("profileControlsHint")
+        controls_hint.setWordWrap(True)
+        info_layout.addWidget(controls_hint)
+
+        controls_panel = QtWidgets.QWidget()
+        controls_layout = QtWidgets.QVBoxLayout(controls_panel)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        primary_row = QtWidgets.QHBoxLayout()
+        primary_row.setContentsMargins(0, 0, 0, 0)
+        primary_row.setSpacing(6)
+
+        self.marker_toggle = self._make_toggle_button(
+            "Markers", checked=True, tooltip="Show/hide draggable measurement markers"
+        )
         self.marker_toggle.toggled.connect(self._on_marker_toggle)
-        toggle_layout.addWidget(self.marker_toggle)
-        toggle_layout.addStretch(1)
-        info_layout.addLayout(toggle_layout)
-        theme_layout = QtWidgets.QHBoxLayout()
-        theme_layout.setContentsMargins(0, 0, 0, 0)
-        self.dark_bg_cb = QtWidgets.QCheckBox("Dark background")
-        self.dark_bg_cb.setChecked(self._dark_background)
-        self.dark_bg_cb.toggled.connect(self._on_theme_toggled)
-        theme_layout.addWidget(self.dark_bg_cb)
-        self.grid_cb = QtWidgets.QCheckBox("Show grid")
-        self.grid_cb.setChecked(False)
-        self.grid_cb.toggled.connect(self._on_theme_toggled)
-        theme_layout.addWidget(self.grid_cb)
-        theme_layout.addStretch(1)
-        info_layout.addLayout(theme_layout)
-        plot_layout = QtWidgets.QHBoxLayout()
-        plot_layout.setContentsMargins(0, 0, 0, 0)
-        self.show_points_cb = QtWidgets.QCheckBox("Show data points")
-        self.show_points_cb.setChecked(False)
-        self.show_points_cb.toggled.connect(self._on_plot_option_changed)
-        plot_layout.addWidget(self.show_points_cb)
-        self.show_lines_cb = QtWidgets.QCheckBox("Show connecting lines")
-        self.show_lines_cb.setChecked(True)
+        primary_row.addWidget(self.marker_toggle)
+
+        self.show_lines_cb = self._make_toggle_button(
+            "Lines", checked=True, tooltip="Show connecting profile line"
+        )
         self.show_lines_cb.toggled.connect(self._on_plot_option_changed)
-        plot_layout.addWidget(self.show_lines_cb)
-        self.extra_ticks_cb = QtWidgets.QCheckBox("Extra ticks")
-        self.extra_ticks_cb.setChecked(False)
+        primary_row.addWidget(self.show_lines_cb)
+
+        self.show_points_cb = self._make_toggle_button(
+            "Points", checked=False, tooltip="Show sampled data points"
+        )
+        self.show_points_cb.toggled.connect(self._on_plot_option_changed)
+        primary_row.addWidget(self.show_points_cb)
+
+        self.grid_cb = self._make_toggle_button(
+            "Grid", checked=False, tooltip="Toggle grid on profile axis"
+        )
+        self.grid_cb.toggled.connect(self._on_theme_toggled)
+        primary_row.addWidget(self.grid_cb)
+
+        self.dark_bg_cb = self._make_toggle_button(
+            "Dark", checked=self._dark_background, tooltip="Toggle dark plotting background"
+        )
+        self.dark_bg_cb.toggled.connect(self._on_theme_toggled)
+        primary_row.addWidget(self.dark_bg_cb)
+
+        primary_row.addStretch(1)
+        self.advanced_toggle_btn = self._make_toggle_button(
+            "Advanced \u25bc", checked=False, tooltip="Show/hide advanced profile controls"
+        )
+        self.advanced_toggle_btn.toggled.connect(self._set_advanced_options_visible)
+        primary_row.addWidget(self.advanced_toggle_btn)
+        controls_layout.addLayout(primary_row)
+
+        self._advanced_controls_widget = QtWidgets.QWidget()
+        advanced_row = QtWidgets.QHBoxLayout(self._advanced_controls_widget)
+        advanced_row.setContentsMargins(0, 0, 0, 0)
+        advanced_row.setSpacing(6)
+
+        self.extra_ticks_cb = self._make_toggle_button(
+            "Extra ticks", checked=False, tooltip="Enable additional minor tick marks"
+        )
         self.extra_ticks_cb.toggled.connect(self._on_plot_option_changed)
-        plot_layout.addWidget(self.extra_ticks_cb)
-        self.precision_cb = QtWidgets.QCheckBox("Precision mode")
-        self.precision_cb.setChecked(False)
+        advanced_row.addWidget(self.extra_ticks_cb)
+
+        self.precision_cb = self._make_toggle_button(
+            "Precision", checked=False, tooltip="Higher tick density for fine inspection"
+        )
         self.precision_cb.toggled.connect(self._on_plot_option_changed)
-        plot_layout.addWidget(self.precision_cb)
-        self.multi_channel_cb = QtWidgets.QCheckBox("Multi-channel")
-        self.multi_channel_cb.setChecked(False)
+        advanced_row.addWidget(self.precision_cb)
+
+        self.multi_channel_cb = self._make_toggle_button(
+            "Multi-channel", checked=False, tooltip="Plot extra channel profiles when available"
+        )
         self.multi_channel_cb.toggled.connect(self._on_plot_option_changed)
-        plot_layout.addWidget(self.multi_channel_cb)
+        advanced_row.addWidget(self.multi_channel_cb)
+
         # Preview control disabled because the dialog preview is commented out to save resources.
         # self.preview_toggle_cb = QtWidgets.QCheckBox("Show preview")
         # self.preview_toggle_cb.setChecked(True)
         # self.preview_toggle_cb.toggled.connect(self._on_preview_toggle)
         # plot_layout.addWidget(self.preview_toggle_cb)
         # (If you re-enable the preview panel above, uncomment these lines to restore the toggle.)
-        self.preserve_profiles_cb = QtWidgets.QCheckBox("Keep profiles on channel switch")
-        self.preserve_profiles_cb.setChecked(True)
+        self.preserve_profiles_cb = self._make_toggle_button(
+            "Preserve profiles", checked=True, tooltip="Keep overlays when changing channel"
+        )
         self.preserve_profiles_cb.toggled.connect(self._on_preserve_toggle)
-        plot_layout.addWidget(self.preserve_profiles_cb)
-        plot_layout.addStretch(1)
-        info_layout.addLayout(plot_layout)
+        advanced_row.addWidget(self.preserve_profiles_cb)
+        advanced_row.addStretch(1)
+        controls_layout.addWidget(self._advanced_controls_widget)
+        self._set_advanced_options_visible(False)
+
+        info_layout.addWidget(controls_panel)
         self.profile_list = QtWidgets.QListWidget()
         self.profile_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.profile_list.setAlternatingRowColors(True)
+        self.profile_list.setUniformItemSizes(True)
         self.profile_list.itemDoubleClicked.connect(self._on_profile_item_activated)
         self.profile_list.currentItemChanged.connect(self._on_profile_item_selected)
         info_layout.addWidget(QtWidgets.QLabel("Profiles"))
@@ -356,6 +399,79 @@ class ProfileDialog(QtWidgets.QDialog):
             qimg = QtGui.QImage.fromData(buf.getvalue())
             QtWidgets.QApplication.clipboard().setImage(qimg)
 
+    def _make_toggle_button(self, text, *, checked=False, tooltip=None):
+        btn = QtWidgets.QToolButton(self)
+        btn.setObjectName("profileToggleButton")
+        btn.setText(text)
+        btn.setCheckable(True)
+        btn.setChecked(bool(checked))
+        btn.setAutoRaise(False)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        self._toggle_buttons.append(btn)
+        return btn
+
+    def _set_advanced_options_visible(self, visible):
+        visible = bool(visible)
+        self._advanced_controls_visible = visible
+        if hasattr(self, "_advanced_controls_widget") and self._advanced_controls_widget is not None:
+            self._advanced_controls_widget.setVisible(visible)
+        if hasattr(self, "advanced_toggle_btn") and self.advanced_toggle_btn is not None:
+            self.advanced_toggle_btn.blockSignals(True)
+            self.advanced_toggle_btn.setChecked(visible)
+            self.advanced_toggle_btn.setText("Advanced \u25b2" if visible else "Advanced \u25bc")
+            self.advanced_toggle_btn.blockSignals(False)
+
+    def _apply_toggle_button_styles(self):
+        if not self._toggle_buttons:
+            return
+        dark = bool(self._dark_background)
+        if dark:
+            inactive_bg = "#1e2430"
+            inactive_border = "#46556e"
+            inactive_text = "#d4deee"
+            active_bg = "#2f6fcb"
+            active_border = "#79a9f2"
+            active_text = "#ffffff"
+            hint_color = "#b9c6d8"
+        else:
+            inactive_bg = "#f3f5f9"
+            inactive_border = "#aeb7c5"
+            inactive_text = "#1f2a3d"
+            active_bg = "#1f6fd7"
+            active_border = "#5b97e8"
+            active_text = "#ffffff"
+            hint_color = "#4b5b73"
+        style = (
+            "QToolButton#profileToggleButton {"
+            f"background-color: {inactive_bg};"
+            f"color: {inactive_text};"
+            f"border: 1px solid {inactive_border};"
+            "border-radius: 12px;"
+            "padding: 4px 12px;"
+            "font-weight: 600;"
+            "}"
+            "QToolButton#profileToggleButton:checked {"
+            f"background-color: {active_bg};"
+            f"color: {active_text};"
+            f"border: 1px solid {active_border};"
+            "}"
+            "QToolButton#profileToggleButton:hover {"
+            f"border: 1px solid {active_border};"
+            "}"
+        )
+        for btn in self._toggle_buttons:
+            try:
+                btn.setStyleSheet(style)
+            except Exception:
+                pass
+        hint = self.findChild(QtWidgets.QLabel, "profileControlsHint")
+        if hint is not None:
+            hint.setStyleSheet(f"color: {hint_color};")
+
     def wheelEvent(self, event):
         try:
             modifiers = event.modifiers()
@@ -377,6 +493,43 @@ class ProfileDialog(QtWidgets.QDialog):
             self._delete_selected_profile()
             event.accept()
             return
+        try:
+            mods = event.modifiers()
+        except Exception:
+            mods = QtCore.Qt.NoModifier
+        if mods == QtCore.Qt.NoModifier:
+            if key == QtCore.Qt.Key_V and hasattr(self, "marker_toggle"):
+                self.marker_toggle.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_G and hasattr(self, "grid_cb"):
+                self.grid_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_L and hasattr(self, "show_lines_cb"):
+                self.show_lines_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_P and hasattr(self, "show_points_cb"):
+                self.show_points_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_M and hasattr(self, "multi_channel_cb"):
+                self.multi_channel_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_T and hasattr(self, "extra_ticks_cb"):
+                self.extra_ticks_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_R and hasattr(self, "precision_cb"):
+                self.precision_cb.toggle()
+                event.accept()
+                return
+            if key == QtCore.Qt.Key_A and hasattr(self, "advanced_toggle_btn"):
+                self.advanced_toggle_btn.toggle()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def resizeEvent(self, event):
@@ -407,6 +560,22 @@ class ProfileDialog(QtWidgets.QDialog):
             font = self.profile_list.font()
             font.setPointSizeF(max(7.0, 9.0 * scale))
             self.profile_list.setFont(font)
+        for btn in getattr(self, "_toggle_buttons", []):
+            try:
+                font = btn.font()
+                font.setPointSizeF(max(7.0, 8.8 * scale))
+                btn.setFont(font)
+            except Exception:
+                pass
+        for btn in (getattr(self, "copy_btn", None), getattr(self, "add_btn", None), getattr(self, "delete_btn", None), getattr(self, "close_btn", None)):
+            if btn is None:
+                continue
+            try:
+                font = btn.font()
+                font.setPointSizeF(max(7.0, 9.0 * scale))
+                btn.setFont(font)
+            except Exception:
+                pass
         self.canvas.draw_idle()
         if self._marker_positions and len(self._marker_positions) >= 2:
             delta = abs(self._marker_positions[1] - self._marker_positions[0])
@@ -1192,6 +1361,7 @@ class ProfileDialog(QtWidgets.QDialog):
                     txt.set_color(text)
             except Exception:
                 pass
+        self._apply_toggle_button_styles()
         if self._marker_positions and len(self._marker_positions) >= 2:
             self._update_marker_annotation(abs(self._marker_positions[1] - self._marker_positions[0]))
         self.canvas.draw_idle()
