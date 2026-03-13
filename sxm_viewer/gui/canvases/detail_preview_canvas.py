@@ -175,6 +175,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_ticks = True
         self._show_colorbar = True
         self._show_title = True
+        self._show_acquisition_overlay = False
         self._fit_to_canvas = False
         self._frame_fill_mode = False
         self._frame_fill_prev_state = None
@@ -264,6 +265,11 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_show_title(self, show: bool):
         """Toggle rendering of title/date overlays in views."""
         self._show_title = bool(show)
+        self._redraw()
+
+    def set_show_acquisition_overlay(self, show: bool):
+        """Toggle acquisition metadata HUD in the top-right image corner."""
+        self._show_acquisition_overlay = bool(show)
         self._redraw()
 
     def set_show_molecules(self, show: bool):
@@ -685,6 +691,7 @@ class MultiPreviewCanvas(FigureCanvas):
             title = v.get('title', '')
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
+            self._draw_acquisition_overlay(ax, v)
             if not self._show_ticks:
                 ax.set_xticks([])
                 ax.set_yticks([])
@@ -4534,6 +4541,7 @@ class MultiPreviewCanvas(FigureCanvas):
         title = view.get('title', '')
         if title and self._show_title:
             ax.set_title(title, fontsize=9)
+        self._draw_acquisition_overlay(ax, view)
         ax.tick_params(labelsize=8)
 
         if self.scale_bar_enabled:
@@ -4675,8 +4683,65 @@ class MultiPreviewCanvas(FigureCanvas):
             title = view.get('title', '') or view.get('label', '')
             if title and self._show_title:
                 ax.set_title(title, fontsize=9 * font_scale, color=text_color)
+            self._draw_acquisition_overlay(ax, view)
         fig.tight_layout()
         return fig
+
+    def _acquisition_overlay_text(self, view):
+        if not view:
+            return ""
+        text = view.get("acquisition_overlay_text")
+        if text:
+            return str(text).strip()
+        meta = view.get("meta") or {}
+        text = meta.get("acquisition_overlay_text")
+        if text:
+            return str(text).strip()
+        mode = str(meta.get("acquisition_mode") or "").strip().upper()
+        if mode == "CH":
+            z_nm = meta.get("acquisition_z_abs_nm")
+            try:
+                return f"CH  z_abs {float(z_nm):.3f} nm"
+            except Exception:
+                return ""
+        if mode == "CC":
+            parts = []
+            bias = meta.get("acquisition_bias_text")
+            setp = meta.get("acquisition_setpoint_text")
+            if bias:
+                parts.append(f"Bias {bias}")
+            if setp:
+                parts.append(f"Iset {setp}")
+            if parts:
+                return "CC  " + " | ".join(parts)
+        return ""
+
+    def _draw_acquisition_overlay(self, ax, view):
+        if not self._show_acquisition_overlay or ax is None:
+            return
+        text = self._acquisition_overlay_text(view)
+        if not text:
+            return
+        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        fontsize = max(7.0, 8.5 * scale)
+        ax.text(
+            0.985,
+            0.985,
+            text,
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=fontsize,
+            fontweight="semibold",
+            color="#f5f7fb",
+            bbox={
+                "facecolor": "black",
+                "alpha": 0.42,
+                "edgecolor": "none",
+                "boxstyle": "round,pad=0.22",
+            },
+            zorder=26,
+        )
 
     def _style_export_figure(self, fig, ax, cbar):
         dark = bool(self._detail_dark)

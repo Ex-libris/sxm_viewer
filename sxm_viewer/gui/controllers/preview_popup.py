@@ -88,6 +88,10 @@ def spawn_preview_popup(owner, views, title=None):
     except Exception:
         pass
     try:
+        canvas.set_show_acquisition_overlay(getattr(owner, "show_acquisition_overlay", False))
+    except Exception:
+        pass
+    try:
         canvas.set_profile_label_mode(getattr(owner, "profile_label_mode", "length"))
     except Exception:
         pass

@@ -72,6 +72,166 @@ def _build_spec_transform(header, xpix, ypix):
         'ypix': yp,
     }
 
+
+def _coerce_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _fmt_overlay_number(value, unit="", precision=4):
+    if value is None:
+        return ""
+    try:
+        text = f"{float(value):.{precision}g}"
+    except Exception:
+        text = str(value).strip()
+    unit_txt = str(unit or "").strip()
+    return f"{text} {unit_txt}".strip()
+
+
+def _candidate_abs_z_keys(header):
+    if not header:
+        return []
+    keys = []
+    for key in header.keys():
+        kl = str(key).strip().lower().replace(" ", "")
+        if kl in {"topography", "z", "zabs", "z_abs", "zpiezo", "zposition"}:
+            keys.append(str(key))
+    priority = {"topography": 0, "z_abs": 1, "zabs": 1, "z": 2, "zpiezo": 3, "zposition": 4}
+    keys.sort(key=lambda k: priority.get(str(k).strip().lower(), 99))
+    return keys
+
+
+def _extract_abs_z_nm_from_header(header):
+    if not header:
+        return None
+    for key in _candidate_abs_z_keys(header):
+        raw = header.get(key)
+        num = _coerce_float(raw)
+        if num is None:
+            continue
+        unit = (
+            header.get(f"{key}PhysUnit")
+            or header.get(f"{key}Unit")
+            or header.get("ZPhysUnit")
+            or header.get("PhysUnit")
+            or "nm"
+        )
+        try:
+            _, arr_nm = normalize_unit_and_data(np.asarray([num], dtype=float), unit)
+            if arr_nm.size:
+                return float(arr_nm[0])
+        except Exception:
+            continue
+    return None
+
+
+def _infer_abs_z_pm_from_topography(viewer, file_key: str, header: dict, fds: list, channel_idx: int):
+    if not fds:
+        return None
+    try:
+        topo_idx = _find_topography_channel(fds)
+        if topo_idx is None:
+            topo_idx = channel_idx if (0 <= channel_idx < len(fds)) else None
+        if topo_idx is None:
+            return None
+        fd_topo = fds[topo_idx]
+        samples = _sample_channel_values_for_tagging(file_key, header, fd_topo, CH_SAMPLE_POINTS)
+        if samples is None or not np.asarray(samples).size:
+            return None
+        _, arr_nm = normalize_unit_and_data(samples, fd_topo.get("PhysUnit", ""))
+        vals = np.asarray(arr_nm, dtype=float).ravel()
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return None
+        return int(round(float(np.nanmedian(vals)) * 1000.0))
+    except Exception:
+        return None
+
+
+def _build_acquisition_overlay_info(viewer, header_path: Path, header: dict, fds: list, channel_idx: int):
+    file_key = str(header_path)
+    taginfo = viewer.tags.get(file_key, {}) or {}
+    tag_label = str(taginfo.get("tag") or "").strip().lower()
+    header_hint = header_indicates_constant(header)
+    if tag_label in {"constant-height", "constant-current"}:
+        effective_tag = tag_label
+    elif header_hint == "CH":
+        effective_tag = "constant-height"
+    elif header_hint == "CC":
+        effective_tag = "constant-current"
+    else:
+        effective_tag = None
+
+    bias_val = header.get("Bias")
+    bias_unit = header.get("BiasPhysUnit") or "V"
+    setp_val = header.get("SetPoint")
+    setp_unit = header.get("SetPointPhysUnit") or ""
+    bias_txt = _fmt_overlay_number(bias_val, bias_unit)
+    setp_txt = _fmt_overlay_number(setp_val, setp_unit)
+    header_abs_nm = _extract_abs_z_nm_from_header(header)
+    if effective_tag is None:
+        if taginfo.get("abs_z_pm") is not None or (header_abs_nm is not None and not (bias_txt or setp_txt)):
+            effective_tag = "constant-height"
+        elif bias_txt or setp_txt:
+            effective_tag = "constant-current"
+        else:
+            return {
+                "mode": "",
+                "text": "",
+                "z_abs_nm": None,
+                "bias_text": bias_txt,
+                "setpoint_text": setp_txt,
+            }
+
+    if effective_tag == "constant-height":
+        abs_pm = taginfo.get("abs_z_pm", None)
+        if abs_pm is None:
+            if header_abs_nm is not None:
+                abs_pm = int(round(float(header_abs_nm) * 1000.0))
+        if abs_pm is None:
+            abs_pm = _infer_abs_z_pm_from_topography(viewer, file_key, header, fds, channel_idx)
+        z_txt = ""
+        z_nm = None
+        if abs_pm is not None:
+            z_nm = float(abs_pm) / 1000.0
+            z_txt = f"{z_nm:.3f} nm"
+            if tag_label == "constant-height" and taginfo.get("abs_z_pm") != abs_pm:
+                try:
+                    updated = dict(taginfo)
+                    updated["abs_z_pm"] = int(abs_pm)
+                    viewer.tags[file_key] = updated
+                    viewer.config["tags"] = viewer.tags
+                    save_config(viewer.config)
+                except Exception:
+                    pass
+        text = f"CH  z_abs {z_txt}" if z_txt else "CH"
+        return {
+            "mode": "CH",
+            "text": text,
+            "z_abs_nm": z_nm,
+            "bias_text": bias_txt,
+            "setpoint_text": setp_txt,
+        }
+
+    parts = []
+    if bias_txt:
+        parts.append(f"Bias {bias_txt}")
+    if setp_txt:
+        parts.append(f"Iset {setp_txt}")
+    text = "CC"
+    if parts:
+        text = "CC  " + " | ".join(parts)
+    return {
+        "mode": "CC",
+        "text": text,
+        "z_abs_nm": None,
+        "bias_text": bias_txt,
+        "setpoint_text": setp_txt,
+    }
+
 def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel_idx:int,
                          unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
     """Return HTML for the metadata pane with clearer styling and sections."""
@@ -425,6 +585,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     if display_unit:
         colorbar_label = f"{caption} [{display_unit}]"
     viewer._last_colorbar_label = colorbar_label
+    acq_overlay = _build_acquisition_overlay_info(viewer, header_path, header, fds, channel_idx)
     meta = {
         'file_path': str(header_path),
         'file_name': header_path.name,
@@ -433,6 +594,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'datetime': datetime_txt,
         'channel': caption,
         'channel_index': int(channel_idx),
+        'acquisition_mode': acq_overlay.get("mode"),
+        'acquisition_overlay_text': acq_overlay.get("text", ""),
+        'acquisition_z_abs_nm': acq_overlay.get("z_abs_nm"),
+        'acquisition_bias_text': acq_overlay.get("bias_text", ""),
+        'acquisition_setpoint_text': acq_overlay.get("setpoint_text", ""),
     }
     clim_main = _auto_preview_clim(display_arr)
     spec_pixels = []
@@ -455,6 +621,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'axis_unit': axis_unit,
         'relative_axes': bool(viewer.relative_axes),
         'meta': meta,
+        'acquisition_overlay_text': acq_overlay.get("text", ""),
         'spectra': overlay_specs,
         'highlight_spec': highlight_spec,
         'spec_pixels': list(spec_pixels),
@@ -492,6 +659,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                      'cmap': cmap2, 'unit': unit2_display, 'title': title2,
                      'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                      'relative_axes': bool(viewer.relative_axes), 'meta': meta2,
+                     'acquisition_overlay_text': acq_overlay.get("text", ""),
                      'spec_pixels': list(spec_pixels)}
             if clim2:
                 vdict['clim'] = clim2

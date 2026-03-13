@@ -214,6 +214,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
+        self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
         self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
         if self.profile_label_mode not in {"length", "full", "hidden"}:
             self.profile_label_mode = "length"
@@ -229,6 +230,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
             'show_molecules': True,
+            'show_acquisition_overlay': False,
             'profile_label_mode': "length",
             'show_crop_template_overlay': False,
             'show_crop_history_overlay': False,
@@ -857,6 +859,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self.preview_canvas.set_show_acquisition_overlay(self.show_acquisition_overlay)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_profile_label_mode(self.profile_label_mode)
         except Exception:
             pass
@@ -1278,6 +1284,7 @@ QLabel:hover {{
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
+            (getattr(self, 'acquisition_overlay_act', None), defaults.get('show_acquisition_overlay', False)),
             (getattr(self, 'crop_template_act', None), defaults.get('show_crop_template_overlay', False)),
             (getattr(self, 'crop_history_act', None), defaults.get('show_crop_history_overlay', False)),
         ]
@@ -5706,6 +5713,24 @@ QLabel:hover {{
         if act is not None:
             act.blockSignals(True)
             act.setChecked(self.show_molecules)
+            act.blockSignals(False)
+
+    def on_show_acquisition_overlay_toggled(self, checked: bool):
+        self.show_acquisition_overlay = bool(checked)
+        self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
+        save_config(self.config)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                canv.set_show_acquisition_overlay(self.show_acquisition_overlay)
+            except Exception:
+                continue
+        act = getattr(self, "acquisition_overlay_act", None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(self.show_acquisition_overlay)
             act.blockSignals(False)
 
     def on_profile_label_mode_changed(self, mode: str):
