@@ -277,11 +277,13 @@ class MultiPreviewCanvas(FigureCanvas):
         """Toggle acquisition metadata HUD in the top-right image corner."""
         self._show_acquisition_overlay = bool(show)
         self._redraw()
+        self._notify_views_callback()
 
     def set_show_molecules(self, show: bool):
         """Toggle rendering of molecular overlays in views."""
         self.show_molecules = bool(show)
         self._redraw()
+        self._notify_views_callback()
 
     def set_profile_tool_enabled(self, enabled: bool):
         enabled = bool(enabled)
@@ -364,6 +366,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._frame_fill_prev_state = None
         self._frame_fill_mode = enabled
         self._redraw()
+        self._notify_views_callback()
 
     def draw(self):
         try:
@@ -1682,6 +1685,27 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_copy_feedback_handler(self, handler):
         self._copy_feedback_handler = handler
 
+    def _notify_copy_feedback(self, view=None, *, fmt="png", displayed=False):
+        if not callable(self._copy_feedback_handler):
+            return
+        payload = {
+            "format": str(fmt or "png").lower(),
+            "displayed": bool(displayed),
+            "canvas": self,
+        }
+        ref_view = view
+        if ref_view is None:
+            ref_view = self.views[0] if self.views else {}
+        try:
+            self._copy_feedback_handler(ref_view, payload)
+        except TypeError:
+            try:
+                self._copy_feedback_handler(ref_view)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def get_overview_pixmap(self):
         """Return a pixmap snapshot of the current canvas (with overlays)."""
         try:
@@ -1738,6 +1762,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 mods = QtCore.Qt.NoModifier
                 key = None
             if mods & QtCore.Qt.ControlModifier:
+                if key == QtCore.Qt.Key_C:
+                    self._copy_displayed("png")
+                    return
                 if key == QtCore.Qt.Key_1:
                     self.set_show_profile_overlays(not self._show_profile_overlays)
                     return
@@ -4267,8 +4294,7 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             qimg = self._view_to_qimage(view)
             QtWidgets.QApplication.clipboard().setImage(qimg)
-            if callable(self._copy_feedback_handler):
-                self._copy_feedback_handler(view)
+            self._notify_copy_feedback(view, fmt="png", displayed=False)
         except Exception:
             pass
 
@@ -4365,15 +4391,18 @@ class MultiPreviewCanvas(FigureCanvas):
             active = self._get_active_angle_frame()
             angle_style_act.setChecked(active and active.get('style', 'dots') == 'arrows')
 
-        export_menu = menu.addMenu("Copy / Export")
-        copy_act = export_menu.addAction("Copy image")
-        copy_svg_act = export_menu.addAction("Copy view as SVG (vector)")
-        copy_disp_png = export_menu.addAction("Copy displayed (PNG)")
-        copy_disp_svg = export_menu.addAction("Copy displayed (SVG)")
+        copy_menu = menu.addMenu("Copy")
+        copy_disp_png = copy_menu.addAction("Copy displayed as PNG  (Ctrl+C)")
+        copy_disp_svg = copy_menu.addAction("Copy displayed as SVG")
+        copy_menu.addSeparator()
+        copy_act = copy_menu.addAction("Copy data image only (PNG)")
+        copy_svg_act = copy_menu.addAction("Copy data view as SVG (vector)")
+
+        export_menu = menu.addMenu("Save / Export")
+        save_act = export_menu.addAction("Save data image as PNG...")
+        save_svg_act = export_menu.addAction("Save displayed view as SVG...")
+        save_pdf_act = export_menu.addAction("Save displayed view as PDF...")
         export_menu.addSeparator()
-        save_act = export_menu.addAction("Save image as...")
-        save_svg_act = export_menu.addAction("Save view as SVG...")
-        save_pdf_act = export_menu.addAction("Save view as PDF...")
         export_stp_act = export_menu.addAction("Export as WSxM STP...")
 
         molecules_menu = menu.addMenu("Molecules")
@@ -4520,16 +4549,23 @@ class MultiPreviewCanvas(FigureCanvas):
     def _copy_displayed(self, fmt='png'):
         """Copy the current figure exactly as displayed (including overlays)."""
         buf = io.BytesIO()
+        def _save_without_hint():
+            if fmt == 'svg':
+                with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                    self.fig.savefig(buf, format='svg', bbox_inches='tight')
+            else:
+                self.fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
         if fmt == 'svg':
-            with matplotlib.rc_context({'svg.fonttype': 'none'}):
-                self.fig.savefig(buf, format='svg', bbox_inches='tight')
+            self._save_current_figure_without_shortcut_hint(_save_without_hint)
             mime = QtCore.QMimeData()
             mime.setData("image/svg+xml", buf.getvalue())
             QtWidgets.QApplication.clipboard().setMimeData(mime)
+            self._notify_copy_feedback(fmt="svg", displayed=True)
         else:
-            self.fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+            self._save_current_figure_without_shortcut_hint(_save_without_hint)
             qimg = QtGui.QImage.fromData(buf.getvalue())
             QtWidgets.QApplication.clipboard().setImage(qimg)
+            self._notify_copy_feedback(fmt="png", displayed=True)
 
     def _copy_view_as_svg(self, view):
         try:
@@ -4544,8 +4580,7 @@ class MultiPreviewCanvas(FigureCanvas):
             mime = QtCore.QMimeData()
             mime.setData("image/svg+xml", svg_bytes)
             QtWidgets.QApplication.clipboard().setMimeData(mime)
-            if callable(self._copy_feedback_handler):
-                self._copy_feedback_handler(view)
+            self._notify_copy_feedback(view, fmt="svg", displayed=False)
         except Exception:
             pass
         finally:
@@ -5072,7 +5107,7 @@ class MultiPreviewCanvas(FigureCanvas):
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
         hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | Ctrl+1/2/3 overlays"
-        ax.text(
+        hint_artist = ax.text(
             0.012,
             0.012,
             hint,
@@ -5089,6 +5124,35 @@ class MultiPreviewCanvas(FigureCanvas):
             },
             zorder=24,
         )
+        try:
+            hint_artist.set_gid("ui_shortcut_hint")
+        except Exception:
+            pass
+
+    def _set_shortcut_hint_artist_visibility(self, visible: bool):
+        changed = False
+        for ax in getattr(self.fig, "axes", []) or []:
+            for text in getattr(ax, "texts", []) or []:
+                try:
+                    if text.get_gid() == "ui_shortcut_hint":
+                        text.set_visible(bool(visible))
+                        changed = True
+                except Exception:
+                    continue
+        return changed
+
+    def _save_current_figure_without_shortcut_hint(self, save_fn):
+        if not callable(save_fn):
+            return
+        changed = False
+        if getattr(self, "_show_shortcut_hint", False):
+            changed = self._set_shortcut_hint_artist_visibility(False)
+        try:
+            save_fn()
+        finally:
+            if changed:
+                self._set_shortcut_hint_artist_visibility(True)
+                self.draw_idle()
 
     def _style_export_figure(self, fig, ax, cbar):
         dark = bool(self._detail_dark)

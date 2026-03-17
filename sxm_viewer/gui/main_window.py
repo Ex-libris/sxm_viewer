@@ -6,6 +6,7 @@ import time
 import re
 import json
 import os
+import tempfile
 import threading
 from collections import OrderedDict, defaultdict
 from functools import partial
@@ -218,6 +219,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
         if self.profile_label_mode not in {"length", "full", "hidden"}:
             self.profile_label_mode = "length"
+        self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
@@ -322,6 +324,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._multi_spec_selection_keys = set()
         self.spectro_compare_controller = SpectroCompareController(self)
         self.thumb_multi_select = set()
+        self._canvas_display_syncing = False
+        self._last_canvas_display_options = {}
+        self._clipboard_export_dir = None
+        self._clipboard_copy_worker = None
+        self._clipboard_copy_total = 0
+        self._toast_registry = {}
         self._batch_export_progress = None
         self._batch_export_worker = None
         self.virtual_copies = {}
@@ -848,7 +856,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             "Preview area:\n"
             "  Right-click for copy/save options\n"
             "  Enable 'Measure profile' for line sampling\n"
-            "  Ctrl+C copies the focused image to clipboard"
+            "  Ctrl+C copies the displayed preview as PNG"
         )
         try:
             self.preview_canvas.set_show_title(self.show_preview_title)
@@ -890,6 +898,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_filter_menu_callback(
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
+        self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
@@ -908,6 +917,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.enable_fixed_crop_quick_mode(self.quick_crop_mode)
         self.preview_canvas.show_fixed_crop_template(self.show_crop_template_overlay)
         self.preview_canvas.show_fixed_crop_history(self.show_crop_history_overlay)
+        self.preview_canvas.set_views_callback(
+            lambda _=None, c=self.preview_canvas: self._on_canvas_display_options_changed(c)
+        )
+        if self.canvas_display_options:
+            self._apply_canvas_display_options(
+                self.canvas_display_options,
+                source_canvas=self.preview_canvas,
+                persist=False,
+            )
         self.quick_crop_toggle_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
         self.quick_crop_toggle_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
@@ -1510,7 +1528,9 @@ QLabel:hover {{
             "<li><b>Ctrl+Wheel</b> over thumbnails = resize previews</li>"
             "<li><b>Shift+Click</b> spectroscopy marker = multi-select</li>"
             "<li><b>Ctrl+Drag</b> thumbnails = reorder export selection</li>"
-            "<li><b>Ctrl+C</b> over preview = copy current image</li>"
+            "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
+            "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
+            "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 overlays</li>"
             "</ul>"
         ) % color
@@ -1574,6 +1594,10 @@ QLabel:hover {{
         # Arrow navigation when the scroll area / container has focus
         if obj in thumb_objects and event.type() == QtCore.QEvent.KeyPress:
             key = event.key()
+            if (event.modifiers() & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_A:
+                if self._select_all_thumbnails():
+                    event.accept()
+                    return True
             if key in (
                 QtCore.Qt.Key_Left,
                 QtCore.Qt.Key_Right,
@@ -1644,6 +1668,18 @@ QLabel:hover {{
     def keyPressEvent(self, event):
         key = event.key()
         mods = event.modifiers()
+        if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_A:
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if self._is_widget_in_thumbnail_area(focus_widget):
+                if self._select_all_thumbnails():
+                    event.accept()
+                    return
+        if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_C:
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if self._is_widget_in_thumbnail_area(focus_widget):
+                if self._copy_thumbnail_selection_to_clipboard_files():
+                    event.accept()
+                    return
         if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_D:
             views = getattr(self.preview_canvas, "views", None)
             if views:
@@ -1676,6 +1712,120 @@ QLabel:hover {{
             QtWidgets.QComboBox,
         )
         return isinstance(widget, blocking_types)
+
+    def _is_widget_descendant(self, widget, ancestor):
+        if widget is None or ancestor is None:
+            return False
+        cur = widget
+        while cur is not None:
+            if cur is ancestor:
+                return True
+            cur = cur.parentWidget()
+        return False
+
+    def _is_widget_in_thumbnail_area(self, widget):
+        thumb_container = getattr(self, "thumb_container", None)
+        thumb_viewport = getattr(self, "_thumb_viewport", None)
+        scroll = getattr(self, "scroll", None)
+        if widget is None:
+            return False
+        return (
+            self._is_widget_descendant(widget, thumb_container)
+            or self._is_widget_descendant(widget, thumb_viewport)
+            or self._is_widget_descendant(widget, scroll)
+        )
+
+    def _ordered_thumbnail_selection(self):
+        selected = set(getattr(self, "thumb_multi_select", set()) or [])
+        ordered = []
+        for fp in list(getattr(self, "current_thumb_files", []) or []):
+            s = str(fp)
+            if s in selected:
+                ordered.append(s)
+        if ordered:
+            return ordered
+        current = str(getattr(self, "selected_file_for_thumbs", "") or "")
+        return [current] if current else []
+
+    def _select_all_thumbnails(self):
+        files = [str(fp) for fp in list(getattr(self, "current_thumb_files", []) or []) if str(fp)]
+        if not files:
+            return False
+        self.thumb_multi_select = set(files)
+        self.last_thumb_anchor = files[-1]
+        self._refresh_thumb_selection_styles()
+        return True
+
+    def _copy_thumbnail_selection_to_clipboard_files(self):
+        targets = self._ordered_thumbnail_selection()
+        if not targets:
+            return False
+        if getattr(self, "_clipboard_copy_worker", None) is not None:
+            self._show_toast("Clipboard copy already running...")
+            return True
+        try:
+            max_items = int(self.config.get("clipboard_copy_max_images", 48))
+        except Exception:
+            max_items = 48
+        if max_items < 1:
+            max_items = 48
+        if len(targets) > max_items:
+            self._show_toast(
+                f"Selection too large ({len(targets)}). Copying first {max_items} images.",
+                duration_ms=1800,
+            )
+            targets = targets[:max_items]
+        try:
+            clip_dir = Path(tempfile.gettempdir()) / "sxm_viewer_clipboard"
+            clip_dir.mkdir(parents=True, exist_ok=True)
+            session_dir = clip_dir / f"multi_{int(time.time() * 1000)}"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            self._clipboard_export_dir = session_dir
+            cfg = self.get_current_detail_config()
+            worker = BatchExportWorker(self, targets, cfg, session_dir)
+            worker.signals.finished.connect(self._on_clipboard_copy_finished)
+            self._clipboard_copy_worker = worker
+            self._clipboard_copy_total = len(targets)
+            self._show_toast(f"Preparing {len(targets)} image(s) for clipboard...", duration_ms=1200)
+            QtCore.QThreadPool.globalInstance().start(worker)
+            return True
+        except Exception:
+            self._clipboard_copy_worker = None
+            self._clipboard_copy_total = 0
+            self._show_toast("Clipboard copy failed to start", duration_ms=1700)
+            return False
+
+    def _on_clipboard_copy_finished(self, saved, errors, cancelled):
+        self._clipboard_copy_worker = None
+        total = int(getattr(self, "_clipboard_copy_total", 0) or 0)
+        self._clipboard_copy_total = 0
+        saved = list(saved or [])
+        errors = list(errors or [])
+        if cancelled:
+            self._show_toast("Clipboard copy canceled", duration_ms=1400)
+            return
+        if not saved:
+            if errors:
+                self._show_toast("Clipboard copy failed", duration_ms=1800)
+            else:
+                self._show_toast("No images copied", duration_ms=1400)
+            return
+        try:
+            mime = QtCore.QMimeData()
+            urls = [QtCore.QUrl.fromLocalFile(str(Path(p))) for p in saved]
+            mime.setUrls(urls)
+            mime.setText("\n".join(str(Path(p)) for p in saved))
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+        except Exception:
+            self._show_toast("Copied files, but clipboard assignment failed", duration_ms=1800)
+            return
+        if errors:
+            self._show_toast(
+                f"Copied {len(saved)}/{max(total, len(saved))} images ({len(errors)} skipped)",
+                duration_ms=1900,
+            )
+        else:
+            self._show_toast(f"Copied {len(saved)} image file(s)", duration_ms=1400)
 
     def _update_rubber_band_selection(self, rect, modifiers):
         in_rect = set()
@@ -2371,10 +2521,9 @@ QLabel:hover {{
                     pass
 
     def on_scale_bar_toggled(self, checked: bool):
-        self.config['show_scale_bar'] = bool(checked)
-        save_config(self.config)
-        if self.preview_canvas:
-            self.preview_canvas.enable_scale_bar(bool(checked))
+        options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
+        options["scale_bar_enabled"] = bool(checked)
+        self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
@@ -3549,13 +3698,85 @@ QLabel:hover {{
     def _on_canvas_overlay_highlight(self, idx):
         return viewer_measurement._on_canvas_overlay_highlight(self, idx)
 
-    def _on_view_copied(self, view):
-        title = view.get('title') or 'View'
-        msg = f"Copied '{title}' to clipboard"
+    def _resolve_toast_host(self, target=None):
+        host = None
+        if isinstance(target, QtWidgets.QWidget):
+            host = target.window() if target.window() is not None else target
+        if host is None:
+            host = self
+        return host
+
+    def _show_toast(self, message, *, duration_ms=1400, target=None):
+        text = str(message or "").strip()
+        if not text:
+            return
+        host = self._resolve_toast_host(target)
+        if host is None:
+            return
         try:
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), msg)
+            if sip.isdeleted(host):
+                host = self
         except Exception:
             pass
+        if not isinstance(host, QtWidgets.QWidget):
+            host = self
+        key = int(id(host))
+        entry = self._toast_registry.get(key)
+        toast = None
+        timer = None
+        if entry:
+            toast, timer = entry
+            try:
+                if sip.isdeleted(toast):
+                    toast = None
+            except Exception:
+                toast = None
+        if toast is None:
+            toast = QtWidgets.QLabel(host)
+            toast.setObjectName("copyToast")
+            toast.setAlignment(QtCore.Qt.AlignCenter)
+            toast.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            toast.setStyleSheet(
+                "QLabel#copyToast {"
+                "background-color: rgba(18, 24, 34, 212);"
+                "color: #f5f7fb;"
+                "border: 1px solid rgba(255,255,255,55);"
+                "border-radius: 10px;"
+                "padding: 6px 12px;"
+                "font-weight: 600;"
+                "}"
+            )
+            timer = QtCore.QTimer(toast)
+            timer.setSingleShot(True)
+            timer.timeout.connect(toast.hide)
+            self._toast_registry[key] = (toast, timer)
+        toast.setText(text)
+        toast.adjustSize()
+        rect = host.rect()
+        margin = 14
+        x = max(margin, int((rect.width() - toast.width()) * 0.5))
+        y = max(margin, int(rect.height() - toast.height() - margin))
+        toast.move(x, y)
+        toast.show()
+        toast.raise_()
+        if timer is not None:
+            timer.start(max(900, int(duration_ms)))
+
+    def _on_view_copied(self, view=None, info=None, target=None):
+        if not isinstance(view, dict):
+            view = {}
+        if not isinstance(info, dict):
+            info = {}
+        fmt = str(info.get("format") or "png").upper()
+        displayed = bool(info.get("displayed", False))
+        canvas = info.get("canvas")
+        host = target if isinstance(target, QtWidgets.QWidget) else canvas
+        if displayed:
+            msg = f"Copied displayed image ({fmt})"
+        else:
+            title = view.get('title') or 'Image'
+            msg = f"Copied '{title}' ({fmt})"
+        self._show_toast(msg, duration_ms=1400, target=host)
 
     def _on_preview_value(self, value, x, y, view):
         return viewer_preview._on_preview_value(self, value, x, y, view)
@@ -5697,42 +5918,168 @@ QLabel:hover {{
         self.config['detail_grid_view'] = self.detail_grid_view; save_config(self.config)
         self._apply_detail_view_theme()
 
+    def _canvas_display_state_from_canvas(self, canvas):
+        if canvas is None:
+            return {}
+        try:
+            layout = str(getattr(canvas, "_view_layout", "grid") or "grid").strip().lower()
+            if layout not in ("grid", "stacked"):
+                layout = "grid"
+        except Exception:
+            layout = "grid"
+        relative_axes = getattr(canvas, "_relative_axes_override", None)
+        if relative_axes is not None:
+            relative_axes = bool(relative_axes)
+        return {
+            "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
+            "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
+            "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical").strip().lower(),
+            "show_title": bool(getattr(canvas, "_show_title", True)),
+            "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
+            "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
+            "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
+            "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+            "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
+            "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
+            "relative_axes_override": relative_axes,
+            "view_layout": layout,
+        }
+
+    def _on_canvas_display_options_changed(self, canvas):
+        if self._canvas_display_syncing:
+            return
+        options = self._canvas_display_state_from_canvas(canvas)
+        if not options:
+            return
+        if options == getattr(self, "_last_canvas_display_options", {}):
+            return
+        self._apply_canvas_display_options(options, source_canvas=canvas, persist=True)
+
+    def _apply_canvas_display_options(self, options, source_canvas=None, persist=True):
+        if not isinstance(options, dict) or not options:
+            return
+        self._canvas_display_syncing = True
+        try:
+            normalized = {
+                "show_ticks": bool(options.get("show_ticks", True)),
+                "show_colorbar": bool(options.get("show_colorbar", True)),
+                "colorbar_orientation": str(options.get("colorbar_orientation", "vertical") or "vertical").strip().lower(),
+                "show_title": bool(options.get("show_title", True)),
+                "show_acquisition_overlay": bool(options.get("show_acquisition_overlay", False)),
+                "show_shortcut_hint": bool(options.get("show_shortcut_hint", True)),
+                "show_profile_overlays": bool(options.get("show_profile_overlays", True)),
+                "show_angle_overlays": bool(options.get("show_angle_overlays", True)),
+                "show_molecules": bool(options.get("show_molecules", True)),
+                "scale_bar_enabled": bool(options.get("scale_bar_enabled", False)),
+                "frame_fill_mode": bool(options.get("frame_fill_mode", False)),
+                "relative_axes_override": options.get("relative_axes_override", None),
+                "view_layout": str(options.get("view_layout", "grid") or "grid").strip().lower(),
+            }
+            if normalized["view_layout"] not in ("grid", "stacked"):
+                normalized["view_layout"] = "grid"
+            if normalized["colorbar_orientation"] not in ("vertical", "horizontal"):
+                normalized["colorbar_orientation"] = "vertical"
+            rel = normalized["relative_axes_override"]
+            if rel is not None:
+                normalized["relative_axes_override"] = bool(rel)
+
+            self.show_molecules = normalized["show_molecules"]
+            self.show_acquisition_overlay = normalized["show_acquisition_overlay"]
+            try:
+                if hasattr(self, "scale_bar_cb") and self.scale_bar_cb is not None:
+                    self.scale_bar_cb.blockSignals(True)
+                    self.scale_bar_cb.setChecked(normalized["scale_bar_enabled"])
+                    self.scale_bar_cb.blockSignals(False)
+            except Exception:
+                pass
+            for act_name, key in (("molecules_act", "show_molecules"), ("acquisition_overlay_act", "show_acquisition_overlay")):
+                act = getattr(self, act_name, None)
+                if act is not None:
+                    try:
+                        act.blockSignals(True)
+                        act.setChecked(bool(normalized[key]))
+                        act.blockSignals(False)
+                    except Exception:
+                        pass
+
+            canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+            for canv in canvases:
+                if canv is None:
+                    continue
+                try:
+                    canv._show_ticks = normalized["show_ticks"]
+                    canv._show_colorbar = normalized["show_colorbar"]
+                    canv._colorbar_orientation = normalized["colorbar_orientation"]
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_title(normalized["show_title"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_acquisition_overlay(normalized["show_acquisition_overlay"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_shortcut_hint(normalized["show_shortcut_hint"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_profile_overlays(normalized["show_profile_overlays"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_angle_overlays(normalized["show_angle_overlays"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_molecules(normalized["show_molecules"])
+                except Exception:
+                    pass
+                try:
+                    canv.enable_scale_bar(normalized["scale_bar_enabled"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_frame_fill_mode(normalized["frame_fill_mode"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_relative_axes_override(normalized["relative_axes_override"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_view_layout(normalized["view_layout"])
+                except Exception:
+                    pass
+                try:
+                    canv._redraw()
+                except Exception:
+                    pass
+
+            self._last_canvas_display_options = dict(normalized)
+            self.canvas_display_options = dict(normalized)
+            if persist:
+                self.config["canvas_display_options"] = dict(normalized)
+                self.config["show_molecules"] = self.show_molecules
+                self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
+                self.config["show_scale_bar"] = normalized["scale_bar_enabled"]
+                save_config(self.config)
+        finally:
+            self._canvas_display_syncing = False
+
     def on_show_molecules_toggled(self, checked: bool):
         self.show_molecules = bool(checked)
-        self.config['show_molecules'] = self.show_molecules; save_config(self.config)
-        try:
-            if getattr(self, "preview_canvas", None):
-                self.preview_canvas.set_show_molecules(self.show_molecules)
-        except Exception:
-            pass
-        for canv in getattr(self, '_popup_canvases', []):
-            try:
-                canv.set_show_molecules(self.show_molecules)
-            except Exception:
-                continue
-        act = getattr(self, 'molecules_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_molecules)
-            act.blockSignals(False)
+        options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
+        options["show_molecules"] = self.show_molecules
+        self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
 
     def on_show_acquisition_overlay_toggled(self, checked: bool):
         self.show_acquisition_overlay = bool(checked)
-        self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
-        save_config(self.config)
-        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
-        for canv in canvases:
-            if canv is None:
-                continue
-            try:
-                canv.set_show_acquisition_overlay(self.show_acquisition_overlay)
-            except Exception:
-                continue
-        act = getattr(self, "acquisition_overlay_act", None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_acquisition_overlay)
-            act.blockSignals(False)
+        options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
+        options["show_acquisition_overlay"] = self.show_acquisition_overlay
+        self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
 
     def on_profile_label_mode_changed(self, mode: str):
         mode = str(mode or "length").strip().lower()
