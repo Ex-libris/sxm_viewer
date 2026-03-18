@@ -135,10 +135,28 @@ class CustomFilterDialog(QtWidgets.QDialog):
         form.addRow("Filter", self.filter_combo)
         self.axis_combo = QtWidgets.QComboBox()
         self.axis_combo.addItems(["both","row","col"])
-        form.addRow("Axis", self.axis_combo)
+        self.axis_label = QtWidgets.QLabel("Axis")
+        form.addRow(self.axis_label, self.axis_combo)
         self.sigma_spin = QtWidgets.QDoubleSpinBox()
         self.sigma_spin.setRange(0.1, 50.0); self.sigma_spin.setSingleStep(0.1); self.sigma_spin.setValue(2.0)
-        form.addRow("Sigma", self.sigma_spin)
+        self.sigma_label = QtWidgets.QLabel("Sigma")
+        form.addRow(self.sigma_label, self.sigma_spin)
+        self.lap_sigma_spin = QtWidgets.QDoubleSpinBox()
+        self.lap_sigma_spin.setRange(0.0, 20.0)
+        self.lap_sigma_spin.setSingleStep(0.1)
+        self.lap_sigma_spin.setValue(float(FILTER_DEFINITIONS.get("laplacian", {}).get("default_sigma", 0.6)))
+        self.lap_sigma_label = QtWidgets.QLabel("Laplace sigma")
+        form.addRow(self.lap_sigma_label, self.lap_sigma_spin)
+        self.lap_neighbors_combo = QtWidgets.QComboBox()
+        self.lap_neighbors_combo.addItem("4-neighbor", 4)
+        self.lap_neighbors_combo.addItem("8-neighbor", 8)
+        self.lap_neighbors_label = QtWidgets.QLabel("Laplace stencil")
+        self.lap_neighbors_combo.setCurrentIndex(1)
+        form.addRow(self.lap_neighbors_label, self.lap_neighbors_combo)
+        self.lap_abs_cb = QtWidgets.QCheckBox("Absolute response")
+        self.lap_abs_cb.setChecked(bool(FILTER_DEFINITIONS.get("laplacian", {}).get("default_absolute", True)))
+        self.lap_abs_label = QtWidgets.QLabel("Laplace output")
+        form.addRow(self.lap_abs_label, self.lap_abs_cb)
         layout.addLayout(form)
         btn_row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("Add step")
@@ -166,6 +184,21 @@ class CustomFilterDialog(QtWidgets.QDialog):
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         self.preview_cb.toggled.connect(self._update_preview)
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_selection_changed)
+        self._on_filter_selection_changed()
+
+    def _set_param_row_visible(self, label_widget, field_widget, visible):
+        label_widget.setVisible(bool(visible))
+        field_widget.setVisible(bool(visible))
+
+    def _on_filter_selection_changed(self, _idx=None):
+        key = self.filter_combo.currentData()
+        self._set_param_row_visible(self.axis_label, self.axis_combo, key == "flatten")
+        self._set_param_row_visible(self.sigma_label, self.sigma_spin, key in ("highpass", "lowpass"))
+        show_lap = key == "laplacian"
+        self._set_param_row_visible(self.lap_sigma_label, self.lap_sigma_spin, show_lap)
+        self._set_param_row_visible(self.lap_neighbors_label, self.lap_neighbors_combo, show_lap)
+        self._set_param_row_visible(self.lap_abs_label, self.lap_abs_cb, show_lap)
 
     def _current_step(self):
         key = self.filter_combo.currentData()
@@ -174,6 +207,10 @@ class CustomFilterDialog(QtWidgets.QDialog):
             params['axis'] = self.axis_combo.currentText()
         if key in ('highpass','lowpass'):
             params['sigma'] = float(self.sigma_spin.value())
+        if key == 'laplacian':
+            params['sigma'] = float(self.lap_sigma_spin.value())
+            params['neighbors'] = int(self.lap_neighbors_combo.currentData() or 8)
+            params['absolute'] = bool(self.lap_abs_cb.isChecked())
         return {'key': key, 'params': params}
 
     def _on_add_step(self):

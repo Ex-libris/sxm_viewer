@@ -200,7 +200,14 @@ def spawn_preview_popup(owner, views, title=None):
         pass
 
     canvas.set_views([owner._copy_view_for_popup(v) for v in views])
-    canvas.set_views_callback(lambda _=None: _schedule_resize(force=False))
+    def _on_popup_canvas_state_changed(_=None):
+        _schedule_resize(force=False)
+        try:
+            if hasattr(owner, "_on_canvas_display_options_changed"):
+                owner._on_canvas_display_options_changed(canvas)
+        except Exception:
+            pass
+    canvas.set_views_callback(_on_popup_canvas_state_changed)
     canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
     canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
     canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
@@ -222,6 +229,7 @@ def spawn_preview_popup(owner, views, title=None):
     canvas.set_histogram_dialog_callback(lambda c: owner._open_histogram_dialog(c))
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
+    canvas.set_copy_feedback_handler(lambda view=None, info=None, host=dlg: owner._on_view_copied(view, info, target=host))
 
     seq = views[0].get("crop_sequence") if views else None
     if hasattr(owner, "quick_crop_controller"):
