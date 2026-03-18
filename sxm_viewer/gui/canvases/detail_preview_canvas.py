@@ -31,7 +31,7 @@ from .molecular_overlay import (
     get_atom_radius,
     available_atom_palettes,
 )
-from ..thumbnail_render import sample_array_value, array_to_qimage
+from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 
 try:
     from scipy import ndimage
@@ -5827,14 +5827,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if xlim0 == xlim1 or ylim0 == ylim1:
             self._reset_crop_state()
             return
-        def _map_x(x):
-            frac = (x - xlim0) / (xlim1 - xlim0)
-            return int(np.clip(round(frac * (w - 1)), 0, w - 1))
-        def _map_y(y):
-            frac = (y - ylim0) / (ylim1 - ylim0)
-            return int(np.clip(round(frac * (h - 1)), 0, h - 1))
-        c0, c1 = _map_x(x0c), _map_x(x1c)
-        r0, r1 = _map_y(y0c), _map_y(y1c)
+        c0 = self._axis_coord_to_pixel(view, x0c, w, 'x', ax=self._crop_ax)
+        c1 = self._axis_coord_to_pixel(view, x1c, w, 'x', ax=self._crop_ax)
+        r0 = self._axis_coord_to_pixel(view, y0c, h, 'y', ax=self._crop_ax)
+        r1 = self._axis_coord_to_pixel(view, y1c, h, 'y', ax=self._crop_ax)
         if c1 < c0:
             c0, c1 = c1, c0
         if r1 < r0:
@@ -5845,22 +5841,8 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
         # Build new extent in data coordinates, preserving orientation
-        ext = view.get("extent")
-        if ext is None:
-            crop_extent = None
-        else:
-            x_extent0, x_extent1, y_extent1, y_extent0 = ext
-            def _lerp_x(idx):
-                return x_extent0 + (x_extent1 - x_extent0) * (idx / (w - 1))
-            def _lerp_y(idx):
-                return y_extent0 + (y_extent1 - y_extent0) * (idx / (h - 1))
-            crop_extent = (
-                _lerp_x(c0),
-                _lerp_x(c1),
-                _lerp_y(r1),  # note: extent ordering is (x0, x1, y1, y0)
-                _lerp_y(r0),
-            )
-        bounds_data = self._pixel_bounds_to_axis_bounds(self._crop_ax, w, h, c0, c1, r0, r1)
+        crop_extent = self._compute_crop_extent(view, w, h, c0, c1, r0, r1)
+        bounds_data = crop_extent if crop_extent is not None else self._pixel_bounds_to_axis_bounds(view, self._crop_ax, w, h, c0, c1, r0, r1)
         entry = self._register_crop_entry(view, bounds_data, (c0, c1, r0, r1), self._crop_square, update_size=True)
         new_view = dict(view)
         try:
@@ -6007,25 +5989,55 @@ class MultiPreviewCanvas(FigureCanvas):
                     except Exception:
                         pass
 
-    def _axis_coord_to_pixel(self, ax, coord, length, axis_key):
-        if ax is None or coord is None or length <= 0:
-            return 0
-        limits = ax.get_xlim() if axis_key == 'x' else ax.get_ylim()
-        lim0, lim1 = limits
-        denom = max(1, length - 1)
-        frac = (coord - lim0) / (lim1 - lim0) if lim1 != lim0 else 0.0
-        idx = int(round(frac * denom))
-        return int(np.clip(idx, 0, length - 1))
+    def _view_extent(self, view):
+        if not view:
+            return None
+        extent = view.get("extent")
+        if extent is None:
+            extent = view.get("extent_raw")
+        try:
+            extent = tuple(extent) if extent is not None else None
+        except Exception:
+            extent = None
+        return extent if extent and len(extent) == 4 else None
 
-    def _pixel_bounds_to_axis_bounds(self, ax, w, h, c0, c1, r0, r1):
-        if ax is None:
+    def _axis_coord_to_pixel(self, view, coord, length, axis_key, ax=None):
+        if coord is None or length <= 0:
+            return 0
+        extent = self._view_extent(view)
+        if extent is not None:
+            lim0, lim1 = (extent[0], extent[1]) if axis_key == 'x' else (extent[2], extent[3])
+        elif ax is not None:
+            limits = ax.get_xlim() if axis_key == 'x' else ax.get_ylim()
+            lim0, lim1 = limits
+        else:
+            lim0, lim1 = 0.0, float(max(1, length - 1))
+        idx = _interp_index(coord, lim0, lim1, length)
+        if idx is None:
+            return 0
+        return int(np.clip(round(idx), 0, length - 1))
+
+    def _index_to_axis_coord(self, idx, start, end, size):
+        if size <= 0:
+            return start
+        denom = max(1, size - 1)
+        frac = idx / denom if denom else 0.0
+        if end > start:
+            return start + (end - start) * frac
+        return end + (start - end) * frac
+
+    def _pixel_bounds_to_axis_bounds(self, view, ax, w, h, c0, c1, r0, r1):
+        extent = self._view_extent(view)
+        if extent is None and ax is None:
             return None
         def _interp(idx, lim, size):
-            denom = max(1, size - 1)
-            frac = idx / denom if denom else 0.0
-            return lim[0] + (lim[1] - lim[0]) * frac
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
+            return self._index_to_axis_coord(idx, lim[0], lim[1], size)
+        if extent is not None:
+            xlim = (extent[0], extent[1])
+            ylim = (extent[2], extent[3])
+        else:
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
         left = min(c0, c1)
         right = max(c0, c1)
         bottom = min(r0, r1)
@@ -6041,16 +6053,12 @@ class MultiPreviewCanvas(FigureCanvas):
         ext = view.get("extent")
         if ext is None:
             return None
-        x_extent0, x_extent1, y_extent1, y_extent0 = ext
-        def _lerp(idx, start, end, denom):
-            return start + (end - start) * (idx / denom) if denom != 0 else start
-        denom_x = max(1, w - 1)
-        denom_y = max(1, h - 1)
+        x_extent0, x_extent1, y_extent_top, y_extent_bottom = ext
         return (
-            _lerp(c0, x_extent0, x_extent1, denom_x),
-            _lerp(c1, x_extent0, x_extent1, denom_x),
-            _lerp(r1, y_extent0, y_extent1, denom_y),
-            _lerp(r0, y_extent0, y_extent1, denom_y),
+            self._index_to_axis_coord(c0, x_extent0, x_extent1, w),
+            self._index_to_axis_coord(c1, x_extent0, x_extent1, w),
+            self._index_to_axis_coord(r0, y_extent_top, y_extent_bottom, h),
+            self._index_to_axis_coord(r1, y_extent_top, y_extent_bottom, h),
         )
 
     def _register_crop_entry(self, view, bounds_data, pixel_bounds, square, update_size=True):
@@ -6245,7 +6253,7 @@ class MultiPreviewCanvas(FigureCanvas):
         r0 = int(np.clip(int(round(cy - height / 2.0)), 0, max(0, h - height)))
         c1 = c0 + width - 1
         r1 = r0 + height - 1
-        bounds = self._pixel_bounds_to_axis_bounds(ax, w, h, c0, c1, r0, r1)
+        bounds = self._pixel_bounds_to_axis_bounds(view, ax, w, h, c0, c1, r0, r1)
         return bounds, (c0, c1, r0, r1)
 
     def _compute_pixels_for_real_size(self, view, ax, real_width, real_height):
@@ -6535,8 +6543,8 @@ class MultiPreviewCanvas(FigureCanvas):
         height = min(max(2, int(template.get("height", 2))), h)
         if width <= 0 or height <= 0:
             return False
-        cx = self._axis_coord_to_pixel(ax, event.xdata, w, 'x')
-        cy = self._axis_coord_to_pixel(ax, event.ydata, h, 'y')
+        cx = self._axis_coord_to_pixel(view, event.xdata, w, 'x', ax=ax)
+        cy = self._axis_coord_to_pixel(view, event.ydata, h, 'y', ax=ax)
         max_c0 = max(0, w - width)
         max_r0 = max(0, h - height)
         c0 = int(np.clip(cx - width // 2, 0, max_c0))
@@ -6548,7 +6556,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
         crop_extent = self._compute_crop_extent(view, w, h, c0, c1, r0, r1)
-        bounds_data = self._pixel_bounds_to_axis_bounds(ax, w, h, c0, c1, r0, r1)
+        bounds_data = crop_extent if crop_extent is not None else self._pixel_bounds_to_axis_bounds(view, ax, w, h, c0, c1, r0, r1)
         entry = self._register_crop_entry(view, bounds_data, (c0, c1, r0, r1), template.get("square", False), update_size=False)
         new_view = dict(view)
         try:
