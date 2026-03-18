@@ -842,7 +842,7 @@ class MultiPreviewCanvas(FigureCanvas):
             # Z-range for depth cueing
             z_vals = coords[:, 2]
             z_min = z_vals.min()
-            z_range = z_vals.ptp()
+            z_range = z_vals.max() - z_vals.min()
             if z_range < 1e-6:
                 z_range = 1.0
 
