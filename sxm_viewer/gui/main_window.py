@@ -4537,7 +4537,7 @@ QLabel:hover {{
         reference = images[ref_idx]
         shifts = np.zeros((len(images), 2), dtype=float)
         ref_gray = reference.astype(np.float32)
-        ref_gray = (ref_gray - ref_gray.min()) / max(ref_gray.ptp(), 1e-6)
+        ref_gray = (ref_gray - ref_gray.min()) / max(ref_gray.max() - ref_gray.min(), 1e-6)
         # apply a Hann window to reduce edge effects
         try:
             win_y = np.hanning(ref_gray.shape[0])
@@ -4550,7 +4550,7 @@ QLabel:hover {{
             if i == ref_idx:
                 continue
             target = img.astype(np.float32)
-            target = (target - target.min()) / max(target.ptp(), 1e-6)
+            target = (target - target.min()) / max(target.max() - target.min(), 1e-6)
             try:
                 target *= window
             except Exception:
