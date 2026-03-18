@@ -45,6 +45,7 @@ from ..processing.filters import (
     subtract_2nd_order_plane,
     gaussian_filter_image,
     highpass_filter,
+    laplacian_filter_image,
     FILTER_DEFINITIONS,
     _gaussian_available,
     _filter_signature,
@@ -3003,6 +3004,73 @@ QLabel:hover {{
         if "[crop]" in title or label == "[crop]":
             return True
         return False
+
+    def _prompt_laplacian_filter_params(self, parent=None):
+        defaults = FILTER_DEFINITIONS.get("laplacian", {})
+        saved = self.config.get("laplacian_filter_params", {})
+        dlg = QtWidgets.QDialog(parent or self)
+        dlg.setWindowTitle("Laplacian filter parameters")
+        dlg.setModal(True)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        form = QtWidgets.QFormLayout()
+
+        sigma_default = float(saved.get("sigma", defaults.get("default_sigma", 0.6)))
+        neigh_default = int(saved.get("neighbors", defaults.get("default_neighbors", 8)))
+        abs_default = bool(saved.get("absolute", defaults.get("default_absolute", True)))
+
+        sigma_spin = QtWidgets.QDoubleSpinBox(dlg)
+        sigma_spin.setDecimals(2)
+        sigma_spin.setRange(0.0, 20.0)
+        sigma_spin.setSingleStep(0.1)
+        sigma_spin.setValue(max(0.0, sigma_default))
+        sigma_spin.setToolTip("Pre-smoothing sigma. Use 0 for raw Laplacian response.")
+        form.addRow("Sigma", sigma_spin)
+
+        neigh_combo = QtWidgets.QComboBox(dlg)
+        neigh_combo.addItem("4-neighbor", 4)
+        neigh_combo.addItem("8-neighbor", 8)
+        neigh_combo.setCurrentIndex(1 if neigh_default == 8 else 0)
+        form.addRow("Stencil", neigh_combo)
+
+        abs_cb = QtWidgets.QCheckBox("Absolute response", dlg)
+        abs_cb.setChecked(abs_default)
+        abs_cb.setToolTip("Enable to show edge magnitude only (no sign).")
+        form.addRow("Output", abs_cb)
+
+        layout.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dlg,
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        params = {
+            "sigma": float(sigma_spin.value()),
+            "neighbors": int(neigh_combo.currentData() or 8),
+            "absolute": bool(abs_cb.isChecked()),
+        }
+        self.config["laplacian_filter_params"] = dict(params)
+        save_config(self.config)
+        return params
+
+    def _single_filter_step_spec(self, filter_key, parent=None):
+        if not filter_key:
+            return None, None
+        params = {}
+        if filter_key in ("highpass", "lowpass"):
+            params["sigma"] = FILTER_DEFINITIONS.get(filter_key, {}).get("default_sigma", 2.0)
+        elif filter_key == "laplacian":
+            params = self._prompt_laplacian_filter_params(parent=parent)
+            if params is None:
+                return None, None
+        step = {"key": filter_key, "params": params}
+        label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", filter_key)
+        return step, label
+
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
         """Populate a context menu with quick filter actions for a preview canvas."""
         if menu is None or canvas is None:
@@ -3025,11 +3093,11 @@ QLabel:hover {{
             return
         steps = pipeline
         if steps is None and filter_key:
-            params = {}
-            if filter_key in ('highpass', 'lowpass'):
-                params['sigma'] = FILTER_DEFINITIONS.get(filter_key, {}).get('default_sigma', 2.0)
-            steps = [{'key': filter_key, 'params': params}]
-            label = label or FILTER_DEFINITIONS.get(filter_key, {}).get('label', filter_key)
+            step, step_label = self._single_filter_step_spec(filter_key, parent=canvas)
+            if step is None:
+                return
+            steps = [step]
+            label = label or step_label
         new_views = []
         for v in canvas.views:
             nv = dict(v)
@@ -3110,6 +3178,11 @@ QLabel:hover {{
             if key == 'highpass':
                 sigma = params.get('sigma', 2.0)
                 return highpass_filter(arr, sigma)
+            if key == 'laplacian':
+                sigma = params.get('sigma', FILTER_DEFINITIONS.get('laplacian', {}).get('default_sigma', 0.6))
+                neighbors = params.get('neighbors', FILTER_DEFINITIONS.get('laplacian', {}).get('default_neighbors', 8))
+                absolute = params.get('absolute', FILTER_DEFINITIONS.get('laplacian', {}).get('default_absolute', True))
+                return laplacian_filter_image(arr, sigma=sigma, neighbors=neighbors, absolute=absolute)
         except Exception:
             pass
         return arr
@@ -4605,12 +4678,10 @@ QLabel:hover {{
             QtWidgets.QMessageBox.warning(self, "Filters", "Gaussian filters require scipy or OpenCV.")
             return
         if pipeline is None:
-            params = {}
-            if filter_key in ('highpass', 'lowpass'):
-                params['sigma'] = FILTER_DEFINITIONS.get(filter_key, {}).get('default_sigma', 2.0)
-            step = {'key': filter_key, 'params': params}
+            step, spec_label = self._single_filter_step_spec(filter_key, parent=self)
+            if step is None:
+                return
             spec_steps = [step]
-            spec_label = FILTER_DEFINITIONS.get(filter_key, {}).get('label', filter_key)
         else:
             spec_steps = pipeline
             spec_label = label or 'Custom'
