@@ -4342,6 +4342,17 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act = display_menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(bool(self._show_colorbar))
+        cbar_orient_menu = display_menu.addMenu("Colorbar orientation")
+        cbar_orient_group = QtWidgets.QActionGroup(self)
+        cbar_orient_group.setExclusive(True)
+        cbar_vert_act = cbar_orient_menu.addAction("Vertical")
+        cbar_vert_act.setCheckable(True)
+        cbar_vert_act.setChecked(self._colorbar_orientation == 'vertical')
+        cbar_orient_group.addAction(cbar_vert_act)
+        cbar_horiz_act = cbar_orient_menu.addAction("Horizontal")
+        cbar_horiz_act.setCheckable(True)
+        cbar_horiz_act.setChecked(self._colorbar_orientation == 'horizontal')
+        cbar_orient_group.addAction(cbar_horiz_act)
         show_title_act = display_menu.addAction("Show Title")
         show_title_act.setCheckable(True)
         show_title_act.setChecked(bool(self._show_title))
@@ -4424,8 +4435,6 @@ class MultiPreviewCanvas(FigureCanvas):
 
         view_menu = menu.addMenu("View")
         reset_zoom_act = view_menu.addAction("Reset Zoom")
-        cbar_text = "Horizontal Colorbar" if self._colorbar_orientation == 'vertical' else "Vertical Colorbar"
-        toggle_cbar_act = view_menu.addAction(cbar_text)
         arrange_act = None
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
@@ -4465,8 +4474,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
         elif chosen == reset_zoom_act:
             self._reset_view_zoom()
-        elif chosen == toggle_cbar_act:
-            self._toggle_colorbar_orientation()
+        elif chosen in (cbar_vert_act, cbar_horiz_act):
+            self._set_colorbar_orientation('vertical' if chosen == cbar_vert_act else 'horizontal')
         elif chosen == profile_tool_act:
             self.set_profile_tool_enabled(profile_tool_act.isChecked())
         elif chosen == angle_tool_act:
@@ -4635,7 +4644,15 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
 
     def _toggle_colorbar_orientation(self):
-        self._colorbar_orientation = 'horizontal' if self._colorbar_orientation == 'vertical' else 'vertical'
+        self._set_colorbar_orientation('horizontal' if self._colorbar_orientation == 'vertical' else 'vertical')
+
+    def _set_colorbar_orientation(self, orientation):
+        orientation = str(orientation or 'vertical').strip().lower()
+        if orientation not in ('vertical', 'horizontal'):
+            orientation = 'vertical'
+        if self._colorbar_orientation == orientation:
+            return
+        self._colorbar_orientation = orientation
         self._redraw()
         self._notify_views_callback()
 
