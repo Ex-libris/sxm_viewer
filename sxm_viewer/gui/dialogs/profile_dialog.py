@@ -45,7 +45,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
-from ..plot_typography import add_font_menu_action, normalize_font_family
+from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -172,6 +172,9 @@ class ProfileDialog(QtWidgets.QDialog):
         self._advanced_controls_visible = False
         owner = self.parent()
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
+        self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
+        self._plot_font_italic = bool(getattr(owner, "_plot_font_italic", False))
+        self._plot_font_underline = bool(getattr(owner, "_plot_font_underline", False))
         v = QtWidgets.QVBoxLayout()
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
@@ -382,24 +385,60 @@ class ProfileDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         copy_png = menu.addAction("Copy plot (PNG)")
         copy_svg = menu.addAction("Copy plot (SVG)")
-        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
+        add_font_menu_action(
+            menu,
+            self,
+            self._plot_font_family,
+            self.set_plot_font_family,
+            current_style=self._font_style_state(),
+            apply_style_callback=self.set_plot_typography,
+        )
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action == copy_png:
             self._copy_plot("png")
         elif action == copy_svg:
             self._copy_plot("svg")
 
+    def _font_style_state(self):
+        return {
+            "bold": bool(getattr(self, "_plot_font_bold", False)),
+            "italic": bool(getattr(self, "_plot_font_italic", False)),
+            "underline": bool(getattr(self, "_plot_font_underline", False)),
+        }
+
+    def set_plot_typography(self, **changes):
+        """Update shared plot typography and redraw with the new style."""
+        family = changes.get("family", None)
+        owner = self.parent()
+        style_changes = {
+            "bold": changes.get("bold", None),
+            "italic": changes.get("italic", None),
+            "underline": changes.get("underline", None),
+        }
+        if family is not None:
+            family = normalize_font_family(family, "sans-serif")
+            self._plot_font_family = family
+        if owner is not None and hasattr(owner, "set_plot_typography"):
+            target = {
+                "family": family if family is not None else self._plot_font_family,
+                "bold": bool(style_changes["bold"] if style_changes["bold"] is not None else self._plot_font_bold),
+                "italic": bool(style_changes["italic"] if style_changes["italic"] is not None else self._plot_font_italic),
+                "underline": bool(style_changes["underline"] if style_changes["underline"] is not None else self._plot_font_underline),
+            }
+            if any(getattr(owner, f"_plot_font_{k}", None) != v for k, v in target.items()):
+                try:
+                    owner.set_plot_typography(**target)
+                    return
+                except Exception:
+                    pass
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            if style_changes[key] is not None:
+                setattr(self, attr, bool(style_changes[key]))
+        self.update_profiles(self._active, self._saved)
+
     def set_plot_font_family(self, family: str):
         """Rebuild the profile plot with a new shared font family."""
-        owner = self.parent()
-        if owner is not None and hasattr(owner, "set_plot_font_family") and getattr(owner, "_plot_font_family", None) != family:
-            try:
-                owner.set_plot_font_family(family)
-                return
-            except Exception:
-                pass
-        self._plot_font_family = normalize_font_family(family, "sans-serif")
-        self.update_profiles(self._active, self._saved)
+        self.set_plot_typography(family=family)
 
     def _copy_plot(self, fmt):
         buf = io.BytesIO()
@@ -565,21 +604,50 @@ class ProfileDialog(QtWidgets.QDialog):
             self.ax.yaxis.label.set_fontsize(label_size)
             self.ax_top.xaxis.label.set_fontsize(label_size)
             self.ax_right.yaxis.label.set_fontsize(label_size)
+            style = self._font_style_state()
+            for text in (self.ax.xaxis.label, self.ax.yaxis.label, self.ax_top.xaxis.label, self.ax_right.yaxis.label):
+                apply_text_style(text, family=self._plot_font_family, **style)
+            for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()) + list(self.ax_top.get_xticklabels()) + list(self.ax_right.get_yticklabels()):
+                apply_text_style(text, family=self._plot_font_family, **style)
+            title = self.ax.get_title()
+            if title:
+                apply_text_style(self.ax.title, family=self._plot_font_family, **style)
         except Exception:
             pass
         for widget in (self.stats, self.marker_info):
             if widget is not None:
                 font = widget.font()
                 font.setPointSizeF(max(7.0, 9.0 * scale))
+                font = apply_qfont_style(
+                    font,
+                    family=self._plot_font_family,
+                    bold=self._plot_font_bold,
+                    italic=self._plot_font_italic,
+                    underline=self._plot_font_underline,
+                )
                 widget.setFont(font)
         if self.profile_list is not None:
             font = self.profile_list.font()
             font.setPointSizeF(max(7.0, 9.0 * scale))
+            font = apply_qfont_style(
+                font,
+                family=self._plot_font_family,
+                bold=self._plot_font_bold,
+                italic=self._plot_font_italic,
+                underline=self._plot_font_underline,
+            )
             self.profile_list.setFont(font)
         for btn in getattr(self, "_toggle_buttons", []):
             try:
                 font = btn.font()
                 font.setPointSizeF(max(7.0, 8.8 * scale))
+                font = apply_qfont_style(
+                    font,
+                    family=self._plot_font_family,
+                    bold=self._plot_font_bold,
+                    italic=self._plot_font_italic,
+                    underline=self._plot_font_underline,
+                )
                 btn.setFont(font)
             except Exception:
                 pass
@@ -589,6 +657,13 @@ class ProfileDialog(QtWidgets.QDialog):
             try:
                 font = btn.font()
                 font.setPointSizeF(max(7.0, 9.0 * scale))
+                font = apply_qfont_style(
+                    font,
+                    family=self._plot_font_family,
+                    bold=self._plot_font_bold,
+                    italic=self._plot_font_italic,
+                    underline=self._plot_font_underline,
+                )
                 btn.setFont(font)
             except Exception:
                 pass
@@ -862,6 +937,10 @@ class ProfileDialog(QtWidgets.QDialog):
                 self._marker_label.set_position((label_x, label_y))
                 self._marker_label.set_color(arrow_color)
                 self._marker_label.set_fontsize(label_size)
+                self._marker_label.set_fontfamily(self._plot_font_family)
+                self._marker_label.set_fontweight("bold" if self._plot_font_bold else "normal")
+                self._marker_label.set_fontstyle("italic" if self._plot_font_italic else "normal")
+                self._marker_label.set_underline(bool(self._plot_font_underline))
             except Exception:
                 try: self._marker_label.remove()
                 except: pass

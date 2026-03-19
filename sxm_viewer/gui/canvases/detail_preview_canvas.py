@@ -31,7 +31,7 @@ from .molecular_overlay import (
     get_atom_radius,
     available_atom_palettes,
 )
-from ..plot_typography import add_font_menu_action, normalize_font_family
+from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 
 try:
@@ -175,6 +175,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_label_mode = "length"
         self._view_font_scale = 1.0
         self._font_family = normalize_font_family(matplotlib.rcParams.get("font.family", [None])[0], "sans-serif")
+        self._plot_font_bold = bool(getattr(parent, "_plot_font_bold", False))
+        self._plot_font_italic = bool(getattr(parent, "_plot_font_italic", False))
+        self._plot_font_underline = bool(getattr(parent, "_plot_font_underline", False))
         self._colorbar_orientation = 'vertical'
         self._show_ticks = True
         self._show_colorbar = True
@@ -513,9 +516,30 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_plot_font_family(self, family: str):
         """Apply a shared font family to the canvas and its scale bar."""
-        family = normalize_font_family(family, "sans-serif")
-        self._font_family = family
-        self._scale_bar_settings["font_family"] = family
+        self.set_plot_typography(family=family)
+
+    def _plot_style_state(self):
+        return {
+            "bold": bool(getattr(self, "_plot_font_bold", False)),
+            "italic": bool(getattr(self, "_plot_font_italic", False)),
+            "underline": bool(getattr(self, "_plot_font_underline", False)),
+        }
+
+    def set_plot_typography(self, *, family=None, bold=None, italic=None, underline=None):
+        """Apply shared typography settings to the preview canvas."""
+        changes = {
+            "bold": bold,
+            "italic": italic,
+            "underline": underline,
+        }
+        if family is not None:
+            family = normalize_font_family(family, "sans-serif")
+            self._font_family = family
+            self._scale_bar_settings["font_family"] = family
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            value = changes.get(key)
+            if value is not None:
+                setattr(self, attr, bool(value))
         self._redraw()
 
     def _apply_plot_font_family_choice(self, family: str):
@@ -799,10 +823,21 @@ class MultiPreviewCanvas(FigureCanvas):
                     cbar.set_label(cbar_label)
                 if not self._show_ticks:
                     cbar.set_ticks([])
+                try:
+                    apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+                    apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                    for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
+                        apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
+                except Exception:
+                    pass
                 self._colorbars.append(cbar)
             title = v.get('title', '')
-            ax.set_title(title, fontsize=9)
+            if title:
+                ax.set_title(title, fontsize=9)
+                apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
             ax.tick_params(labelsize=8)
+            for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+                apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, v)
             if ax is self.main_ax:
                 self._draw_shortcut_hint(ax)
@@ -1269,9 +1304,12 @@ class MultiPreviewCanvas(FigureCanvas):
         # Apply font scaling
         sb.size_bar.get_children()[0].set_linewidth(0) # remove border if any
         text = sb.txt_label.get_children()[0]
-        
         text.set_fontsize(10 * font_scale)
         text.set_fontweight('bold')
+        try:
+            apply_text_style(text, family=getattr(self, "_font_family", None), **self._plot_style_state())
+        except Exception:
+            pass
         sb.set_zorder(20)
         
         ax.add_artist(sb)
@@ -1621,6 +1659,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 ax.xaxis.label.set_fontsize(label_size)
                 ax.yaxis.label.set_fontsize(label_size)
                 ax.title.set_fontsize(title_size)
+                apply_text_style(ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+                apply_text_style(ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
+                for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+                    apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
             except Exception:
                 pass
         for cbar in getattr(self, '_colorbars', []):
@@ -1628,6 +1671,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.ax.tick_params(labelsize=tick_size)
                 cbar.ax.yaxis.label.set_fontsize(label_size)
                 cbar.ax.xaxis.label.set_fontsize(label_size)
+                apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+                for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
+                    apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
             except Exception:
                 pass
         # Update scale bar font size
@@ -4465,7 +4512,14 @@ class MultiPreviewCanvas(FigureCanvas):
             view_menu.addSeparator()
             arrange_act = view_menu.addAction("Arrange pop-outs")
 
-        add_font_menu_action(menu, self, self._font_family, self._apply_plot_font_family_choice)
+        add_font_menu_action(
+            menu,
+            self,
+            self._font_family,
+            self._apply_plot_font_family_choice,
+            current_style=self._plot_style_state(),
+            apply_style_callback=self.set_plot_typography,
+        )
 
         global_pos = None
         if event is not None:
@@ -4943,8 +4997,11 @@ class MultiPreviewCanvas(FigureCanvas):
         title = view.get('title', '')
         if title and self._show_title:
             ax.set_title(title, fontsize=9)
+            apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
         self._draw_acquisition_overlay(ax, view)
         ax.tick_params(labelsize=8)
+        for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+            apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
 
         if self.scale_bar_enabled:
             extent_for_scale = display_extent if display_extent is not None else raw_extent
@@ -5076,6 +5133,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     if not self._show_ticks:
                         cbar.set_ticks([])
                     cbar.outline.set_edgecolor(text_color)
+                    apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                    for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
+                        apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
                 except Exception:
                     pass
             try:
@@ -5085,7 +5145,10 @@ class MultiPreviewCanvas(FigureCanvas):
             title = view.get('title', '') or view.get('label', '')
             if title and self._show_title:
                 ax.set_title(title, fontsize=9 * font_scale, color=text_color)
+                apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, view)
+            for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+                apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
         fig.tight_layout()
         return fig
 
@@ -5126,7 +5189,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(7.0, 8.5 * scale)
-        ax.text(
+        text_artist = ax.text(
             0.985,
             0.985,
             text,
@@ -5144,6 +5207,10 @@ class MultiPreviewCanvas(FigureCanvas):
             },
             zorder=26,
         )
+        try:
+            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
+        except Exception:
+            pass
 
     def _draw_shortcut_hint(self, ax):
         if not self._show_shortcut_hint or ax is None:
@@ -5170,6 +5237,7 @@ class MultiPreviewCanvas(FigureCanvas):
         )
         try:
             hint_artist.set_gid("ui_shortcut_hint")
+            apply_text_style(hint_artist, family=self._font_family, **self._plot_style_state())
         except Exception:
             pass
 
@@ -5238,6 +5306,11 @@ class MultiPreviewCanvas(FigureCanvas):
             ax.xaxis.label.set_fontsize(label_size)
             ax.yaxis.label.set_fontsize(label_size)
             ax.title.set_fontsize(title_size)
+            apply_text_style(ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+            apply_text_style(ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+            apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
+            for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+                apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
         except Exception:
             pass
         if cbar is not None:    
@@ -5245,6 +5318,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.ax.tick_params(labelsize=tick_size)
                 cbar.ax.yaxis.label.set_fontsize(label_size)
                 cbar.ax.xaxis.label.set_fontsize(label_size)
+                apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+                for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
+                    apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
             except Exception:
                 pass
 

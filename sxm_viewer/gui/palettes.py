@@ -9,6 +9,14 @@ COLOR_CYCLES = OrderedDict({
         "#4c78a8", "#f58518", "#e45756", "#72b7b2", "#54a24b",
         "#eeca3b", "#b279a2", "#ff9da6", "#9c755f", "#bab0ab",
     ],
+    "Rainbow": [
+        "#e41a1c", "#ff7f00", "#ffff33", "#4daf4a", "#377eb8",
+        "#984ea3", "#f781bf", "#000000",
+    ],
+    "Grayscale": [
+        "#000000", "#1f1f1f", "#4a4a4a", "#7a7a7a", "#a6a6a6",
+        "#d0d0d0", "#f0f0f0",
+    ],
     "Viridis": [
         "#440154", "#482878", "#3e4989", "#31688e", "#26838f",
         "#1f9d8a", "#6cce5a", "#b6de2b", "#fee825",
@@ -70,6 +78,9 @@ COLOR_CYCLES = OrderedDict({
     "Solar": [
         "#00204c", "#00356f", "#004b92", "#0062b5", "#1877c9",
         "#3d8dd3", "#62a4dc", "#86bae4", "#abd1ed", "#cfe7f5",
+    ],
+    "Black & White": [
+        "#000000", "#ffffff", "#666666", "#999999", "#cccccc",
     ],
 })
 

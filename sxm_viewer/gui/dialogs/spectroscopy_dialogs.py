@@ -66,7 +66,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
-from ..plot_typography import add_font_menu_action, normalize_font_family
+from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
 try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
@@ -189,6 +189,15 @@ def _topo_axis_from_spec(spec: dict | None) -> dict | None:
             return {"key": "topo", "label": name or "Topo", "unit": unit, "values": arr}
     return None
 
+
+def _style_kwargs(style_state: dict | None = None) -> dict:
+    style_state = style_state or {}
+    return {
+        "bold": bool(style_state.get("bold", False)),
+        "italic": bool(style_state.get("italic", False)),
+        "underline": bool(style_state.get("underline", False)),
+    }
+
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
     SCIENCE_PALETTE = [
@@ -199,7 +208,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#ffff33",
         "#a65628", "#f781bf", "#999999", "#66c2a5", "#fc8d62", "#8da0cb",
         "#e78ac3", "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3", "#8b9dc3",
-        "#f96855", "#56a3a6", "#9f5f9d", "#2d5d82", "#73c2ff", "#ffaec9"
+        "#f96855", "#56a3a6", "#9f5f9d", "#2d5d82", "#73c2ff", "#ffaec9",
+        "#000000", "#202020", "#404040", "#808080", "#c0c0c0", "#ffffff"
     ]
     def __init__(self, spec, parent=None):
         super().__init__(parent)
@@ -255,6 +265,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             else:
                 self.viewer = parent
         self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
+        self._plot_font_bold = bool(getattr(self.viewer, "_plot_font_bold", False))
+        self._plot_font_italic = bool(getattr(self.viewer, "_plot_font_italic", False))
+        self._plot_font_underline = bool(getattr(self.viewer, "_plot_font_underline", False))
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
@@ -559,7 +572,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         copy_all_act = menu.addAction("Copy all traces (table)")
         copy_png_act = menu.addAction("Copy plot as PNG")
         copy_svg_act = menu.addAction("Copy plot as SVG")
-        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
+        add_font_menu_action(
+            menu,
+            self,
+            self._plot_font_family,
+            self.set_plot_font_family,
+            current_style=self._font_style_state(),
+            apply_style_callback=self.set_plot_typography,
+        )
         style_menu = menu.addMenu("Plot style")
         grid_act = style_menu.addAction("Show grid")
         grid_act.setCheckable(True)
@@ -646,18 +666,46 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         elif action == reset_act:
             self._reset_plot_style()
 
+    def _font_style_state(self):
+        return {
+            "bold": bool(getattr(self, "_plot_font_bold", False)),
+            "italic": bool(getattr(self, "_plot_font_italic", False)),
+            "underline": bool(getattr(self, "_plot_font_underline", False)),
+        }
+
+    def set_plot_typography(self, **changes):
+        """Update the plot typography state and redraw the active channel."""
+        family = changes.get("family", None)
+        viewer = getattr(self, "viewer", None)
+        style_changes = {
+            "bold": changes.get("bold", None),
+            "italic": changes.get("italic", None),
+            "underline": changes.get("underline", None),
+        }
+        if family is not None:
+            family = normalize_font_family(family, "sans-serif")
+            self._plot_font_family = family
+        if viewer is not None and hasattr(viewer, "set_plot_typography"):
+            target = {
+                "family": family if family is not None else self._plot_font_family,
+                "bold": bool(style_changes["bold"] if style_changes["bold"] is not None else self._plot_font_bold),
+                "italic": bool(style_changes["italic"] if style_changes["italic"] is not None else self._plot_font_italic),
+                "underline": bool(style_changes["underline"] if style_changes["underline"] is not None else self._plot_font_underline),
+            }
+            if any(getattr(viewer, f"_plot_font_{k}", None) != v for k, v in target.items()):
+                try:
+                    viewer.set_plot_typography(**target)
+                    return
+                except Exception:
+                    pass
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            if style_changes[key] is not None:
+                setattr(self, attr, bool(style_changes[key]))
+        self._plot_selected_channel()
+
     def set_plot_font_family(self, family: str):
         """Refresh the spectroscopy plot with a new shared font family."""
-        family = normalize_font_family(family, "sans-serif")
-        viewer = getattr(self, "viewer", None)
-        if viewer is not None and hasattr(viewer, "set_plot_font_family") and getattr(viewer, "_plot_font_family", None) != family:
-            try:
-                viewer.set_plot_font_family(family)
-                return
-            except Exception:
-                pass
-        self._plot_font_family = family
-        self._plot_selected_channel()
+        self.set_plot_typography(family=family)
 
     def _copy_channel_to_clipboard(self):
         name = self.channel_combo.currentText()
@@ -884,14 +932,41 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.ax.tick_params(labelsize=8 * scale)
         self.ax.xaxis.label.set_fontsize(10 * scale)
         self.ax.yaxis.label.set_fontsize(10 * scale)
+        style = _style_kwargs(self._font_style_state())
+        apply_text_style(self.ax.xaxis.label, family=self._plot_font_family, **style)
+        apply_text_style(self.ax.yaxis.label, family=self._plot_font_family, **style)
+        for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
+            apply_text_style(text, family=self._plot_font_family, **style)
         legend = self.ax.get_legend()
         if legend:
             for text in legend.get_texts():
                 text.set_fontsize(8 * scale)
+                apply_text_style(text, family=self._plot_font_family, **style)
+            try:
+                for text in legend.get_title().texts if hasattr(legend.get_title(), "texts") else []:
+                    apply_text_style(text, family=self._plot_font_family, **style)
+            except Exception:
+                pass
         for widget, base in ((self.meta_label, 9.0), (self.fit_result_label, 8.5)):
             font = widget.font()
             font.setPointSizeF(base * scale)
+            font = apply_qfont_style(font, family=self._plot_font_family, **style)
             widget.setFont(font)
+        for widget, base in (
+            (self.channel_combo, 9.0),
+            (self.fit_btn, 9.0),
+            (self.copy_btn, 9.0),
+            (self.axis_combo, 9.0),
+        ):
+            if widget is None:
+                continue
+            try:
+                font = widget.font()
+                font.setPointSizeF(base * scale)
+                font = apply_qfont_style(font, family=self._plot_font_family, **style)
+                widget.setFont(font)
+            except Exception:
+                pass
 
     def _entries_support_log_axis(self, axis: str) -> bool:
         sequences = []
@@ -1351,6 +1426,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             grid_layout.addWidget(button, row, col)
             self._swatch_buttons.append(button)
         outer_layout.addWidget(grid_widget, 1)
+        custom_btn = QtWidgets.QPushButton("Custom...")
+        custom_btn.setToolTip("Pick any color with the system color dialog")
+        custom_btn.clicked.connect(self._choose_custom_swatch_color)
+        outer_layout.addWidget(custom_btn, 0, QtCore.Qt.AlignTop)
         swatch_widget.setAccessibleName("Color cycle swatches")
         swatch_widget.setAccessibleDescription("Displays available colors for the single spectrum plot")
         if self._swatch_buttons:
@@ -1371,6 +1450,19 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         entry = self._current_entry()
         if entry:
             entry["color"] = color
+        self._plot_selected_channel()
+
+    def _choose_custom_swatch_color(self):
+        current = QtGui.QColor(self._active_line_color or "#000000")
+        color = QtWidgets.QColorDialog.getColor(current, self, "Select spectroscopy color")
+        if not color.isValid():
+            return
+        hex_color = color.name()
+        self._active_line_color = hex_color
+        entry = self._current_entry()
+        if entry:
+            entry["color"] = hex_color
+        self._set_active_swatch(None)
         self._plot_selected_channel()
 
     def _draw_fit_overlay(self, res):
@@ -1454,6 +1546,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.specs = list(specs)
         self.viewer = parent
         self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
+        self._plot_font_bold = bool(getattr(self.viewer, "_plot_font_bold", False))
+        self._plot_font_italic = bool(getattr(self.viewer, "_plot_font_italic", False))
+        self._plot_font_underline = bool(getattr(self.viewer, "_plot_font_underline", False))
         self.dataset = dataset
         self.anchor_path = str(image_entry.get('path') or "")
         if self.anchor_path:
@@ -1939,7 +2034,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
 
-        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
+        add_font_menu_action(
+            menu,
+            self,
+            self._plot_font_family,
+            self.set_plot_font_family,
+            current_style=self._font_style_state(),
+            apply_style_callback=self.set_plot_typography,
+        )
         style_menu = menu.addMenu("Marker style")
         style_group = QtWidgets.QActionGroup(menu)
         current_marker = self._position_marker_config.get("marker", "o")
@@ -1976,6 +2078,38 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         elif action == reset_act:
             self._reset_matrix_view()
 
+    def _font_style_state(self):
+        return {
+            "bold": bool(getattr(self, "_plot_font_bold", False)),
+            "italic": bool(getattr(self, "_plot_font_italic", False)),
+            "underline": bool(getattr(self, "_plot_font_underline", False)),
+        }
+
+    def set_plot_typography(self, **changes):
+        """Refresh the matrix explorer typography."""
+        family = changes.get("family", None)
+        viewer = getattr(self, "viewer", None)
+        if family is not None:
+            family = normalize_font_family(family, "sans-serif")
+            self._plot_font_family = family
+        if viewer is not None and hasattr(viewer, "set_plot_typography"):
+            target = {
+                "family": family if family is not None else self._plot_font_family,
+                "bold": bool(changes.get("bold", self._plot_font_bold)),
+                "italic": bool(changes.get("italic", self._plot_font_italic)),
+                "underline": bool(changes.get("underline", self._plot_font_underline)),
+            }
+            if any(getattr(viewer, f"_plot_font_{k}", None) != v for k, v in target.items()):
+                try:
+                    viewer.set_plot_typography(**target)
+                    return
+                except Exception:
+                    pass
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            if key in changes:
+                setattr(self, attr, bool(changes[key]))
+        self._draw_image_layer()
+
     def set_plot_font_family(self, family: str):
         """Refresh the matrix explorer plot with a new shared font family."""
         family = normalize_font_family(family, "sans-serif")
@@ -1986,8 +2120,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 return
             except Exception:
                 pass
-        self._plot_font_family = family
-        self._draw_image_layer()
+        self.set_plot_typography(family=family)
 
     def _set_position_marker_style(self, marker):
         if not marker:
@@ -2088,6 +2221,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     alpha=cfg.get("alpha", 0.85),
                     zorder=2,
                 )
+        style = _style_kwargs(self._font_style_state())
+        for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
+            apply_text_style(text, family=self._plot_font_family, **style)
         self._update_selection_markers(redraw=False)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
@@ -2559,6 +2695,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._legend_border = True
         self._legend_filename_only = False
         self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
+        self._plot_font_bold = bool(getattr(self.viewer, "_plot_font_bold", False))
+        self._plot_font_italic = bool(getattr(self.viewer, "_plot_font_italic", False))
+        self._plot_font_underline = bool(getattr(self.viewer, "_plot_font_underline", False))
         self._grid_major = True
         self._grid_minor = False
         self._grid_alpha = 0.25
@@ -4841,7 +4980,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         copy_svg = menu.addAction("Copy plot as SVG")
         copy_all = menu.addAction("Copy all traces (table)")
         menu.addSeparator()
-        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
+        add_font_menu_action(
+            menu,
+            self,
+            self._plot_font_family,
+            self.set_plot_font_family,
+            current_style=self._font_style_state(),
+            apply_style_callback=self.set_plot_typography,
+        )
         menu.addSeparator()
         minima_act = menu.addAction("Find minima (x-position)")
         resolve_act = menu.addAction("Resolve minima overlaps")
@@ -5105,14 +5251,38 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def set_plot_font_family(self, family: str):
         """Refresh the comparison plot with a new shared font family."""
         family = normalize_font_family(family, "sans-serif")
+        self.set_plot_typography(family=family)
+
+    def _font_style_state(self):
+        return {
+            "bold": bool(getattr(self, "_plot_font_bold", False)),
+            "italic": bool(getattr(self, "_plot_font_italic", False)),
+            "underline": bool(getattr(self, "_plot_font_underline", False)),
+        }
+
+    def set_plot_typography(self, **changes):
+        """Refresh the comparison plot typography."""
+        family = changes.get("family", None)
         viewer = getattr(self, "viewer", None)
-        if viewer is not None and hasattr(viewer, "set_plot_font_family") and getattr(viewer, "_plot_font_family", None) != family:
-            try:
-                viewer.set_plot_font_family(family)
-                return
-            except Exception:
-                pass
-        self._plot_font_family = family
+        if family is not None:
+            family = normalize_font_family(family, "sans-serif")
+            self._plot_font_family = family
+        if viewer is not None and hasattr(viewer, "set_plot_typography"):
+            target = {
+                "family": family if family is not None else self._plot_font_family,
+                "bold": bool(changes.get("bold", self._plot_font_bold)),
+                "italic": bool(changes.get("italic", self._plot_font_italic)),
+                "underline": bool(changes.get("underline", self._plot_font_underline)),
+            }
+            if any(getattr(viewer, f"_plot_font_{k}", None) != v for k, v in target.items()):
+                try:
+                    viewer.set_plot_typography(**target)
+                    return
+                except Exception:
+                    pass
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            if key in changes:
+                setattr(self, attr, bool(changes[key]))
         self._update_plot()
 
     def _on_compare_canvas_keypress(self, event):
@@ -5729,18 +5899,28 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.tick_params(labelsize=8 * scale)
         self.ax.xaxis.label.set_fontsize(10 * scale)
         self.ax.yaxis.label.set_fontsize(10 * scale)
+        style = _style_kwargs(self._font_style_state())
+        apply_text_style(self.ax.xaxis.label, family=self._plot_font_family, **style)
+        apply_text_style(self.ax.yaxis.label, family=self._plot_font_family, **style)
+        for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
+            apply_text_style(text, family=self._plot_font_family, **style)
+        if self.ax.get_title():
+            apply_text_style(self.ax.title, family=self._plot_font_family, **style)
         if self.ax.get_legend():
             plt_legend = self.ax.get_legend()
             for text in plt_legend.get_texts():
                 text.set_fontsize(8 * scale)
+                apply_text_style(text, family=self._plot_font_family, **style)
         for meta in getattr(self, "_minima_meta", []):
             txt = meta.get("text")
             if txt:
                 txt.set_fontsize(7 * scale)
+                apply_text_style(txt, family=self._plot_font_family, **style)
         for pl in getattr(self, "_point_labels", []):
             txt = pl.get("text")
             if txt:
                 txt.set_fontsize(7 * scale)
+                apply_text_style(txt, family=self._plot_font_family, **style)
         self.canvas.draw_idle()
 
     def _curve_name(self, spec_id):

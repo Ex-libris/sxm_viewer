@@ -180,6 +180,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             save_config(self.config)
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
+        self.show_spectro_miniatures = bool(self.config.get("show_spectro_miniatures", False))
+        self.spectro_miniature_default_channel = str(self.config.get("spectro_miniature_default_channel", "") or "")
+        self.spectro_thumb_channel_by_path = dict(self.config.get("spectro_thumb_channel_by_path", {}) or {})
         self.spectro_highlight_glow = bool(self.config.get("spectro_highlight_glow", True))
         preview_cfg = self.config.get("show_preview_spectra")
         if preview_cfg is None:
@@ -326,6 +329,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._multi_spec_selection_keys = set()
         self.spectro_compare_controller = SpectroCompareController(self)
         self.thumb_multi_select = set()
+        self.spectro_thumb_multi_select = set()
+        self.current_spectro_thumb_files = []
+        self.selected_spectro_thumb_file = None
         self._canvas_display_syncing = False
         self._last_canvas_display_options = {}
         self._profile_dialogs = []
@@ -360,6 +366,9 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         # Plot typography defaults are shared across preview, popups and dialogs.
         self._plot_font_family = normalize_font_family(self.config.get("plot_font_family", UI_FONT_FAMILY), UI_FONT_FAMILY)
+        self._plot_font_bold = bool(self.config.get("plot_font_bold", False))
+        self._plot_font_italic = bool(self.config.get("plot_font_italic", False))
+        self._plot_font_underline = bool(self.config.get("plot_font_underline", False))
         set_matplotlib_font_family(self._plot_font_family)
         # fonts
         base_font = QtGui.QFont(UI_FONT_FAMILY, UI_FONT_SIZE)
@@ -887,7 +896,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         try:
             self.preview_canvas.set_plot_font_family_callback(lambda fam: self.set_plot_font_family(fam))
-            self.preview_canvas.set_plot_font_family(self._plot_font_family)
+            if hasattr(self.preview_canvas, "set_plot_typography"):
+                self.preview_canvas.set_plot_typography(
+                    family=self._plot_font_family,
+                    bold=self._plot_font_bold,
+                    italic=self._plot_font_italic,
+                    underline=self._plot_font_underline,
+                )
+            else:
+                self.preview_canvas.set_plot_font_family(self._plot_font_family)
         except Exception:
             pass
         try:
@@ -1590,19 +1607,48 @@ QLabel:hover {{
                 if len(dirs) == 1 and not files:
                     self.load_folder(dirs[0])
                 else:
-                    drop_files = []
+                    drop_image_files = []
+                    drop_spectro_files = []
                     for folder in dirs:
                         try:
-                            drop_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
+                            drop_image_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
                         except Exception:
                             continue
-                    drop_files.extend(files)
-                    folder_hint = None
-                    if len(dirs) == 1 and not files:
-                        folder_hint = dirs[0]
-                    elif len(files) and len({str(p.parent) for p in files}) == 1 and not dirs:
-                        folder_hint = files[0].parent
-                    self.load_files(drop_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
+                    explicit_images, explicit_spectros = viewer_loader.classify_dropped_paths(self, files)
+                    drop_image_files.extend(explicit_images)
+                    drop_spectro_files.extend(explicit_spectros)
+                    if drop_image_files:
+                        folder_hint = None
+                        if len(dirs) == 1 and not files:
+                            folder_hint = dirs[0]
+                        elif len(explicit_images) and len({str(p.parent) for p in explicit_images}) == 1 and not dirs:
+                            folder_hint = explicit_images[0].parent
+                        self.load_files(drop_image_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
+                    if drop_spectro_files:
+                        spectro_hint = None
+                        if len(drop_spectro_files) == 1:
+                            spectro_hint = drop_spectro_files[0].parent
+                        loaded_specs = self.load_spectroscopy_files(drop_spectro_files, folder_hint=spectro_hint, append=True, refresh=True)
+                        # A single spectroscopy drop should surface immediately so the user sees
+                        # the data without hunting for it in the browser.
+                        if len(drop_spectro_files) == 1 and not drop_image_files:
+                            try:
+                                dropped = str(Path(drop_spectro_files[0]).resolve()).lower()
+                            except Exception:
+                                dropped = str(drop_spectro_files[0]).lower()
+                            spec = None
+                            for item in loaded_specs or []:
+                                try:
+                                    key = str(Path(item.get("path", "")).resolve()).lower()
+                                except Exception:
+                                    key = str(item.get("path", "")).lower()
+                                if key == dropped:
+                                    spec = item
+                                    break
+                            if spec is None and loaded_specs:
+                                spec = loaded_specs[0]
+                            if spec is not None:
+                                self._open_spectroscopy_popup(spec)
                 event.acceptProposedAction()
                 return
         super().dropEvent(event)
@@ -1656,11 +1702,16 @@ QLabel:hover {{
                     
                     if not hasattr(self, 'thumb_multi_select') or self.thumb_multi_select is None:
                         self.thumb_multi_select = set()
+                    if not hasattr(self, 'spectro_thumb_multi_select') or self.spectro_thumb_multi_select is None:
+                        self.spectro_thumb_multi_select = set()
                     self._selection_before_drag = set(self.thumb_multi_select)
+                    self._spectro_selection_before_drag = set(self.spectro_thumb_multi_select)
                     
                     if not (event.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier)):
                         self._selection_before_drag = set()
+                        self._spectro_selection_before_drag = set()
                         self._clear_thumb_multi_selection()
+                        self._clear_spectro_thumb_multi_selection()
                     return True
             elif event.type() == QtCore.QEvent.MouseMove:
                 if hasattr(self, '_rubber_band') and self._rubber_band.isVisible():
@@ -1673,6 +1724,8 @@ QLabel:hover {{
                     self._rubber_band.hide()
                     if hasattr(self, '_selection_before_drag'):
                         del self._selection_before_drag
+                    if hasattr(self, '_spectro_selection_before_drag'):
+                        del self._spectro_selection_before_drag
                     return True
 
         # When the thumbnail viewport or container is resized, debounce and repopulate so
@@ -1783,11 +1836,17 @@ QLabel:hover {{
 
     def _select_all_thumbnails(self):
         files = [str(fp) for fp in list(getattr(self, "current_thumb_files", []) or []) if str(fp)]
-        if not files:
+        spectro_files = [str(fp) for fp in list(getattr(self, "current_spectro_thumb_files", []) or []) if str(fp)]
+        if not files and not spectro_files:
             return False
         self.thumb_multi_select = set(files)
-        self.last_thumb_anchor = files[-1]
+        self.spectro_thumb_multi_select = set(spectro_files)
+        if files:
+            self.last_thumb_anchor = files[-1]
+        if spectro_files:
+            self.last_spectro_thumb_anchor = spectro_files[-1]
         self._refresh_thumb_selection_styles()
+        self._refresh_spectro_thumb_selection_styles()
         return True
 
     def _copy_thumbnail_selection_to_clipboard_files(self):
@@ -1866,17 +1925,29 @@ QLabel:hover {{
         for key, widget in self.thumb_widgets.items():
             if widget.geometry().intersects(rect):
                 in_rect.add(str(key))
-        
-        base = getattr(self, '_selection_before_drag', set())
+        in_spectro_rect = set()
+        for key, widget in getattr(self, "spectro_thumb_widgets", {}).items():
+            if widget.geometry().intersects(rect):
+                in_spectro_rect.add(str(key))
+
+        base = set(getattr(self, '_selection_before_drag', set()) or [])
+        base_spectro = set(getattr(self, '_spectro_selection_before_drag', set()) or [])
         if modifiers & QtCore.Qt.ControlModifier:
             new_selection = base.symmetric_difference(in_rect)
+            new_spectro_selection = base_spectro.symmetric_difference(in_spectro_rect)
         elif modifiers & QtCore.Qt.ShiftModifier:
             new_selection = base.union(in_rect)
+            new_spectro_selection = base_spectro.union(in_spectro_rect)
         else:
             new_selection = in_rect
-            
+            new_spectro_selection = in_spectro_rect
+
+        if new_selection == set(getattr(self, "thumb_multi_select", set()) or []) and new_spectro_selection == set(getattr(self, "spectro_thumb_multi_select", set()) or []):
+            return
         self.thumb_multi_select = new_selection
+        self.spectro_thumb_multi_select = new_spectro_selection
         self._refresh_thumb_selection_styles()
+        self._refresh_spectro_thumb_selection_styles()
 
     def _thumb_dimensions(self):
         return viewer_thumb_ui._thumb_dimensions(self)
@@ -2125,6 +2196,21 @@ QLabel:hover {{
                 pass
         return result
 
+    def load_spectroscopy_files(self, files, folder_hint: Path | None = None, *, append: bool = True, refresh: bool = True):
+        start = time.perf_counter()
+        result = viewer_loader.load_spectroscopy_files(
+            self,
+            files,
+            folder_hint=folder_hint,
+            append=append,
+            refresh=refresh,
+        )
+        end = time.perf_counter()
+        ms = (end - start) * 1000.0
+        gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
+        log_status(f"[Perf] Load spectros: {ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        return result
+
     def clear_loaded_images(self):
         """Clear the current image session and leave the app ready for fresh drops."""
         self.files = []
@@ -2137,6 +2223,9 @@ QLabel:hover {{
         self.last_preview = None
         self.current_thumb_files = []
         self.thumb_multi_select = set()
+        self.spectro_thumb_multi_select = set()
+        self.current_spectro_thumb_files = []
+        self.selected_spectro_thumb_file = None
         self.thumbnail_filters = {}
         self.virtual_copies = {}
         self.virtual_copy_order = []
@@ -2157,6 +2246,7 @@ QLabel:hover {{
         self.files_with_matrix = set()
         self._spectros_loaded = False
         self._spectros_pending = False
+        self.spectro_thumb_channel_by_path = {}
         try:
             self._thumb_generation += 1
         except Exception:
@@ -2202,24 +2292,134 @@ QLabel:hover {{
         except Exception:
             pass
 
-    def set_plot_font_family(self, family: str, *, refresh: bool = True):
-        """Set the shared plot font family and redraw visible plot surfaces."""
-        family = normalize_font_family(family, UI_FONT_FAMILY)
-        if family == getattr(self, "_plot_font_family", None) and refresh:
-            # Even if the family is unchanged, a refresh can be useful after config restore.
+    def _spectroscopy_metadata_lines(self, spec):
+        """Format spectroscopy metadata for the Details panel without dumping large arrays."""
+        if not spec:
+            return ["No spectroscopy metadata."]
+
+        def _fmt(value):
+            if value is None:
+                return "None"
+            if isinstance(value, (str, int, float, bool)):
+                return str(value)
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, dict):
+                return f"dict({len(value)})"
+            if isinstance(value, (list, tuple, set)):
+                return f"{type(value).__name__}({len(value)})"
+            if hasattr(value, "shape"):
+                try:
+                    arr = np.asarray(value)
+                    return f"array(shape={arr.shape}, dtype={arr.dtype})"
+                except Exception:
+                    return type(value).__name__
+            return str(value)
+
+        lines = ["Spectroscopy details", ""]
+        for key in ("path", "source", "time", "file_mtime", "image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
+            if key in spec:
+                lines.append(f"{key}: {_fmt(spec.get(key))}")
+        channels = spec.get("channels") or {}
+        if channels:
+            lines.append("")
+            lines.append(f"Channels ({len(channels)}):")
+            for name, values in channels.items():
+                try:
+                    arr = np.asarray(values)
+                    shape = arr.shape
+                except Exception:
+                    shape = "?"
+                lines.append(f"  - {name}: shape={shape}")
+        axis_choices = spec.get("AxisChoices") or []
+        if axis_choices:
+            lines.append("")
+            lines.append(f"Axis choices ({len(axis_choices)}):")
+            for ax in axis_choices:
+                key = ax.get("key") or ax.get("label") or "Axis"
+                label = ax.get("label") or "Axis"
+                unit = ax.get("unit") or ""
+                lines.append(f"  - {key}: {label}" + (f" ({unit})" if unit else ""))
+        lines.append("")
+        lines.append("Raw fields:")
+        for key in sorted(spec.keys(), key=lambda s: str(s).lower()):
+            if key in {"channels", "AxisChoices"}:
+                continue
+            lines.append(f"  {key}: {_fmt(spec.get(key))}")
+        return lines
+
+    def show_spectroscopy_details(self, spec):
+        """Show a spectroscopy entry in the left Details panel."""
+        try:
+            self.meta_box.setPlainText("\n".join(self._spectroscopy_metadata_lines(spec)))
+        except Exception:
             pass
-        self._plot_font_family = family
-        self.config["plot_font_family"] = family
+        try:
+            if hasattr(self, "details_group"):
+                self.details_group.setChecked(True)
+        except Exception:
+            pass
+
+    def on_set_spectro_thumbnail_channel(self, channel_name: str, paths=None):
+        """Set the rendered spectroscopy channel for one or more miniature cards."""
+        channel_name = str(channel_name or "").strip()
+        if not channel_name:
+            return
+        targets = [str(Path(p)) for p in (paths or []) if p]
+        if targets:
+            for key in targets:
+                self.spectro_thumb_channel_by_path[key] = channel_name
+            self.config["spectro_thumb_channel_by_path"] = self.spectro_thumb_channel_by_path
+        else:
+            self.spectro_miniature_default_channel = channel_name
+            self.config["spectro_miniature_default_channel"] = channel_name
         save_config(self.config)
-        set_matplotlib_font_family(family)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def set_plot_typography(self, *, family=None, bold=None, italic=None, underline=None, refresh: bool = True):
+        """Set shared plot typography and redraw visible plot surfaces."""
+        changed = False
+        style_changes = {
+            "bold": bold,
+            "italic": italic,
+            "underline": underline,
+        }
+        if family is not None:
+            family = normalize_font_family(family, UI_FONT_FAMILY)
+            if family != getattr(self, "_plot_font_family", None):
+                self._plot_font_family = family
+                self.config["plot_font_family"] = family
+                changed = True
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            val = style_changes.get(key)
+            if val is not None and bool(val) != getattr(self, attr, False):
+                setattr(self, attr, bool(val))
+                self.config[f"plot_font_{key}"] = bool(val)
+                changed = True
+        if changed:
+            save_config(self.config)
+        set_matplotlib_font_family(self._plot_font_family)
         if not refresh:
-            return family
+            return {
+                "family": self._plot_font_family,
+                "bold": self._plot_font_bold,
+                "italic": self._plot_font_italic,
+                "underline": self._plot_font_underline,
+            }
         canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
         for canv in canvases:
             if canv is None:
                 continue
             try:
-                canv.set_plot_font_family(family)
+                if hasattr(canv, "set_plot_typography"):
+                    canv.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    canv.set_plot_font_family(self._plot_font_family)
             except Exception:
                 try:
                     canv._redraw()
@@ -2229,24 +2429,52 @@ QLabel:hover {{
             if dlg is None:
                 continue
             try:
-                dlg.set_plot_font_family(family)
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
             except Exception:
                 pass
         for dlg in list(getattr(self, "_spectro_popups", []) or []):
             if dlg is None:
                 continue
             try:
-                dlg.set_plot_font_family(family)
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
             except Exception:
                 pass
         for dlg in list(getattr(self, "_multi_spectro_popups", []) or []):
             if dlg is None:
                 continue
             try:
-                dlg.set_plot_font_family(family)
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
             except Exception:
                 pass
-        return family
+        return self._plot_font_family
+
+    def set_plot_font_family(self, family: str, *, refresh: bool = True):
+        """Backward-compatible wrapper for shared font family updates."""
+        return self.set_plot_typography(family=family, refresh=refresh)
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
@@ -2886,6 +3114,12 @@ QLabel:hover {{
 
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
+
+    def _refresh_spectro_thumb_selection_styles(self):
+        return viewer_thumb_ui._refresh_spectro_thumb_selection_styles(self)
+
+    def _clear_spectro_thumb_multi_selection(self, update_styles=True):
+        return viewer_thumb_ui._clear_spectro_thumb_multi_selection(self, update_styles=update_styles)
 
     def _schedule_marker_refresh(self, delay_ms: int = 120):
         try:
@@ -4797,6 +5031,11 @@ QLabel:hover {{
         overlay_act.setChecked(self.show_spectra)
         overlay_act.triggered.connect(self.on_show_spectra_toggled)
         menu.addAction(overlay_act)
+        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
+        mini_act.setCheckable(True)
+        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
+        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
+        menu.addAction(mini_act)
         glow_act = QtWidgets.QAction("Spectro highlight glow", menu)
         glow_act.setCheckable(True)
         glow_act.setChecked(getattr(self, "spectro_highlight_glow", True))
@@ -4841,6 +5080,62 @@ QLabel:hover {{
         anim_act.triggered.connect(lambda _, paths=list(targets): self._on_create_animation(paths))
         menu.addAction(anim_act)
 
+        menu.exec_(label_widget.mapToGlobal(pos))
+
+    def _on_spectro_thumb_context_menu(self, label_widget, pos):
+        spec = label_widget.property("spectro_entry")
+        if not spec:
+            return
+        key = str(spec.get("path", "") or "")
+        selected = sorted(set(getattr(self, "spectro_thumb_multi_select", set()) or []))
+        targets = selected if selected else [key]
+        menu = QtWidgets.QMenu(self)
+        open_act = QtWidgets.QAction("Open spectroscopy", menu)
+        open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
+        menu.addAction(open_act)
+        details_act = QtWidgets.QAction("Show metadata in Details", menu)
+        details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
+        menu.addAction(details_act)
+
+        channels = list((spec.get("channels") or {}).keys())
+        common = set(channels)
+        if selected:
+            for path in selected:
+                entry = None
+                for s in getattr(self, "spectros", []) or []:
+                    if str(s.get("path", "") or "") == path:
+                        entry = s
+                        break
+                if entry is None:
+                    continue
+                common &= set((entry.get("channels") or {}).keys())
+        channel_menu = menu.addMenu("Miniature channel")
+        channel_list = sorted(common) if common else channels
+        if not channel_list:
+            channel_list = channels
+        if channel_list:
+            current = self.spectro_thumb_channel_by_path.get(key) or self.spectro_miniature_default_channel or channel_list[0]
+            for ch_name in channel_list:
+                act = QtWidgets.QAction(ch_name, channel_menu)
+                act.setCheckable(True)
+                act.setChecked(ch_name == current)
+                act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
+                channel_menu.addAction(act)
+
+        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
+        mini_act.setCheckable(True)
+        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
+        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
+        menu.addAction(mini_act)
+        menu.addSeparator()
+        copy_path = QtWidgets.QAction("Copy file path", menu)
+        def _copy_path():
+            try:
+                QtWidgets.QApplication.clipboard().setText(str(spec.get("path", "")))
+            except Exception:
+                pass
+        copy_path.triggered.connect(_copy_path)
+        menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None):
@@ -6073,6 +6368,13 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
+
+    def on_show_spectro_miniatures_toggled(self, checked: bool):
+        self.show_spectro_miniatures = bool(checked)
+        self.config["show_spectro_miniatures"] = self.show_spectro_miniatures
+        save_config(self.config)
+        # Miniatures are a thumbnail presentation choice, so a full repopulate is enough.
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def on_show_preview_spectra_toggled(self, checked: bool):
         self.show_preview_spectra = bool(checked)
