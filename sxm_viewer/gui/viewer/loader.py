@@ -84,24 +84,14 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, parse_nanonis_spectroscopy, parse_nanonis_3ds
+from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
-def load_folder(viewer, folder:Path):
+def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
+    """Return the image header files implied by a folder load."""
     folder = Path(folder)
-    log_status(f"Loading folder: {folder}")
-    t0 = time.perf_counter()
-    viewer._update_toolbar_actions(False)
-    prev_last_dir = getattr(viewer, 'last_dir', None)
-    viewer.last_dir = folder
-    viewer.path_le.setText(str(folder))
-    # persist last dir early
-    viewer.config['last_dir'] = str(folder)
-    viewer._record_recent_dir(folder)
-
     txts = sorted(folder.glob("*.txt"))
-    converted = []
     if getattr(viewer, "convert_nanonis_enabled", True):
         converted = convert_nanonis(folder)
         if converted:
@@ -109,15 +99,97 @@ def load_folder(viewer, folder:Path):
             log_status(f"Converted {len(converted)} Nanonis scan(s)")
     else:
         log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    return txts
+
+
+def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
+    """Return header files for an explicit file drop without scanning the folder."""
+    collected: list[Path] = []
+    sxm_paths = []
+    seen = set()
+    for raw in paths or []:
+        path = Path(raw)
+        if not path.exists() or path.is_dir():
+            continue
+        try:
+            key = str(path.resolve()).lower()
+        except Exception:
+            key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.suffix.lower() == ".txt":
+            collected.append(path)
+        elif path.suffix.lower() == ".sxm":
+            sxm_paths.append(path)
+    if sxm_paths:
+        if getattr(viewer, "convert_nanonis_enabled", True):
+            converted = convert_nanonis_files(sxm_paths)
+            if converted:
+                collected.extend(converted)
+        else:
+            log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    return sorted(collected, key=lambda p: str(p).lower())
+
+
+def load_files(
+    viewer,
+    files,
+    folder_hint: Path | None = None,
+    source_label: str = "files",
+    *,
+    append: bool = False,
+    refresh_spectros: bool = True,
+):
+    files = [Path(p) for p in (files or []) if p]
+    if not files:
+        return
+    log_status(f"Loading {source_label}: {len(files)} file(s)")
+    t0 = time.perf_counter()
+    viewer._update_toolbar_actions(False)
+    prev_last_dir = getattr(viewer, 'last_dir', None)
+    existing_files = list(getattr(viewer, "files", []) or []) if append else []
+    existing_headers = dict(getattr(viewer, "headers", {}) or {}) if append else None
+    folder = Path(folder_hint) if folder_hint is not None else None
+    if folder is None:
+        parents = {p.parent for p in files if p.parent}
+        if len(parents) == 1:
+            folder = next(iter(parents))
+        # Mixed-folder drops should not force a synthetic root path into the UI.
+    if folder is not None:
+        viewer.last_dir = folder
+        try:
+            viewer.path_le.setText(str(folder))
+        except Exception:
+            pass
+        viewer.config['last_dir'] = str(folder)
+        viewer._record_recent_dir(folder)
+
+    txts = _collect_explicit_image_paths(viewer, files)
     log_status(f"Found {len(txts)} header file(s)")
-    viewer.files = txts
-    viewer.headers.clear()
-    viewer._invalidate_thumbnail_cache()
-    viewer._invalidate_channel_cache()
-    viewer.thumb_multi_select = set()
+    if append:
+        merged_files = []
+        seen = set()
+        for path in existing_files + txts:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_files.append(path)
+        viewer.files = merged_files
+        viewer.headers = existing_headers if existing_headers is not None else viewer.headers
+    else:
+        viewer.files = txts
+        viewer.headers.clear()
+        viewer._invalidate_thumbnail_cache()
+        viewer._invalidate_channel_cache()
+        viewer.thumb_multi_select = set()
     cache_hits = 0
     cache_miss = 0
     for t in txts:
+        key = str(t)
+        if append and key in (existing_headers or {}):
+            continue
         cached = viewer._get_cached_header(t)
         if cached:
             hdr, fds = cached
@@ -129,7 +201,7 @@ def load_folder(viewer, folder:Path):
                 viewer._store_header_cache(t, hdr, fds)
             except Exception:
                 continue
-        viewer.headers[str(t)] = (hdr, fds)
+        viewer.headers[key] = (hdr, fds)
     if cache_miss:
         viewer._save_header_cache()
     log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
@@ -162,6 +234,7 @@ def load_folder(viewer, folder:Path):
         viewer.channel_dropdown.setCurrentIndex(viewer.last_channel_index)
     else:
         viewer.last_channel_index = 0; viewer.channel_dropdown.setCurrentIndex(0)
+    viewer.channel_dropdown.setEnabled(True)
     viewer.channel_dropdown.blockSignals(False)
 
     # set cmaps
@@ -185,53 +258,65 @@ def load_folder(viewer, folder:Path):
         log_status("Skipping auto-detect tags (disabled in config)")
     t_tags = time.perf_counter()
 
-    # keep spectroscopy folder aligned with the SXM folder unless the user picked a custom path
-    try:
-        spec_path = Path(getattr(viewer, 'spec_folder_path', folder))
-    except Exception:
-        spec_path = folder
-    auto_follow = False
-    if not spec_path.exists():
-        auto_follow = True
-    elif prev_last_dir and spec_path.resolve() == Path(prev_last_dir).resolve():
-        auto_follow = True
-    if auto_follow:
-        viewer.spec_folder_path = folder
-        viewer.config['spectra_folder'] = str(folder)
-        save_config(viewer.config)
-        try:
-            viewer.spec_folder_le.setText(str(folder))
-        except Exception:
-            pass
+    if refresh_spectros:
+        # Keep spectroscopy folder aligned only when opening a real folder.
+        if folder is not None:
+            try:
+                spec_path = Path(getattr(viewer, 'spec_folder_path', folder))
+            except Exception:
+                spec_path = folder
+            auto_follow = False
+            if not spec_path.exists():
+                auto_follow = True
+            elif prev_last_dir and spec_path.resolve() == Path(prev_last_dir).resolve():
+                auto_follow = True
+            if auto_follow:
+                viewer.spec_folder_path = folder
+                viewer.config['spectra_folder'] = str(folder)
+                save_config(viewer.config)
+                try:
+                    viewer.spec_folder_le.setText(str(folder))
+                except Exception:
+                    pass
 
-    # load spectroscopy markers referencing this folder
-    log_status("Loading spectroscopy references...")
-    if getattr(viewer, "lazy_spectros_enabled", False) and getattr(viewer, "show_spectra", True):
-        viewer.spectros = []
-        viewer.matrix_spectros = []
-        viewer.spectros_by_image = defaultdict(list)
-        viewer.files_with_matrix = set()
-        viewer._spectros_loaded = False
-        viewer._spectros_pending = True
-        try:
-            viewer._update_spectro_stats_label()
-        except Exception:
-            pass
-        t_specs = time.perf_counter()
-        log_status("[Perf] Spectroscopy load deferred (lazy mode on)")
+        # load spectroscopy markers referencing this folder
+        log_status("Loading spectroscopy references...")
+        if getattr(viewer, "lazy_spectros_enabled", False) and getattr(viewer, "show_spectra", True):
+            viewer.spectros = []
+            viewer.matrix_spectros = []
+            viewer.spectros_by_image = defaultdict(list)
+            viewer.files_with_matrix = set()
+            viewer._spectros_loaded = False
+            viewer._spectros_pending = True
+            try:
+                viewer._update_spectro_stats_label()
+            except Exception:
+                pass
+            t_specs = time.perf_counter()
+            log_status("[Perf] Spectroscopy load deferred (lazy mode on)")
+        else:
+            viewer._spectros_pending = False
+            viewer._reload_spectros(refresh=False)
+            t_specs = time.perf_counter()
     else:
-        viewer._spectros_pending = False
-        viewer._reload_spectros(refresh=False)
+        log_status("Skipping spectroscopy reload for explicit file drop")
         t_specs = time.perf_counter()
 
     QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
-    log_status("Folder load complete.")
+    log_status(f"{source_label.capitalize()} load complete.")
     log_status(
         f"[Perf] Load stages: headers { (t_headers - t0)*1000:.0f} ms | "
         f"tags { (t_tags - t_headers)*1000:.0f} ms | "
         f"spectros { (t_specs - t_tags)*1000:.0f} ms | "
         f"total { (t_specs - t0)*1000:.0f} ms"
     )
+
+
+def load_folder(viewer, folder:Path):
+    folder = Path(folder)
+    log_status(f"Loading folder: {folder}")
+    files = collect_folder_image_paths(viewer, folder)
+    return load_files(viewer, files, folder_hint=folder, source_label="folder")
 
 
 def _parse_header_datetime(viewer, header, path: Path | str | None = None):

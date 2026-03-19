@@ -168,6 +168,9 @@ class PopupProfileController:
     def _register_dialog(self, dlg):
         if dlg is None:
             return
+        dialogs = getattr(self.owner, "_profile_dialogs", None)
+        if dialogs is not None and dlg not in dialogs:
+            dialogs.append(dlg)
         refs = getattr(self.owner, "_popup_refs", None)
         if refs is not None and dlg not in refs:
             refs.append(dlg)
@@ -178,6 +181,9 @@ class PopupProfileController:
     def _deregister_dialog(self, dlg):
         if dlg is None:
             return
+        dialogs = getattr(self.owner, "_profile_dialogs", None)
+        if dialogs and dlg in dialogs:
+            dialogs.remove(dlg)
         refs = getattr(self.owner, "_popup_refs", None)
         if refs and dlg in refs:
             refs.remove(dlg)

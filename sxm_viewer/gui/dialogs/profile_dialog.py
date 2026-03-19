@@ -45,6 +45,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ..plot_typography import add_font_menu_action, normalize_font_family
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -169,6 +170,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self._last_saved_count = 0
         self._toggle_buttons = []
         self._advanced_controls_visible = False
+        owner = self.parent()
+        self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         v = QtWidgets.QVBoxLayout()
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
@@ -379,11 +382,24 @@ class ProfileDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         copy_png = menu.addAction("Copy plot (PNG)")
         copy_svg = menu.addAction("Copy plot (SVG)")
+        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action == copy_png:
             self._copy_plot("png")
         elif action == copy_svg:
             self._copy_plot("svg")
+
+    def set_plot_font_family(self, family: str):
+        """Rebuild the profile plot with a new shared font family."""
+        owner = self.parent()
+        if owner is not None and hasattr(owner, "set_plot_font_family") and getattr(owner, "_plot_font_family", None) != family:
+            try:
+                owner.set_plot_font_family(family)
+                return
+            except Exception:
+                pass
+        self._plot_font_family = normalize_font_family(family, "sans-serif")
+        self.update_profiles(self._active, self._saved)
 
     def _copy_plot(self, fmt):
         buf = io.BytesIO()

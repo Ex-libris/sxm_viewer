@@ -31,6 +31,7 @@ from .molecular_overlay import (
     get_atom_radius,
     available_atom_palettes,
 )
+from ..plot_typography import add_font_menu_action, normalize_font_family
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 
 try:
@@ -173,6 +174,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_label_scale = 1.0
         self._profile_label_mode = "length"
         self._view_font_scale = 1.0
+        self._font_family = normalize_font_family(matplotlib.rcParams.get("font.family", [None])[0], "sans-serif")
         self._colorbar_orientation = 'vertical'
         self._show_ticks = True
         self._show_colorbar = True
@@ -222,8 +224,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._scale_bar_settings = {
             'text_color': None,
             'bar_color': None,
-            'font_family': 'sans-serif'
+            'font_family': self._font_family
         }
+        self._font_change_callback = None
         # Outline extraction state
         self.outline_mode = False  # if True, Alt+drag will outline blobs
         self._outline_start = None
@@ -503,6 +506,28 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_arrange_callback(self, cb):
         """Register callback invoked when the user requests window tiling."""
         self._arrange_windows_callback = cb
+
+    def set_plot_font_family_callback(self, cb):
+        """Register a callback used when the user picks a new plot font."""
+        self._font_change_callback = cb
+
+    def set_plot_font_family(self, family: str):
+        """Apply a shared font family to the canvas and its scale bar."""
+        family = normalize_font_family(family, "sans-serif")
+        self._font_family = family
+        self._scale_bar_settings["font_family"] = family
+        self._redraw()
+
+    def _apply_plot_font_family_choice(self, family: str):
+        """Route a font choice through the owner first, then fall back locally."""
+        family = normalize_font_family(family, "sans-serif")
+        if callable(self._font_change_callback):
+            try:
+                self._font_change_callback(family)
+                return
+            except Exception:
+                pass
+        self.set_plot_font_family(family)
 
     def set_show_profile_overlays(self, show: bool):
         self._show_profile_overlays = bool(show)
@@ -4439,6 +4464,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
             arrange_act = view_menu.addAction("Arrange pop-outs")
+
+        add_font_menu_action(menu, self, self._font_family, self._apply_plot_font_family_choice)
 
         global_pos = None
         if event is not None:

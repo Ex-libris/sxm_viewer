@@ -71,6 +71,36 @@ def prepare_nanonis_folder(folder: Path | str) -> List[Path]:
     return generated
 
 
+def prepare_nanonis_files(paths: Iterable[Path | str]) -> List[Path]:
+    """Convert explicit Nanonis scan files and return generated header paths."""
+    reader = _ensure_nanonis_reader()
+    if reader is None:
+        return []
+    generated: List[Path] = []
+    seen = set()
+    for raw_path in paths or []:
+        scan_path = Path(raw_path)
+        if not scan_path.is_file():
+            continue
+        try:
+            key = str(scan_path.resolve()).lower()
+        except Exception:
+            key = str(scan_path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cache_root = scan_path.parent / NANONIS_CACHE_DIRNAME
+        cache_root.mkdir(exist_ok=True)
+        try:
+            header_path = _convert_scan_file(reader, scan_path, cache_root)
+        except Exception as exc:
+            log(f"[Nanonis] Failed to convert {scan_path.name}: {exc}")
+            continue
+        if header_path is not None:
+            generated.append(header_path)
+    return generated
+
+
 # --------------------------------------------------------------------------- #
 # Conversion helpers                                                         #
 # --------------------------------------------------------------------------- #

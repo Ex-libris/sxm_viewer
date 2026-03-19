@@ -200,6 +200,11 @@ def spawn_preview_popup(owner, views, title=None):
         pass
 
     canvas.set_views([owner._copy_view_for_popup(v) for v in views])
+    try:
+        canvas.set_plot_font_family_callback(lambda fam: owner.set_plot_font_family(fam))
+        canvas.set_plot_font_family(getattr(owner, "_plot_font_family", "sans-serif"))
+    except Exception:
+        pass
     def _on_popup_canvas_state_changed(_=None):
         _schedule_resize(force=False)
         try:

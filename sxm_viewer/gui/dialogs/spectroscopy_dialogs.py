@@ -66,6 +66,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ..plot_typography import add_font_menu_action, normalize_font_family
 try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
@@ -253,6 +254,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 self.viewer = parent.viewer
             else:
                 self.viewer = parent
+        self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
         self._palette_swatches = self._create_palette_swatch_widget()
@@ -557,6 +559,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         copy_all_act = menu.addAction("Copy all traces (table)")
         copy_png_act = menu.addAction("Copy plot as PNG")
         copy_svg_act = menu.addAction("Copy plot as SVG")
+        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
         style_menu = menu.addMenu("Plot style")
         grid_act = style_menu.addAction("Show grid")
         grid_act.setCheckable(True)
@@ -642,6 +645,19 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self._plot_selected_channel()
         elif action == reset_act:
             self._reset_plot_style()
+
+    def set_plot_font_family(self, family: str):
+        """Refresh the spectroscopy plot with a new shared font family."""
+        family = normalize_font_family(family, "sans-serif")
+        viewer = getattr(self, "viewer", None)
+        if viewer is not None and hasattr(viewer, "set_plot_font_family") and getattr(viewer, "_plot_font_family", None) != family:
+            try:
+                viewer.set_plot_font_family(family)
+                return
+            except Exception:
+                pass
+        self._plot_font_family = family
+        self._plot_selected_channel()
 
     def _copy_channel_to_clipboard(self):
         name = self.channel_combo.currentText()
@@ -1437,6 +1453,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.image_entry = image_entry
         self.specs = list(specs)
         self.viewer = parent
+        self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
         self.dataset = dataset
         self.anchor_path = str(image_entry.get('path') or "")
         if self.anchor_path:
@@ -1922,6 +1939,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
 
+        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
         style_menu = menu.addMenu("Marker style")
         style_group = QtWidgets.QActionGroup(menu)
         current_marker = self._position_marker_config.get("marker", "o")
@@ -1957,6 +1975,19 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._clear_selection()
         elif action == reset_act:
             self._reset_matrix_view()
+
+    def set_plot_font_family(self, family: str):
+        """Refresh the matrix explorer plot with a new shared font family."""
+        family = normalize_font_family(family, "sans-serif")
+        viewer = getattr(self, "viewer", None)
+        if viewer is not None and hasattr(viewer, "set_plot_font_family") and getattr(viewer, "_plot_font_family", None) != family:
+            try:
+                viewer.set_plot_font_family(family)
+                return
+            except Exception:
+                pass
+        self._plot_font_family = family
+        self._draw_image_layer()
 
     def _set_position_marker_style(self, marker):
         if not marker:
@@ -2527,6 +2558,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._legend_bg = True
         self._legend_border = True
         self._legend_filename_only = False
+        self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
         self._grid_major = True
         self._grid_minor = False
         self._grid_alpha = 0.25
@@ -4809,6 +4841,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         copy_svg = menu.addAction("Copy plot as SVG")
         copy_all = menu.addAction("Copy all traces (table)")
         menu.addSeparator()
+        add_font_menu_action(menu, self, self._plot_font_family, self.set_plot_font_family)
+        menu.addSeparator()
         minima_act = menu.addAction("Find minima (x-position)")
         resolve_act = menu.addAction("Resolve minima overlaps")
         menu.addSeparator()
@@ -5067,6 +5101,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._bump_line_width(-0.4)
         elif action == reset_act:
             self._reset_plot_style()
+
+    def set_plot_font_family(self, family: str):
+        """Refresh the comparison plot with a new shared font family."""
+        family = normalize_font_family(family, "sans-serif")
+        viewer = getattr(self, "viewer", None)
+        if viewer is not None and hasattr(viewer, "set_plot_font_family") and getattr(viewer, "_plot_font_family", None) != family:
+            try:
+                viewer.set_plot_font_family(family)
+                return
+            except Exception:
+                pass
+        self._plot_font_family = family
+        self._update_plot()
 
     def _on_compare_canvas_keypress(self, event):
         if not event or not hasattr(event, "key"):

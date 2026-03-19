@@ -89,6 +89,7 @@ from .controllers.session import SessionController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
+from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
@@ -327,6 +328,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_multi_select = set()
         self._canvas_display_syncing = False
         self._last_canvas_display_options = {}
+        self._profile_dialogs = []
         self._clipboard_export_dir = None
         self._clipboard_copy_worker = None
         self._clipboard_copy_total = 0
@@ -356,6 +358,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_widgets = {}
         self.selected_file_for_thumbs = None
 
+        # Plot typography defaults are shared across preview, popups and dialogs.
+        self._plot_font_family = normalize_font_family(self.config.get("plot_font_family", UI_FONT_FAMILY), UI_FONT_FAMILY)
+        set_matplotlib_font_family(self._plot_font_family)
         # fonts
         base_font = QtGui.QFont(UI_FONT_FAMILY, UI_FONT_SIZE)
         bold_font = QtGui.QFont(UI_FONT_FAMILY, UI_FONT_BOLD_SIZE, QtGui.QFont.Bold)
@@ -653,6 +658,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_filter_combo = QtWidgets.QComboBox()
         self.thumb_filter_combo.addItems(['All', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
         thumbs_toolbar.addWidget(self.thumb_filter_combo)
+        self.clear_thumb_list_btn = QtWidgets.QPushButton("Clear thumbnails")
+        self.clear_thumb_list_btn.setToolTip("Remove the current thumbnail session and start fresh")
+        self.clear_thumb_list_btn.clicked.connect(self.clear_loaded_images)
+        thumbs_toolbar.addWidget(self.clear_thumb_list_btn)
         thumbs_toolbar.addSpacing(8)
         self.matrix_summary_label = QtWidgets.QLabel("")
         self.matrix_summary_label.setObjectName("matrixSummaryLabel")
@@ -876,6 +885,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
+        try:
+            self.preview_canvas.set_plot_font_family_callback(lambda fam: self.set_plot_font_family(fam))
+            self.preview_canvas.set_plot_font_family(self._plot_font_family)
+        except Exception:
+            pass
         try:
             self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
             self.preview_canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
@@ -1557,21 +1571,40 @@ QLabel:hover {{
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
-                    path = Path(url.toLocalFile())
-                    if path.is_dir():
-                        event.acceptProposedAction()
-                        return
+                    event.acceptProposedAction()
+                    return
         super().dragEnterEvent(event)
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
+            dirs = []
+            files = []
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     path = Path(url.toLocalFile())
                     if path.is_dir():
-                        self.load_folder(path)
-                        event.acceptProposedAction()
-                        return
+                        dirs.append(path)
+                    elif path.exists():
+                        files.append(path)
+            if dirs or files:
+                if len(dirs) == 1 and not files:
+                    self.load_folder(dirs[0])
+                else:
+                    drop_files = []
+                    for folder in dirs:
+                        try:
+                            drop_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
+                        except Exception:
+                            continue
+                    drop_files.extend(files)
+                    folder_hint = None
+                    if len(dirs) == 1 and not files:
+                        folder_hint = dirs[0]
+                    elif len(files) and len({str(p.parent) for p in files}) == 1 and not dirs:
+                        folder_hint = files[0].parent
+                    self.load_files(drop_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
+                event.acceptProposedAction()
+                return
         super().dropEvent(event)
 
     def eventFilter(self, obj, event):
@@ -2070,6 +2103,150 @@ QLabel:hover {{
             except Exception:
                 pass
         return result
+
+    def load_files(self, files, folder_hint: Path | None = None, *, append: bool = False, refresh_spectros: bool = True):
+        start = time.perf_counter()
+        result = viewer_loader.load_files(
+            self,
+            files,
+            folder_hint=folder_hint,
+            source_label="drop" if append else "files",
+            append=append,
+            refresh_spectros=refresh_spectros,
+        )
+        end = time.perf_counter()
+        files_ms = (end - start) * 1000.0
+        gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
+        log_status(f"[Perf] Load files: {files_ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        if self.auto_detect_tags:
+            try:
+                self._auto_detect_tags_for_folder()
+            except Exception:
+                pass
+        return result
+
+    def clear_loaded_images(self):
+        """Clear the current image session and leave the app ready for fresh drops."""
+        self.files = []
+        self.headers.clear()
+        self.frame_map_entries = []
+        self.hidden_frame_keys.clear()
+        self.selected_file_for_thumbs = None
+        self.current_inspector_header = None
+        self.current_inspector_channel = None
+        self.last_preview = None
+        self.current_thumb_files = []
+        self.thumb_multi_select = set()
+        self.thumbnail_filters = {}
+        self.virtual_copies = {}
+        self.virtual_copy_order = []
+        self.added_views = []
+        self.extra_view_specs = []
+        self.molecule_overlays = {}
+        self.frame_entry_pixmaps = {}
+        self._frame_real_pixmap_cache = {}
+        self._processed_views = {}
+        self.matrix_datasets = {}
+        self._spectro_hist_cache = {}
+        self._last_base_array = None
+        self._last_base_extent = None
+        self._last_base_unit = None
+        self.spectros = []
+        self.matrix_spectros = []
+        self.spectros_by_image = defaultdict(list)
+        self.files_with_matrix = set()
+        self._spectros_loaded = False
+        self._spectros_pending = False
+        try:
+            self._thumb_generation += 1
+        except Exception:
+            pass
+        self._invalidate_thumbnail_cache()
+        self._invalidate_channel_cache()
+        self._update_toolbar_actions(False)
+        try:
+            self.clear_thumbs()
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_views([])
+        except Exception:
+            pass
+        try:
+            self.preview_value_label.setText("Value: --")
+            self.angle_value_label.setText("Angle: --")
+        except Exception:
+            pass
+        try:
+            self.meta_box.clear()
+        except Exception:
+            pass
+        try:
+            self.channel_dropdown.blockSignals(True)
+            self.channel_dropdown.clear()
+            self.channel_dropdown.setEnabled(False)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.channel_dropdown.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self.frame_map_widget.set_entries([])
+            self.frame_map_widget.clear_hidden_entries()
+        except Exception:
+            pass
+        try:
+            self._update_spectro_stats_label()
+        except Exception:
+            pass
+
+    def set_plot_font_family(self, family: str, *, refresh: bool = True):
+        """Set the shared plot font family and redraw visible plot surfaces."""
+        family = normalize_font_family(family, UI_FONT_FAMILY)
+        if family == getattr(self, "_plot_font_family", None) and refresh:
+            # Even if the family is unchanged, a refresh can be useful after config restore.
+            pass
+        self._plot_font_family = family
+        self.config["plot_font_family"] = family
+        save_config(self.config)
+        set_matplotlib_font_family(family)
+        if not refresh:
+            return family
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                canv.set_plot_font_family(family)
+            except Exception:
+                try:
+                    canv._redraw()
+                except Exception:
+                    pass
+        for dlg in list(getattr(self, "_profile_dialogs", []) or []):
+            if dlg is None:
+                continue
+            try:
+                dlg.set_plot_font_family(family)
+            except Exception:
+                pass
+        for dlg in list(getattr(self, "_spectro_popups", []) or []):
+            if dlg is None:
+                continue
+            try:
+                dlg.set_plot_font_family(family)
+            except Exception:
+                pass
+        for dlg in list(getattr(self, "_multi_spectro_popups", []) or []):
+            if dlg is None:
+                continue
+            try:
+                dlg.set_plot_font_family(family)
+            except Exception:
+                pass
+        return family
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
