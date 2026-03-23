@@ -1563,7 +1563,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 overlays</li>"
+            "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
             "</ul>"
         ) % color
 

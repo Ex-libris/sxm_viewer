@@ -90,6 +90,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._resize_settle_timer.setInterval(140)
         self._resize_settle_timer.timeout.connect(self._finalize_after_resize)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self._overlay_shortcuts = []
         self.views = []
         self._ax_view_map = {}
         self._relative_axes_override = None
@@ -186,6 +187,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_profile_overlays = True
         self._show_angle_overlays = True
         self._show_shortcut_hint = True
+        self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
         self._frame_fill_prev_state = None
@@ -268,6 +270,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._pan_active = False
         self._pan_ax = None
         self._pan_start = None
+        self._install_overlay_shortcuts()
         self._pan_start_lim = None
         self._pan_last_ts = 0.0
         self._pan_throttle_ms = 16
@@ -561,13 +564,56 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_show_angle_overlays(self, show: bool):
         self._show_angle_overlays = bool(show)
-        self._update_angle_artists()
+        self._apply_angle_visibility()
+        self.draw_idle()
         self._notify_views_callback()
 
     def set_show_shortcut_hint(self, show: bool):
         self._show_shortcut_hint = bool(show)
+        if not self._show_shortcut_hint:
+            self._clear_shortcut_hint_artist()
         self._redraw()
         self._notify_views_callback()
+
+    def _install_overlay_shortcuts(self):
+        """Bind overlay toggles at the window level so they work from toolbars too."""
+        if self._overlay_shortcuts:
+            return
+        try:
+            shortcuts = [
+                ("Ctrl+1", lambda: self.set_show_profile_overlays(not self._show_profile_overlays)),
+                ("Ctrl+2", lambda: self.set_show_angle_overlays(not self._show_angle_overlays)),
+                ("Ctrl+3", lambda: self.set_show_molecules(not self.show_molecules)),
+                ("Ctrl+4", lambda: self.enable_scale_bar(not self.scale_bar_enabled)),
+                ("Ctrl+5", lambda: self.set_show_acquisition_overlay(not self._show_acquisition_overlay)),
+                ("Ctrl+H", lambda: self.set_show_shortcut_hint(not self._show_shortcut_hint)),
+            ]
+            for seq, handler in shortcuts:
+                shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(seq), self)
+                shortcut.setContext(QtCore.Qt.WindowShortcut)
+                shortcut.activated.connect(handler)
+                self._overlay_shortcuts.append(shortcut)
+        except Exception:
+            self._overlay_shortcuts = []
+
+    def _clear_shortcut_hint_artist(self):
+        art = getattr(self, "_shortcut_hint_artist", None)
+        if art is None:
+            return
+        try:
+            art.remove()
+        except Exception:
+            pass
+        self._shortcut_hint_artist = None
+
+    def _shortcut_hint_hit(self, event):
+        art = getattr(self, "_shortcut_hint_artist", None)
+        if art is None or event is None:
+            return False
+        try:
+            return bool(art.contains(event)[0])
+        except Exception:
+            return False
 
     def export_molecule_state(self):
         return [mol.to_dict() for mol in (self.molecules or [])]
@@ -2090,45 +2136,48 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
 
     def _apply_angle_visibility(self):
-        visible = bool(self._show_angle_overlays)
-        for frame in self._angle_frames or []:
+        overlay_visible = bool(self._show_angle_overlays)
+        active_idx = self._active_angle_frame_idx
+        for idx, frame in enumerate(self._angle_frames or []):
+            # Keep the active measurement visible while the tool is enabled.
+            frame_visible = bool(self.angle_enabled and idx == active_idx) or overlay_visible
             style = frame.get("style", "dots")
             for art in frame.get("lines", []) or []:
                 if art is None:
                     continue
                 try:
-                    art.set_visible(visible and style == "dots")
+                    art.set_visible(frame_visible and style == "dots")
                 except Exception:
                     pass
             for art in frame.get("markers", []) or []:
                 if art is None:
                     continue
                 try:
-                    art.set_visible(visible and style == "dots")
+                    art.set_visible(frame_visible and style == "dots")
                 except Exception:
                     pass
             for art in frame.get("arrows", []) or []:
                 if art is None:
                     continue
                 try:
-                    art.set_visible(visible and style == "arrows")
+                    art.set_visible(frame_visible and style == "arrows")
                 except Exception:
                     pass
             label = frame.get("label")
             if label is not None:
                 try:
-                    label.set_visible(visible)
+                    label.set_visible(frame_visible)
                 except Exception:
                     pass
             patch = frame.get("patch")
             if patch is not None:
                 try:
-                    patch.set_visible(visible)
+                    patch.set_visible(frame_visible)
                 except Exception:
                     pass
             for lbl in frame.get("len_labels", []) or []:
                 try:
-                    lbl.set_visible(visible)
+                    lbl.set_visible(frame_visible)
                 except Exception:
                     pass
 
@@ -2383,8 +2432,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
 
     def _apply_profile_visibility(self):
-        visible = bool(self._show_profile_overlays)
-        artists = [
+        active_visible = bool(self.profile_enabled and self.profile_pts is not None)
+        overlay_visible = bool(self._show_profile_overlays)
+        active_artists = [
             self._profile_line,
             self._profile_p0,
             self._profile_p1,
@@ -2393,20 +2443,26 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_label,
             self._profile_hud_text,
         ]
-        artists.extend(list(self._profile_endpoint_labels or []))
-        artists.extend(list(self._profile_marker_artists or []))
+        active_artists.extend(list(self._profile_endpoint_labels or []))
+        active_artists.extend(list(self._profile_marker_artists or []))
         for echo in self._profile_echo_artists or []:
             if isinstance(echo, dict):
-                artists.extend(echo.values())
-        for entry in self._saved_profiles or []:
-            artists.extend(entry.get("artists", []) or [])
-        for art in artists:
+                active_artists.extend(echo.values())
+        for art in active_artists:
             if art is None:
                 continue
             try:
-                art.set_visible(visible)
+                art.set_visible(active_visible)
             except Exception:
                 continue
+        for entry in self._saved_profiles or []:
+            for art in entry.get("artists", []) or []:
+                if art is None:
+                    continue
+                try:
+                    art.set_visible(overlay_visible)
+                except Exception:
+                    continue
 
     def _schedule_profile_update(self):
         if not self._profile_update_timer.isActive():
@@ -3815,6 +3871,9 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_base_click(self, event):
         if event is None or event.inaxes is None:
             return
+        if self._shortcut_hint_hit(event):
+            self.set_show_shortcut_hint(False)
+            return
         # If clicking on a scale bar, do not trigger base canvas actions (like drag/copy)
         if self.scale_bar_enabled:
             for sb in self._scale_bar_artists:
@@ -4450,10 +4509,10 @@ class MultiPreviewCanvas(FigureCanvas):
         layout_stack_act.setChecked(self._view_layout == "stacked")
 
         overlays_menu = menu.addMenu("Overlays")
-        show_profile_overlay_act = overlays_menu.addAction("Show Profiles  (Ctrl+1)")
+        show_profile_overlay_act = overlays_menu.addAction("Show Saved Profiles  (Ctrl+1)")
         show_profile_overlay_act.setCheckable(True)
         show_profile_overlay_act.setChecked(bool(self._show_profile_overlays))
-        show_angle_overlay_act = overlays_menu.addAction("Show Angles  (Ctrl+2)")
+        show_angle_overlay_act = overlays_menu.addAction("Show Saved Angles  (Ctrl+2)")
         show_angle_overlay_act.setCheckable(True)
         show_angle_overlay_act.setChecked(bool(self._show_angle_overlays))
         show_molecule_overlay_act = overlays_menu.addAction("Show Molecules  (Ctrl+3)")
@@ -5215,9 +5274,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def _draw_shortcut_hint(self, ax):
         if not self._show_shortcut_hint or ax is None:
             return
+        self._clear_shortcut_hint_artist()
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
-        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | Ctrl+1/2/3 overlays"
+        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | Ctrl+1/2/3 saved overlays | click to hide"
         hint_artist = ax.text(
             0.012,
             0.012,
@@ -5237,21 +5297,20 @@ class MultiPreviewCanvas(FigureCanvas):
         )
         try:
             hint_artist.set_gid("ui_shortcut_hint")
+            self._shortcut_hint_artist = hint_artist
             apply_text_style(hint_artist, family=self._font_family, **self._plot_style_state())
         except Exception:
             pass
 
     def _set_shortcut_hint_artist_visibility(self, visible: bool):
-        changed = False
-        for ax in getattr(self.fig, "axes", []) or []:
-            for text in getattr(ax, "texts", []) or []:
-                try:
-                    if text.get_gid() == "ui_shortcut_hint":
-                        text.set_visible(bool(visible))
-                        changed = True
-                except Exception:
-                    continue
-        return changed
+        art = getattr(self, "_shortcut_hint_artist", None)
+        if art is None:
+            return False
+        try:
+            art.set_visible(bool(visible))
+            return True
+        except Exception:
+            return False
 
     def _save_current_figure_without_shortcut_hint(self, save_fn):
         if not callable(save_fn):
