@@ -84,7 +84,17 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
+from ...providers import (
+    convert_nanonis,
+    convert_nanonis_files,
+    convert_mtrx,
+    convert_mtrx_files,
+    classify_mtrx_file,
+    is_mtrx_file,
+    parse_mtrx_spectroscopy,
+    parse_nanonis_spectroscopy,
+    parse_nanonis_3ds,
+)
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
@@ -99,6 +109,13 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
             log_status(f"Converted {len(converted)} Nanonis scan(s)")
     else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    try:
+        converted_mtrx = convert_mtrx(folder)
+        if converted_mtrx:
+            txts = sorted(list(txts) + list(converted_mtrx), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted_mtrx)} MATRIX scan(s)")
+    except Exception as exc:
+        log_status(f"Skipping MATRIX conversion: {exc}")
     return txts
 
 
@@ -118,6 +135,13 @@ def classify_dropped_paths(viewer, paths):
         if key in seen:
             continue
         seen.add(key)
+        if is_mtrx_file(path):
+            kind = classify_mtrx_file(path)
+            if kind == "spectroscopy":
+                spectro_paths.append(path)
+            else:
+                image_paths.append(path)
+            continue
         suffix = path.suffix.lower()
         if suffix in {".dat", ".3ds"}:
             spectro_paths.append(path)
@@ -144,6 +168,7 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
     """Return header files for an explicit file drop without scanning the folder."""
     collected: list[Path] = []
     sxm_paths = []
+    mtrx_paths = []
     seen = set()
     for raw in paths or []:
         path = Path(raw)
@@ -156,6 +181,10 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
         if key in seen:
             continue
         seen.add(key)
+        if is_mtrx_file(path):
+            if classify_mtrx_file(path) == "image":
+                mtrx_paths.append(path)
+            continue
         if path.suffix.lower() == ".txt":
             collected.append(path)
         elif path.suffix.lower() == ".sxm":
@@ -167,6 +196,19 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
                 collected.extend(converted)
         else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if mtrx_paths:
+        try:
+            converted_mtrx = convert_mtrx_files(mtrx_paths)
+            if converted_mtrx:
+                collected.extend(converted_mtrx)
+            else:
+                log_status(
+                    "MATRIX image import found no readable payload. "
+                    "These files usually need their companion result-chain files "
+                    "(for example *_0001.mtrx, *_0002.mtrx, ...) in the same folder."
+                )
+        except Exception as exc:
+            log_status(f"Skipping MATRIX conversion: {exc}")
     return sorted(collected, key=lambda p: str(p).lower())
 
 
@@ -384,6 +426,13 @@ def load_spectroscopy_files(viewer, files, folder_hint: Path | None = None, *, a
         image_meta=getattr(viewer, "image_meta", None),
         use_disk_cache=False,
     )
+    if not new_specs:
+        mtrx_files = [p for p in files if is_mtrx_file(p)]
+        if mtrx_files:
+            log_status(
+                "MATRIX spectroscopy import found no readable traces. "
+                "The file may be missing its companion result-chain files."
+            )
     if append:
         merged_specs = prev_specs + list(new_specs or [])
     else:
@@ -826,7 +875,8 @@ def _scan_spectros(
                     log_status(f"  - spectroscopy cache store failed: {exc}")
                 except Exception:
                     pass
-    patterns = ("*.dat","*.DAT","*.3ds","*.3DS")
+    # Include MATRIX results here so folder-scoped spectroscopy scans can pick them up too.
+    patterns = ("*.dat", "*.DAT", "*.3ds", "*.3DS", "*.mtrx", "*.MTRX")
     cache = viewer._spectro_cache
     seen_keys = set()
     file_map = {}
@@ -979,6 +1029,11 @@ def _scan_spectros(
                             log_status(f"Spectroscopy parse rejected: {p} returned no spectra (.3ds)")
                         except Exception:
                             pass
+                elif is_mtrx_file(p):
+                    try:
+                        spec_list = parse_mtrx_spectroscopy(p)
+                    except Exception:
+                        spec_list = None
                 if spec_list is None and ext not in (".3ds",):
                     try:
                         spec_list = parse_spectroscopy_file(p)
