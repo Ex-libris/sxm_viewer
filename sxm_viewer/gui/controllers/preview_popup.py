@@ -216,13 +216,7 @@ def spawn_preview_popup(owner, views, title=None):
     canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
     canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
     canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
-    canvas.set_crop_callback(
-        lambda v: spawn_preview_popup(
-            owner,
-            [owner._copy_view_for_popup(v)],
-            title=owner._friendly_view_title(v, default="Cropped view"),
-        )
-    )
+    canvas.set_crop_callback(lambda v: owner._on_preview_crop(v))
     canvas.set_double_click_callback(
         lambda v=None: spawn_preview_popup(
             owner,

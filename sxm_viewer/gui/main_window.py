@@ -1515,19 +1515,24 @@ QLabel:hover {{
         """Receive cropped view from preview canvas and pop it out."""
         if not view:
             return
-        # Offer to save crop as a virtual copy in thumbnails
+        auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
+        # Offer to save crop as a virtual copy in thumbnails, unless explicitly
+        # requested by the crop tool for frictionless iterative workflows.
         try:
             path = view.get("path") or (view.get("meta") or {}).get("path")
             if path:
-                ret = QtWidgets.QMessageBox.question(
-                    self,
-                    "Save crop",
-                    "Add this cropped view to thumbnails as a virtual copy?",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                    QtWidgets.QMessageBox.No,
-                )
-                if ret == QtWidgets.QMessageBox.Yes:
+                if auto_virtual_copy:
                     self._create_virtual_crop_view(view)
+                else:
+                    ret = QtWidgets.QMessageBox.question(
+                        self,
+                        "Save crop",
+                        "Add this cropped view to thumbnails as a virtual copy?",
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                        QtWidgets.QMessageBox.No,
+                    )
+                    if ret == QtWidgets.QMessageBox.Yes:
+                        self._create_virtual_crop_view(view)
         except Exception:
             pass
         title = view.get("title") or "Cropped view"

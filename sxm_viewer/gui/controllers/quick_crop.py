@@ -66,6 +66,7 @@ class QuickCropController:
         if viewer.quick_crop_mode:
             text = (
                 "Shift+drag to size, click to spawn crops. "
+                "Right-click -> Quick tools -> Edit crop frame enables drag/resize/rotate, Enter applies. "
                 "Ctrl+Z undo, Ctrl+Shift+W close latest pop-out. "
                 f"History overlay is {overlay_state}. "
                 "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+H toggles history overlay, Ctrl+Shift+T toggles template overlay."
