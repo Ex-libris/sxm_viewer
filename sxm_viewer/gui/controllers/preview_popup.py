@@ -234,7 +234,7 @@ def spawn_preview_popup(owner, views, title=None):
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)
     canvas.enable_fixed_crop_quick_mode(owner.quick_crop_mode)
-    canvas.show_fixed_crop_template(owner.show_crop_template_overlay)
+    canvas.show_fixed_crop_template(False)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
         canvas.set_molecule_palette(owner.molecule_palette, notify=False)

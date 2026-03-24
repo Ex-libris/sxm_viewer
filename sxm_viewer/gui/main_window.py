@@ -228,7 +228,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
-        self.show_crop_template_overlay = bool(self.config.get("show_crop_template_overlay", False))
+        # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
+        self.show_crop_template_overlay = False
         self.show_crop_history_overlay = bool(self.config.get("show_crop_history_overlay", False))
         self._display_defaults = {
             'show_matrix_markers': True,

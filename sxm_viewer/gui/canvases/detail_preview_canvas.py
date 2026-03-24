@@ -123,6 +123,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_template_manual_dims = None
         self._fixed_crop_history_highlight_seq = None
         self._fixed_crop_history_highlight_artists = {}
+        self._fixed_crop_drag_last_ts = 0.0
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._histogram_dialog_callback = None
@@ -590,6 +591,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 ("Ctrl+4", lambda: self.enable_scale_bar(not self.scale_bar_enabled)),
                 ("Ctrl+5", lambda: self.set_show_acquisition_overlay(not self._show_acquisition_overlay)),
                 ("Ctrl+H", lambda: self.set_show_shortcut_hint(not self._show_shortcut_hint)),
+                ("Ctrl+E", lambda: self.enable_fixed_crop_transform_mode(not self._fixed_crop_transform_mode)),
                 (QtCore.Qt.Key_Return, self._on_apply_fixed_crop_shortcut),
                 (QtCore.Qt.Key_Enter, self._on_apply_fixed_crop_shortcut),
                 (QtCore.Qt.Key_Escape, self._on_cancel_fixed_crop_shortcut),
@@ -3910,8 +3912,6 @@ class MultiPreviewCanvas(FigureCanvas):
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
         if self._fixed_crop_transform_mode and event.button == 1 and view is not None:
-            if self._outline_key(view) != self._fixed_crop_template_view_key:
-                return
             hit = self._fixed_crop_template_handle_hit(event, view, ax)
             if hit is not None:
                 if self._begin_fixed_crop_template_drag(hit, event, view, ax):
@@ -5935,7 +5935,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._fixed_crop_template_drag is not None:
             try:
                 if self._update_fixed_crop_template_drag(event):
-                    self.draw_idle()
+                    now_ms = time.perf_counter() * 1000.0
+                    if (now_ms - float(self._fixed_crop_drag_last_ts or 0.0)) >= 12.0:
+                        self._fixed_crop_drag_last_ts = now_ms
+                        self._redraw()
                     return
             except Exception:
                 pass
@@ -6003,7 +6006,8 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
             self._finish_fixed_crop_template_drag()
-            self.draw_idle()
+            self._fixed_crop_drag_last_ts = 0.0
+            self._redraw()
             return
         if self._outline_start is not None and self._outline_ax is not None:
             self._finish_outline_drag(event)
@@ -6132,6 +6136,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         else:
             self._fixed_crop_template_drag = None
+            self._fixed_crop_drag_last_ts = 0.0
+            self._fixed_crop_template_visible = False
         self._notify_views_callback()
         self._redraw()
 
@@ -6435,7 +6441,7 @@ class MultiPreviewCanvas(FigureCanvas):
         handle_len = max(geom["height"] * 0.22, geom["height"] * 0.08, 1.0)
         handle_world = rot.transform((geom["cx"], geom["top"] + handle_len))
         handle_px = ax.transData.transform(handle_world)
-        if float(np.hypot(*(ev_px - handle_px))) <= 14.0:
+        if float(np.hypot(*(ev_px - handle_px))) <= 22.0:
             return {"mode": "rotate", "geom": geom}
 
         # Corner handles
@@ -6447,7 +6453,7 @@ class MultiPreviewCanvas(FigureCanvas):
         }
         for mode, pt in corners.items():
             pt_px = ax.transData.transform(rot.transform(pt))
-            if float(np.hypot(*(ev_px - pt_px))) <= 11.0:
+            if float(np.hypot(*(ev_px - pt_px))) <= 18.0:
                 return {"mode": mode, "geom": geom}
 
         lx, ly = inv.transform(ev_world)
@@ -7053,10 +7059,10 @@ class MultiPreviewCanvas(FigureCanvas):
         frame = patches.Polygon(
             corners,
             closed=True,
-            linewidth=1.35,
-            edgecolor="#ff66ff",
-            facecolor=(1.0, 0.4, 1.0, 0.12),
-            alpha=0.95,
+            linewidth=1.25,
+            edgecolor="#f46cff",
+            facecolor=(1.0, 0.58, 1.0, 0.045),
+            alpha=0.9,
             linestyle="--",
             zorder=17,
         )
@@ -7088,15 +7094,15 @@ class MultiPreviewCanvas(FigureCanvas):
         )
 
         if self._fixed_crop_transform_mode:
-            corner_size = 96.0
+            corner_size = 58.0
             ax.scatter(
                 corners[:, 0],
                 corners[:, 1],
                 s=corner_size,
                 marker="s",
-                color="#ff66ff",
-                edgecolors="#ffd3ff",
-                linewidths=0.6,
+                color="#f46cff",
+                edgecolors="#ffe1ff",
+                linewidths=0.5,
                 zorder=19,
             )
             top_mid = rot.transform((cx, top))
@@ -7114,11 +7120,11 @@ class MultiPreviewCanvas(FigureCanvas):
             ax.scatter(
                 [rotate_pt[0]],
                 [rotate_pt[1]],
-                s=78,
+                s=62,
                 marker="o",
                 color="#222222",
-                edgecolors="#ff66ff",
-                linewidths=1.0,
+                edgecolors="#f46cff",
+                linewidths=0.9,
                 zorder=20,
             )
             ax.text(
@@ -7244,6 +7250,11 @@ class MultiPreviewCanvas(FigureCanvas):
             new_view["arr"] = np.array(arr, copy=True)
         except Exception:
             new_view["arr"] = arr
+        if not new_view.get("path"):
+            meta = new_view.get("meta") or {}
+            src_path = meta.get("path") or meta.get("file_path")
+            if src_path:
+                new_view["path"] = src_path
         if bounds_data is not None:
             crop_extent = tuple(float(v) for v in bounds_data)
             new_view["extent_raw"] = crop_extent
@@ -7290,7 +7301,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if cropped_arr is None:
             return False
         pixel_bounds = tuple(int(v) for v in (template.get("pixel_bounds") or geom.get("pixel_bounds") or (0, 0, 0, 0)))
-        return self._build_cropped_view_from_selection(
+        ok = self._build_cropped_view_from_selection(
             view=view,
             ax=ax,
             cropped_arr=cropped_arr,
@@ -7301,6 +7312,9 @@ class MultiPreviewCanvas(FigureCanvas):
             update_size=False,
             auto_virtual_copy=True,
         )
+        if ok:
+            self.enable_fixed_crop_transform_mode(False)
+        return ok
 
     def _apply_fixed_crop_quick(self, event, view, ax):
         template = self._fixed_crop_template
