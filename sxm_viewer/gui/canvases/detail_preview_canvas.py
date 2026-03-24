@@ -5835,7 +5835,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(view.get("arr"))
         if arr.size == 0:
             return
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         xmin, xmax = ax.get_xlim()
@@ -6067,7 +6067,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if arr.size == 0:
             self._reset_crop_state()
             return
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         xlim0, xlim1 = self._crop_ax.get_xlim()
@@ -6240,6 +6240,50 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
         self._fixed_crop_history_highlight_artists.clear()
 
+    def _history_entry_geometry(self, entry):
+        if not entry:
+            return None
+        data_bounds = entry.get("data_bounds")
+        if not data_bounds:
+            return None
+        x0, x1, y0, y1 = data_bounds
+        left, right = min(x0, x1), max(x0, x1)
+        bottom, top = min(y0, y1), max(y0, y1)
+        width = right - left
+        height = top - bottom
+        if width <= 0 or height <= 0:
+            return None
+        angle = float(entry.get("rotate", 0.0) or 0.0)
+        cx = (left + right) * 0.5
+        cy = (bottom + top) * 0.5
+        corners_local = np.array(
+            [
+                [left, bottom],
+                [right, bottom],
+                [right, top],
+                [left, top],
+            ],
+            dtype=float,
+        )
+        if abs(angle) > 1e-9:
+            rot = Affine2D().rotate_deg_around(cx, cy, angle)
+            corners = rot.transform(corners_local)
+            label_anchor = rot.transform((left + (width * 0.02), top - (height * 0.02)))
+        else:
+            corners = corners_local
+            label_anchor = np.array([left + (width * 0.02), top - (height * 0.02)], dtype=float)
+        return {
+            "left": float(left),
+            "right": float(right),
+            "bottom": float(bottom),
+            "top": float(top),
+            "width": float(width),
+            "height": float(height),
+            "angle": float(angle),
+            "corners": corners,
+            "label_anchor": label_anchor,
+        }
+
     def _update_highlight_artists(self):
         if self._fixed_crop_history_visible:
             self._cleanup_highlight_artists()
@@ -6260,38 +6304,29 @@ class MultiPreviewCanvas(FigureCanvas):
             )
             if entry is None:
                 continue
-            active_keys.add(key)
-            x0, x1, y0, y1 = entry.get("data_bounds") or (0, 0, 0, 0)
-            left, right = min(x0, x1), max(x0, x1)
-            bottom, top = min(y0, y1), max(y0, y1)
-            width = right - left
-            height = top - bottom
-            if width <= 0 or height <= 0:
+            geom = self._history_entry_geometry(entry)
+            if geom is None:
                 continue
+            active_keys.add(key)
+            corners = geom["corners"]
             artists = self._fixed_crop_history_highlight_artists.get(key)
             if artists:
                 fill, outline = artists
-                fill.set_xy((left, bottom))
-                fill.set_width(width)
-                fill.set_height(height)
-                outline.set_xy((left, bottom))
-                outline.set_width(width)
-                outline.set_height(height)
+                fill.set_xy(corners)
+                outline.set_xy(corners)
             else:
-                fill = patches.Rectangle(
-                    (left, bottom),
-                    width,
-                    height,
+                fill = patches.Polygon(
+                    corners,
+                    closed=True,
                     linewidth=0,
                     edgecolor='none',
                     facecolor='#ff66ff',
                     alpha=0.15,
                     zorder=17,
                 )
-                outline = patches.Rectangle(
-                    (left, bottom),
-                    width,
-                    height,
+                outline = patches.Polygon(
+                    corners,
+                    closed=True,
                     linewidth=3.0,
                     edgecolor='#ffffff',
                     facecolor='none',
@@ -6314,9 +6349,12 @@ class MultiPreviewCanvas(FigureCanvas):
     def _view_extent(self, view):
         if not view:
             return None
-        extent = view.get("extent")
+        raw_extent = view.get("extent_raw")
+        if raw_extent is None:
+            raw_extent = view.get("extent")
+        extent = self._display_extent_for_view(view, raw_extent)
         if extent is None:
-            extent = view.get("extent_raw")
+            extent = raw_extent
         try:
             extent = tuple(extent) if extent is not None else None
         except Exception:
@@ -6478,7 +6516,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.ndim < 2 or arr.size == 0:
             return None
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         if w <= 0 or h <= 0:
@@ -6561,7 +6599,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.ndim < 2 or arr.size == 0:
             return False
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         left = float(left)
@@ -6735,26 +6773,25 @@ class MultiPreviewCanvas(FigureCanvas):
     def _render_history_entry(self, ax, entry, show_label=True):
         if not entry or ax is None:
             return
-        data_bounds = entry.get("data_bounds")
-        if not data_bounds:
+        geom = self._history_entry_geometry(entry)
+        if geom is None:
             return
-        x0, x1, y0, y1 = data_bounds
-        left, right = min(x0, x1), max(x0, x1)
-        bottom, top = min(y0, y1), max(y0, y1)
-        width = right - left
-        height = top - bottom
-        if width <= 0 or height <= 0:
-            return
+        left = geom["left"]
+        right = geom["right"]
+        bottom = geom["bottom"]
+        top = geom["top"]
+        width = geom["width"]
+        height = geom["height"]
+        corners = geom["corners"]
         seq = entry.get("sequence")
         is_active = seq is not None and seq == self._fixed_crop_history_highlight_seq
         edge_color = entry.get("color") or ('#ff66ff' if is_active else '#ffd166')
         line_width = 2.3 if is_active else 1.8
         alpha = 1.0 if is_active else 0.6
         if is_active:
-            highlight_fill = patches.Rectangle(
-                (left, bottom),
-                width,
-                height,
+            highlight_fill = patches.Polygon(
+                corners,
+                closed=True,
                 linewidth=0,
                 edgecolor='none',
                 facecolor=edge_color,
@@ -6762,10 +6799,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 zorder=17,
             )
             ax.add_patch(highlight_fill)
-        rect = patches.Rectangle(
-            (left, bottom),
-            width,
-            height,
+        rect = patches.Polygon(
+            corners,
+            closed=True,
             linewidth=line_width,
             edgecolor=edge_color,
             facecolor='none',
@@ -6775,10 +6811,9 @@ class MultiPreviewCanvas(FigureCanvas):
         )
         ax.add_patch(rect)
         if is_active:
-            highlight_outline = patches.Rectangle(
-                (left, bottom),
-                width,
-                height,
+            highlight_outline = patches.Polygon(
+                corners,
+                closed=True,
                 linewidth=max(line_width + 1.2, 3.0),
                 edgecolor='#ffffff',
                 facecolor='none',
@@ -6787,18 +6822,21 @@ class MultiPreviewCanvas(FigureCanvas):
                 zorder=19,
             )
             ax.add_patch(highlight_outline)
-            # handles
-            handle_size = max(width, height) * 0.02
-            for (cx, cy) in [(left, bottom), (left + width, bottom), (left, bottom + height), (left + width, bottom + height)]:
-                h_rect = patches.Rectangle((cx - handle_size/2, cy - handle_size/2), handle_size, handle_size,
-                                           facecolor=edge_color, edgecolor=edge_color, alpha=0.95, zorder=19)
-                ax.add_patch(h_rect)
+            ax.scatter(
+                corners[:, 0],
+                corners[:, 1],
+                s=24,
+                marker="s",
+                color=edge_color,
+                edgecolors="#ffffff",
+                linewidths=0.35,
+                alpha=0.9,
+                zorder=20,
+            )
         if not show_label or seq is None:
             return
-        label_offset_x = width * 0.02 if width > 0 else 0.0
-        label_offset_y = height * 0.02 if height > 0 else 0.0
-        label_x = left + label_offset_x
-        label_y = top - label_offset_y
+        label_x = float(geom["label_anchor"][0])
+        label_y = float(geom["label_anchor"][1])
         real_size = entry.get("real_size", (0.0, 0.0))
         unit = entry.get("unit") or self._fixed_crop_template_unit or "nm"
         pixel_bounds = entry.get("pixel_bounds")
@@ -6838,13 +6876,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._fixed_crop_history_visible:
             for entry in entries:
                 self._render_history_entry(ax, entry)
-        else:
-            highlight_seq = self._fixed_crop_history_highlight_seq
-            if highlight_seq is None:
-                return
-            entry = next((e for e in entries if e.get("sequence") == highlight_seq), None)
-            if entry:
-                self._render_history_entry(ax, entry, show_label=False)
 
     def _emit_fixed_crop_history_update(self):
         if callable(self._fixed_crop_history_callback):
@@ -6875,7 +6906,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.size == 0:
             return None
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         if w == 0 or h == 0:
@@ -6900,13 +6931,13 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.size == 0:
             return None
-        extent = view.get("extent")
+        extent = self._view_extent(view)
         if not extent:
             return None
         x0, x1, y1, y0 = extent
         x_span = abs(x1 - x0)
         y_span = abs(y1 - y0)
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         if w == 0 or h == 0:
@@ -7325,7 +7356,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.ndim < 2 or arr.size == 0:
             return None
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         if h <= 0 or w <= 0:
@@ -7505,7 +7536,7 @@ class MultiPreviewCanvas(FigureCanvas):
         arr = np.asarray(arr_obj)
         if arr.ndim < 2 or arr.size == 0:
             return False
-        flip = bool(view.get("relative_axes"))
+        flip = self._use_relative_axes(view)
         arr_disp = np.flipud(arr) if flip else arr
         h, w = arr_disp.shape[:2]
         if w <= 0 or h <= 0:
