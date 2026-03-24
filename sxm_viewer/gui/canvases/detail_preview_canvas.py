@@ -124,6 +124,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_history_highlight_seq = None
         self._fixed_crop_history_highlight_artists = {}
         self._fixed_crop_drag_last_ts = 0.0
+        self._fixed_crop_drag_throttle_ms = 12.0
+        self._fixed_crop_overlay_artists = {}
+        self._fixed_crop_cursor_mode = None
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._histogram_dialog_callback = None
@@ -786,6 +789,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self.fig.clf()
         self._ax_view_map = {}
         self._image_meta = {}
+        self._fixed_crop_overlay_artists = {}
         # reset zoom baselines for new axes
         self._zoom_reset_limits = {}
         self._scale_bar_artists = []
@@ -5932,16 +5936,30 @@ class MultiPreviewCanvas(FigureCanvas):
         super().mouseReleaseEvent(event)
 
     def _on_motion_value(self, event):
-        if self._fixed_crop_template_drag is not None:
-            try:
-                if self._update_fixed_crop_template_drag(event):
-                    now_ms = time.perf_counter() * 1000.0
-                    if (now_ms - float(self._fixed_crop_drag_last_ts or 0.0)) >= 12.0:
-                        self._fixed_crop_drag_last_ts = now_ms
-                        self._redraw()
-                    return
-            except Exception:
-                pass
+        if self._fixed_crop_transform_mode:
+            ax = event.inaxes if event is not None else None
+            view = self._ax_view_map.get(ax) if ax is not None else None
+            if self._fixed_crop_template_drag is not None:
+                try:
+                    if self._update_fixed_crop_template_drag(event):
+                        mode = (self._fixed_crop_template_drag or {}).get("mode")
+                        self._set_fixed_crop_cursor(mode=mode, dragging=True)
+                        now_ms = time.perf_counter() * 1000.0
+                        if (now_ms - float(self._fixed_crop_drag_last_ts or 0.0)) >= float(self._fixed_crop_drag_throttle_ms or 12.0):
+                            self._fixed_crop_drag_last_ts = now_ms
+                            drag_ax = (self._fixed_crop_template_drag or {}).get("ax") or ax
+                            drag_view = self._ax_view_map.get(drag_ax) if drag_ax is not None else view
+                            self._refresh_fixed_crop_overlay_fast(drag_ax, drag_view, dragging=True)
+                        return
+                except Exception:
+                    pass
+            else:
+                mode = None
+                if ax is not None and view is not None and event is not None and event.xdata is not None and event.ydata is not None:
+                    hit = self._fixed_crop_template_handle_hit(event, view, ax)
+                    if hit is not None:
+                        mode = hit.get("mode")
+                self._set_fixed_crop_cursor(mode=mode, dragging=False)
         if self._outline_rect is not None and self._outline_start is not None and event.inaxes is self._outline_ax:
             try:
                 x0, y0 = self._outline_start
@@ -6001,13 +6019,18 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_crop_release(self, event):
         """Finish a crop drag and emit a cropped view copy."""
         if self._fixed_crop_template_drag is not None:
+            drag_ax = (self._fixed_crop_template_drag or {}).get("ax")
             try:
                 self._update_fixed_crop_template_drag(event)
             except Exception:
                 pass
             self._finish_fixed_crop_template_drag()
             self._fixed_crop_drag_last_ts = 0.0
-            self._redraw()
+            drag_view = self._ax_view_map.get(drag_ax) if drag_ax is not None else None
+            if drag_ax is not None and drag_view is not None:
+                self._refresh_fixed_crop_overlay_fast(drag_ax, drag_view, dragging=False)
+            else:
+                self._redraw()
             return
         if self._outline_start is not None and self._outline_ax is not None:
             self._finish_outline_drag(event)
@@ -6138,6 +6161,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._fixed_crop_template_drag = None
             self._fixed_crop_drag_last_ts = 0.0
             self._fixed_crop_template_visible = False
+            self._set_fixed_crop_cursor(mode=None, dragging=False)
         self._notify_views_callback()
         self._redraw()
 
@@ -6375,6 +6399,74 @@ class MultiPreviewCanvas(FigureCanvas):
             self._index_to_axis_coord(r1, y_extent_top, y_extent_bottom, h),
         )
 
+    def _clear_fixed_crop_overlay_artists(self, ax=None):
+        if ax is None:
+            targets = list(self._fixed_crop_overlay_artists.keys())
+        else:
+            targets = [ax]
+        for target_ax in targets:
+            artists = self._fixed_crop_overlay_artists.pop(target_ax, [])
+            for artist in artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+
+    def _fixed_crop_rotate_handle_points(self, ax, geom):
+        angle = float(geom.get("angle", 0.0) or 0.0)
+        rot = Affine2D().rotate_deg_around(geom["cx"], geom["cy"], angle)
+        top_mid = rot.transform((geom["cx"], geom["top"]))
+        center_px = np.asarray(ax.transData.transform((geom["cx"], geom["cy"])), dtype=float)
+        top_mid_px = np.asarray(ax.transData.transform(top_mid), dtype=float)
+        vec = top_mid_px - center_px
+        norm = float(np.hypot(vec[0], vec[1]))
+        if norm <= 1e-9:
+            direction = np.array([0.0, -1.0], dtype=float)
+        else:
+            direction = vec / norm
+        rotate_px = top_mid_px + (direction * 28.0)
+        rotate_pt = ax.transData.inverted().transform(rotate_px)
+        return top_mid, rotate_pt
+
+    def _set_fixed_crop_cursor(self, mode=None, dragging=False):
+        target = (mode, bool(dragging))
+        if self._fixed_crop_cursor_mode == target:
+            return
+        self._fixed_crop_cursor_mode = target
+        cursor = QtCore.Qt.ArrowCursor
+        if mode == "rotate":
+            cursor = QtCore.Qt.CrossCursor
+        elif mode == "move":
+            cursor = QtCore.Qt.ClosedHandCursor if dragging else QtCore.Qt.SizeAllCursor
+        elif mode in ("resize_nw", "resize_se"):
+            cursor = QtCore.Qt.SizeFDiagCursor
+        elif mode in ("resize_ne", "resize_sw"):
+            cursor = QtCore.Qt.SizeBDiagCursor
+        try:
+            self.setCursor(cursor)
+        except Exception:
+            pass
+
+    def _refresh_fixed_crop_overlay_fast(self, ax, view, dragging=False):
+        if ax is None:
+            return
+        if not self._fixed_crop_template_visible or view is None:
+            self._clear_fixed_crop_overlay_artists(ax=ax)
+            self.draw_idle()
+            return
+        updated = False
+        try:
+            updated = self._update_template_overlay_artists(ax, view, skip_label=bool(dragging))
+        except Exception:
+            updated = False
+        if not updated:
+            self._clear_fixed_crop_overlay_artists(ax=ax)
+            try:
+                self._render_template_overlay(ax, view)
+            except Exception:
+                pass
+        self.draw_idle()
+
     def _fixed_crop_template_geometry(self, view, ax):
         template = self._fixed_crop_template
         if template is None or not template.get("pixel_bounds") or view is None or ax is None:
@@ -6437,9 +6529,8 @@ class MultiPreviewCanvas(FigureCanvas):
         ev_world = np.array([event.xdata, event.ydata], dtype=float)
         ev_px = ax.transData.transform(ev_world)
 
-        # Rotation handle
-        handle_len = max(geom["height"] * 0.22, geom["height"] * 0.08, 1.0)
-        handle_world = rot.transform((geom["cx"], geom["top"] + handle_len))
+        # Rotation handle (always rendered outward from the top edge in screen space)
+        _top_mid_world, handle_world = self._fixed_crop_rotate_handle_points(ax, geom)
         handle_px = ax.transData.transform(handle_world)
         if float(np.hypot(*(ev_px - handle_px))) <= 22.0:
             return {"mode": "rotate", "geom": geom}
@@ -6514,6 +6605,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "view_key": self._outline_key(view),
             "ax": ax,
             "press": (float(event.xdata), float(event.ydata)),
+            "last": (float(event.xdata), float(event.ydata)),
             "bounds_start": (geom["left"], geom["right"], geom["bottom"], geom["top"]),
             "angle_start": float(geom.get("angle", 0.0) or 0.0),
             "center_start": (geom["cx"], geom["cy"]),
@@ -6527,6 +6619,12 @@ class MultiPreviewCanvas(FigureCanvas):
         drag = self._fixed_crop_template_drag
         if not drag or event is None or event.xdata is None or event.ydata is None:
             return False
+        current = (float(event.xdata), float(event.ydata))
+        last = drag.get("last")
+        if last is not None:
+            if abs(current[0] - float(last[0])) < 1e-9 and abs(current[1] - float(last[1])) < 1e-9:
+                return False
+        drag["last"] = current
         ax = drag.get("ax")
         if event.inaxes is not ax:
             return False
@@ -7032,9 +7130,11 @@ class MultiPreviewCanvas(FigureCanvas):
         key = self._outline_key(view)
         if key != self._fixed_crop_template_view_key:
             return
+        self._clear_fixed_crop_overlay_artists(ax=ax)
         geom = self._fixed_crop_template_geometry(view, ax)
         if geom is None:
             return
+        artists = []
         left = float(geom["left"])
         right = float(geom["right"])
         bottom = float(geom["bottom"])
@@ -7067,6 +7167,7 @@ class MultiPreviewCanvas(FigureCanvas):
             zorder=17,
         )
         ax.add_patch(frame)
+        artists.append(frame)
 
         px_width = int(self._fixed_crop_template.get("width", int(width)))
         px_height = int(self._fixed_crop_template.get("height", int(height)))
@@ -7080,7 +7181,7 @@ class MultiPreviewCanvas(FigureCanvas):
         size_label = f"{real_label}\n({px_width}x{px_height} px)" if real_label else f"{px_width}x{px_height} px"
 
         label_anchor = rot.transform((left + (width * 0.015), top - (height * 0.02)))
-        ax.text(
+        lbl = ax.text(
             float(label_anchor[0]),
             float(label_anchor[1]),
             size_label,
@@ -7092,10 +7193,11 @@ class MultiPreviewCanvas(FigureCanvas):
             bbox=dict(facecolor="#111111", alpha=0.7, pad=1, edgecolor="none"),
             zorder=18,
         )
+        artists.append(lbl)
 
         if self._fixed_crop_transform_mode:
             corner_size = 58.0
-            ax.scatter(
+            corner_pts = ax.scatter(
                 corners[:, 0],
                 corners[:, 1],
                 s=corner_size,
@@ -7105,10 +7207,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 linewidths=0.5,
                 zorder=19,
             )
-            top_mid = rot.transform((cx, top))
-            handle_len = max(height * 0.26, 1.0)
-            rotate_pt = rot.transform((cx, top + handle_len))
-            ax.plot(
+            artists.append(corner_pts)
+            top_mid, rotate_pt = self._fixed_crop_rotate_handle_points(ax, geom)
+            handle_line = ax.plot(
                 [top_mid[0], rotate_pt[0]],
                 [top_mid[1], rotate_pt[1]],
                 linestyle="-",
@@ -7116,8 +7217,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 color="#ff66ff",
                 alpha=0.9,
                 zorder=19,
-            )
-            ax.scatter(
+            )[0]
+            artists.append(handle_line)
+            rotate_marker = ax.scatter(
                 [rotate_pt[0]],
                 [rotate_pt[1]],
                 s=62,
@@ -7127,7 +7229,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 linewidths=0.9,
                 zorder=20,
             )
-            ax.text(
+            artists.append(rotate_marker)
+            rotate_lbl = ax.text(
                 float(rotate_pt[0]),
                 float(rotate_pt[1]),
                 "R",
@@ -7138,6 +7241,80 @@ class MultiPreviewCanvas(FigureCanvas):
                 va="center",
                 zorder=21,
             )
+            artists.append(rotate_lbl)
+        self._fixed_crop_overlay_artists[ax] = artists
+
+    def _update_template_overlay_artists(self, ax, view, skip_label=False):
+        if ax is None or view is None:
+            return False
+        artists = self._fixed_crop_overlay_artists.get(ax)
+        if not artists:
+            return False
+        geom = self._fixed_crop_template_geometry(view, ax)
+        if geom is None:
+            return False
+
+        expected_len = 6 if self._fixed_crop_transform_mode else 2
+        if len(artists) != expected_len:
+            return False
+
+        left = float(geom["left"])
+        right = float(geom["right"])
+        bottom = float(geom["bottom"])
+        top = float(geom["top"])
+        width = float(geom["width"])
+        height = float(geom["height"])
+        cx = float(geom["cx"])
+        cy = float(geom["cy"])
+        angle = float(geom.get("angle", 0.0) or 0.0)
+        rot = Affine2D().rotate_deg_around(cx, cy, angle)
+
+        corners_local = np.array(
+            [
+                [left, bottom],
+                [right, bottom],
+                [right, top],
+                [left, top],
+            ],
+            dtype=float,
+        )
+        corners = rot.transform(corners_local)
+
+        frame = artists[0]
+        frame.set_xy(corners)
+
+        label_anchor = rot.transform((left + (width * 0.015), top - (height * 0.02)))
+        lbl = artists[1]
+        lbl.set_position((float(label_anchor[0]), float(label_anchor[1])))
+        if not skip_label:
+            px_width = int(self._fixed_crop_template.get("width", int(width)))
+            px_height = int(self._fixed_crop_template.get("height", int(height)))
+            real_unit = self._fixed_crop_template_unit or "nm"
+            real_label = ""
+            if self._fixed_crop_template_bounds:
+                bx0, bx1, by0, by1 = self._fixed_crop_template_bounds
+                real_dx = abs(bx1 - bx0)
+                real_dy = abs(by1 - by0)
+                real_label = f"{real_dx:.3g} {real_unit} x {real_dy:.3g} {real_unit}"
+            size_label = f"{real_label}\n({px_width}x{px_height} px)" if real_label else f"{px_width}x{px_height} px"
+            lbl.set_text(size_label)
+
+        if self._fixed_crop_transform_mode:
+            corner_pts = artists[2]
+            corner_pts.set_offsets(corners)
+            top_mid, rotate_pt = self._fixed_crop_rotate_handle_points(ax, geom)
+            handle_line = artists[3]
+            handle_line.set_data(
+                [float(top_mid[0]), float(rotate_pt[0])],
+                [float(top_mid[1]), float(rotate_pt[1])],
+            )
+            rotate_marker = artists[4]
+            rotate_marker.set_offsets(
+                np.array([[float(rotate_pt[0]), float(rotate_pt[1])]], dtype=float)
+            )
+            rotate_lbl = artists[5]
+            rotate_lbl.set_position((float(rotate_pt[0]), float(rotate_pt[1])))
+        return True
 
     def _extract_rotated_crop(self, view, ax, bounds_data, width_px, height_px, angle_deg):
         if view is None or ax is None or not bounds_data:
