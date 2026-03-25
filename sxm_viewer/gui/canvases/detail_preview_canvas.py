@@ -3907,6 +3907,19 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             pass
 
+    def _event_qt_modifiers(self, event):
+        mods_qt = QtCore.Qt.NoModifier
+        try:
+            mods_qt = getattr(getattr(event, "guiEvent", None), "modifiers", lambda: QtCore.Qt.NoModifier)()
+        except Exception:
+            mods_qt = QtCore.Qt.NoModifier
+        if mods_qt == QtCore.Qt.NoModifier:
+            try:
+                mods_qt = QtWidgets.QApplication.keyboardModifiers()
+            except Exception:
+                mods_qt = QtCore.Qt.NoModifier
+        return mods_qt
+
     def _on_base_click(self, event):
         if event is None or event.inaxes is None:
             return
@@ -3923,8 +3936,12 @@ class MultiPreviewCanvas(FigureCanvas):
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
         if self._fixed_crop_transform_mode and event.button == 1 and view is not None:
+            mods_qt = self._event_qt_modifiers(event)
             hit = self._fixed_crop_template_handle_hit(event, view, ax)
             if hit is not None:
+                if hit.get("mode") == "move" and bool(mods_qt & QtCore.Qt.ControlModifier):
+                    hit = dict(hit)
+                    hit["mode"] = "rotate"
                 if self._begin_fixed_crop_template_drag(hit, event, view, ax):
                     return
             # Keep edit mode deterministic: left-click outside handles should not
@@ -6044,6 +6061,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     hit = self._fixed_crop_template_handle_hit(event, view, ax)
                     if hit is not None:
                         mode = hit.get("mode")
+                        if mode == "move" and bool(self._event_qt_modifiers(event) & QtCore.Qt.ControlModifier):
+                            mode = "rotate"
                 self._set_fixed_crop_cursor(mode=mode, dragging=False)
         if self._outline_rect is not None and self._outline_start is not None and event.inaxes is self._outline_ax:
             try:
@@ -7277,7 +7296,7 @@ class MultiPreviewCanvas(FigureCanvas):
             closed=True,
             linewidth=1.25,
             edgecolor="#f46cff",
-            facecolor=(1.0, 0.58, 1.0, 0.045),
+            facecolor=(1.0, 0.58, 1.0, 0.025),
             alpha=0.9,
             linestyle="--",
             zorder=17,
