@@ -84,7 +84,7 @@ class SpectroCompareController:
         viewer = self.viewer
         count = len(getattr(viewer, "_multi_spec_selection", []))
         if hasattr(viewer, 'spec_selection_label'):
-            viewer.spec_selection_label.setText(f"Spectra selected: {count}")
+            viewer.spec_selection_label.setText(f"Selected: {count}")
 
     # ------------------------------------------------------------------
     def prime_multi_selection_anchor(self, current_spec):

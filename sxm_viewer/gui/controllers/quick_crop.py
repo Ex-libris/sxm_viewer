@@ -44,6 +44,12 @@ class QuickCropController:
                 btn.blockSignals(False)
             except Exception:
                 pass
+        detail_widget = getattr(viewer, 'quick_crop_detail_widget', None)
+        if detail_widget is not None:
+            try:
+                detail_widget.setVisible(enabled)
+            except Exception:
+                pass
         canvases = [getattr(viewer, 'preview_canvas', None)] + list(getattr(viewer, '_popup_canvases', []))
         for canv in canvases:
             if canv is None:

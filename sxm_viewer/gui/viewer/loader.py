@@ -267,13 +267,17 @@ def load_files(
     for lab in labels:
         viewer.channel_dropdown.addItem(lab)
         viewer.channel_dropdown.setItemData(viewer.channel_dropdown.count()-1, lab, QtCore.Qt.ToolTipRole)
-    viewer.channel_dropdown.setMinimumWidth(380)
+    viewer.channel_dropdown.setMinimumWidth(240)
     if 0 <= viewer.last_channel_index < viewer.channel_dropdown.count():
         viewer.channel_dropdown.setCurrentIndex(viewer.last_channel_index)
     else:
         viewer.last_channel_index = 0; viewer.channel_dropdown.setCurrentIndex(0)
     viewer.channel_dropdown.setEnabled(True)
     viewer.channel_dropdown.blockSignals(False)
+    try:
+        viewer._sync_channel_nav_buttons()
+    except Exception:
+        pass
 
     # set cmaps
     try: viewer.thumb_cmap_combo.setCurrentText(viewer.thumb_cmap)

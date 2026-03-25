@@ -11,7 +11,7 @@ _NUMERIC_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 _UNIT_DISPLAY_CHOICES = {
     # order favours the most common STM ranges first (centered on the native unit)
     "nm": [("nm", 1.0), ("pm", 1e3), ("um", 1e-3), ("mm", 1e-6), ("m", 1e-9)],
-    "A": [("nA", 1e9), ("pA", 1e12), ("uA", 1e6), ("mA", 1e3), ("A", 1.0), ("kA", 1e-3)],
+    "A": [("nA", 1e9), ("pA", 1e12), ("fA", 1e15), ("uA", 1e6), ("mA", 1e3), ("A", 1.0), ("kA", 1e-3)],
     "V": [("mV", 1e3), ("uV", 1e6), ("V", 1.0), ("kV", 1e-3)],
     "Hz": [("kHz", 1e-3), ("Hz", 1.0), ("MHz", 1e-6), ("GHz", 1e-9)],
 }
@@ -22,6 +22,7 @@ _SI_BASE_UNITS = {
     "um": ("m", 1e-6),
     "mm": ("m", 1e-3),
     "m": ("m", 1.0),
+    "fA": ("A", 1e-15),
     "A": ("A", 1.0),
     "V": ("V", 1.0),
     "Hz": ("Hz", 1.0),

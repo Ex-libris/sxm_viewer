@@ -7,13 +7,32 @@ from .constants import UI_FONT_FAMILY
 from .styles import MAIN_SHORTCUTS_PANEL_STYLE, lower_control_frame_style, mode_selector_style
 
 
+def _configure_compact_control(widget):
+    try:
+        widget.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed)
+    except Exception:
+        pass
+    return widget
+
+
+def _add_menu_widget(menu, widget):
+    action = QtWidgets.QWidgetAction(menu)
+    action.setDefaultWidget(widget)
+    menu.addAction(action)
+    return action
+
+
 def create_lower_controls(viewer):
     frame = QtWidgets.QFrame()
     frame.setObjectName("lowerControlFrame")
     frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
-    layout = QtWidgets.QHBoxLayout(frame)
-    layout.setContentsMargins(8, 4, 8, 4)
-    layout.setSpacing(12)
+    layout = QtWidgets.QVBoxLayout(frame)
+    layout.setContentsMargins(8, 4, 8, 6)
+    layout.setSpacing(6)
+
+    top_row = QtWidgets.QHBoxLayout()
+    top_row.setContentsMargins(0, 0, 0, 0)
+    top_row.setSpacing(8)
 
     mode_widget = QtWidgets.QWidget(frame)
     mode_widget.setObjectName("modeSelector")
@@ -28,7 +47,7 @@ def create_lower_controls(viewer):
     mode_definitions = [
         (viewer.MODE_BROWSE, "Browse", "Ctrl+B"),
         (viewer.MODE_MEASURE, "Measure", "Ctrl+M"),
-        (viewer.MODE_SPECTRO, "Spectroscopy", "Ctrl+S"),
+        (viewer.MODE_SPECTRO, "Spectro", "Ctrl+S"),
     ]
     for mode, label, shortcut in mode_definitions:
         btn = QtWidgets.QToolButton(mode_widget)
@@ -42,20 +61,18 @@ def create_lower_controls(viewer):
         viewer.mode_button_group.addButton(btn, mode)
         viewer.mode_buttons[mode] = btn
         mode_layout.addWidget(btn)
-    layout.addWidget(mode_widget)
+    top_row.addWidget(mode_widget)
+    top_row.addStretch(1)
+    layout.addLayout(top_row)
 
     viewer.mode_stack = QtWidgets.QStackedWidget(frame)
     viewer.mode_stack.addWidget(build_browse_context_page(viewer))
     viewer.mode_stack.addWidget(build_measure_context_page(viewer))
     viewer.mode_stack.addWidget(build_spectro_context_page(viewer))
-    layout.addWidget(viewer.mode_stack, 1)
+    layout.addWidget(viewer.mode_stack)
 
     display_widget = build_display_widget(viewer, frame)
     layout.addWidget(display_widget)
-
-    layout.setStretch(0, 0)
-    layout.setStretch(1, 1)
-    layout.setStretch(2, 0)
 
     settings = QtCore.QSettings()
     saved_mode = str(settings.value("lowerPane/lastMode", "Browse"))
@@ -73,9 +90,9 @@ def build_browse_context_page(viewer):
     layout = QtWidgets.QHBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
-    viewer.add_view_btn = QtWidgets.QPushButton("+ Channel")
+    viewer.add_view_btn = _configure_compact_control(QtWidgets.QPushButton("+ View"))
     viewer.add_view_btn.setToolTip("Add the current channel as an extra preview")
-    viewer.clear_views_btn = QtWidgets.QPushButton("Clear views")
+    viewer.clear_views_btn = _configure_compact_control(QtWidgets.QPushButton("Clear views"))
     viewer.clear_views_btn.setToolTip("Remove extra previews and keep only the main view")
     for btn in (
         viewer.add_view_btn,
@@ -91,21 +108,21 @@ def build_measure_context_page(viewer):
     layout = QtWidgets.QHBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
-    viewer.measure_profile_btn = QtWidgets.QPushButton("Profile")
+    viewer.measure_profile_btn = _configure_compact_control(QtWidgets.QPushButton("Profile"))
     viewer.measure_profile_btn.setToolTip("Start or stop interactive profile measurement")
-    viewer.measure_angle_btn = QtWidgets.QPushButton("Angle")
+    viewer.measure_angle_btn = _configure_compact_control(QtWidgets.QPushButton("Angle"))
     viewer.measure_angle_btn.setToolTip("Start or stop angle measurement tool")
-    viewer.exit_profile_btn = QtWidgets.QPushButton("Exit")
-    viewer.exit_profile_btn.setToolTip("Exit the profile measurement mode")
-    viewer.clear_profile_btn = QtWidgets.QPushButton("Clear")
+    viewer.clear_profile_btn = _configure_compact_control(QtWidgets.QPushButton("Clear"))
     viewer.clear_profile_btn.setToolTip("Clear the current profile line and start fresh")
-    viewer.show_profile_window_btn = QtWidgets.QPushButton("Show")
+    viewer.show_profile_window_btn = _configure_compact_control(QtWidgets.QPushButton("Profiles"))
     viewer.show_profile_window_btn.setToolTip("Reopen the profile dialog with current measurements")
+    viewer.exit_profile_btn = _configure_compact_control(QtWidgets.QPushButton("Done"))
+    viewer.exit_profile_btn.setToolTip("Exit the profile measurement mode")
     layout.addWidget(viewer.measure_profile_btn)
     layout.addWidget(viewer.measure_angle_btn)
-    layout.addWidget(viewer.exit_profile_btn)
     layout.addWidget(viewer.clear_profile_btn)
     layout.addWidget(viewer.show_profile_window_btn)
+    layout.addWidget(viewer.exit_profile_btn)
     layout.addStretch(1)
     return page
 
@@ -115,24 +132,35 @@ def build_spectro_context_page(viewer):
     layout = QtWidgets.QHBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
-    viewer.show_spectra_cb = QtWidgets.QCheckBox("Show in preview")
+    viewer.show_spectra_cb = _configure_compact_control(QtWidgets.QCheckBox("Preview markers"))
     viewer.show_spectra_cb.setChecked(getattr(viewer, "show_preview_spectra", True))
     viewer.show_spectra_cb.setToolTip("Toggle spectroscopy overlays in the preview panel")
-    viewer.clear_spec_selection_btn = QtWidgets.QPushButton("Clear spec selection")
+    viewer.clear_spec_selection_btn = _configure_compact_control(QtWidgets.QPushButton("Clear selection"))
     viewer.clear_spec_selection_btn.setToolTip("Clear the multi-selection of spectroscopy points")
-    viewer.grid_as_matrix_cb = QtWidgets.QCheckBox("Treat NxN singles as matrix")
+    viewer.grid_as_matrix_cb = QtWidgets.QCheckBox("NxN singles as matrix")
     viewer.grid_as_matrix_cb.setChecked(getattr(viewer, "spectro_single_grid_as_matrix", False))
     viewer.grid_as_matrix_cb.setToolTip("Interpret square grids of single .dat spectra as matrix datasets")
     viewer.force_single_cb = QtWidgets.QCheckBox("Force single mode")
     viewer.force_single_cb.setChecked(getattr(viewer, "spectro_force_single_mode", False))
     viewer.force_single_cb.setToolTip("Ignore matrix hints and treat all .dat as single spectra")
-    viewer.spec_selection_label = QtWidgets.QLabel("Spectra selected: 0")
+    viewer.spectro_more_btn = QtWidgets.QToolButton(page)
+    viewer.spectro_more_btn.setText("More")
+    viewer.spectro_more_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+    viewer.spectro_more_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+    viewer.spectro_more_btn.setToolTip("Show less-frequent spectroscopy options")
+    _configure_compact_control(viewer.spectro_more_btn)
+    viewer.spectro_more_menu = QtWidgets.QMenu(viewer.spectro_more_btn)
+    _add_menu_widget(viewer.spectro_more_menu, viewer.grid_as_matrix_cb)
+    _add_menu_widget(viewer.spectro_more_menu, viewer.force_single_cb)
+    viewer.spectro_more_btn.setMenu(viewer.spectro_more_menu)
+    viewer.spec_selection_label = QtWidgets.QLabel("Selected: 0")
     font_small = QtGui.QFont(UI_FONT_FAMILY, 9)
     viewer.spec_selection_label.setFont(font_small)
+    viewer.spec_selection_label.setMinimumWidth(0)
+    viewer.spec_selection_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
     layout.addWidget(viewer.show_spectra_cb)
     layout.addWidget(viewer.clear_spec_selection_btn)
-    layout.addWidget(viewer.grid_as_matrix_cb)
-    layout.addWidget(viewer.force_single_cb)
+    layout.addWidget(viewer.spectro_more_btn)
     layout.addWidget(viewer.spec_selection_label)
     layout.addStretch(1)
     return page
@@ -248,22 +276,24 @@ def build_display_widget(viewer, parent):
     container = QtWidgets.QWidget(parent)
     layout = QtWidgets.QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
+    layout.setSpacing(8)
     _ensure_display_menu(viewer)
 
-    viewer.spectro_browser_btn = QtWidgets.QPushButton("Spectro Browser", container)
+    viewer.spectro_browser_btn = _configure_compact_control(QtWidgets.QPushButton("Spectro Browser", container))
     viewer.spectro_browser_btn.setToolTip("Open the spectroscopy browser")
     viewer.spectro_browser_btn.clicked.connect(lambda: viewer.open_spectro_browser())
     layout.addWidget(viewer.spectro_browser_btn)
 
-    layout.addStretch(1)
     viewer.spectro_stats_label = QtWidgets.QLabel(
-        "Spectros: -- (Single: --, Matrix datasets: --)", container
+        "Spectra -- | Single -- | Matrix --", container
     )
     stats_font = QtGui.QFont(UI_FONT_FAMILY, 9)
     viewer.spectro_stats_label.setFont(stats_font)
     viewer.spectro_stats_label.setToolTip("Summary of spectroscopy content for the loaded folder")
-    layout.addWidget(viewer.spectro_stats_label, 0, QtCore.Qt.AlignRight)
+    viewer.spectro_stats_label.setWordWrap(True)
+    viewer.spectro_stats_label.setMinimumWidth(0)
+    viewer.spectro_stats_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+    layout.addWidget(viewer.spectro_stats_label, 1)
     return container
 
 

@@ -416,6 +416,7 @@ _UNIT_NORMALIZATION: Dict[str, Tuple[str, float]] = {
     "ang": ("nm", 0.1),
     "angstrom": ("nm", 0.1),
     "a": ("A", 1.0),
+    "fa": ("A", 1e-15),
     "pa": ("A", 1e-12),
     "na": ("A", 1e-9),
     "ma": ("A", 1e-3),

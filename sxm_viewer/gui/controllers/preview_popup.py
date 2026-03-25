@@ -6,6 +6,34 @@ from ..canvases.detail_preview_canvas import MultiPreviewCanvas
 from .profile import PopupProfileController
 
 
+def _resolve_popup_channel_source(owner, views):
+    if not views or len(views) != 1:
+        return None
+    view = views[0] or {}
+    if view.get("crop_sequence") is not None:
+        return None
+    meta = view.get("meta") or {}
+    file_path = view.get("path") or meta.get("path") or meta.get("file_path")
+    channel_idx = view.get("channel_idx")
+    if channel_idx is None:
+        channel_idx = meta.get("channel_index")
+    if not file_path or channel_idx is None:
+        return None
+    try:
+        channel_idx = int(channel_idx)
+    except Exception:
+        return None
+    header, fds = owner.headers.get(str(file_path), (None, None))
+    if header is None or not fds or len(fds) <= 1 or channel_idx < 0 or channel_idx >= len(fds):
+        return None
+    return {
+        "file_path": str(file_path),
+        "channel_idx": channel_idx,
+        "header": header,
+        "fds": fds,
+    }
+
+
 def spawn_preview_popup(owner, views, title=None):
     """Create a preview popup dialog reusing the existing owner logic."""
     if not views:
@@ -26,6 +54,7 @@ def spawn_preview_popup(owner, views, title=None):
     layout.setContentsMargins(6, 6, 6, 6)
     layout.setSpacing(0)
     layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
+    popup_source = _resolve_popup_channel_source(owner, views)
 
     # Use a default that we immediately adapt to the
     # aspect ratio of the underlying image so the popup
@@ -100,7 +129,7 @@ def spawn_preview_popup(owner, views, title=None):
         except Exception:
             return 180
 
-    def _enforce_square_dialog():
+    def _enforce_square_dialog(*, respect_min_side: bool = True):
         if _square_resize_busy["active"]:
             return
         try:
@@ -120,7 +149,9 @@ def spawn_preview_popup(owner, views, title=None):
             min_side = _minimum_square_side()
             avail_w = max(1, dlg.width() - margins.left() - margins.right())
             avail_h = max(1, dlg.height() - margins.top() - margins.bottom())
-            side = max(min(avail_w, avail_h), min_side)
+            side = min(avail_w, avail_h)
+            if respect_min_side:
+                side = max(side, min_side)
             target_w = side + margins.left() + margins.right()
             target_h = side + margins.top() + margins.bottom()
             dlg_min = dlg.minimumSizeHint()
@@ -150,7 +181,7 @@ def spawn_preview_popup(owner, views, title=None):
                 dlg.setMinimumSize(0, 0)
                 _last_square_target["w"] = -1
                 _last_square_target["h"] = -1
-                _enforce_square_dialog()
+                _enforce_square_dialog(respect_min_side=True)
         except Exception:
             pass
 
@@ -161,7 +192,9 @@ def spawn_preview_popup(owner, views, title=None):
                 return
         except Exception:
             pass
-        _enforce_square_dialog()
+        # After a user drag-resize, keep the popup square without forcing it
+        # back up to the latest font-derived content hint.
+        _enforce_square_dialog(respect_min_side=False)
 
     def _schedule_resize(force=False):
         if force:
@@ -275,6 +308,88 @@ def spawn_preview_popup(owner, views, title=None):
     except Exception:
         pass
 
+    popup_header = None
+    if popup_source is not None:
+        popup_header = QtWidgets.QWidget(dlg)
+        popup_header_layout = QtWidgets.QHBoxLayout(popup_header)
+        popup_header_layout.setContentsMargins(0, 0, 0, 6)
+        popup_header_layout.setSpacing(6)
+        popup_header_layout.addWidget(QtWidgets.QLabel("Channel", popup_header))
+        channel_prev_btn = QtWidgets.QToolButton(popup_header)
+        channel_prev_btn.setArrowType(QtCore.Qt.LeftArrow)
+        channel_prev_btn.setAutoRaise(True)
+        channel_prev_btn.setToolTip("Previous channel in this popup")
+        popup_header_layout.addWidget(channel_prev_btn)
+        channel_combo = QtWidgets.QComboBox(popup_header)
+        channel_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        for idx, fd in enumerate(popup_source["fds"]):
+            label = fd.get("Caption", fd.get("FileName", f"chan{idx}"))
+            channel_combo.addItem(f"{idx}: {label}")
+            channel_combo.setItemData(idx, label, QtCore.Qt.ToolTipRole)
+        channel_combo.setCurrentIndex(int(popup_source["channel_idx"]))
+        popup_header_layout.addWidget(channel_combo, 1)
+        channel_next_btn = QtWidgets.QToolButton(popup_header)
+        channel_next_btn.setArrowType(QtCore.Qt.RightArrow)
+        channel_next_btn.setAutoRaise(True)
+        channel_next_btn.setToolTip("Next channel in this popup")
+        popup_header_layout.addWidget(channel_next_btn)
+        layout.addWidget(popup_header)
+
+        channel_sync = {"active": False}
+
+        def _sync_popup_channel_buttons():
+            idx = channel_combo.currentIndex()
+            count = channel_combo.count()
+            channel_prev_btn.setEnabled(idx > 0)
+            channel_next_btn.setEnabled(0 <= idx < count - 1)
+
+        def _apply_popup_channel(idx):
+            if channel_sync["active"]:
+                return
+            try:
+                idx = int(idx)
+            except Exception:
+                return
+            if idx < 0 or idx >= channel_combo.count():
+                return
+            current_view = canvas.views[0] if getattr(canvas, "views", None) else {}
+            cmap_override = current_view.get("cmap")
+            try:
+                bundle = owner._build_single_channel_view(
+                    popup_source["file_path"],
+                    idx,
+                    cmap_override=cmap_override,
+                    use_local_cmap=True,
+                )
+            except Exception:
+                bundle = None
+            if not bundle:
+                return
+            channel_sync["active"] = True
+            try:
+                popup_source["channel_idx"] = idx
+                canvas._popup_channel_source = dict(popup_source)
+                preserve_profiles = True
+                canvas.set_views([owner._copy_view_for_popup(bundle["view"])], preserve_profiles=preserve_profiles)
+                dlg.setWindowTitle(owner._friendly_view_title(bundle["view"], default="Preview"))
+                channel_combo.blockSignals(True)
+                channel_combo.setCurrentIndex(idx)
+                channel_combo.blockSignals(False)
+                _sync_popup_channel_buttons()
+                # Preserve the user's manually resized popup size when
+                # switching channels; only grow if the refreshed content
+                # now requires more room.
+                _schedule_resize(force=False)
+            finally:
+                channel_sync["active"] = False
+
+        channel_combo.currentIndexChanged.connect(_apply_popup_channel)
+        channel_prev_btn.clicked.connect(lambda: channel_combo.setCurrentIndex(max(0, channel_combo.currentIndex() - 1)))
+        channel_next_btn.clicked.connect(lambda: channel_combo.setCurrentIndex(min(channel_combo.count() - 1, channel_combo.currentIndex() + 1)))
+        _sync_popup_channel_buttons()
+        canvas._popup_channel_source = dict(popup_source)
+        dlg._preview_channel_combo = channel_combo
+
     layout.addWidget(canvas, 1)
     canvas.setFocus()
 
@@ -302,6 +417,13 @@ def spawn_preview_popup(owner, views, title=None):
                 except Exception:
                     pass
                 return False
+            if event.type() in (QtCore.QEvent.WindowActivate, QtCore.QEvent.MouseButtonPress, QtCore.QEvent.FocusIn):
+                try:
+                    if hasattr(owner, "_set_active_preview_popup"):
+                        owner._set_active_preview_popup(dlg, self.canvas)
+                except Exception:
+                    pass
+                return False
             if event.type() == QtCore.QEvent.KeyPress:
                 if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() == QtCore.Qt.Key_D:
                     try:
@@ -322,6 +444,11 @@ def spawn_preview_popup(owner, views, title=None):
 
     _schedule_resize(force=True)
     dlg.show()
+    if hasattr(owner, "_set_active_preview_popup"):
+        try:
+            owner._set_active_preview_popup(dlg, canvas)
+        except Exception:
+            pass
     owner._popup_refs.append(dlg)
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.update_popup_actions()
@@ -332,6 +459,11 @@ def spawn_preview_popup(owner, views, title=None):
         if hasattr(owner, "quick_crop_controller"):
             owner.quick_crop_controller.update_popup_actions()
         profile_controller.dispose()
+        if hasattr(owner, "_clear_active_preview_popup"):
+            try:
+                owner._clear_active_preview_popup(dlg)
+            except Exception:
+                pass
 
     def _remove_popup_canvas(_=None):
         if canvas in getattr(owner, "_popup_canvases", []):

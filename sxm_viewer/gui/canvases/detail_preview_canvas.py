@@ -1854,6 +1854,8 @@ class MultiPreviewCanvas(FigureCanvas):
         state = {
             'active_pts': tuple(self.profile_pts) if self.profile_pts is not None else None,
             'saved': saved,
+            'enabled': bool(self.profile_enabled),
+            'user_enabled': bool(getattr(self, "_profile_user_enabled", self.profile_enabled)),
             'marker_key': self._profile_marker_key,
             'marker_positions_by_key': dict(self._profile_marker_positions_by_key),
             'marker_domain_by_key': dict(self._profile_marker_domain_by_key),
@@ -1882,12 +1884,16 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_state_syncing = True
             active_pts = state.get('active_pts')
             saved = state.get('saved') or []
+            enabled = bool(state.get('enabled', bool(active_pts is not None)))
+            self._profile_user_enabled = bool(state.get('user_enabled', enabled))
             self._profile_marker_key = state.get('marker_key')
             self._profile_marker_positions_by_key = dict(state.get('marker_positions_by_key') or {})
             self._profile_marker_domain_by_key = dict(state.get('marker_domain_by_key') or {})
+            if not enabled and self.profile_enabled:
+                self.enable_profile(False)
             if active_pts is not None:
                 self._set_profile_pts(tuple(active_pts))
-                if not self.profile_enabled:
+                if enabled and not self.profile_enabled:
                     self.enable_profile(True)
             self._clear_saved_profile_artists(notify=False)
             for entry in saved:
@@ -1895,8 +1901,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 if pts is None:
                     continue
                 self._add_saved_profile_from_pts(tuple(pts), entry.get('color'), entry.get('lw'))
-            self._ensure_profile_artists()
-            self._update_profile_artists()
+            if enabled:
+                self._ensure_profile_artists()
+                self._update_profile_artists()
+            self._apply_profile_visibility()
             self.set_profile_marker_key(self._profile_marker_key)
         finally:
             self._profile_state_syncing = False
