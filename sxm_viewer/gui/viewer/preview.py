@@ -36,6 +36,7 @@ from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
 from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging, header_indicates_constant
 from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
+from ...utils.units import _auto_display_unit, _safe_float
 from ..thumbnail_render import detect_valid_scan_region
 
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
@@ -83,12 +84,20 @@ def _coerce_float(value):
 def _fmt_overlay_number(value, unit="", precision=4):
     if value is None:
         return ""
-    try:
-        text = f"{float(value):.{precision}g}"
-    except Exception:
-        text = str(value).strip()
     unit_txt = str(unit or "").strip()
-    return f"{text} {unit_txt}".strip()
+    numeric = _safe_float(value, default=None)
+    if numeric is None:
+        return f"{str(value).strip()} {unit_txt}".strip()
+    display_value = float(numeric)
+    display_unit = unit_txt
+    if unit_txt:
+        try:
+            display_unit, factor = _auto_display_unit(unit_txt, np.asarray([display_value], dtype=float))
+            display_value *= float(factor)
+        except Exception:
+            display_unit = unit_txt
+    text = f"{display_value:.{precision}g}"
+    return f"{text} {display_unit}".strip()
 
 
 def _candidate_abs_z_keys(header):
@@ -438,8 +447,8 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     center_txt = ""
     if x_center is not None and y_center is not None:
         center_txt = f"{fmt_number(x_center)} / {fmt_number(y_center)} {esc(x_unit)}"
-    bias_txt = f"{fmt_number(bias)} {esc(bias_unit)}" if bias is not None else ""
-    setp_txt = f"{fmt_number(setp)} {esc(setp_unit)}" if setp is not None else ""
+    bias_txt = esc(_fmt_overlay_number(bias, bias_unit)) if bias is not None else ""
+    setp_txt = esc(_fmt_overlay_number(setp, setp_unit)) if setp is not None else ""
     key_rows = [
         ("Acquired", date_display),
         ("Bias", bias_txt),
