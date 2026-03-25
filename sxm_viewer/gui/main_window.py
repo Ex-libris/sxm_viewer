@@ -100,6 +100,7 @@ from .palettes import DEFAULT_COLOR_CYCLE
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
+VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
 # Patch export module with missing dependency
 viewer_export.convert_to_si = convert_to_si
@@ -648,6 +649,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         self.thumb_container.setLayout(self.thumb_layout); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.thumb_container)
         self._thumb_viewport = self.scroll.viewport()
+        self.scroll.setAcceptDrops(True)
+        self.thumb_container.setAcceptDrops(True)
+        self._thumb_viewport.setAcceptDrops(True)
         self._thumb_viewport.installEventFilter(self)
         self.scroll.installEventFilter(self)
         self.thumb_container.installEventFilter(self)
@@ -922,6 +926,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.set_crop_callback(self._on_preview_crop)
+        self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         self.preview_canvas.set_double_click_callback(
             lambda v=None: self._spawn_preview_popup(
                 [self._copy_view_for_popup(v)] if v else [],
@@ -1590,6 +1595,65 @@ QLabel:hover {{
     def _on_show_shortcuts_requested(self):
         self._set_shortcuts_panel_visible(True)
 
+    def _handle_local_file_mime_drop(self, mime):
+        if mime is None or not mime.hasUrls():
+            return False
+        dirs = []
+        files = []
+        for url in mime.urls():
+            if url.isLocalFile():
+                path = Path(url.toLocalFile())
+                if path.is_dir():
+                    dirs.append(path)
+                elif path.exists():
+                    files.append(path)
+        if not dirs and not files:
+            return False
+        if len(dirs) == 1 and not files:
+            self.load_folder(dirs[0])
+            return True
+        drop_image_files = []
+        drop_spectro_files = []
+        for folder in dirs:
+            try:
+                drop_image_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
+            except Exception:
+                continue
+        explicit_images, explicit_spectros = viewer_loader.classify_dropped_paths(self, files)
+        drop_image_files.extend(explicit_images)
+        drop_spectro_files.extend(explicit_spectros)
+        if drop_image_files:
+            folder_hint = None
+            if len(dirs) == 1 and not files:
+                folder_hint = dirs[0]
+            elif len(explicit_images) and len({str(p.parent) for p in explicit_images}) == 1 and not dirs:
+                folder_hint = explicit_images[0].parent
+            self.load_files(drop_image_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
+        if drop_spectro_files:
+            spectro_hint = None
+            if len(drop_spectro_files) == 1:
+                spectro_hint = drop_spectro_files[0].parent
+            loaded_specs = self.load_spectroscopy_files(drop_spectro_files, folder_hint=spectro_hint, append=True, refresh=True)
+            if len(drop_spectro_files) == 1 and not drop_image_files:
+                try:
+                    dropped = str(Path(drop_spectro_files[0]).resolve()).lower()
+                except Exception:
+                    dropped = str(drop_spectro_files[0]).lower()
+                spec = None
+                for item in loaded_specs or []:
+                    try:
+                        key = str(Path(item.get("path", "")).resolve()).lower()
+                    except Exception:
+                        key = str(item.get("path", "")).lower()
+                    if key == dropped:
+                        spec = item
+                        break
+                if spec is None and loaded_specs:
+                    spec = loaded_specs[0]
+                if spec is not None:
+                    self._open_spectroscopy_popup(spec)
+        return True
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
@@ -1599,64 +1663,9 @@ QLabel:hover {{
         super().dragEnterEvent(event)
 
     def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            dirs = []
-            files = []
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    path = Path(url.toLocalFile())
-                    if path.is_dir():
-                        dirs.append(path)
-                    elif path.exists():
-                        files.append(path)
-            if dirs or files:
-                if len(dirs) == 1 and not files:
-                    self.load_folder(dirs[0])
-                else:
-                    drop_image_files = []
-                    drop_spectro_files = []
-                    for folder in dirs:
-                        try:
-                            drop_image_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
-                        except Exception:
-                            continue
-                    explicit_images, explicit_spectros = viewer_loader.classify_dropped_paths(self, files)
-                    drop_image_files.extend(explicit_images)
-                    drop_spectro_files.extend(explicit_spectros)
-                    if drop_image_files:
-                        folder_hint = None
-                        if len(dirs) == 1 and not files:
-                            folder_hint = dirs[0]
-                        elif len(explicit_images) and len({str(p.parent) for p in explicit_images}) == 1 and not dirs:
-                            folder_hint = explicit_images[0].parent
-                        self.load_files(drop_image_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
-                    if drop_spectro_files:
-                        spectro_hint = None
-                        if len(drop_spectro_files) == 1:
-                            spectro_hint = drop_spectro_files[0].parent
-                        loaded_specs = self.load_spectroscopy_files(drop_spectro_files, folder_hint=spectro_hint, append=True, refresh=True)
-                        # A single spectroscopy drop should surface immediately so the user sees
-                        # the data without hunting for it in the browser.
-                        if len(drop_spectro_files) == 1 and not drop_image_files:
-                            try:
-                                dropped = str(Path(drop_spectro_files[0]).resolve()).lower()
-                            except Exception:
-                                dropped = str(drop_spectro_files[0]).lower()
-                            spec = None
-                            for item in loaded_specs or []:
-                                try:
-                                    key = str(Path(item.get("path", "")).resolve()).lower()
-                                except Exception:
-                                    key = str(item.get("path", "")).lower()
-                                if key == dropped:
-                                    spec = item
-                                    break
-                            if spec is None and loaded_specs:
-                                spec = loaded_specs[0]
-                            if spec is not None:
-                                self._open_spectroscopy_popup(spec)
-                event.acceptProposedAction()
-                return
+        if self._handle_local_file_mime_drop(event.mimeData()):
+            event.acceptProposedAction()
+            return
         super().dropEvent(event)
 
     def eventFilter(self, obj, event):
@@ -1666,6 +1675,14 @@ QLabel:hover {{
             getattr(self, 'scroll', None),
         )
         preview_canvas = getattr(self, 'preview_canvas', None)
+
+        if obj in thumb_objects and event.type() in (
+            QtCore.QEvent.DragEnter,
+            QtCore.QEvent.DragMove,
+            QtCore.QEvent.Drop,
+        ):
+            if self._handle_thumbnail_drag_event(event):
+                return True
 
         # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
         if obj in thumb_objects and event.type() == QtCore.QEvent.Wheel:
@@ -1827,6 +1844,89 @@ QLabel:hover {{
             or self._is_widget_descendant(widget, thumb_viewport)
             or self._is_widget_descendant(widget, scroll)
         )
+
+    def _thumbnail_virtual_drag_payload(self, mime):
+        if mime is None or not mime.hasFormat("application/x-sxm-view"):
+            return None
+        try:
+            payload = json.loads(bytes(mime.data("application/x-sxm-view")).decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("drag_origin") or "") != "preview_canvas":
+            return None
+        return payload
+
+    def _thumbnail_drop_insert_anchor(self, global_pos):
+        keys = [
+            str(key)
+            for key in list(getattr(self, "current_thumb_files", []) or [])
+            if str(key) in getattr(self, "thumb_widgets", {})
+        ]
+        if not keys:
+            return VIRTUAL_COPY_INSERT_START
+        thumb_columns = int(getattr(self, "thumb_grid_columns", 1) or 1)
+        best_idx = None
+        best_rect = None
+        best_dist = None
+        for idx, key in enumerate(keys):
+            widget = getattr(self, "thumb_widgets", {}).get(key)
+            if widget is None:
+                continue
+            try:
+                rect = QtCore.QRect(widget.mapToGlobal(QtCore.QPoint(0, 0)), widget.size())
+            except Exception:
+                continue
+            if rect.contains(global_pos):
+                before = global_pos.x() < rect.center().x() if thumb_columns > 1 else global_pos.y() < rect.center().y()
+                anchor_idx = idx - 1 if before else idx
+                return VIRTUAL_COPY_INSERT_START if anchor_idx < 0 else keys[anchor_idx]
+            dist = abs(global_pos.x() - rect.center().x()) + abs(global_pos.y() - rect.center().y())
+            if best_dist is None or dist < best_dist:
+                best_idx = idx
+                best_rect = rect
+                best_dist = dist
+        if best_idx is None or best_rect is None:
+            return keys[-1]
+        before = global_pos.x() < best_rect.center().x() if thumb_columns > 1 else global_pos.y() < best_rect.center().y()
+        anchor_idx = best_idx - 1 if before else best_idx
+        return VIRTUAL_COPY_INSERT_START if anchor_idx < 0 else keys[anchor_idx]
+
+    def _handle_thumbnail_drag_event(self, event):
+        mime = getattr(event, "mimeData", lambda: None)()
+        payload = self._thumbnail_virtual_drag_payload(mime)
+        if payload is None:
+            if mime is None or not mime.hasUrls():
+                return False
+            if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+                event.acceptProposedAction()
+                return True
+            if event.type() != QtCore.QEvent.Drop:
+                return False
+            handled = self._handle_local_file_mime_drop(mime)
+            if handled:
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return handled
+        event_type = event.type()
+        if event_type in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+            event.acceptProposedAction()
+            return True
+        if event_type != QtCore.QEvent.Drop:
+            return False
+        try:
+            global_pos = event.globalPos()
+        except Exception:
+            global_pos = QtGui.QCursor.pos()
+        anchor_key = self._thumbnail_drop_insert_anchor(global_pos)
+        created = self._create_virtual_copy_from_drag_payload(payload, insert_after_key=anchor_key)
+        if created:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+        return True
 
     def _ordered_thumbnail_selection(self):
         selected = set(getattr(self, "thumb_multi_select", set()) or [])
@@ -2721,20 +2821,119 @@ QLabel:hover {{
         self._virtual_counter = ctr
         return f"processed_{stem}_{op}{chan}_{ctr}"
 
-    def _insert_processed_after_source(self, processed_key: str, origin_path: str):
-        """Insert processed entry immediately after its origin in self.files."""
+    def _normalize_virtual_copy_order(self):
+        ordered = []
+        seen = set()
+        for key in list(getattr(self, "virtual_copy_order", []) or []):
+            skey = str(key)
+            if not skey or skey in seen or skey not in getattr(self, "_processed_views", {}):
+                continue
+            ordered.append(skey)
+            seen.add(skey)
+        self.virtual_copy_order = ordered
+        return ordered
+
+    def _processed_insert_anchor(self, processed_key):
+        data = getattr(self, "_processed_views", {}).get(str(processed_key)) or {}
+        anchor = data.get("insert_after")
+        if anchor in (None, ""):
+            anchor = data.get("source") or VIRTUAL_COPY_INSERT_START
+        return str(anchor) if anchor else VIRTUAL_COPY_INSERT_START
+
+    def _ordered_virtual_thumbnail_files(self, real_files, processed_files=None):
+        real_keys = [str(p) for p in list(real_files or []) if p and not self._is_processed_key(str(p))]
+        candidate_set = {str(p) for p in list(processed_files or []) if p and self._is_processed_key(str(p))}
+        ordered_processed = [key for key in self._normalize_virtual_copy_order() if key in candidate_set]
+        for key in candidate_set:
+            if key not in ordered_processed:
+                ordered_processed.append(key)
+        after_map = defaultdict(list)
+        for key in ordered_processed:
+            after_map[self._processed_insert_anchor(key)].append(key)
+        result = []
+        visited = set()
+
+        def _append_children(anchor):
+            for child in after_map.get(str(anchor), []):
+                if child in visited:
+                    continue
+                visited.add(child)
+                result.append(child)
+                _append_children(child)
+
+        _append_children(VIRTUAL_COPY_INSERT_START)
+        for key in real_keys:
+            result.append(key)
+            _append_children(key)
+        for key in ordered_processed:
+            if key in visited:
+                continue
+            result.append(key)
+            _append_children(key)
+        return result
+
+    def _thumbnail_image_display_order(self):
+        current = [str(key) for key in list(getattr(self, "current_thumb_files", []) or []) if str(key)]
+        if current:
+            return current
+        real_keys = [str(p) for p in list(getattr(self, "files", []) or []) if not self._is_processed_key(str(p))]
+        processed_keys = [str(p) for p in list(getattr(self, "files", []) or []) if self._is_processed_key(str(p))]
+        return self._ordered_virtual_thumbnail_files(real_keys, processed_keys)
+
+    def _set_processed_insert_after(self, processed_key, after_key=None, display_order=None):
+        key = str(processed_key)
+        if key not in getattr(self, "_processed_views", {}):
+            return
+        anchor = after_key
+        if anchor in (None, "", VIRTUAL_COPY_INSERT_START):
+            anchor = VIRTUAL_COPY_INSERT_START
+        else:
+            anchor = str(anchor)
+        self._processed_views[key]["insert_after"] = anchor
+        order = [item for item in self._normalize_virtual_copy_order() if item != key]
+        if display_order is None:
+            display_order = self._thumbnail_image_display_order()
+        display_order = [str(item) for item in list(display_order or []) if str(item) and str(item) != key]
+        if anchor == VIRTUAL_COPY_INSERT_START:
+            slot = 0
+        elif anchor in display_order:
+            slot = display_order.index(anchor) + 1
+        else:
+            slot = len(display_order)
+        processed_before = 0
+        for existing in display_order[:slot]:
+            if self._is_processed_key(existing) and existing in order:
+                processed_before += 1
+        order.insert(min(processed_before, len(order)), key)
+        self.virtual_copy_order = order
+
+    def _insert_processed_after_source(self, processed_key: str, origin_path: str, insert_after_key=None):
+        """Insert processed entry immediately after its origin or a supplied display anchor."""
+        processed_key = str(processed_key)
+        origin_path = str(origin_path)
+        anchor_key = insert_after_key
+        if anchor_key in (None, "", VIRTUAL_COPY_INSERT_START):
+            anchor_key = origin_path
+        else:
+            anchor_key = str(anchor_key)
         try:
             cur_files = [str(p) for p in self.files]
             if processed_key in cur_files:
-                return
+                idx = cur_files.index(processed_key)
+                self.files.pop(idx)
+                cur_files.pop(idx)
             try:
-                pos = cur_files.index(str(origin_path))
+                pos = cur_files.index(anchor_key)
             except ValueError:
-                pos = len(self.files) - 1
+                try:
+                    pos = cur_files.index(origin_path)
+                except ValueError:
+                    pos = len(self.files) - 1
             self.files.insert(pos + 1, Path(processed_key))
         except Exception:
             # fallback append
             self.files.append(Path(processed_key))
+        self._set_processed_insert_after(processed_key, after_key=anchor_key)
 
     def _remove_virtual_entries(self, paths):
         """Remove selected virtual copies from in-memory store and UI."""
@@ -5948,10 +6147,42 @@ QLabel:hover {{
 
     # ---------- Virtual copies (channels, crops, drift) ----------
 
-    def _create_virtual_channel_copies(self, paths, channel_idx=None):
+    def _virtual_copy_source_anchor(self, view):
+        if not view:
+            return VIRTUAL_COPY_INSERT_START
+        path = view.get("path") or (view.get("meta") or {}).get("path") or (view.get("meta") or {}).get("file_path")
+        return str(path) if path else VIRTUAL_COPY_INSERT_START
+
+    def _create_virtual_copy_from_popup_view(self, view):
+        return self._create_virtual_view_copy(view, insert_after_key=self._virtual_copy_source_anchor(view))
+
+    def _create_virtual_copy_from_drag_payload(self, payload, insert_after_key=None):
+        if not isinstance(payload, dict):
+            return None
+        drag_token = payload.get("view_drag_token")
+        if drag_token:
+            view = MultiPreviewCanvas.consume_drag_view_snapshot(drag_token)
+            if view:
+                return self._create_virtual_view_copy(view, insert_after_key=insert_after_key)
+        file_path = payload.get("file_path")
+        channel_idx = payload.get("channel_index")
+        if not file_path or channel_idx is None:
+            return None
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            return None
+        created = self._create_virtual_channel_copies(
+            [str(file_path)],
+            channel_idx=channel_idx,
+            insert_after_key=insert_after_key,
+        )
+        return created
+
+    def _create_virtual_channel_copies(self, paths, channel_idx=None, insert_after_key=None):
         """Create virtual copies of selected images for a specific channel."""
         if not paths:
-            return
+            return 0
         targets = [str(Path(p)) for p in paths]
         # If channel not provided, ask the user using first file's channels
         if channel_idx is None:
@@ -5967,9 +6198,10 @@ QLabel:hover {{
             dlg.setIntValue(self.channel_dropdown.currentIndex())
             dlg.setLabelText(f"Channel index (0-{len(fds)-1}) for virtual copy")
             if dlg.exec_() != QtWidgets.QDialog.Accepted:
-                return
+                return 0
             channel_idx = dlg.intValue()
         added = 0
+        anchor_key = insert_after_key
         for p in targets:
             try:
                 header, fds = self.headers.get(p, (None, None))
@@ -6001,52 +6233,74 @@ QLabel:hover {{
                     'op': 'channel',
                 }
                 self.headers[key] = (dict(header), fds_new)
-                self._insert_processed_after_source(key, p)
+                self._insert_processed_after_source(key, p, insert_after_key=anchor_key)
+                if insert_after_key not in (None, "", VIRTUAL_COPY_INSERT_START):
+                    anchor_key = key
                 added += 1
             except Exception:
                 continue
         if added:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return added
 
-    def _create_virtual_crop_view(self, view):
-        """Create a virtual copy from a cropped preview view (single channel)."""
+    def _create_virtual_view_copy(self, view, insert_after_key=None, tag=None, op=None):
+        """Create a virtual thumbnail copy from the current popup/preview view snapshot."""
         if not view:
-            return
-        path = view.get("path") or (view.get("meta") or {}).get("path")
+            return None
+        path = view.get("path") or (view.get("meta") or {}).get("path") or (view.get("meta") or {}).get("file_path")
         arr = view.get("arr")
-        ch_idx = view.get("channel_idx") or (view.get("meta") or {}).get("channel_idx")
+        ch_idx = view.get("channel_idx")
+        if ch_idx is None:
+            ch_idx = (view.get("meta") or {}).get("channel_index")
         if path is None or arr is None:
-            return
+            return None
         try:
-            header, fds = self.headers.get(str(path), (None, None))
+            arr = np.asarray(arr)
+        except Exception:
+            return None
+        if arr.ndim < 2 or arr.size == 0:
+            return None
+        path = str(path)
+        try:
+            header, fds = self.headers.get(path, (None, None))
             if header is None or fds is None:
                 header, fds = parse_header(Path(path))
             if not fds:
-                return
+                return None
             ch_idx = int(ch_idx) if ch_idx is not None else 0
+            title = str(view.get("title") or "")
+            inferred_crop = bool(view.get("crop_sequence") is not None or "[crop]" in title.lower())
+            tag = str(tag or ("[crop]" if inferred_crop else "[copy]"))
+            op_name = str(op or ("crop" if inferred_crop else "copy"))
             arr_by_channel = {ch_idx: np.array(arr, copy=True)}
             fds_new = [dict(fd) for fd in fds]
             for i, fd_new in enumerate(fds_new):
-                fd_new['FileName'] = f"{Path(path).name}_crop_ch{i}"
-                fd_new['Caption'] = f"{fd_new.get('Caption') or Path(path).name} [crop]"
+                base_caption = fd_new.get("Caption") or Path(path).name
+                fd_new["FileName"] = f"{Path(path).name}_{op_name}_ch{i}"
+                fd_new["Caption"] = f"{base_caption} {tag}"
             header_new = dict(header)
-            header_new['xPixel'] = arr.shape[1]
-            header_new['yPixel'] = arr.shape[0]
-            key = self._make_processed_key(str(path), op="crop", channel_idx=ch_idx)
+            header_new["xPixel"] = int(arr.shape[1])
+            header_new["yPixel"] = int(arr.shape[0])
+            key = self._make_processed_key(path, op=op_name, channel_idx=ch_idx)
             self._processed_views[key] = {
-                'arr_by_channel': arr_by_channel,
-                'header': header_new,
-                'fds': fds_new,
-                'channel_idx': ch_idx,
-                'source': str(path),
-                'label': "[crop]",
-                'op': 'crop',
+                "arr_by_channel": arr_by_channel,
+                "header": header_new,
+                "fds": fds_new,
+                "channel_idx": ch_idx,
+                "source": path,
+                "label": tag,
+                "op": op_name,
             }
             self.headers[key] = (header_new, fds_new)
-            self._insert_processed_after_source(key, str(path))
+            self._insert_processed_after_source(key, path, insert_after_key=insert_after_key)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            return key
         except Exception:
-            return
+            return None
+
+    def _create_virtual_crop_view(self, view, insert_after_key=None):
+        """Create a virtual copy from a cropped preview view (single channel)."""
+        return self._create_virtual_view_copy(view, insert_after_key=insert_after_key, tag="[crop]", op="crop")
 
     def _create_virtual_copy_from_history(self, seq):
         if seq is None:

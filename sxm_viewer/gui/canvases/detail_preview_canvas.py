@@ -66,6 +66,8 @@ _FIXED_CROP_HISTORY_LIMIT = 96
 
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
+    _DRAG_VIEW_SNAPSHOTS = {}
+    _DRAG_VIEW_SNAPSHOT_LIMIT = 32
 
     def __init__(self, parent=None, figsize=(6,6)):
         self.fig = Figure(figsize=figsize)
@@ -101,6 +103,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._views_callback = None
         self._drag_candidate = None  # (view, QPoint start, QImage cache)
         self._crop_callback = None  # callable(view_dict) -> None
+        self._virtual_copy_callback = None
         self._crop_start = None
         self._crop_rect = None
         self._crop_ax = None
@@ -499,6 +502,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_crop_callback(self, cb):
         """Register a callback to receive cropped views created via drag-crop."""
         self._crop_callback = cb
+
+    def set_virtual_copy_callback(self, cb):
+        """Register a callback that can promote a view into a virtual thumbnail copy."""
+        self._virtual_copy_callback = cb
 
     def set_double_click_callback(self, cb):
         """Register a callback to pop out the clicked view on double-click."""
@@ -4473,6 +4480,64 @@ class MultiPreviewCanvas(FigureCanvas):
         cmap = view.get('cmap', 'viridis')
         return array_to_qimage(arr, cmap_name=cmap)
 
+    @classmethod
+    def _stash_drag_view_snapshot(cls, view):
+        if not isinstance(view, dict):
+            return None
+        try:
+            snapshot = dict(view)
+        except Exception:
+            return None
+        arr = snapshot.get("arr")
+        if arr is not None:
+            try:
+                snapshot["arr"] = np.array(arr, copy=True)
+            except Exception:
+                pass
+        meta = snapshot.get("meta")
+        if isinstance(meta, dict):
+            try:
+                snapshot["meta"] = dict(meta)
+            except Exception:
+                pass
+        token = f"viewdrag_{time.time_ns()}"
+        cls._DRAG_VIEW_SNAPSHOTS[token] = {
+            "view": snapshot,
+            "ts_ns": time.time_ns(),
+        }
+        while len(cls._DRAG_VIEW_SNAPSHOTS) > cls._DRAG_VIEW_SNAPSHOT_LIMIT:
+            try:
+                oldest = next(iter(cls._DRAG_VIEW_SNAPSHOTS))
+            except Exception:
+                break
+            cls._DRAG_VIEW_SNAPSHOTS.pop(oldest, None)
+        return token
+
+    @classmethod
+    def consume_drag_view_snapshot(cls, token):
+        if not token:
+            return None
+        entry = cls._DRAG_VIEW_SNAPSHOTS.pop(str(token), None)
+        if not isinstance(entry, dict):
+            return None
+        view = entry.get("view")
+        if not isinstance(view, dict):
+            return None
+        result = dict(view)
+        arr = result.get("arr")
+        if arr is not None:
+            try:
+                result["arr"] = np.array(arr, copy=True)
+            except Exception:
+                pass
+        meta = result.get("meta")
+        if isinstance(meta, dict):
+            try:
+                result["meta"] = dict(meta)
+            except Exception:
+                pass
+        return result
+
     def _show_context_menu(self, event, view):
         if view is None:
             return
@@ -4595,6 +4660,9 @@ class MultiPreviewCanvas(FigureCanvas):
         export_menu.addSeparator()
         export_stp_act = export_menu.addAction("Export as WSxM STP...")
 
+        virtual_copy_act = menu.addAction("Create virtual copy in thumbnails")
+        virtual_copy_act.setEnabled(bool(callable(self._virtual_copy_callback) and view.get("arr") is not None))
+
         molecules_menu = menu.addMenu("Molecules")
         load_mol_act = molecules_menu.addAction("Load Molecule (XYZ/PDB)...")
         recent_menu = None
@@ -4658,6 +4726,12 @@ class MultiPreviewCanvas(FigureCanvas):
             if callable(self._stp_export_callback):
                 try:
                     self._stp_export_callback(view)
+                except Exception:
+                    pass
+        elif chosen == virtual_copy_act:
+            if callable(self._virtual_copy_callback):
+                try:
+                    self._virtual_copy_callback(view)
                 except Exception:
                     pass
         elif chosen == reset_zoom_act:
@@ -5899,12 +5973,23 @@ class MultiPreviewCanvas(FigureCanvas):
             mime.setImageData(qimg)
             try:
                 meta = view.get('meta') or {}
+                channel_idx = view.get('channel_idx', meta.get('channel_index'))
+                if channel_idx is not None:
+                    try:
+                        channel_idx = int(channel_idx)
+                    except Exception:
+                        channel_idx = None
+                drag_token = self._stash_drag_view_snapshot(view)
                 payload = {
-                    'file_path': meta.get('file_path'),
-                    'channel_index': meta.get('channel_index'),
+                    'file_path': view.get('path') or meta.get('path') or meta.get('file_path'),
+                    'channel_index': channel_idx,
                     'cmap': view.get('cmap'),
+                    'drag_origin': 'preview_canvas',
+                    'view_drag_token': drag_token,
                 }
                 if payload.get('file_path') is not None and payload.get('channel_index') is not None:
+                    mime.setData('application/x-sxm-view', json.dumps(payload).encode('utf-8'))
+                elif drag_token:
                     mime.setData('application/x-sxm-view', json.dumps(payload).encode('utf-8'))
             except Exception:
                 pass

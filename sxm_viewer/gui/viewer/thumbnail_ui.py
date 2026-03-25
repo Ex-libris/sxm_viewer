@@ -388,6 +388,8 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         files_iter = [t for t in files_iter if include(str(t))]
 
     sort_mode = (viewer.thumb_sort_combo.currentText() if hasattr(viewer, 'thumb_sort_combo') else 'Name (A?Z)')
+    real_files_iter = [str(p) for p in files_iter if not viewer._is_processed_key(str(p))]
+    processed_files_iter = [str(p) for p in files_iter if viewer._is_processed_key(str(p))]
     if sort_mode.startswith('Name'):
         def _natural_key(name: str):
             parts = re.split(r"(\\d+)", name)
@@ -401,16 +403,21 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 else:
                     key.append(part.lower())
             return key
-        files_iter.sort(key=lambda p: _natural_key(Path(p).name))
+        real_files_iter.sort(key=lambda p: _natural_key(Path(p).name))
     elif 'Date (new' in sort_mode or 'Date (old' in sort_mode:
         rev = ('new' in sort_mode)
         def sort_key_date(p):
             hdr = viewer.headers.get(str(p), (None, None))[0]
             return viewer._parse_header_datetime(hdr, path=p)
-        files_iter.sort(key=sort_key_date, reverse=rev)
+        real_files_iter.sort(key=sort_key_date, reverse=rev)
     elif sort_mode.startswith('Tag'):
         order = {'constant-height': 0, 'constant-current': 1, None: 2}
-        files_iter.sort(key=lambda p: (order.get((viewer.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
+        real_files_iter.sort(key=lambda p: (order.get((viewer.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
+
+    try:
+        files_iter = viewer._ordered_virtual_thumbnail_files(real_files_iter, processed_files_iter)
+    except Exception:
+        files_iter = list(real_files_iter) + list(processed_files_iter)
 
     viewer.current_thumb_files = [str(f) for f in files_iter]
     viewer._thumb_meta = {}
