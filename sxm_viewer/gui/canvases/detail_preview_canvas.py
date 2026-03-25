@@ -1,6 +1,7 @@
 """Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import copy
 import io
 import itertools
 import json
@@ -63,6 +64,7 @@ except Exception:  # pragma: no cover - optional dependency
     _HAS_CV2 = False
 
 _FIXED_CROP_HISTORY_LIMIT = 96
+_UNDO_HISTORY_LIMIT = 24
 
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
@@ -133,9 +135,14 @@ class MultiPreviewCanvas(FigureCanvas):
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         self._histogram_dialog_callback = None
+        self._histogram_auto_callback = None
+        self._histogram_reset_callback = None
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._value_callback = None
+        self._undo_history = []
+        self._undo_restore_in_progress = False
+        self._undo_suspend_depth = 0
         self._value_cid = self.mpl_connect('motion_notify_event', self._on_motion_value)
         self.mpl_connect('motion_notify_event', self._on_molecule_motion)
         self.mpl_connect('button_release_event', self._on_molecule_release)
@@ -288,24 +295,39 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_show_title(self, show: bool):
         """Toggle rendering of title/date overlays in views."""
-        self._show_title = bool(show)
+        show = bool(show)
+        if show == self._show_title:
+            return
+        self.push_undo_state("show_title")
+        self._show_title = show
         self._redraw()
         self._notify_views_callback()
 
     def set_show_acquisition_overlay(self, show: bool):
         """Toggle acquisition metadata HUD in the top-right image corner."""
-        self._show_acquisition_overlay = bool(show)
+        show = bool(show)
+        if show == self._show_acquisition_overlay:
+            return
+        self.push_undo_state("acquisition_overlay")
+        self._show_acquisition_overlay = show
         self._redraw()
         self._notify_views_callback()
 
     def set_show_molecules(self, show: bool):
         """Toggle rendering of molecular overlays in views."""
-        self.show_molecules = bool(show)
+        show = bool(show)
+        if show == self.show_molecules:
+            return
+        self.push_undo_state("show_molecules")
+        self.show_molecules = show
         self._redraw()
         self._notify_views_callback()
 
     def set_profile_tool_enabled(self, enabled: bool):
         enabled = bool(enabled)
+        if enabled == bool(getattr(self, "_profile_user_enabled", self.profile_enabled)):
+            return
+        self.push_undo_state("profile_tool")
         self._profile_user_enabled = enabled
         self.enable_profile(enabled)
         if enabled:
@@ -319,10 +341,18 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def clear_measurement_overlays(self):
         try:
-            self.clear_angle_measurement()
+            self.push_undo_state("clear_measurements")
+            self._clear_angle_artists()
             self._clear_profile_artists()
             self._clear_saved_profile_artists(notify=False)
             self.profile_pts = None
+            if self.angle_enabled:
+                self._undo_suspend_depth += 1
+                try:
+                    self._ensure_angle_frames()
+                finally:
+                    self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
+                self._emit_angle()
             self._emit_profile_state()
             self.draw_idle()
         except Exception:
@@ -330,26 +360,29 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def apply_display_preset(self, preset: str):
         preset = (preset or "").strip().lower()
+        if preset not in {"focus", "analysis", "publication"}:
+            return
+        self.push_undo_state(f"preset:{preset}")
         if preset == "focus":
             self._show_ticks = False
             self._show_colorbar = False
             self._show_title = False
-            self.set_show_profile_overlays(False)
-            self.set_show_angle_overlays(False)
+            self._show_profile_overlays = False
+            self._show_angle_overlays = False
         elif preset == "analysis":
             self._show_ticks = True
             self._show_colorbar = True
             self._show_title = True
-            self.set_show_profile_overlays(True)
-            self.set_show_angle_overlays(True)
-        elif preset == "publication":
+            self._show_profile_overlays = True
+            self._show_angle_overlays = True
+        else:
             self._show_ticks = False
             self._show_colorbar = True
             self._show_title = True
-            self.set_show_profile_overlays(False)
-            self.set_show_angle_overlays(False)
-        else:
-            return
+            self._show_profile_overlays = False
+            self._show_angle_overlays = False
+        self._apply_profile_visibility()
+        self._apply_angle_visibility()
         self._redraw()
         self._notify_views_callback()
 
@@ -363,6 +396,7 @@ class MultiPreviewCanvas(FigureCanvas):
         enabled = bool(enabled)
         if enabled == self._frame_fill_mode:
             return
+        self.push_undo_state("frame_fill")
         if enabled:
             self._frame_fill_prev_state = {
                 "show_ticks": bool(self._show_ticks),
@@ -454,6 +488,7 @@ class MultiPreviewCanvas(FigureCanvas):
             layout = "grid"
         if layout == self._view_layout:
             return
+        self.push_undo_state("view_layout")
         self._view_layout = layout
         self._redraw()
         self._notify_views_callback()
@@ -466,6 +501,7 @@ class MultiPreviewCanvas(FigureCanvas):
             new_val = bool(value)
         if self._relative_axes_override == new_val:
             return
+        self.push_undo_state("relative_axes")
         self._relative_axes_override = new_val
         self.suspend_zoom_restore()
         self._redraw()
@@ -519,6 +555,14 @@ class MultiPreviewCanvas(FigureCanvas):
         """Register callback to open the histogram dialog for this canvas."""
         self._histogram_dialog_callback = cb
 
+    def set_histogram_auto_callback(self, cb):
+        """Register callback that applies automatic contrast to the active view."""
+        self._histogram_auto_callback = cb
+
+    def set_histogram_reset_callback(self, cb):
+        """Register callback that resets contrast to the full data range."""
+        self._histogram_reset_callback = cb
+
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
         self._stp_export_callback = cb
@@ -571,19 +615,31 @@ class MultiPreviewCanvas(FigureCanvas):
         self.set_plot_font_family(family)
 
     def set_show_profile_overlays(self, show: bool):
-        self._show_profile_overlays = bool(show)
+        show = bool(show)
+        if show == self._show_profile_overlays:
+            return
+        self.push_undo_state("show_profile_overlays")
+        self._show_profile_overlays = show
         self._apply_profile_visibility()
         self.draw_idle()
         self._notify_views_callback()
 
     def set_show_angle_overlays(self, show: bool):
-        self._show_angle_overlays = bool(show)
+        show = bool(show)
+        if show == self._show_angle_overlays:
+            return
+        self.push_undo_state("show_angle_overlays")
+        self._show_angle_overlays = show
         self._apply_angle_visibility()
         self.draw_idle()
         self._notify_views_callback()
 
     def set_show_shortcut_hint(self, show: bool):
-        self._show_shortcut_hint = bool(show)
+        show = bool(show)
+        if show == self._show_shortcut_hint:
+            return
+        self.push_undo_state("show_shortcut_hint")
+        self._show_shortcut_hint = show
         if not self._show_shortcut_hint:
             self._clear_shortcut_hint_artist()
         self._redraw()
@@ -702,6 +758,275 @@ class MultiPreviewCanvas(FigureCanvas):
             self._set_active_angle_frame_index(int(state.get("active_idx", 0)))
             self._ensure_angle_frames()
             self._update_angle_artists()
+
+    def _clone_undo_value(self, value):
+        if isinstance(value, np.ndarray):
+            return np.array(value, copy=True)
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    def _clone_undo_view(self, view):
+        if not isinstance(view, dict):
+            return self._clone_undo_value(view)
+        cloned = {}
+        for key, value in view.items():
+            cloned[key] = self._clone_undo_value(value)
+        return cloned
+
+    def export_outline_state(self):
+        groups = []
+        for key, entries in (self._outlines or {}).items():
+            try:
+                file_path, extent = key
+            except Exception:
+                file_path, extent = None, ()
+            exported_entries = []
+            for entry in entries or []:
+                if isinstance(entry, dict):
+                    pts = entry.get("pts")
+                    color = entry.get("color", self._outline_default_color)
+                    lw = entry.get("lw", self._outline_default_lw)
+                    ls = entry.get("ls", self._outline_default_ls)
+                else:
+                    pts = entry
+                    color = self._outline_default_color
+                    lw = self._outline_default_lw
+                    ls = self._outline_default_ls
+                try:
+                    pts_arr = np.asarray(pts, dtype=float)
+                except Exception:
+                    continue
+                if pts_arr.ndim != 2 or pts_arr.shape[0] < 2:
+                    continue
+                exported_entries.append(
+                    {
+                        "pts": pts_arr.tolist(),
+                        "color": color,
+                        "lw": float(lw),
+                        "ls": self._clone_undo_value(ls),
+                    }
+                )
+            if exported_entries:
+                groups.append(
+                    {
+                        "file_path": file_path,
+                        "extent": list(extent or ()),
+                        "entries": exported_entries,
+                    }
+                )
+        order = []
+        for key, idx in self._outline_order or []:
+            try:
+                file_path, extent = key
+                idx_int = int(idx)
+            except Exception:
+                continue
+            order.append(
+                {
+                    "file_path": file_path,
+                    "extent": list(extent or ()),
+                    "index": idx_int,
+                }
+            )
+        return {
+            "groups": groups,
+            "order": order,
+            "threshold": float(self._outline_threshold),
+        }
+
+    def import_outline_state(self, state):
+        self._outlines = {}
+        self._outline_order = []
+        if not isinstance(state, dict):
+            return
+        try:
+            self._outline_threshold = max(0.05, min(0.99, float(state.get("threshold", self._outline_threshold))))
+        except Exception:
+            pass
+        for group in state.get("groups", []) or []:
+            key = (
+                group.get("file_path"),
+                tuple(group.get("extent") or ()),
+            )
+            entries = []
+            for entry in group.get("entries", []) or []:
+                try:
+                    pts_arr = np.asarray(entry.get("pts"), dtype=float)
+                except Exception:
+                    continue
+                if pts_arr.ndim != 2 or pts_arr.shape[0] < 2:
+                    continue
+                entries.append(
+                    {
+                        "pts": pts_arr,
+                        "color": entry.get("color", self._outline_default_color),
+                        "lw": float(entry.get("lw", self._outline_default_lw)),
+                        "ls": self._clone_undo_value(entry.get("ls", self._outline_default_ls)),
+                    }
+                )
+            if entries:
+                self._outlines[key] = entries
+        order = []
+        for item in state.get("order", []) or []:
+            key = (
+                item.get("file_path"),
+                tuple(item.get("extent") or ()),
+            )
+            try:
+                idx = int(item.get("index", -1))
+            except Exception:
+                continue
+            outlines = self._outlines.get(key)
+            if outlines and 0 <= idx < len(outlines):
+                order.append((key, idx))
+        if not order:
+            for key, entries in self._outlines.items():
+                order.extend((key, idx) for idx in range(len(entries)))
+        self._outline_order = order
+
+    def export_canvas_undo_state(self):
+        return {
+            "views": [self._clone_undo_view(v) for v in (self.views or [])],
+            "profile_state": self._clone_undo_value(self.export_profile_state()),
+            "profile_user_enabled": bool(getattr(self, "_profile_user_enabled", self.profile_enabled)),
+            "active_profile_color": self._active_profile_color,
+            "active_profile_lw": float(self._active_profile_lw),
+            "active_profile_original_color": self._active_profile_original_color,
+            "profile_label_mode": self._profile_label_mode,
+            "angle_state": self._clone_undo_value(self.export_angle_state()),
+            "angle_enabled": bool(self.angle_enabled),
+            "molecule_state": self._clone_undo_value(self.export_molecule_state()),
+            "outline_state": self._clone_undo_value(self.export_outline_state()),
+            "show_title": bool(self._show_title),
+            "show_acquisition_overlay": bool(self._show_acquisition_overlay),
+            "show_molecules": bool(self.show_molecules),
+            "show_profile_overlays": bool(self._show_profile_overlays),
+            "show_angle_overlays": bool(self._show_angle_overlays),
+            "show_shortcut_hint": bool(self._show_shortcut_hint),
+            "show_ticks": bool(self._show_ticks),
+            "show_colorbar": bool(self._show_colorbar),
+            "scale_bar_enabled": bool(self.scale_bar_enabled),
+            "colorbar_orientation": self._colorbar_orientation,
+            "view_layout": self._view_layout,
+            "frame_fill_mode": bool(self._frame_fill_mode),
+            "frame_fill_prev_state": self._clone_undo_value(self._frame_fill_prev_state),
+            "fit_to_canvas": bool(self._fit_to_canvas),
+            "relative_axes_override": self._clone_undo_value(self._relative_axes_override),
+        }
+
+    def push_undo_state(self, label=None):
+        if self._undo_restore_in_progress or self._undo_suspend_depth > 0:
+            return False
+        try:
+            state = self.export_canvas_undo_state()
+        except Exception:
+            return False
+        if label is not None:
+            state["_label"] = str(label)
+        self._undo_history.append(state)
+        if len(self._undo_history) > _UNDO_HISTORY_LIMIT:
+            self._undo_history.pop(0)
+        return True
+
+    def handle_undo_request(self):
+        if self.undo_last_action():
+            return True
+        if self._undo_last_profile_snapshot():
+            return True
+        if self._undo_last_outline():
+            return True
+        return bool(self.undo_last_molecule_change())
+
+    def undo_last_action(self):
+        if not self._undo_history:
+            return False
+        state = self._undo_history.pop()
+        if not isinstance(state, dict):
+            return False
+        self._undo_restore_in_progress = True
+        self._undo_suspend_depth += 1
+        try:
+            try:
+                self.enable_profile(False)
+            except Exception:
+                pass
+            try:
+                self.enable_angle(False)
+            except Exception:
+                pass
+
+            self._show_title = bool(state.get("show_title", self._show_title))
+            self._show_acquisition_overlay = bool(state.get("show_acquisition_overlay", self._show_acquisition_overlay))
+            self.show_molecules = bool(state.get("show_molecules", self.show_molecules))
+            self._show_profile_overlays = bool(state.get("show_profile_overlays", self._show_profile_overlays))
+            self._show_angle_overlays = bool(state.get("show_angle_overlays", self._show_angle_overlays))
+            self._show_shortcut_hint = bool(state.get("show_shortcut_hint", self._show_shortcut_hint))
+            if not self._show_shortcut_hint:
+                self._clear_shortcut_hint_artist()
+            self._show_ticks = bool(state.get("show_ticks", self._show_ticks))
+            self._show_colorbar = bool(state.get("show_colorbar", self._show_colorbar))
+            self._colorbar_orientation = str(state.get("colorbar_orientation", self._colorbar_orientation) or "vertical")
+            self._view_layout = str(state.get("view_layout", self._view_layout) or "grid")
+            self._frame_fill_mode = bool(state.get("frame_fill_mode", self._frame_fill_mode))
+            self._frame_fill_prev_state = self._clone_undo_value(state.get("frame_fill_prev_state"))
+            self._fit_to_canvas = bool(state.get("fit_to_canvas", self._fit_to_canvas))
+            self._relative_axes_override = self._clone_undo_value(state.get("relative_axes_override", self._relative_axes_override))
+
+            desired_scale_bar = bool(state.get("scale_bar_enabled", self.scale_bar_enabled))
+            if desired_scale_bar != self.scale_bar_enabled:
+                self.scale_bar_enabled = desired_scale_bar
+                if desired_scale_bar:
+                    self._connect_scale_bar_events()
+                else:
+                    self._disconnect_scale_bar_events()
+
+            self.molecules = []
+            for entry in state.get("molecule_state", []) or []:
+                try:
+                    self.molecules.append(Molecule.from_dict(entry))
+                except Exception:
+                    continue
+            self.import_outline_state(state.get("outline_state"))
+
+            views = [self._clone_undo_view(v) for v in (state.get("views") or [])]
+            self.set_views(views, preserve_profiles=False)
+
+            self._active_profile_color = state.get("active_profile_color", self._active_profile_color) or self._active_profile_color
+            try:
+                self._active_profile_lw = float(state.get("active_profile_lw", self._active_profile_lw))
+            except Exception:
+                pass
+            self._active_profile_original_color = state.get("active_profile_original_color")
+            mode = str(state.get("profile_label_mode", self._profile_label_mode) or "length").strip().lower()
+            if mode not in ("length", "full", "hidden"):
+                mode = "length"
+            self._profile_label_mode = mode
+            self._profile_user_enabled = bool(state.get("profile_user_enabled", getattr(self, "_profile_user_enabled", False)))
+            profile_state = state.get("profile_state")
+            if isinstance(profile_state, dict):
+                self.import_profile_state(self._clone_undo_value(profile_state), emit=False)
+
+            angle_state = state.get("angle_state")
+            if bool(state.get("angle_enabled", False)):
+                self.angle_enabled = True
+                self._connect_angle_events()
+                if isinstance(angle_state, dict):
+                    self.import_angle_state(self._clone_undo_value(angle_state))
+                else:
+                    self._ensure_angle_frames()
+                self._apply_angle_visibility()
+            else:
+                self.angle_enabled = False
+
+            self._apply_profile_visibility()
+            self.draw_idle()
+            self._notify_views_callback()
+            return True
+        finally:
+            self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
+            self._undo_restore_in_progress = False
 
     def set_view_clim(self, view, clim):
         """Update the color limits for a specific view and redraw while preserving overlays."""
@@ -1303,6 +1628,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def enable_scale_bar(self, enable: bool):
         if enable == self.scale_bar_enabled:
             return
+        self.push_undo_state("scale_bar")
         self.scale_bar_enabled = enable
         if enable:
             self._connect_scale_bar_events()
@@ -1639,10 +1965,15 @@ class MultiPreviewCanvas(FigureCanvas):
     def enable_angle(self, enable: bool):
         if enable == self.angle_enabled:
             return
+        self.push_undo_state("angle_tool")
         self.angle_enabled = enable
         if enable:
             self._connect_angle_events()
-            self._ensure_angle_frames()
+            self._undo_suspend_depth += 1
+            try:
+                self._ensure_angle_frames()
+            finally:
+                self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
             self._emit_angle()
         else:
             self._disconnect_angle_events()
@@ -1652,9 +1983,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
 
     def clear_angle_measurement(self):
+        if self.angle_enabled or self._angle_frames:
+            self.push_undo_state("clear_angle")
         self._clear_angle_artists()
         if self.angle_enabled:
-            self._ensure_angle_frames()
+            self._undo_suspend_depth += 1
+            try:
+                self._ensure_angle_frames()
+            finally:
+                self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
             self._emit_angle()
 
     def _connect_angle_events(self):
@@ -1782,6 +2119,7 @@ class MultiPreviewCanvas(FigureCanvas):
             mode = "length"
         if mode == self._profile_label_mode:
             return
+        self.push_undo_state("profile_label_mode")
         self._profile_label_mode = mode
         self._update_profile_markers()
         for entry in self._saved_profiles:
@@ -1940,21 +2278,18 @@ class MultiPreviewCanvas(FigureCanvas):
                 if key == QtCore.Qt.Key_H:
                     self.set_show_shortcut_hint(not self._show_shortcut_hint)
                     return
-        if self.profile_enabled and event is not None:
-            try:
-                if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
-                    self._undo_last_profile_snapshot()
+            if not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+                if key == QtCore.Qt.Key_A and callable(self._histogram_auto_callback):
+                    try:
+                        self._histogram_auto_callback(self)
+                    except Exception:
+                        pass
                     return
-            except Exception:
-                pass
+            if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_Z:
+                if self.handle_undo_request():
+                    return
         if event is not None:
             try:
-                if event.modifiers() & QtCore.Qt.ControlModifier and event.key() == QtCore.Qt.Key_Z:
-                    # Undo priority: outlines -> molecules
-                    if self._undo_last_outline():
-                        return
-                    self.undo_last_molecule_change()
-                    return
                 if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_R:
                     self._reset_view_zoom()
                     return
@@ -2037,6 +2372,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._ensure_frame_artists(frame)
 
     def _add_angle_frame_at(self, x, y):
+        self.push_undo_state("add_angle_frame")
         center = (x, y) if (x is not None and y is not None) else None
         frame = self._create_angle_frame(center=center)
         self._angle_frames.append(frame)
@@ -2373,6 +2709,9 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         if style is None:
             style = 'arrows' if frame.get('style', 'dots') == 'dots' else 'dots'
+        if style == frame.get('style', 'dots'):
+            return
+        self.push_undo_state("angle_style")
         frame['style'] = style
         self._update_angle_artists()
         self._emit_angle()
@@ -2519,7 +2858,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._emit_profile()
         self.draw_idle()
 
-    def activate_saved_profile(self, index):
+    def activate_saved_profile(self, index, push_undo=True):
         """Promote a saved overlay back to the active profile line."""
         if index is None or not self._saved_profiles:
             return False
@@ -2529,6 +2868,8 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         if idx < 0 or idx >= len(self._saved_profiles):
             return False
+        if push_undo:
+            self.push_undo_state("activate_profile")
         entry = self._saved_profiles.pop(idx)
         self._active_profile_original_color = entry.get('color')
         if self._profile_marker_positions_by_key:
@@ -3063,6 +3404,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _snapshot_active_profile(self):
         if self.profile_pts is None or self.main_ax is None:
             return
+        self.push_undo_state("snapshot_profile")
         pts = tuple(self.profile_pts)
         if self._active_profile_original_color:
             color = self._active_profile_original_color
@@ -3152,6 +3494,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 break
         if target is None:
             return
+        self.push_undo_state("delete_profile")
         for art in target.get('artists', []):
             try:
                 if art is not None:
@@ -3165,6 +3508,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _remove_saved_profile(self, idx):
         if idx < 0 or idx >= len(self._saved_profiles):
             return
+        self.push_undo_state("remove_profile")
         entry = self._saved_profiles.pop(idx)
         if self._profile_marker_positions_by_key:
             new_map = {}
@@ -3241,7 +3585,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _undo_last_profile_snapshot(self):
         if not self._saved_profiles:
-            return
+            return False
         entry = self._saved_profiles.pop()
         for art in entry.get('artists', []):
             try:
@@ -3251,6 +3595,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         self.draw_idle()
         self._emit_profile()
+        return True
 
     def _clear_saved_profile_artists(self, notify=False):
         for entry in self._saved_profiles:
@@ -3333,6 +3678,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
 
     def clear_saved_profiles(self, notify=True):
+        if self._saved_profiles:
+            self.push_undo_state("clear_profiles")
         self._clear_saved_profile_artists(notify=notify)
 
     def highlight_saved_profile(self, index):
@@ -3411,6 +3758,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._dragging = None
             return
         if self.profile_pts is None:
+            self.push_undo_state("start_profile")
             self._set_profile_pts((x, y, x, y))
             self._ensure_profile_artists()
             self._dragging = 'p1'
@@ -3425,12 +3773,14 @@ class MultiPreviewCanvas(FigureCanvas):
         thresh = 18.0  # pixels
         if d0 <= thresh or d0 <= d1:
             if d0 <= thresh:
+                self.push_undo_state("move_profile")
                 self._dragging = 'p0'
                 self._line_drag_origin = None
                 self._set_profile_animated(True)
                 self._prepare_profile_blit()
                 return
         if d1 <= thresh:
+            self.push_undo_state("move_profile")
             self._dragging = 'p1'
             self._line_drag_origin = None
             self._set_profile_animated(True)
@@ -3439,6 +3789,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.profile_pts is not None:
             dist_line = self._distance_to_segment_pixels(x, y, self.profile_pts)
             if dist_line <= thresh:
+                self.push_undo_state("move_profile")
                 self._dragging = 'line'
                 self._line_drag_origin = (x, y, self.profile_pts)
                 self._set_profile_animated(True)
@@ -3449,7 +3800,9 @@ class MultiPreviewCanvas(FigureCanvas):
         if overlay_idx is not None:
             if self.profile_pts is not None:
                 self._snapshot_active_profile()
-            activated = self.activate_saved_profile(overlay_idx)
+            else:
+                self.push_undo_state("activate_profile")
+            activated = self.activate_saved_profile(overlay_idx, push_undo=False)
             if activated:
                 if callable(self._profile_highlight_cb):
                     try:
@@ -3471,6 +3824,8 @@ class MultiPreviewCanvas(FigureCanvas):
         # else: start a new line from here
         if self.profile_pts is not None:
             self._snapshot_active_profile()
+        else:
+            self.push_undo_state("start_profile")
         self._active_profile_original_color = None
         self._set_profile_pts((x, y, x, y))
         self._dragging = 'p1'
@@ -3529,7 +3884,8 @@ class MultiPreviewCanvas(FigureCanvas):
         col = QtWidgets.QColorDialog.getColor(QtGui.QColor(current_color), self, "Select Profile Color")
         if not col.isValid(): return
         new_color = col.name()
-        
+        self.push_undo_state("profile_color")
+
         if active:
             self._active_profile_color = new_color
             if self._profile_line:
@@ -3560,6 +3916,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._emit_profile()
 
     def _change_profile_width(self, overlay_idx, active, delta):
+        has_overlay = overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles)
+        if not active and not has_overlay:
+            return
+        self.push_undo_state("profile_width")
         if active:
             self._active_profile_lw = max(0.5, self._active_profile_lw + delta)
             if self._profile_line:
@@ -3568,7 +3928,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     if entry.get('line'): entry['line'].set_linewidth(self._active_profile_lw)
             self.draw_idle()
         
-        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
+        if has_overlay:
             entry = self._saved_profiles[overlay_idx]
             cur_lw = entry.get('lw', 1.5)
             new_lw = max(0.5, cur_lw + delta)
@@ -3801,6 +4161,7 @@ class MultiPreviewCanvas(FigureCanvas):
         hit = self._angle_handle_at(x, y)
         if not hit:
             return
+        self.push_undo_state("move_angle")
         self._angle_dragging = hit
         self._prepare_angle_blit()
 
@@ -4190,6 +4551,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _push_molecule_snapshot(self):
         """Save current molecule state for undo."""
+        self.push_undo_state("molecules")
         try:
             snap = [m.copy() for m in self.molecules]
             self._molecule_history.append(snap)
@@ -4201,13 +4563,14 @@ class MultiPreviewCanvas(FigureCanvas):
     def undo_last_molecule_change(self):
         """Undo the latest molecule change, if any."""
         if not self._molecule_history:
-            return
+            return False
         try:
             last = self._molecule_history.pop()
             self.molecules = [m.copy() for m in last]
             self._redraw()
+            return True
         except Exception:
-            pass
+            return False
 
     def _check_molecule_hit(self, event):
         # When measurement tools are active, avoid picking/dragging molecules to prevent accidental moves.
@@ -4585,6 +4948,10 @@ class MultiPreviewCanvas(FigureCanvas):
         exit_crop_frame_act.setEnabled(bool(self._fixed_crop_transform_mode))
         quick_menu.addSeparator()
         clear_overlays_act = quick_menu.addAction("Clear profile/angle overlays")
+        auto_hist_act = quick_menu.addAction("Auto contrast (1-99%)  (A)")
+        auto_hist_act.setEnabled(callable(self._histogram_auto_callback))
+        reset_hist_act = quick_menu.addAction("Reset range to data min/max")
+        reset_hist_act.setEnabled(callable(self._histogram_reset_callback))
         histogram_act = quick_menu.addAction("Histogram...")
         histogram_act.setEnabled(callable(self._histogram_dialog_callback))
 
@@ -4767,6 +5134,16 @@ class MultiPreviewCanvas(FigureCanvas):
             self.enable_fixed_crop_transform_mode(False)
         elif chosen == clear_overlays_act:
             self.clear_measurement_overlays()
+        elif chosen == auto_hist_act and callable(self._histogram_auto_callback):
+            try:
+                self._histogram_auto_callback(self)
+            except Exception:
+                pass
+        elif chosen == reset_hist_act and callable(self._histogram_reset_callback):
+            try:
+                self._histogram_reset_callback(self)
+            except Exception:
+                pass
         elif chosen == histogram_act and callable(self._histogram_dialog_callback):
             try:
                 self._histogram_dialog_callback(self)
@@ -4937,16 +5314,19 @@ class MultiPreviewCanvas(FigureCanvas):
             orientation = 'vertical'
         if self._colorbar_orientation == orientation:
             return
+        self.push_undo_state("colorbar_orientation")
         self._colorbar_orientation = orientation
         self._redraw()
         self._notify_views_callback()
 
     def _toggle_ticks(self):
+        self.push_undo_state("show_ticks")
         self._show_ticks = not self._show_ticks
         self._redraw()
         self._notify_views_callback()
 
     def _toggle_colorbar(self):
+        self.push_undo_state("show_colorbar")
         self._show_colorbar = not self._show_colorbar
         self._redraw()
         self._notify_views_callback()
@@ -5422,7 +5802,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._clear_shortcut_hint_artist()
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
-        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | Ctrl+1/2/3 saved overlays | click to hide"
+        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | Ctrl+1/2/3 saved overlays | click to hide"
         hint_artist = ax.text(
             0.012,
             0.012,
@@ -5560,6 +5940,7 @@ class MultiPreviewCanvas(FigureCanvas):
         key = self._outline_key(view)
         if key is None:
             return
+        self.push_undo_state("add_outline")
         entries = self._outlines.setdefault(key, [])
         for contour in contours_world:
             entry = {
@@ -5609,6 +5990,15 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def clear_outlines(self, view=None):
         """Clear stored outlines for all views or a specific view."""
+        if view is None:
+            has_outlines = bool(self._outlines)
+        else:
+            try:
+                has_outlines = bool(self._outlines.get(self._outline_key(view)))
+            except Exception:
+                has_outlines = False
+        if has_outlines:
+            self.push_undo_state("clear_outlines")
         if view is None:
             self._outlines.clear()
             self._outline_order.clear()
@@ -5731,6 +6121,8 @@ class MultiPreviewCanvas(FigureCanvas):
         """Apply style settings to all outlines of a view."""
         key = self._outline_key(view)
         entries = self._outlines.get(key, [])
+        if entries:
+            self.push_undo_state("outline_style")
         new_entries = []
         for e in entries:
             if isinstance(e, dict):
@@ -7563,6 +7955,18 @@ class MultiPreviewCanvas(FigureCanvas):
             new_view["arr"] = np.array(arr, copy=True)
         except Exception:
             new_view["arr"] = arr
+        try:
+            finite = arr[np.isfinite(arr)]
+            if finite.size:
+                lo = float(finite.min())
+                hi = float(finite.max())
+                if hi <= lo:
+                    hi = lo + 1e-12
+                new_view["clim"] = (lo, hi)
+            else:
+                new_view.pop("clim", None)
+        except Exception:
+            new_view.pop("clim", None)
         if not new_view.get("path"):
             meta = new_view.get("meta") or {}
             src_path = meta.get("path") or meta.get("file_path")

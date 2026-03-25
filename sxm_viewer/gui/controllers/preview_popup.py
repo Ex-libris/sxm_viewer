@@ -32,6 +32,10 @@ def spawn_preview_popup(owner, views, title=None):
     # is created snugly around the content.
     canvas = MultiPreviewCanvas(dlg, figsize=(4, 3))
     try:
+        canvas._undo_suspend_depth += 1
+    except Exception:
+        pass
+    try:
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -227,6 +231,8 @@ def spawn_preview_popup(owner, views, title=None):
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
     canvas.set_histogram_dialog_callback(lambda c: owner._open_histogram_dialog(c))
+    canvas.set_histogram_auto_callback(lambda c: owner._auto_contrast(c))
+    canvas.set_histogram_reset_callback(lambda c: owner._reset_contrast(c))
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_copy_feedback_handler(lambda view=None, info=None, host=dlg: owner._on_view_copied(view, info, target=host))
@@ -263,6 +269,11 @@ def spawn_preview_popup(owner, views, title=None):
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
     profile_controller.set_initial_state(measure_initial)
     canvas.set_angle_tool_enabled(angle_initial)
+
+    try:
+        canvas._undo_suspend_depth = max(0, getattr(canvas, "_undo_suspend_depth", 0) - 1)
+    except Exception:
+        pass
 
     layout.addWidget(canvas, 1)
     canvas.setFocus()

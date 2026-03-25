@@ -883,6 +883,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             "  Ctrl+C copies the displayed preview as PNG"
         )
         try:
+            self.preview_canvas._undo_suspend_depth += 1
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_show_title(self.show_preview_title)
         except Exception:
             pass
@@ -937,6 +941,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
         self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
+        self.preview_canvas.set_histogram_auto_callback(lambda c: self._auto_contrast(c))
+        self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
@@ -955,6 +961,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.enable_fixed_crop_quick_mode(self.quick_crop_mode)
         self.preview_canvas.show_fixed_crop_template(self.show_crop_template_overlay)
         self.preview_canvas.show_fixed_crop_history(self.show_crop_history_overlay)
+        try:
+            self.preview_canvas._undo_suspend_depth = max(0, getattr(self.preview_canvas, "_undo_suspend_depth", 0) - 1)
+        except Exception:
+            pass
         self.preview_canvas.set_views_callback(
             lambda _=None, c=self.preview_canvas: self._on_canvas_display_options_changed(c)
         )
@@ -969,7 +979,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_undo_shortcut.activated.connect(self.quick_crop_controller.undo_last_crop)
+        self.quick_crop_undo_shortcut.activated.connect(self._on_global_undo_requested)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
@@ -1574,7 +1584,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
             "</ul>"
         ) % color
 
@@ -1594,6 +1604,47 @@ QLabel:hover {{
 
     def _on_show_shortcuts_requested(self):
         self._set_shortcuts_panel_visible(True)
+
+    def _focused_canvas_with_undo(self):
+        widget = QtWidgets.QApplication.focusWidget()
+        while widget is not None:
+            undo_fn = getattr(widget, "handle_undo_request", None)
+            if callable(undo_fn):
+                return widget
+            undo_fn = getattr(widget, "undo_last_action", None)
+            if callable(undo_fn):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _on_global_undo_requested(self):
+        focus_widget = QtWidgets.QApplication.focusWidget()
+        if isinstance(
+            focus_widget,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            try:
+                focus_widget.undo()
+            except Exception:
+                pass
+            return
+        canvas = self._focused_canvas_with_undo()
+        if canvas is not None:
+            try:
+                handle_undo = getattr(canvas, "handle_undo_request", None)
+                if callable(handle_undo) and handle_undo():
+                    return
+                undo_last = getattr(canvas, "undo_last_action", None)
+                if callable(undo_last) and undo_last():
+                    return
+            except Exception:
+                pass
+        self.quick_crop_controller.undo_last_crop()
 
     def _handle_local_file_mime_drop(self, mime):
         if mime is None or not mime.hasUrls():
@@ -3714,6 +3765,10 @@ QLabel:hover {{
                 return
             steps = [step]
             label = label or step_label
+        try:
+            canvas.push_undo_state("filter")
+        except Exception:
+            pass
         new_views = []
         for v in canvas.views:
             nv = dict(v)
@@ -4496,6 +4551,10 @@ QLabel:hover {{
         if finite is None:
             return
         try:
+            canvas.push_undo_state("auto_contrast")
+        except Exception:
+            pass
+        try:
             lo, hi = np.percentile(finite, [pct_low, pct_high])
         except Exception:
             lo, hi = vmin, vmax
@@ -4506,6 +4565,10 @@ QLabel:hover {{
         vmin, vmax, _ = self._view_finite_values(view)
         if vmin is None:
             return
+        try:
+            canvas.push_undo_state("reset_contrast")
+        except Exception:
+            pass
         self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):

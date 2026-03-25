@@ -63,7 +63,7 @@ def open_histogram_dialog(owner, canvas):
     btn_row.addWidget(apply_btn)
     layout.addLayout(btn_row)
 
-    state = {"view_idx": 0, "lines": (None, None), "finite": None, "dragging": None}
+    state = {"view_idx": 0, "lines": (None, None), "finite": None, "dragging": None, "undo_pushed": False}
 
     def load_view(idx: int):
         idx = max(0, min(idx, len(views) - 1))
@@ -123,6 +123,12 @@ def open_histogram_dialog(owner, canvas):
         lo, hi = spin_lo.value(), spin_hi.value()
         if lo > hi:
             lo, hi = hi, lo
+        if not state.get("undo_pushed", False):
+            try:
+                canvas.push_undo_state("histogram_range")
+                state["undo_pushed"] = True
+            except Exception:
+                pass
         owner._apply_clim_to_view(canvas, view, lo, hi)
         if close:
             dlg.accept()
