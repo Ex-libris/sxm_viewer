@@ -89,6 +89,7 @@ from .controllers.session import SessionController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
+from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
@@ -99,6 +100,7 @@ from .palettes import DEFAULT_COLOR_CYCLE
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
+VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
 # Patch export module with missing dependency
 viewer_export.convert_to_si = convert_to_si
@@ -179,6 +181,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             save_config(self.config)
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
+        self.show_spectro_miniatures = bool(self.config.get("show_spectro_miniatures", False))
+        self.spectro_miniature_default_channel = str(self.config.get("spectro_miniature_default_channel", "") or "")
+        self.spectro_thumb_channel_by_path = dict(self.config.get("spectro_thumb_channel_by_path", {}) or {})
         self.spectro_highlight_glow = bool(self.config.get("spectro_highlight_glow", True))
         preview_cfg = self.config.get("show_preview_spectra")
         if preview_cfg is None:
@@ -224,7 +229,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
-        self.show_crop_template_overlay = bool(self.config.get("show_crop_template_overlay", False))
+        # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
+        self.show_crop_template_overlay = False
         self.show_crop_history_overlay = bool(self.config.get("show_crop_history_overlay", False))
         self._display_defaults = {
             'show_matrix_markers': True,
@@ -325,8 +331,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._multi_spec_selection_keys = set()
         self.spectro_compare_controller = SpectroCompareController(self)
         self.thumb_multi_select = set()
+        self.spectro_thumb_multi_select = set()
+        self.current_spectro_thumb_files = []
+        self.selected_spectro_thumb_file = None
         self._canvas_display_syncing = False
         self._last_canvas_display_options = {}
+        self._profile_dialogs = []
         self._clipboard_export_dir = None
         self._clipboard_copy_worker = None
         self._clipboard_copy_total = 0
@@ -356,6 +366,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_widgets = {}
         self.selected_file_for_thumbs = None
 
+        # Plot typography defaults are shared across preview, popups and dialogs.
+        self._plot_font_family = normalize_font_family(self.config.get("plot_font_family", UI_FONT_FAMILY), UI_FONT_FAMILY)
+        self._plot_font_bold = bool(self.config.get("plot_font_bold", False))
+        self._plot_font_italic = bool(self.config.get("plot_font_italic", False))
+        self._plot_font_underline = bool(self.config.get("plot_font_underline", False))
+        set_matplotlib_font_family(self._plot_font_family)
         # fonts
         base_font = QtGui.QFont(UI_FONT_FAMILY, UI_FONT_SIZE)
         bold_font = QtGui.QFont(UI_FONT_FAMILY, UI_FONT_BOLD_SIZE, QtGui.QFont.Bold)
@@ -633,6 +649,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         self.thumb_container.setLayout(self.thumb_layout); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.thumb_container)
         self._thumb_viewport = self.scroll.viewport()
+        self.scroll.setAcceptDrops(True)
+        self.thumb_container.setAcceptDrops(True)
+        self._thumb_viewport.setAcceptDrops(True)
         self._thumb_viewport.installEventFilter(self)
         self.scroll.installEventFilter(self)
         self.thumb_container.installEventFilter(self)
@@ -653,6 +672,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.thumb_filter_combo = QtWidgets.QComboBox()
         self.thumb_filter_combo.addItems(['All', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
         thumbs_toolbar.addWidget(self.thumb_filter_combo)
+        self.clear_thumb_list_btn = QtWidgets.QPushButton("Clear thumbnails")
+        self.clear_thumb_list_btn.setToolTip("Remove the current thumbnail session and start fresh")
+        self.clear_thumb_list_btn.clicked.connect(self.clear_loaded_images)
+        thumbs_toolbar.addWidget(self.clear_thumb_list_btn)
         thumbs_toolbar.addSpacing(8)
         self.matrix_summary_label = QtWidgets.QLabel("")
         self.matrix_summary_label.setObjectName("matrixSummaryLabel")
@@ -860,6 +883,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             "  Ctrl+C copies the displayed preview as PNG"
         )
         try:
+            self.preview_canvas._undo_suspend_depth += 1
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_show_title(self.show_preview_title)
         except Exception:
             pass
@@ -877,6 +904,19 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
         try:
+            self.preview_canvas.set_plot_font_family_callback(lambda fam: self.set_plot_font_family(fam))
+            if hasattr(self.preview_canvas, "set_plot_typography"):
+                self.preview_canvas.set_plot_typography(
+                    family=self._plot_font_family,
+                    bold=self._plot_font_bold,
+                    italic=self._plot_font_italic,
+                    underline=self._plot_font_underline,
+                )
+            else:
+                self.preview_canvas.set_plot_font_family(self._plot_font_family)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_molecule_palette(self.molecule_palette, notify=False)
             self.preview_canvas.set_molecule_palette_callback(self._on_molecule_palette_changed)
         except Exception:
@@ -890,6 +930,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.set_crop_callback(self._on_preview_crop)
+        self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         self.preview_canvas.set_double_click_callback(
             lambda v=None: self._spawn_preview_popup(
                 [self._copy_view_for_popup(v)] if v else [],
@@ -900,6 +941,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
         self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
+        self.preview_canvas.set_histogram_auto_callback(lambda c: self._auto_contrast(c))
+        self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
@@ -918,6 +961,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.enable_fixed_crop_quick_mode(self.quick_crop_mode)
         self.preview_canvas.show_fixed_crop_template(self.show_crop_template_overlay)
         self.preview_canvas.show_fixed_crop_history(self.show_crop_history_overlay)
+        try:
+            self.preview_canvas._undo_suspend_depth = max(0, getattr(self.preview_canvas, "_undo_suspend_depth", 0) - 1)
+        except Exception:
+            pass
         self.preview_canvas.set_views_callback(
             lambda _=None, c=self.preview_canvas: self._on_canvas_display_options_changed(c)
         )
@@ -932,7 +979,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_undo_shortcut.activated.connect(self.quick_crop_controller.undo_last_crop)
+        self.quick_crop_undo_shortcut.activated.connect(self._on_global_undo_requested)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
@@ -1484,19 +1531,24 @@ QLabel:hover {{
         """Receive cropped view from preview canvas and pop it out."""
         if not view:
             return
-        # Offer to save crop as a virtual copy in thumbnails
+        auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
+        # Offer to save crop as a virtual copy in thumbnails, unless explicitly
+        # requested by the crop tool for frictionless iterative workflows.
         try:
             path = view.get("path") or (view.get("meta") or {}).get("path")
             if path:
-                ret = QtWidgets.QMessageBox.question(
-                    self,
-                    "Save crop",
-                    "Add this cropped view to thumbnails as a virtual copy?",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                    QtWidgets.QMessageBox.No,
-                )
-                if ret == QtWidgets.QMessageBox.Yes:
+                if auto_virtual_copy:
                     self._create_virtual_crop_view(view)
+                else:
+                    ret = QtWidgets.QMessageBox.question(
+                        self,
+                        "Save crop",
+                        "Add this cropped view to thumbnails as a virtual copy?",
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                        QtWidgets.QMessageBox.No,
+                    )
+                    if ret == QtWidgets.QMessageBox.Yes:
+                        self._create_virtual_crop_view(view)
         except Exception:
             pass
         title = view.get("title") or "Cropped view"
@@ -1532,7 +1584,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
             "</ul>"
         ) % color
 
@@ -1553,25 +1605,118 @@ QLabel:hover {{
     def _on_show_shortcuts_requested(self):
         self._set_shortcuts_panel_visible(True)
 
+    def _focused_canvas_with_undo(self):
+        widget = QtWidgets.QApplication.focusWidget()
+        while widget is not None:
+            undo_fn = getattr(widget, "handle_undo_request", None)
+            if callable(undo_fn):
+                return widget
+            undo_fn = getattr(widget, "undo_last_action", None)
+            if callable(undo_fn):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _on_global_undo_requested(self):
+        focus_widget = QtWidgets.QApplication.focusWidget()
+        if isinstance(
+            focus_widget,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            try:
+                focus_widget.undo()
+            except Exception:
+                pass
+            return
+        canvas = self._focused_canvas_with_undo()
+        if canvas is not None:
+            try:
+                handle_undo = getattr(canvas, "handle_undo_request", None)
+                if callable(handle_undo) and handle_undo():
+                    return
+                undo_last = getattr(canvas, "undo_last_action", None)
+                if callable(undo_last) and undo_last():
+                    return
+            except Exception:
+                pass
+        self.quick_crop_controller.undo_last_crop()
+
+    def _handle_local_file_mime_drop(self, mime):
+        if mime is None or not mime.hasUrls():
+            return False
+        dirs = []
+        files = []
+        for url in mime.urls():
+            if url.isLocalFile():
+                path = Path(url.toLocalFile())
+                if path.is_dir():
+                    dirs.append(path)
+                elif path.exists():
+                    files.append(path)
+        if not dirs and not files:
+            return False
+        if len(dirs) == 1 and not files:
+            self.load_folder(dirs[0])
+            return True
+        drop_image_files = []
+        drop_spectro_files = []
+        for folder in dirs:
+            try:
+                drop_image_files.extend(viewer_loader.collect_folder_image_paths(self, folder))
+            except Exception:
+                continue
+        explicit_images, explicit_spectros = viewer_loader.classify_dropped_paths(self, files)
+        drop_image_files.extend(explicit_images)
+        drop_spectro_files.extend(explicit_spectros)
+        if drop_image_files:
+            folder_hint = None
+            if len(dirs) == 1 and not files:
+                folder_hint = dirs[0]
+            elif len(explicit_images) and len({str(p.parent) for p in explicit_images}) == 1 and not dirs:
+                folder_hint = explicit_images[0].parent
+            self.load_files(drop_image_files, folder_hint=folder_hint, append=True, refresh_spectros=False)
+        if drop_spectro_files:
+            spectro_hint = None
+            if len(drop_spectro_files) == 1:
+                spectro_hint = drop_spectro_files[0].parent
+            loaded_specs = self.load_spectroscopy_files(drop_spectro_files, folder_hint=spectro_hint, append=True, refresh=True)
+            if len(drop_spectro_files) == 1 and not drop_image_files:
+                try:
+                    dropped = str(Path(drop_spectro_files[0]).resolve()).lower()
+                except Exception:
+                    dropped = str(drop_spectro_files[0]).lower()
+                spec = None
+                for item in loaded_specs or []:
+                    try:
+                        key = str(Path(item.get("path", "")).resolve()).lower()
+                    except Exception:
+                        key = str(item.get("path", "")).lower()
+                    if key == dropped:
+                        spec = item
+                        break
+                if spec is None and loaded_specs:
+                    spec = loaded_specs[0]
+                if spec is not None:
+                    self._open_spectroscopy_popup(spec)
+        return True
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
-                    path = Path(url.toLocalFile())
-                    if path.is_dir():
-                        event.acceptProposedAction()
-                        return
+                    event.acceptProposedAction()
+                    return
         super().dragEnterEvent(event)
 
     def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    path = Path(url.toLocalFile())
-                    if path.is_dir():
-                        self.load_folder(path)
-                        event.acceptProposedAction()
-                        return
+        if self._handle_local_file_mime_drop(event.mimeData()):
+            event.acceptProposedAction()
+            return
         super().dropEvent(event)
 
     def eventFilter(self, obj, event):
@@ -1581,6 +1726,14 @@ QLabel:hover {{
             getattr(self, 'scroll', None),
         )
         preview_canvas = getattr(self, 'preview_canvas', None)
+
+        if obj in thumb_objects and event.type() in (
+            QtCore.QEvent.DragEnter,
+            QtCore.QEvent.DragMove,
+            QtCore.QEvent.Drop,
+        ):
+            if self._handle_thumbnail_drag_event(event):
+                return True
 
         # Handle Ctrl+Wheel over the thumbnails to resize thumbnails
         if obj in thumb_objects and event.type() == QtCore.QEvent.Wheel:
@@ -1623,11 +1776,16 @@ QLabel:hover {{
                     
                     if not hasattr(self, 'thumb_multi_select') or self.thumb_multi_select is None:
                         self.thumb_multi_select = set()
+                    if not hasattr(self, 'spectro_thumb_multi_select') or self.spectro_thumb_multi_select is None:
+                        self.spectro_thumb_multi_select = set()
                     self._selection_before_drag = set(self.thumb_multi_select)
+                    self._spectro_selection_before_drag = set(self.spectro_thumb_multi_select)
                     
                     if not (event.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier)):
                         self._selection_before_drag = set()
+                        self._spectro_selection_before_drag = set()
                         self._clear_thumb_multi_selection()
+                        self._clear_spectro_thumb_multi_selection()
                     return True
             elif event.type() == QtCore.QEvent.MouseMove:
                 if hasattr(self, '_rubber_band') and self._rubber_band.isVisible():
@@ -1640,6 +1798,8 @@ QLabel:hover {{
                     self._rubber_band.hide()
                     if hasattr(self, '_selection_before_drag'):
                         del self._selection_before_drag
+                    if hasattr(self, '_spectro_selection_before_drag'):
+                        del self._spectro_selection_before_drag
                     return True
 
         # When the thumbnail viewport or container is resized, debounce and repopulate so
@@ -1736,6 +1896,89 @@ QLabel:hover {{
             or self._is_widget_descendant(widget, scroll)
         )
 
+    def _thumbnail_virtual_drag_payload(self, mime):
+        if mime is None or not mime.hasFormat("application/x-sxm-view"):
+            return None
+        try:
+            payload = json.loads(bytes(mime.data("application/x-sxm-view")).decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("drag_origin") or "") != "preview_canvas":
+            return None
+        return payload
+
+    def _thumbnail_drop_insert_anchor(self, global_pos):
+        keys = [
+            str(key)
+            for key in list(getattr(self, "current_thumb_files", []) or [])
+            if str(key) in getattr(self, "thumb_widgets", {})
+        ]
+        if not keys:
+            return VIRTUAL_COPY_INSERT_START
+        thumb_columns = int(getattr(self, "thumb_grid_columns", 1) or 1)
+        best_idx = None
+        best_rect = None
+        best_dist = None
+        for idx, key in enumerate(keys):
+            widget = getattr(self, "thumb_widgets", {}).get(key)
+            if widget is None:
+                continue
+            try:
+                rect = QtCore.QRect(widget.mapToGlobal(QtCore.QPoint(0, 0)), widget.size())
+            except Exception:
+                continue
+            if rect.contains(global_pos):
+                before = global_pos.x() < rect.center().x() if thumb_columns > 1 else global_pos.y() < rect.center().y()
+                anchor_idx = idx - 1 if before else idx
+                return VIRTUAL_COPY_INSERT_START if anchor_idx < 0 else keys[anchor_idx]
+            dist = abs(global_pos.x() - rect.center().x()) + abs(global_pos.y() - rect.center().y())
+            if best_dist is None or dist < best_dist:
+                best_idx = idx
+                best_rect = rect
+                best_dist = dist
+        if best_idx is None or best_rect is None:
+            return keys[-1]
+        before = global_pos.x() < best_rect.center().x() if thumb_columns > 1 else global_pos.y() < best_rect.center().y()
+        anchor_idx = best_idx - 1 if before else best_idx
+        return VIRTUAL_COPY_INSERT_START if anchor_idx < 0 else keys[anchor_idx]
+
+    def _handle_thumbnail_drag_event(self, event):
+        mime = getattr(event, "mimeData", lambda: None)()
+        payload = self._thumbnail_virtual_drag_payload(mime)
+        if payload is None:
+            if mime is None or not mime.hasUrls():
+                return False
+            if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+                event.acceptProposedAction()
+                return True
+            if event.type() != QtCore.QEvent.Drop:
+                return False
+            handled = self._handle_local_file_mime_drop(mime)
+            if handled:
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return handled
+        event_type = event.type()
+        if event_type in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+            event.acceptProposedAction()
+            return True
+        if event_type != QtCore.QEvent.Drop:
+            return False
+        try:
+            global_pos = event.globalPos()
+        except Exception:
+            global_pos = QtGui.QCursor.pos()
+        anchor_key = self._thumbnail_drop_insert_anchor(global_pos)
+        created = self._create_virtual_copy_from_drag_payload(payload, insert_after_key=anchor_key)
+        if created:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+        return True
+
     def _ordered_thumbnail_selection(self):
         selected = set(getattr(self, "thumb_multi_select", set()) or [])
         ordered = []
@@ -1750,11 +1993,17 @@ QLabel:hover {{
 
     def _select_all_thumbnails(self):
         files = [str(fp) for fp in list(getattr(self, "current_thumb_files", []) or []) if str(fp)]
-        if not files:
+        spectro_files = [str(fp) for fp in list(getattr(self, "current_spectro_thumb_files", []) or []) if str(fp)]
+        if not files and not spectro_files:
             return False
         self.thumb_multi_select = set(files)
-        self.last_thumb_anchor = files[-1]
+        self.spectro_thumb_multi_select = set(spectro_files)
+        if files:
+            self.last_thumb_anchor = files[-1]
+        if spectro_files:
+            self.last_spectro_thumb_anchor = spectro_files[-1]
         self._refresh_thumb_selection_styles()
+        self._refresh_spectro_thumb_selection_styles()
         return True
 
     def _copy_thumbnail_selection_to_clipboard_files(self):
@@ -1833,17 +2082,29 @@ QLabel:hover {{
         for key, widget in self.thumb_widgets.items():
             if widget.geometry().intersects(rect):
                 in_rect.add(str(key))
-        
-        base = getattr(self, '_selection_before_drag', set())
+        in_spectro_rect = set()
+        for key, widget in getattr(self, "spectro_thumb_widgets", {}).items():
+            if widget.geometry().intersects(rect):
+                in_spectro_rect.add(str(key))
+
+        base = set(getattr(self, '_selection_before_drag', set()) or [])
+        base_spectro = set(getattr(self, '_spectro_selection_before_drag', set()) or [])
         if modifiers & QtCore.Qt.ControlModifier:
             new_selection = base.symmetric_difference(in_rect)
+            new_spectro_selection = base_spectro.symmetric_difference(in_spectro_rect)
         elif modifiers & QtCore.Qt.ShiftModifier:
             new_selection = base.union(in_rect)
+            new_spectro_selection = base_spectro.union(in_spectro_rect)
         else:
             new_selection = in_rect
-            
+            new_spectro_selection = in_spectro_rect
+
+        if new_selection == set(getattr(self, "thumb_multi_select", set()) or []) and new_spectro_selection == set(getattr(self, "spectro_thumb_multi_select", set()) or []):
+            return
         self.thumb_multi_select = new_selection
+        self.spectro_thumb_multi_select = new_spectro_selection
         self._refresh_thumb_selection_styles()
+        self._refresh_spectro_thumb_selection_styles()
 
     def _thumb_dimensions(self):
         return viewer_thumb_ui._thumb_dimensions(self)
@@ -2070,6 +2331,307 @@ QLabel:hover {{
             except Exception:
                 pass
         return result
+
+    def load_files(self, files, folder_hint: Path | None = None, *, append: bool = False, refresh_spectros: bool = True):
+        start = time.perf_counter()
+        result = viewer_loader.load_files(
+            self,
+            files,
+            folder_hint=folder_hint,
+            source_label="drop" if append else "files",
+            append=append,
+            refresh_spectros=refresh_spectros,
+        )
+        end = time.perf_counter()
+        files_ms = (end - start) * 1000.0
+        gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
+        log_status(f"[Perf] Load files: {files_ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        if self.auto_detect_tags:
+            try:
+                self._auto_detect_tags_for_folder()
+            except Exception:
+                pass
+        return result
+
+    def load_spectroscopy_files(self, files, folder_hint: Path | None = None, *, append: bool = True, refresh: bool = True):
+        start = time.perf_counter()
+        result = viewer_loader.load_spectroscopy_files(
+            self,
+            files,
+            folder_hint=folder_hint,
+            append=append,
+            refresh=refresh,
+        )
+        end = time.perf_counter()
+        ms = (end - start) * 1000.0
+        gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
+        log_status(f"[Perf] Load spectros: {ms:.0f} ms | since GUI init: {gui_ms:.0f} ms")
+        return result
+
+    def clear_loaded_images(self):
+        """Clear the current image session and leave the app ready for fresh drops."""
+        self.files = []
+        self.headers.clear()
+        self.frame_map_entries = []
+        self.hidden_frame_keys.clear()
+        self.selected_file_for_thumbs = None
+        self.current_inspector_header = None
+        self.current_inspector_channel = None
+        self.last_preview = None
+        self.current_thumb_files = []
+        self.thumb_multi_select = set()
+        self.spectro_thumb_multi_select = set()
+        self.current_spectro_thumb_files = []
+        self.selected_spectro_thumb_file = None
+        self.thumbnail_filters = {}
+        self.virtual_copies = {}
+        self.virtual_copy_order = []
+        self.added_views = []
+        self.extra_view_specs = []
+        self.molecule_overlays = {}
+        self.frame_entry_pixmaps = {}
+        self._frame_real_pixmap_cache = {}
+        self._processed_views = {}
+        self.matrix_datasets = {}
+        self._spectro_hist_cache = {}
+        self._last_base_array = None
+        self._last_base_extent = None
+        self._last_base_unit = None
+        self.spectros = []
+        self.matrix_spectros = []
+        self.spectros_by_image = defaultdict(list)
+        self.files_with_matrix = set()
+        self._spectros_loaded = False
+        self._spectros_pending = False
+        self.spectro_thumb_channel_by_path = {}
+        try:
+            self._thumb_generation += 1
+        except Exception:
+            pass
+        self._invalidate_thumbnail_cache()
+        self._invalidate_channel_cache()
+        self._update_toolbar_actions(False)
+        try:
+            self.clear_thumbs()
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_views([])
+        except Exception:
+            pass
+        try:
+            self.preview_value_label.setText("Value: --")
+            self.angle_value_label.setText("Angle: --")
+        except Exception:
+            pass
+        try:
+            self.meta_box.clear()
+        except Exception:
+            pass
+        try:
+            self.channel_dropdown.blockSignals(True)
+            self.channel_dropdown.clear()
+            self.channel_dropdown.setEnabled(False)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.channel_dropdown.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self.frame_map_widget.set_entries([])
+            self.frame_map_widget.clear_hidden_entries()
+        except Exception:
+            pass
+        try:
+            self._update_spectro_stats_label()
+        except Exception:
+            pass
+
+    def _spectroscopy_metadata_lines(self, spec):
+        """Format spectroscopy metadata for the Details panel without dumping large arrays."""
+        if not spec:
+            return ["No spectroscopy metadata."]
+
+        def _fmt(value):
+            if value is None:
+                return "None"
+            if isinstance(value, (str, int, float, bool)):
+                return str(value)
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, dict):
+                return f"dict({len(value)})"
+            if isinstance(value, (list, tuple, set)):
+                return f"{type(value).__name__}({len(value)})"
+            if hasattr(value, "shape"):
+                try:
+                    arr = np.asarray(value)
+                    return f"array(shape={arr.shape}, dtype={arr.dtype})"
+                except Exception:
+                    return type(value).__name__
+            return str(value)
+
+        lines = ["Spectroscopy details", ""]
+        for key in ("path", "source", "time", "file_mtime", "image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
+            if key in spec:
+                lines.append(f"{key}: {_fmt(spec.get(key))}")
+        channels = spec.get("channels") or {}
+        if channels:
+            lines.append("")
+            lines.append(f"Channels ({len(channels)}):")
+            for name, values in channels.items():
+                try:
+                    arr = np.asarray(values)
+                    shape = arr.shape
+                except Exception:
+                    shape = "?"
+                lines.append(f"  - {name}: shape={shape}")
+        axis_choices = spec.get("AxisChoices") or []
+        if axis_choices:
+            lines.append("")
+            lines.append(f"Axis choices ({len(axis_choices)}):")
+            for ax in axis_choices:
+                key = ax.get("key") or ax.get("label") or "Axis"
+                label = ax.get("label") or "Axis"
+                unit = ax.get("unit") or ""
+                lines.append(f"  - {key}: {label}" + (f" ({unit})" if unit else ""))
+        lines.append("")
+        lines.append("Raw fields:")
+        for key in sorted(spec.keys(), key=lambda s: str(s).lower()):
+            if key in {"channels", "AxisChoices"}:
+                continue
+            lines.append(f"  {key}: {_fmt(spec.get(key))}")
+        return lines
+
+    def show_spectroscopy_details(self, spec):
+        """Show a spectroscopy entry in the left Details panel."""
+        try:
+            self.meta_box.setPlainText("\n".join(self._spectroscopy_metadata_lines(spec)))
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "details_group"):
+                self.details_group.setChecked(True)
+        except Exception:
+            pass
+
+    def on_set_spectro_thumbnail_channel(self, channel_name: str, paths=None):
+        """Set the rendered spectroscopy channel for one or more miniature cards."""
+        channel_name = str(channel_name or "").strip()
+        if not channel_name:
+            return
+        targets = [str(Path(p)) for p in (paths or []) if p]
+        if targets:
+            for key in targets:
+                self.spectro_thumb_channel_by_path[key] = channel_name
+            self.config["spectro_thumb_channel_by_path"] = self.spectro_thumb_channel_by_path
+        else:
+            self.spectro_miniature_default_channel = channel_name
+            self.config["spectro_miniature_default_channel"] = channel_name
+        save_config(self.config)
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+
+    def set_plot_typography(self, *, family=None, bold=None, italic=None, underline=None, refresh: bool = True):
+        """Set shared plot typography and redraw visible plot surfaces."""
+        changed = False
+        style_changes = {
+            "bold": bold,
+            "italic": italic,
+            "underline": underline,
+        }
+        if family is not None:
+            family = normalize_font_family(family, UI_FONT_FAMILY)
+            if family != getattr(self, "_plot_font_family", None):
+                self._plot_font_family = family
+                self.config["plot_font_family"] = family
+                changed = True
+        for key, attr in (("bold", "_plot_font_bold"), ("italic", "_plot_font_italic"), ("underline", "_plot_font_underline")):
+            val = style_changes.get(key)
+            if val is not None and bool(val) != getattr(self, attr, False):
+                setattr(self, attr, bool(val))
+                self.config[f"plot_font_{key}"] = bool(val)
+                changed = True
+        if changed:
+            save_config(self.config)
+        set_matplotlib_font_family(self._plot_font_family)
+        if not refresh:
+            return {
+                "family": self._plot_font_family,
+                "bold": self._plot_font_bold,
+                "italic": self._plot_font_italic,
+                "underline": self._plot_font_underline,
+            }
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                if hasattr(canv, "set_plot_typography"):
+                    canv.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    canv.set_plot_font_family(self._plot_font_family)
+            except Exception:
+                try:
+                    canv._redraw()
+                except Exception:
+                    pass
+        for dlg in list(getattr(self, "_profile_dialogs", []) or []):
+            if dlg is None:
+                continue
+            try:
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
+            except Exception:
+                pass
+        for dlg in list(getattr(self, "_spectro_popups", []) or []):
+            if dlg is None:
+                continue
+            try:
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
+            except Exception:
+                pass
+        for dlg in list(getattr(self, "_multi_spectro_popups", []) or []):
+            if dlg is None:
+                continue
+            try:
+                if hasattr(dlg, "set_plot_typography"):
+                    dlg.set_plot_typography(
+                        family=self._plot_font_family,
+                        bold=self._plot_font_bold,
+                        italic=self._plot_font_italic,
+                        underline=self._plot_font_underline,
+                    )
+                else:
+                    dlg.set_plot_font_family(self._plot_font_family)
+            except Exception:
+                pass
+        return self._plot_font_family
+
+    def set_plot_font_family(self, family: str, *, refresh: bool = True):
+        """Backward-compatible wrapper for shared font family updates."""
+        return self.set_plot_typography(family=family, refresh=refresh)
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
@@ -2310,20 +2872,119 @@ QLabel:hover {{
         self._virtual_counter = ctr
         return f"processed_{stem}_{op}{chan}_{ctr}"
 
-    def _insert_processed_after_source(self, processed_key: str, origin_path: str):
-        """Insert processed entry immediately after its origin in self.files."""
+    def _normalize_virtual_copy_order(self):
+        ordered = []
+        seen = set()
+        for key in list(getattr(self, "virtual_copy_order", []) or []):
+            skey = str(key)
+            if not skey or skey in seen or skey not in getattr(self, "_processed_views", {}):
+                continue
+            ordered.append(skey)
+            seen.add(skey)
+        self.virtual_copy_order = ordered
+        return ordered
+
+    def _processed_insert_anchor(self, processed_key):
+        data = getattr(self, "_processed_views", {}).get(str(processed_key)) or {}
+        anchor = data.get("insert_after")
+        if anchor in (None, ""):
+            anchor = data.get("source") or VIRTUAL_COPY_INSERT_START
+        return str(anchor) if anchor else VIRTUAL_COPY_INSERT_START
+
+    def _ordered_virtual_thumbnail_files(self, real_files, processed_files=None):
+        real_keys = [str(p) for p in list(real_files or []) if p and not self._is_processed_key(str(p))]
+        candidate_set = {str(p) for p in list(processed_files or []) if p and self._is_processed_key(str(p))}
+        ordered_processed = [key for key in self._normalize_virtual_copy_order() if key in candidate_set]
+        for key in candidate_set:
+            if key not in ordered_processed:
+                ordered_processed.append(key)
+        after_map = defaultdict(list)
+        for key in ordered_processed:
+            after_map[self._processed_insert_anchor(key)].append(key)
+        result = []
+        visited = set()
+
+        def _append_children(anchor):
+            for child in after_map.get(str(anchor), []):
+                if child in visited:
+                    continue
+                visited.add(child)
+                result.append(child)
+                _append_children(child)
+
+        _append_children(VIRTUAL_COPY_INSERT_START)
+        for key in real_keys:
+            result.append(key)
+            _append_children(key)
+        for key in ordered_processed:
+            if key in visited:
+                continue
+            result.append(key)
+            _append_children(key)
+        return result
+
+    def _thumbnail_image_display_order(self):
+        current = [str(key) for key in list(getattr(self, "current_thumb_files", []) or []) if str(key)]
+        if current:
+            return current
+        real_keys = [str(p) for p in list(getattr(self, "files", []) or []) if not self._is_processed_key(str(p))]
+        processed_keys = [str(p) for p in list(getattr(self, "files", []) or []) if self._is_processed_key(str(p))]
+        return self._ordered_virtual_thumbnail_files(real_keys, processed_keys)
+
+    def _set_processed_insert_after(self, processed_key, after_key=None, display_order=None):
+        key = str(processed_key)
+        if key not in getattr(self, "_processed_views", {}):
+            return
+        anchor = after_key
+        if anchor in (None, "", VIRTUAL_COPY_INSERT_START):
+            anchor = VIRTUAL_COPY_INSERT_START
+        else:
+            anchor = str(anchor)
+        self._processed_views[key]["insert_after"] = anchor
+        order = [item for item in self._normalize_virtual_copy_order() if item != key]
+        if display_order is None:
+            display_order = self._thumbnail_image_display_order()
+        display_order = [str(item) for item in list(display_order or []) if str(item) and str(item) != key]
+        if anchor == VIRTUAL_COPY_INSERT_START:
+            slot = 0
+        elif anchor in display_order:
+            slot = display_order.index(anchor) + 1
+        else:
+            slot = len(display_order)
+        processed_before = 0
+        for existing in display_order[:slot]:
+            if self._is_processed_key(existing) and existing in order:
+                processed_before += 1
+        order.insert(min(processed_before, len(order)), key)
+        self.virtual_copy_order = order
+
+    def _insert_processed_after_source(self, processed_key: str, origin_path: str, insert_after_key=None):
+        """Insert processed entry immediately after its origin or a supplied display anchor."""
+        processed_key = str(processed_key)
+        origin_path = str(origin_path)
+        anchor_key = insert_after_key
+        if anchor_key in (None, "", VIRTUAL_COPY_INSERT_START):
+            anchor_key = origin_path
+        else:
+            anchor_key = str(anchor_key)
         try:
             cur_files = [str(p) for p in self.files]
             if processed_key in cur_files:
-                return
+                idx = cur_files.index(processed_key)
+                self.files.pop(idx)
+                cur_files.pop(idx)
             try:
-                pos = cur_files.index(str(origin_path))
+                pos = cur_files.index(anchor_key)
             except ValueError:
-                pos = len(self.files) - 1
+                try:
+                    pos = cur_files.index(origin_path)
+                except ValueError:
+                    pos = len(self.files) - 1
             self.files.insert(pos + 1, Path(processed_key))
         except Exception:
             # fallback append
             self.files.append(Path(processed_key))
+        self._set_processed_insert_after(processed_key, after_key=anchor_key)
 
     def _remove_virtual_entries(self, paths):
         """Remove selected virtual copies from in-memory store and UI."""
@@ -2709,6 +3370,12 @@ QLabel:hover {{
 
     def _refresh_thumb_selection_styles(self):
         return viewer_thumb_ui._refresh_thumb_selection_styles(self)
+
+    def _refresh_spectro_thumb_selection_styles(self):
+        return viewer_thumb_ui._refresh_spectro_thumb_selection_styles(self)
+
+    def _clear_spectro_thumb_multi_selection(self, update_styles=True):
+        return viewer_thumb_ui._clear_spectro_thumb_multi_selection(self, update_styles=update_styles)
 
     def _schedule_marker_refresh(self, delay_ms: int = 120):
         try:
@@ -3098,6 +3765,10 @@ QLabel:hover {{
                 return
             steps = [step]
             label = label or step_label
+        try:
+            canvas.push_undo_state("filter")
+        except Exception:
+            pass
         new_views = []
         for v in canvas.views:
             nv = dict(v)
@@ -3880,6 +4551,10 @@ QLabel:hover {{
         if finite is None:
             return
         try:
+            canvas.push_undo_state("auto_contrast")
+        except Exception:
+            pass
+        try:
             lo, hi = np.percentile(finite, [pct_low, pct_high])
         except Exception:
             lo, hi = vmin, vmax
@@ -3890,6 +4565,10 @@ QLabel:hover {{
         vmin, vmax, _ = self._view_finite_values(view)
         if vmin is None:
             return
+        try:
+            canvas.push_undo_state("reset_contrast")
+        except Exception:
+            pass
         self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):
@@ -4620,6 +5299,11 @@ QLabel:hover {{
         overlay_act.setChecked(self.show_spectra)
         overlay_act.triggered.connect(self.on_show_spectra_toggled)
         menu.addAction(overlay_act)
+        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
+        mini_act.setCheckable(True)
+        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
+        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
+        menu.addAction(mini_act)
         glow_act = QtWidgets.QAction("Spectro highlight glow", menu)
         glow_act.setCheckable(True)
         glow_act.setChecked(getattr(self, "spectro_highlight_glow", True))
@@ -4664,6 +5348,62 @@ QLabel:hover {{
         anim_act.triggered.connect(lambda _, paths=list(targets): self._on_create_animation(paths))
         menu.addAction(anim_act)
 
+        menu.exec_(label_widget.mapToGlobal(pos))
+
+    def _on_spectro_thumb_context_menu(self, label_widget, pos):
+        spec = label_widget.property("spectro_entry")
+        if not spec:
+            return
+        key = str(spec.get("path", "") or "")
+        selected = sorted(set(getattr(self, "spectro_thumb_multi_select", set()) or []))
+        targets = selected if selected else [key]
+        menu = QtWidgets.QMenu(self)
+        open_act = QtWidgets.QAction("Open spectroscopy", menu)
+        open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
+        menu.addAction(open_act)
+        details_act = QtWidgets.QAction("Show metadata in Details", menu)
+        details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
+        menu.addAction(details_act)
+
+        channels = list((spec.get("channels") or {}).keys())
+        common = set(channels)
+        if selected:
+            for path in selected:
+                entry = None
+                for s in getattr(self, "spectros", []) or []:
+                    if str(s.get("path", "") or "") == path:
+                        entry = s
+                        break
+                if entry is None:
+                    continue
+                common &= set((entry.get("channels") or {}).keys())
+        channel_menu = menu.addMenu("Miniature channel")
+        channel_list = sorted(common) if common else channels
+        if not channel_list:
+            channel_list = channels
+        if channel_list:
+            current = self.spectro_thumb_channel_by_path.get(key) or self.spectro_miniature_default_channel or channel_list[0]
+            for ch_name in channel_list:
+                act = QtWidgets.QAction(ch_name, channel_menu)
+                act.setCheckable(True)
+                act.setChecked(ch_name == current)
+                act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
+                channel_menu.addAction(act)
+
+        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
+        mini_act.setCheckable(True)
+        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
+        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
+        menu.addAction(mini_act)
+        menu.addSeparator()
+        copy_path = QtWidgets.QAction("Copy file path", menu)
+        def _copy_path():
+            try:
+                QtWidgets.QApplication.clipboard().setText(str(spec.get("path", "")))
+            except Exception:
+                pass
+        copy_path.triggered.connect(_copy_path)
+        menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None):
@@ -5470,10 +6210,42 @@ QLabel:hover {{
 
     # ---------- Virtual copies (channels, crops, drift) ----------
 
-    def _create_virtual_channel_copies(self, paths, channel_idx=None):
+    def _virtual_copy_source_anchor(self, view):
+        if not view:
+            return VIRTUAL_COPY_INSERT_START
+        path = view.get("path") or (view.get("meta") or {}).get("path") or (view.get("meta") or {}).get("file_path")
+        return str(path) if path else VIRTUAL_COPY_INSERT_START
+
+    def _create_virtual_copy_from_popup_view(self, view):
+        return self._create_virtual_view_copy(view, insert_after_key=self._virtual_copy_source_anchor(view))
+
+    def _create_virtual_copy_from_drag_payload(self, payload, insert_after_key=None):
+        if not isinstance(payload, dict):
+            return None
+        drag_token = payload.get("view_drag_token")
+        if drag_token:
+            view = MultiPreviewCanvas.consume_drag_view_snapshot(drag_token)
+            if view:
+                return self._create_virtual_view_copy(view, insert_after_key=insert_after_key)
+        file_path = payload.get("file_path")
+        channel_idx = payload.get("channel_index")
+        if not file_path or channel_idx is None:
+            return None
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            return None
+        created = self._create_virtual_channel_copies(
+            [str(file_path)],
+            channel_idx=channel_idx,
+            insert_after_key=insert_after_key,
+        )
+        return created
+
+    def _create_virtual_channel_copies(self, paths, channel_idx=None, insert_after_key=None):
         """Create virtual copies of selected images for a specific channel."""
         if not paths:
-            return
+            return 0
         targets = [str(Path(p)) for p in paths]
         # If channel not provided, ask the user using first file's channels
         if channel_idx is None:
@@ -5489,9 +6261,10 @@ QLabel:hover {{
             dlg.setIntValue(self.channel_dropdown.currentIndex())
             dlg.setLabelText(f"Channel index (0-{len(fds)-1}) for virtual copy")
             if dlg.exec_() != QtWidgets.QDialog.Accepted:
-                return
+                return 0
             channel_idx = dlg.intValue()
         added = 0
+        anchor_key = insert_after_key
         for p in targets:
             try:
                 header, fds = self.headers.get(p, (None, None))
@@ -5523,52 +6296,74 @@ QLabel:hover {{
                     'op': 'channel',
                 }
                 self.headers[key] = (dict(header), fds_new)
-                self._insert_processed_after_source(key, p)
+                self._insert_processed_after_source(key, p, insert_after_key=anchor_key)
+                if insert_after_key not in (None, "", VIRTUAL_COPY_INSERT_START):
+                    anchor_key = key
                 added += 1
             except Exception:
                 continue
         if added:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        return added
 
-    def _create_virtual_crop_view(self, view):
-        """Create a virtual copy from a cropped preview view (single channel)."""
+    def _create_virtual_view_copy(self, view, insert_after_key=None, tag=None, op=None):
+        """Create a virtual thumbnail copy from the current popup/preview view snapshot."""
         if not view:
-            return
-        path = view.get("path") or (view.get("meta") or {}).get("path")
+            return None
+        path = view.get("path") or (view.get("meta") or {}).get("path") or (view.get("meta") or {}).get("file_path")
         arr = view.get("arr")
-        ch_idx = view.get("channel_idx") or (view.get("meta") or {}).get("channel_idx")
+        ch_idx = view.get("channel_idx")
+        if ch_idx is None:
+            ch_idx = (view.get("meta") or {}).get("channel_index")
         if path is None or arr is None:
-            return
+            return None
         try:
-            header, fds = self.headers.get(str(path), (None, None))
+            arr = np.asarray(arr)
+        except Exception:
+            return None
+        if arr.ndim < 2 or arr.size == 0:
+            return None
+        path = str(path)
+        try:
+            header, fds = self.headers.get(path, (None, None))
             if header is None or fds is None:
                 header, fds = parse_header(Path(path))
             if not fds:
-                return
+                return None
             ch_idx = int(ch_idx) if ch_idx is not None else 0
+            title = str(view.get("title") or "")
+            inferred_crop = bool(view.get("crop_sequence") is not None or "[crop]" in title.lower())
+            tag = str(tag or ("[crop]" if inferred_crop else "[copy]"))
+            op_name = str(op or ("crop" if inferred_crop else "copy"))
             arr_by_channel = {ch_idx: np.array(arr, copy=True)}
             fds_new = [dict(fd) for fd in fds]
             for i, fd_new in enumerate(fds_new):
-                fd_new['FileName'] = f"{Path(path).name}_crop_ch{i}"
-                fd_new['Caption'] = f"{fd_new.get('Caption') or Path(path).name} [crop]"
+                base_caption = fd_new.get("Caption") or Path(path).name
+                fd_new["FileName"] = f"{Path(path).name}_{op_name}_ch{i}"
+                fd_new["Caption"] = f"{base_caption} {tag}"
             header_new = dict(header)
-            header_new['xPixel'] = arr.shape[1]
-            header_new['yPixel'] = arr.shape[0]
-            key = self._make_processed_key(str(path), op="crop", channel_idx=ch_idx)
+            header_new["xPixel"] = int(arr.shape[1])
+            header_new["yPixel"] = int(arr.shape[0])
+            key = self._make_processed_key(path, op=op_name, channel_idx=ch_idx)
             self._processed_views[key] = {
-                'arr_by_channel': arr_by_channel,
-                'header': header_new,
-                'fds': fds_new,
-                'channel_idx': ch_idx,
-                'source': str(path),
-                'label': "[crop]",
-                'op': 'crop',
+                "arr_by_channel": arr_by_channel,
+                "header": header_new,
+                "fds": fds_new,
+                "channel_idx": ch_idx,
+                "source": path,
+                "label": tag,
+                "op": op_name,
             }
             self.headers[key] = (header_new, fds_new)
-            self._insert_processed_after_source(key, str(path))
+            self._insert_processed_after_source(key, path, insert_after_key=insert_after_key)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            return key
         except Exception:
-            return
+            return None
+
+    def _create_virtual_crop_view(self, view, insert_after_key=None):
+        """Create a virtual copy from a cropped preview view (single channel)."""
+        return self._create_virtual_view_copy(view, insert_after_key=insert_after_key, tag="[crop]", op="crop")
 
     def _create_virtual_copy_from_history(self, seq):
         if seq is None:
@@ -5896,6 +6691,13 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
+
+    def on_show_spectro_miniatures_toggled(self, checked: bool):
+        self.show_spectro_miniatures = bool(checked)
+        self.config["show_spectro_miniatures"] = self.show_spectro_miniatures
+        save_config(self.config)
+        # Miniatures are a thumbnail presentation choice, so a full repopulate is enough.
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
     def on_show_preview_spectra_toggled(self, checked: bool):
         self.show_preview_spectra = bool(checked)

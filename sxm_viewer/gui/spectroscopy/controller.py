@@ -41,6 +41,7 @@ def _assign_spectros_to_images(viewer):
     specs = list(viewer.spectros or [])
     if not images or not specs:
         return
+    image_time_index = {str(img.get("path")): img.get("time") for img in images}
     # precompute extents for images
     image_extents = {}
     for img in images:
@@ -72,6 +73,8 @@ def _assign_spectros_to_images(viewer):
                 image_key = mapped
                 specs_for_image = viewer.spectros_by_image[image_key]
                 spec['order_idx'] = len(specs_for_image) + 1
+                # Keep thumbnail ordering aligned with the owning image when we have one.
+                spec['display_time'] = image_time_index.get(image_key) or _spec_time_for_assignment(spec)
                 specs_for_image.append(spec)
                 if spec.get('source') == 'nanonis_3ds':
                     debug_nanonis["total"] += 1
@@ -100,6 +103,9 @@ def _assign_spectros_to_images(viewer):
         spec['image_key'] = image_key
         specs_for_image = viewer.spectros_by_image[image_key]
         spec['order_idx'] = len(specs_for_image) + 1  # stable order for fallback placement
+        # Use the image timestamp as the primary session marker so spectra sit in the
+        # natural sequence of the session instead of drifting to file mtime fallback.
+        spec['display_time'] = image_time_index.get(image_key) or _spec_time_for_assignment(spec)
         specs_for_image.append(spec)
         if spec.get('source') == 'nanonis_3ds':
             debug_nanonis["total"] += 1
@@ -111,9 +117,13 @@ def _assign_spectros_to_images(viewer):
         for idx, spec in enumerate(specs, 1):
             spec['image_key'] = image_key
             spec['order_idx'] = idx
+            spec['display_time'] = image_time_index.get(image_key) or _spec_time_for_assignment(spec)
             viewer.spectros_by_image[image_key].append(spec)
     for k in list(viewer.spectros_by_image.keys()):
-        viewer.spectros_by_image[k].sort(key=lambda s: s.get('time') or datetime.min)
+        viewer.spectros_by_image[k].sort(key=lambda s: (
+            s.get('display_time') or s.get('time') or datetime.min,
+            s.get('order_idx') or 0,
+        ))
 
     # Debug log for nanonis 3ds assignments
     # Suppress debug summary in normal runs

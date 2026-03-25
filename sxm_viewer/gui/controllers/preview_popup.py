@@ -32,6 +32,10 @@ def spawn_preview_popup(owner, views, title=None):
     # is created snugly around the content.
     canvas = MultiPreviewCanvas(dlg, figsize=(4, 3))
     try:
+        canvas._undo_suspend_depth += 1
+    except Exception:
+        pass
+    try:
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -200,6 +204,11 @@ def spawn_preview_popup(owner, views, title=None):
         pass
 
     canvas.set_views([owner._copy_view_for_popup(v) for v in views])
+    try:
+        canvas.set_plot_font_family_callback(lambda fam: owner.set_plot_font_family(fam))
+        canvas.set_plot_font_family(getattr(owner, "_plot_font_family", "sans-serif"))
+    except Exception:
+        pass
     def _on_popup_canvas_state_changed(_=None):
         _schedule_resize(force=False)
         try:
@@ -211,13 +220,8 @@ def spawn_preview_popup(owner, views, title=None):
     canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
     canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
     canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
-    canvas.set_crop_callback(
-        lambda v: spawn_preview_popup(
-            owner,
-            [owner._copy_view_for_popup(v)],
-            title=owner._friendly_view_title(v, default="Cropped view"),
-        )
-    )
+    canvas.set_crop_callback(lambda v: owner._on_preview_crop(v))
+    canvas.set_virtual_copy_callback(lambda v: owner._create_virtual_copy_from_popup_view(v))
     canvas.set_double_click_callback(
         lambda v=None: spawn_preview_popup(
             owner,
@@ -227,6 +231,8 @@ def spawn_preview_popup(owner, views, title=None):
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
     canvas.set_histogram_dialog_callback(lambda c: owner._open_histogram_dialog(c))
+    canvas.set_histogram_auto_callback(lambda c: owner._auto_contrast(c))
+    canvas.set_histogram_reset_callback(lambda c: owner._reset_contrast(c))
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_copy_feedback_handler(lambda view=None, info=None, host=dlg: owner._on_view_copied(view, info, target=host))
@@ -235,7 +241,7 @@ def spawn_preview_popup(owner, views, title=None):
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)
     canvas.enable_fixed_crop_quick_mode(owner.quick_crop_mode)
-    canvas.show_fixed_crop_template(owner.show_crop_template_overlay)
+    canvas.show_fixed_crop_template(False)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
         canvas.set_molecule_palette(owner.molecule_palette, notify=False)
@@ -263,6 +269,11 @@ def spawn_preview_popup(owner, views, title=None):
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
     profile_controller.set_initial_state(measure_initial)
     canvas.set_angle_tool_enabled(angle_initial)
+
+    try:
+        canvas._undo_suspend_depth = max(0, getattr(canvas, "_undo_suspend_depth", 0) - 1)
+    except Exception:
+        pass
 
     layout.addWidget(canvas, 1)
     canvas.setFocus()
