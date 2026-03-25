@@ -1489,6 +1489,12 @@ class MultiPreviewCanvas(FigureCanvas):
         cols = max(arr_w - 1, 1)
         rows = max(arr_h - 1, 1)
         def _axis_from_pixel(col, row):
+            row_use = float(row)
+            # Stored spectro marker rows are in thumbnail/image pixel space
+            # with row 0 at the top. Relative-axes preview flips the image and
+            # draws it with origin='lower', so convert to the displayed row.
+            if str(origin).lower() == 'lower' and rows > 0:
+                row_use = float(rows) - row_use
             if extent_used is not None and meta.get('shape'):
                 xmin, xmax, ymin, ymax = extent_used
                 span_x = xmax - xmin
@@ -1501,12 +1507,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     y_axis = ymax if str(origin).lower() == 'upper' else ymin
                 else:
                     if str(origin).lower() == 'upper':
-                        y_axis = ymax - (row / float(rows)) * span_y
+                        y_axis = ymax - (row_use / float(rows)) * span_y
                     else:
-                        y_axis = ymin + (row / float(rows)) * span_y
+                        y_axis = ymin + (row_use / float(rows)) * span_y
                 return x_axis, y_axis
             x_axis = ex0 if cols == 0 else ex0 + (col / float(cols)) * (ex1 - ex0)
-            y_axis = ey0 if rows == 0 else ey0 + (row / float(rows)) * (ey1 - ey0)
+            y_axis = ey0 if rows == 0 else ey0 + (row_use / float(rows)) * (ey1 - ey0)
             return x_axis, y_axis
         normal_xs = []
         normal_ys = []
