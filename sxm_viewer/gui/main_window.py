@@ -387,6 +387,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_export_png_act = None
         self.toolbar_export_xyz_act = None
         self.toolbar_adjust_act = None
+        self.toolbar_dark_btn = None
+        self.toolbar_display_btn = None
+        self.toolbar_load_mol_btn = None
+        self.preview_adjust_btn = None
         self._canvas_window = None
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
@@ -427,11 +431,28 @@ class SXMGridViewer(QtWidgets.QWidget):
         spec_v.addLayout(spec_row)
         essentials_layout.addWidget(spec_container)
 
-        # Channel controls (moved later into the Selected channel area)
+        # Channel controls stay near the preview workspace because channel switching is a preview task.
         controls_h = QtWidgets.QHBoxLayout()
-        self.channel_label = QtWidgets.QLabel("Channel:")
+        controls_h.setContentsMargins(0, 0, 0, 0)
+        controls_h.setSpacing(6)
+        self.channel_label = QtWidgets.QLabel("Channel")
         self.channel_label.setFont(bold_font)
-        self.channel_dropdown = QtWidgets.QComboBox(); self.channel_dropdown.setMinimumWidth(160)
+        self.channel_prev_btn = QtWidgets.QToolButton()
+        self.channel_prev_btn.setArrowType(QtCore.Qt.LeftArrow)
+        self.channel_prev_btn.setAutoRaise(True)
+        self.channel_prev_btn.setToolTip("Previous channel")
+        self.channel_dropdown = QtWidgets.QComboBox()
+        self.channel_dropdown.setMinimumWidth(240)
+        self.channel_dropdown.setMinimumContentsLength(16)
+        self.channel_dropdown.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        try:
+            self.channel_dropdown.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        except Exception:
+            pass
+        self.channel_next_btn = QtWidgets.QToolButton()
+        self.channel_next_btn.setArrowType(QtCore.Qt.RightArrow)
+        self.channel_next_btn.setAutoRaise(True)
+        self.channel_next_btn.setToolTip("Next channel")
         self.thumb_cmap_combo = QtWidgets.QComboBox(); self.preview_cmap_combo = QtWidgets.QComboBox()
         
         # populate colormap combos with all available matplotlib colormaps and icons
@@ -448,10 +469,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.preview_cmap_combo.addItem(icon, m)
 
         self.thumb_cmap_combo.setCurrentText(self.thumb_cmap); self.preview_cmap_combo.setCurrentText(self.preview_cmap)
-        # Note: don't add these to the essentials panel here; we'll insert the layout into the Selected channel area below.
-        controls_h.addWidget(self.channel_label); controls_h.addWidget(self.channel_dropdown)
+        controls_h.addWidget(self.channel_label)
+        controls_h.addWidget(self.channel_prev_btn)
+        controls_h.addWidget(self.channel_dropdown, 1)
+        controls_h.addWidget(self.channel_next_btn)
 
-        # Colormap combos will be shown in the main toolbar next to the dark-mode toggle (see main_window_toolbar)
         # Dark mode handled via toolbar toggle; placeholder kept for compatibility
         self.dark_mode_cb = None
         left_v.addWidget(essentials_group)
@@ -639,7 +661,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         left_w = QtWidgets.QWidget(); left_w.setLayout(left_v)
 
         # Right panel with splitter for thumbnails/preview
-        title_lbl = QtWidgets.QLabel(""); title_lbl.setFont(bold_font)
+        title_lbl = QtWidgets.QLabel("Thumbnails"); title_lbl.setFont(bold_font)
         self.scroll = QtWidgets.QScrollArea(); self.thumb_container = QtWidgets.QWidget(); self.thumb_layout = QtWidgets.QGridLayout(); self.thumb_layout.setSpacing(THUMB_LAYOUT_SPACING)
         self.scroll.setToolTip(
             "Thumbnails:\n"
@@ -691,23 +713,21 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.matrix_summary_label.mousePressEvent = lambda event: self._focus_first_matrix_dataset()
         thumbs_toolbar.addWidget(self.matrix_summary_label)
         thumbs_toolbar.addStretch(1)
-        self.unit_display_cb = QtWidgets.QCheckBox("Show SI units")
+        self.unit_display_cb = QtWidgets.QCheckBox("SI")
         self.unit_display_cb.setChecked(self.display_units_si)
-        self.unit_relative_cb = QtWidgets.QCheckBox("Relative zero")
+        self.unit_display_cb.setToolTip("Show SI units in preview annotations")
+        self.unit_relative_cb = QtWidgets.QCheckBox("Zero")
         self.unit_relative_cb.setChecked(self.display_units_relative)
-        self.relative_axes_cb = QtWidgets.QCheckBox("Relative axes")
+        self.unit_relative_cb.setToolTip("Display values relative to the current zero/reference")
+        self.relative_axes_cb = QtWidgets.QCheckBox("Axes")
         self.relative_axes_cb.setChecked(self.relative_axes)
-        # Create a compact header: title on the left, channel controls on the right
+        self.relative_axes_cb.setToolTip("Use relative axes in the preview")
+        # Keep the thumbnails header simple so the preview workspace owns the channel workflow.
         header_h = QtWidgets.QHBoxLayout()
         header_h.setContentsMargins(0,0,0,0)
         header_h.setSpacing(8)
         header_h.addWidget(title_lbl)
         header_h.addStretch(1)
-        # create a compact container for the controls so they do not span the full width
-        self.channel_controls_widget = QtWidgets.QWidget()
-        self.channel_controls_widget.setLayout(controls_h)
-        self.channel_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
-        header_h.addWidget(self.channel_controls_widget)
         thumbs_panel_layout.addLayout(header_h)
         thumbs_panel_layout.addWidget(self.scroll, 1)
         thumbs_panel_layout.addLayout(thumbs_toolbar)
@@ -725,9 +745,22 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_panel.setLayout(thumbs_panel_layout)
 
         preview_panel = QtWidgets.QWidget()
-        preview_panel_layout = QtWidgets.QVBoxLayout(); preview_panel_layout.setContentsMargins(0,0,0,0)
+        preview_panel_layout = QtWidgets.QVBoxLayout(); preview_panel_layout.setContentsMargins(0,0,0,0); preview_panel_layout.setSpacing(6)
+        self.preview_workspace_frame = QtWidgets.QFrame()
+        self.preview_workspace_frame.setObjectName("previewWorkspaceFrame")
+        preview_workspace_layout = QtWidgets.QVBoxLayout(self.preview_workspace_frame)
+        preview_workspace_layout.setContentsMargins(10, 8, 10, 8)
+        preview_workspace_layout.setSpacing(6)
         preview_header = QtWidgets.QHBoxLayout()
-        preview_header.addWidget(QtWidgets.QLabel("Preview"))
+        preview_header.setContentsMargins(0, 0, 0, 0)
+        preview_header.setSpacing(8)
+        self.preview_title_label = QtWidgets.QLabel("Preview")
+        self.preview_title_label.setFont(bold_font)
+        preview_header.addWidget(self.preview_title_label)
+        self.channel_controls_widget = QtWidgets.QWidget()
+        self.channel_controls_widget.setLayout(controls_h)
+        self.channel_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        preview_header.addWidget(self.channel_controls_widget, 1)
         preview_header.addStretch(1)
         # Dock/lock controls
         self.preview_lock_cb = QtWidgets.QCheckBox("Lock")
@@ -735,22 +768,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_lock_cb.setToolTip("Lock preview inside the main window")
         self.preview_lock_cb.toggled.connect(self.on_preview_lock_toggled)
         self.preview_detach_btn = QtWidgets.QToolButton()
-        self.preview_detach_btn.setText("Detach")
+        self.preview_detach_btn.setText("Pop out")
         self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
         self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
         self.preview_detach_btn.setEnabled(not self.preview_locked)
-        display_strip = QtWidgets.QWidget()
-        display_layout = QtWidgets.QHBoxLayout(display_strip)
-        display_layout.setContentsMargins(0, 0, 0, 0)
-        display_layout.setSpacing(8)
-        display_layout.addWidget(self.unit_display_cb)
-        display_layout.addWidget(self.unit_relative_cb)
-        display_layout.addWidget(self.relative_axes_cb)
-        self.scale_bar_cb = QtWidgets.QCheckBox("Scale bar")
+        self.scale_bar_cb = QtWidgets.QCheckBox("Bar")
         self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
-        display_layout.addWidget(self.scale_bar_cb)
+        self.scale_bar_cb.setToolTip("Show the scale bar in preview and pop-outs")
         self.preview_hist_btn = QtWidgets.QToolButton()
-        self.preview_hist_btn.setText("Histogram")
+        self.preview_hist_btn.setText("Levels")
         self.preview_hist_btn.setToolTip("Show histogram and adjust display range")
         self.preview_hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
         self.preview_hist_menu = QtWidgets.QMenu(self.preview_hist_btn)
@@ -764,12 +790,59 @@ class SXMGridViewer(QtWidgets.QWidget):
         act_title.triggered.connect(self._on_toggle_preview_title)
         self.preview_hist_btn.setMenu(self.preview_hist_menu)
         self.preview_hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(self.preview_canvas))
+        self.preview_adjust_btn = QtWidgets.QToolButton()
+        self.preview_adjust_btn.setText("Adjust")
+        self.preview_adjust_btn.setToolTip("Open image adjustment tools for the current preview")
+        self.preview_adjust_btn.clicked.connect(self.on_adjust_image)
+        self.preview_adjust_btn.setEnabled(False)
+        self.toolbar_display_btn = QtWidgets.QToolButton()
+        self.toolbar_display_btn.setText("View")
+        self.toolbar_display_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.toolbar_display_btn.setToolTip("Preview and overlay options")
+        self.toolbar_display_btn.setMenu(main_window_layout._ensure_display_menu(self))
+        self.toolbar_load_mol_btn = QtWidgets.QLabel()
+        self.toolbar_load_mol_btn.setFixedSize(44, 28)
+        self.toolbar_load_mol_btn.setAlignment(QtCore.Qt.AlignCenter)
+        self.toolbar_load_mol_btn.setToolTip("Overlay a molecular structure (XYZ, PDB, MOL)")
+        self.toolbar_load_mol_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._molecule_pixmap_size = QtCore.QSize(32, 18)
+        self.toolbar_load_mol_btn.mousePressEvent = lambda event: self.on_load_molecule()
+        self.toolbar_dark_btn = QtWidgets.QPushButton("Dark")
+        self.toolbar_dark_btn.setCheckable(True)
+        self.toolbar_dark_btn.setToolTip("Toggle dark mode")
+        self.toolbar_dark_btn.setMinimumWidth(64)
+        self.toolbar_dark_btn.setFixedHeight(28)
+        self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
         preview_header.addWidget(self.preview_hist_btn)
+        preview_header.addWidget(self.preview_adjust_btn)
+        preview_header.addWidget(self.toolbar_display_btn)
+        preview_header.addWidget(self.toolbar_load_mol_btn)
         preview_header.addWidget(self.preview_detach_btn)
         preview_header.addWidget(self.preview_lock_cb)
-        preview_header.addWidget(display_strip)
-        # Canvas launch button moved to the main toolbar for prominence.
-        preview_panel_layout.addLayout(preview_header)
+        preview_header.addWidget(self.toolbar_dark_btn)
+        preview_workspace_layout.addLayout(preview_header)
+
+        self.thumb_cmap_label = QtWidgets.QLabel("Thumb")
+        self.thumb_cmap_label.setToolTip("Colormap used for thumbnails")
+        self.preview_cmap_label = QtWidgets.QLabel("Preview")
+        self.preview_cmap_label.setToolTip("Colormap used for the preview")
+        self.thumb_cmap_combo.setMinimumWidth(120)
+        self.preview_cmap_combo.setMinimumWidth(120)
+        preview_state_row = QtWidgets.QHBoxLayout()
+        preview_state_row.setContentsMargins(0, 0, 0, 0)
+        preview_state_row.setSpacing(8)
+        preview_state_row.addWidget(self.thumb_cmap_label)
+        preview_state_row.addWidget(self.thumb_cmap_combo)
+        preview_state_row.addSpacing(8)
+        preview_state_row.addWidget(self.preview_cmap_label)
+        preview_state_row.addWidget(self.preview_cmap_combo)
+        preview_state_row.addStretch(1)
+        preview_state_row.addWidget(self.unit_display_cb)
+        preview_state_row.addWidget(self.unit_relative_cb)
+        preview_state_row.addWidget(self.relative_axes_cb)
+        preview_state_row.addWidget(self.scale_bar_cb)
+        preview_workspace_layout.addLayout(preview_state_row)
+        preview_panel_layout.addWidget(self.preview_workspace_frame)
 
         self.quick_crop_controls = QtWidgets.QWidget()
         quick_layout = QtWidgets.QHBoxLayout(self.quick_crop_controls)
@@ -779,7 +852,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_btn.setCheckable(True)
         self.quick_crop_btn.setToolTip("Toggle quick crop mode (Ctrl+Shift+C). Shift+drag to size, click to spawn crops.")
         quick_layout.addWidget(self.quick_crop_btn)
-        quick_layout.addWidget(QtWidgets.QLabel("Real W"))
+        self.quick_crop_detail_widget = QtWidgets.QWidget()
+        quick_detail_layout = QtWidgets.QHBoxLayout(self.quick_crop_detail_widget)
+        quick_detail_layout.setContentsMargins(0, 0, 0, 0)
+        quick_detail_layout.setSpacing(6)
+        quick_detail_layout.addWidget(QtWidgets.QLabel("Real W"))
         self.quick_crop_real_width_spin = QtWidgets.QDoubleSpinBox()
         self.quick_crop_real_width_spin.setRange(0.01, 10000.0)
         self.quick_crop_real_width_spin.setDecimals(3)
@@ -789,8 +866,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_real_width_spin.setValue(5.0)
         self._quick_crop_aspect = 1.0
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(), 5.0]
-        quick_layout.addWidget(self.quick_crop_real_width_spin)
-        quick_layout.addWidget(QtWidgets.QLabel("Real H"))
+        quick_detail_layout.addWidget(self.quick_crop_real_width_spin)
+        quick_detail_layout.addWidget(QtWidgets.QLabel("Real H"))
         self.quick_crop_real_height_spin = QtWidgets.QDoubleSpinBox()
         self.quick_crop_real_height_spin.setRange(0.01, 10000.0)
         self.quick_crop_real_height_spin.setDecimals(3)
@@ -801,30 +878,30 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(),
                                            self.quick_crop_real_height_spin.value()]
         self._quick_crop_aspect = self._quick_crop_last_real_size[0] / max(0.001, self._quick_crop_last_real_size[1])
-        quick_layout.addWidget(self.quick_crop_real_height_spin)
+        quick_detail_layout.addWidget(self.quick_crop_real_height_spin)
         self.quick_crop_lock_aspect_cb = QtWidgets.QCheckBox("Lock aspect")
         self.quick_crop_lock_aspect_cb.setToolTip("Keep width/height ratio when editing one dimension")
-        quick_layout.addWidget(self.quick_crop_lock_aspect_cb)
+        quick_detail_layout.addWidget(self.quick_crop_lock_aspect_cb)
         self.quick_crop_real_unit_lbl = QtWidgets.QLabel("nm")
-        quick_layout.addWidget(self.quick_crop_real_unit_lbl)
+        quick_detail_layout.addWidget(self.quick_crop_real_unit_lbl)
         self.quick_crop_square_cb = QtWidgets.QCheckBox("Square")
         self.quick_crop_square_cb.setToolTip("Force quick crops to remain square")
-        quick_layout.addWidget(self.quick_crop_square_cb)
+        quick_detail_layout.addWidget(self.quick_crop_square_cb)
         self.quick_crop_real_px_info_lbl = QtWidgets.QLabel("")
         self.quick_crop_real_px_info_lbl.setFixedWidth(140)
-        quick_layout.addWidget(self.quick_crop_real_px_info_lbl)
+        quick_detail_layout.addWidget(self.quick_crop_real_px_info_lbl)
         self.quick_crop_undo_btn = QtWidgets.QToolButton()
         self.quick_crop_undo_btn.setText("Undo")
         self.quick_crop_undo_btn.setToolTip("Undo latest crop (Ctrl+Z)")
-        quick_layout.addWidget(self.quick_crop_undo_btn)
+        quick_detail_layout.addWidget(self.quick_crop_undo_btn)
         self.quick_crop_close_btn = QtWidgets.QToolButton()
         self.quick_crop_close_btn.setText("Close pop-out")
         self.quick_crop_close_btn.setToolTip("Close the latest quick-crop pop-out (Ctrl+Shift+W)")
-        quick_layout.addWidget(self.quick_crop_close_btn)
+        quick_detail_layout.addWidget(self.quick_crop_close_btn)
         self.quick_crop_clear_btn = QtWidgets.QToolButton()
         self.quick_crop_clear_btn.setText("Clear history")
         self.quick_crop_clear_btn.setToolTip("Clear crop history markers and pop-outs")
-        quick_layout.addWidget(self.quick_crop_clear_btn)
+        quick_detail_layout.addWidget(self.quick_crop_clear_btn)
         self.quick_crop_export_btn = QtWidgets.QToolButton()
         self.quick_crop_export_btn.setText("Export selection")
         self.quick_crop_export_btn.setToolTip("Export the selected crops (Shift+click) as images")
@@ -832,16 +909,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_controller = QuickCropController(self)
         self.thumbnail_controller = ThumbnailController(self)
         self.quick_crop_export_btn.clicked.connect(self.quick_crop_controller.export_selected_crops)
-        quick_layout.addWidget(self.quick_crop_export_btn)
+        quick_detail_layout.addWidget(self.quick_crop_export_btn)
         self.quick_crop_tile_btn = QtWidgets.QToolButton()
         self.quick_crop_tile_btn.setText("Tile pop-outs")
         self.quick_crop_tile_btn.setToolTip("Arrange all open pop-out windows on screen")
         self.quick_crop_tile_btn.setEnabled(False)
         self.quick_crop_tile_btn.clicked.connect(self.on_arrange_popouts)
-        quick_layout.addWidget(self.quick_crop_tile_btn)
-        quick_layout.addStretch(1)
+        quick_detail_layout.addWidget(self.quick_crop_tile_btn)
+        quick_detail_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
-        quick_layout.addWidget(self.quick_crop_hint_lbl)
+        quick_detail_layout.addWidget(self.quick_crop_hint_lbl)
+        quick_layout.addWidget(self.quick_crop_detail_widget, 1)
         preview_panel_layout.addWidget(self.quick_crop_controls)
         self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
         self.quick_crop_undo_btn.clicked.connect(self.quick_crop_controller.undo_last_crop)
@@ -851,6 +929,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_real_width_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_width_spin))
         self.quick_crop_real_height_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_height_spin))
         self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self.quick_crop_controller.on_real_spin_changed())
+        self.quick_crop_detail_widget.setVisible(bool(self.quick_crop_mode))
 
         self.crop_history_panel = QtWidgets.QWidget()
         crop_hist_layout = QtWidgets.QVBoxLayout(self.crop_history_panel)
@@ -1100,6 +1179,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.path_le.returnPressed.connect(self.open_folder_by_path)
         self.spec_folder_btn.clicked.connect(self.on_spec_folder_browse)
         self.spec_folder_le.returnPressed.connect(self.on_spec_folder_entered)
+        self.channel_prev_btn.clicked.connect(lambda: self._step_channel(-1))
+        self.channel_next_btn.clicked.connect(lambda: self._step_channel(1))
         self.channel_dropdown.currentIndexChanged.connect(self.on_channel_dropdown_changed)
         self.thumb_cmap_combo.currentIndexChanged.connect(self.on_thumb_cmap_changed)
         self.preview_cmap_combo.currentIndexChanged.connect(self.on_preview_cmap_changed)
@@ -1139,6 +1220,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self._update_toolbar_actions(False)
+        self._sync_channel_nav_buttons()
         self._init_mode_shortcuts()
         try:
             log_emitter.message_logged.connect(self._append_activity_log)
@@ -1196,30 +1278,92 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._apply_molecule_button_theme()
         except Exception:
             pass
+        try:
+            self._apply_preview_workspace_theme()
+        except Exception:
+            pass
 
     def _apply_detail_view_theme(self):
         canvas = getattr(self, 'preview_canvas', None)
         if canvas is not None and hasattr(canvas, 'set_detail_theme'):
             canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
 
+    def _apply_preview_workspace_theme(self):
+        dark = bool(getattr(self, "dark_mode", False))
+        frame = getattr(self, "preview_workspace_frame", None)
+        if frame is not None:
+            if dark:
+                border = "#4c4c4c"
+                bg = "#2a2a2a"
+            else:
+                border = "#d8dce5"
+                bg = "#f6f8fb"
+            frame.setStyleSheet(
+                f"""
+QFrame#previewWorkspaceFrame {{
+    border: 1px solid {border};
+    border-radius: 8px;
+    background-color: {bg};
+}}
+"""
+            )
+        combo_style = (
+            "QComboBox { background-color: #1f1f1f; border: 1px solid #444444; color: #f0f0f0; padding: 4px; border-radius: 4px; }"
+            if dark else
+            ""
+        )
+        for combo in (getattr(self, "thumb_cmap_combo", None), getattr(self, "preview_cmap_combo", None)):
+            if combo is not None:
+                combo.setStyleSheet(combo_style)
+        label_style = "color: #f0f0f0; font-weight: 600;" if dark else "color: #202020; font-weight: 600;"
+        for label in (
+            getattr(self, "preview_title_label", None),
+            getattr(self, "channel_label", None),
+            getattr(self, "thumb_cmap_label", None),
+            getattr(self, "preview_cmap_label", None),
+        ):
+            if label is not None:
+                label.setStyleSheet(label_style)
+        btn = getattr(self, "toolbar_dark_btn", None)
+        if btn is not None:
+            if dark:
+                button_style = (
+                    "QPushButton { padding: 4px 10px; border: 1px solid #5a5a5a; border-radius: 6px; background-color: #343434; color: #f0f0f0; }"
+                    "QPushButton:checked { background-color: #2b6cb0; border-color: #2b6cb0; color: #ffffff; font-weight: 600; }"
+                )
+            else:
+                button_style = (
+                    "QPushButton { padding: 4px 10px; border: 1px solid #c8cfdb; border-radius: 6px; background-color: #ffffff; color: #202020; }"
+                    "QPushButton:checked { background-color: #2b6cb0; border-color: #2b6cb0; color: #ffffff; font-weight: 600; }"
+                )
+            btn.setStyleSheet(button_style)
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(self.dark_mode)
+                btn.blockSignals(False)
+            except Exception:
+                pass
+
     def _apply_molecule_button_theme(self):
         btn = getattr(self, "toolbar_load_mol_btn", None)
         if btn is None:
             return
         if getattr(self, "dark_mode", False):
-            base = "#2d2d2d"
-            hover = "#3a3a3a"
+            base = "#343434"
+            hover = "#3d3d3d"
+            border = "#5a5a5a"
             color = QtGui.QColor("#ffffff")
         else:
-            base = "#f0f3ff"
-            hover = base
+            base = "#ffffff"
+            hover = "#eef4ff"
+            border = "#c8cfdb"
             color = QtGui.QColor("#1d1d1d")
         btn.setStyleSheet(
             f"""
 QLabel {{
     background-color: {base};
-    border: none;
-    border-radius: 3px;
+    border: 1px solid {border};
+    border-radius: 6px;
 }}
 QLabel:hover {{
     background-color: {hover};
@@ -1241,7 +1385,11 @@ QLabel:hover {{
         except Exception:
             pixmap = None
         if pixmap and not pixmap.isNull():
+            btn.setText("")
             btn.setPixmap(pixmap)
+        else:
+            btn.setPixmap(QtGui.QPixmap())
+            btn.setText("Mol")
 
     def _append_activity_log(self, message: str):
         box = getattr(self, "activity_log_box", None)
@@ -2118,6 +2266,30 @@ QLabel:hover {{
     def _update_toolbar_actions(self, enabled: bool):
         return main_window_toolbar.update_toolbar_actions(self, enabled)
 
+    def _step_channel(self, delta: int):
+        combo = getattr(self, "channel_dropdown", None)
+        if combo is None or combo.count() <= 0 or not combo.isEnabled():
+            return
+        current = combo.currentIndex()
+        if current < 0:
+            current = 0
+        target = max(0, min(combo.count() - 1, current + int(delta)))
+        if target != current:
+            combo.setCurrentIndex(target)
+
+    def _sync_channel_nav_buttons(self):
+        combo = getattr(self, "channel_dropdown", None)
+        prev_btn = getattr(self, "channel_prev_btn", None)
+        next_btn = getattr(self, "channel_next_btn", None)
+        if combo is None:
+            return
+        has_channels = bool(combo.isEnabled()) and combo.count() > 0
+        current = combo.currentIndex()
+        if prev_btn is not None:
+            prev_btn.setEnabled(has_channels and current > 0)
+        if next_btn is not None:
+            next_btn.setEnabled(has_channels and 0 <= current < combo.count() - 1)
+
     def _on_toggle_layout_mode(self):
         target = "stacked" if self._layout_mode == "columns" else "columns"
         self._apply_layout_mode(target)
@@ -2180,11 +2352,11 @@ QLabel:hover {{
 
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
-        # keep toolbar toggle in sync and show ON/OFF text
         try:
             if hasattr(self, 'toolbar_dark_btn'):
+                self.toolbar_dark_btn.blockSignals(True)
                 self.toolbar_dark_btn.setChecked(self.dark_mode)
-                self.toolbar_dark_btn.setText('dark mode: ON' if self.dark_mode else 'dark mode: OFF')
+                self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
         self.config['dark_mode'] = self.dark_mode; save_config(self.config)
@@ -2439,6 +2611,7 @@ QLabel:hover {{
                 self.channel_dropdown.blockSignals(False)
             except Exception:
                 pass
+        self._sync_channel_nav_buttons()
         try:
             self.frame_map_widget.set_entries([])
             self.frame_map_widget.clear_hidden_entries()
@@ -6609,7 +6782,7 @@ QLabel:hover {{
             self.preview_detached = False
             if hasattr(self, "preview_detach_btn"):
                 try:
-                    self.preview_detach_btn.setText("Detach")
+                    self.preview_detach_btn.setText("Pop out")
                 except Exception:
                     pass
         except Exception:
@@ -6617,25 +6790,11 @@ QLabel:hover {{
 
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
-        # keep toolbar toggle in sync and show ON/OFF text
         try:
             if hasattr(self, 'toolbar_dark_btn'):
+                self.toolbar_dark_btn.blockSignals(True)
                 self.toolbar_dark_btn.setChecked(self.dark_mode)
-                self.toolbar_dark_btn.setText('dark mode: ON' if self.dark_mode else 'dark mode: OFF')
-        except Exception:
-            pass
-        # update toolbar combobox and label styles to match dark/light theme
-        try:
-            combo_style = "QComboBox { background-color: #1f1f1f; border: 1px solid #444444; color: #f0f0f0; padding: 4px; }" if self.dark_mode else ""
-            label_style = "padding-left:8px; padding-right:4px; color: #e6e6e6;" if self.dark_mode else "padding-left:8px; padding-right:4px; color: #202020;"
-            if hasattr(self, 'thumb_cmap_combo'):
-                self.thumb_cmap_combo.setStyleSheet(combo_style)
-            if hasattr(self, 'preview_cmap_combo'):
-                self.preview_cmap_combo.setStyleSheet(combo_style)
-            if hasattr(self, 'thumb_cmap_label'):
-                self.thumb_cmap_label.setStyleSheet(label_style)
-            if hasattr(self, 'preview_cmap_label'):
-                self.preview_cmap_label.setStyleSheet(label_style)
+                self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
         self.config['dark_mode'] = self.dark_mode; save_config(self.config)
@@ -6646,6 +6805,7 @@ QLabel:hover {{
     # ---------- control callbacks ----------
     def on_channel_dropdown_changed(self, idx):
         self.last_channel_index = int(idx); self.config['last_channel_index'] = self.last_channel_index; save_config(self.config)
+        self._sync_channel_nav_buttons()
         self.populate_thumbnails_for_channel(idx)
         if getattr(self, 'frame_real_view', False):
             self._refresh_frame_map_pixmaps()
