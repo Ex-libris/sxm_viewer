@@ -509,6 +509,124 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     return html
 
 
+def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap_override=None, use_local_cmap=False):
+    header_path = Path(header_path_str)
+    file_key = str(header_path)
+    header, fds = viewer.headers.get(file_key, (None, None))
+    if header is None or fds is None or channel_idx < 0 or channel_idx >= len(fds):
+        return None
+    fd = fds[channel_idx]
+    axis_unit = "px"
+    xpix = int(header.get("xPixel", 128))
+    ypix = int(header.get("yPixel", xpix))
+    base_extent = viewer._header_extent(header)
+    unit_normalized, arr_base = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
+    arr_base = np.asarray(arr_base)
+    arr_adj, adjusted_extent = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_base, base_extent)
+    display_extent = viewer._display_extent(adjusted_extent, header)
+    display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj)
+    display_arr = np.asarray(display_arr)
+    axis_unit = header.get("XPhysUnit") or header.get("YPhysUnit") or header.get("ScanUnit") or ""
+    if not axis_unit:
+        axis_unit = "px" if display_extent is None else "nm"
+
+    cmap_to_use = cmap_override or viewer.preview_cmap_combo.currentText() or viewer.preview_cmap
+    if use_local_cmap and cmap_override is None:
+        cmap_to_use = viewer.per_file_channel_cmap.get((file_key, channel_idx), cmap_to_use)
+
+    show_preview_specs = bool(getattr(viewer, "show_preview_spectra", getattr(viewer, "show_spectra", True)))
+    spec_entries = viewer.spectros_by_image.get(str(header_path), []) if show_preview_specs else []
+    overlay_specs = []
+    highlight_spec = None
+    highlight_candidate = getattr(viewer, "_highlighted_spec", None)
+    if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
+        try:
+            highlight_path = str(highlight_candidate.get("image_key") or highlight_candidate.get("path") or "")
+        except Exception:
+            highlight_path = ""
+        if highlight_path and highlight_path == str(header_path):
+            highlight_spec = highlight_candidate
+    if spec_entries and show_preview_specs:
+        if viewer.show_single_markers:
+            overlay_specs.extend([
+                s for s in spec_entries
+                if s.get("matrix_index") is None or not is_matrix_file_entry(s)
+            ])
+        if viewer.show_matrix_markers:
+            overlay_specs.extend([
+                s for s in spec_entries
+                if s.get("matrix_index") is not None and is_matrix_file_entry(s)
+            ])
+
+    caption = fd.get("Caption", fd.get("FileName", ""))
+    date = str(header.get("Date", "") or "").strip()
+    time_txt = str(header.get("Time", "") or "").strip()
+    datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
+    base_title = header_path.name
+    title_text = f"{base_title}  {caption}  {datetime_txt}" if datetime_txt else f"{base_title}  {caption}"
+    colorbar_label = f"{caption} [{display_unit}]" if display_unit else caption
+    acq_overlay = _build_acquisition_overlay_info(viewer, header_path, header, fds, channel_idx)
+    meta = {
+        "file_path": str(header_path),
+        "file_name": header_path.name,
+        "date": date,
+        "time": time_txt,
+        "datetime": datetime_txt,
+        "channel": caption,
+        "channel_index": int(channel_idx),
+        "acquisition_mode": acq_overlay.get("mode"),
+        "acquisition_overlay_text": acq_overlay.get("text", ""),
+        "acquisition_z_abs_nm": acq_overlay.get("z_abs_nm"),
+        "acquisition_bias_text": acq_overlay.get("bias_text", ""),
+        "acquisition_setpoint_text": acq_overlay.get("setpoint_text", ""),
+    }
+    spec_pixels = []
+    for spec in overlay_specs:
+        coords = None
+        try:
+            coords = viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key=str(header_path))
+        except Exception:
+            coords = None
+        if coords is not None:
+            spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+
+    view = {
+        "arr": display_arr,
+        "extent": display_extent,
+        "extent_raw": adjusted_extent,
+        "cmap": cmap_to_use,
+        "unit": display_unit,
+        "title": title_text,
+        "colorbar_label": colorbar_label,
+        "axis_unit": axis_unit,
+        "relative_axes": bool(viewer.relative_axes),
+        "meta": meta,
+        "path": str(header_path),
+        "channel_idx": int(channel_idx),
+        "acquisition_overlay_text": acq_overlay.get("text", ""),
+        "spectra": overlay_specs,
+        "highlight_spec": highlight_spec,
+        "spec_pixels": list(spec_pixels),
+    }
+    clim = _auto_preview_clim(display_arr)
+    if clim:
+        view["clim"] = clim
+    return {
+        "header_path": header_path,
+        "header": header,
+        "fds": fds,
+        "fd": fd,
+        "channel_idx": int(channel_idx),
+        "unit_normalized": unit_normalized,
+        "display_unit": display_unit,
+        "display_arr": display_arr,
+        "zero_offset": zero_offset,
+        "axis_unit": axis_unit,
+        "base_extent": base_extent,
+        "view": view,
+    }
+
+
 def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=False):
     current_path_str = str(header_path_str)
     prev_preview = getattr(viewer, "last_preview", None)
@@ -630,6 +748,8 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'axis_unit': axis_unit,
         'relative_axes': bool(viewer.relative_axes),
         'meta': meta,
+        'path': str(header_path),
+        'channel_idx': int(channel_idx),
         'acquisition_overlay_text': acq_overlay.get("text", ""),
         'spectra': overlay_specs,
         'highlight_spec': highlight_spec,
@@ -668,6 +788,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                      'cmap': cmap2, 'unit': unit2_display, 'title': title2,
                      'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                      'relative_axes': bool(viewer.relative_axes), 'meta': meta2,
+                     'path': str(header_path), 'channel_idx': int(idx2),
                      'acquisition_overlay_text': acq_overlay.get("text", ""),
                      'spec_pixels': list(spec_pixels)}
             if clim2:

@@ -245,6 +245,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             'show_crop_history_overlay': False,
         }
         self._popup_canvases = []
+        self._active_preview_popup = None
+        self._active_preview_canvas = None
         c_single = self.config.get('spectro_marker_color_single')
         if c_single:
             self.spectro_marker_color_single = QtGui.QColor(c_single)
@@ -1656,6 +1658,15 @@ QLabel:hover {{
 
     def _spawn_preview_popup(self, views, title=None):
         return spawn_preview_popup(self, views, title=title)
+
+    def _set_active_preview_popup(self, dlg=None, canvas=None):
+        self._active_preview_popup = dlg
+        self._active_preview_canvas = canvas
+
+    def _clear_active_preview_popup(self, dlg=None):
+        if dlg is None or self._active_preview_popup is dlg:
+            self._active_preview_popup = None
+            self._active_preview_canvas = None
 
     def _on_molecule_palette_changed(self, palette: str):
         palette = (palette or "cpk").lower()
@@ -3389,6 +3400,15 @@ QLabel:hover {{
 
     def _build_metadata_html(self, header_path:Path, header:dict, fd:dict, channel_idx:int, unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
         return viewer_preview._build_metadata_html(self, header_path, header, fd, channel_idx, unit_normalized, unit_display, arr_display, zero_offset)
+
+    def _build_single_channel_view(self, header_path_str, channel_idx: int, *, cmap_override=None, use_local_cmap=False):
+        return viewer_preview.build_single_channel_view(
+            self,
+            header_path_str,
+            channel_idx,
+            cmap_override=cmap_override,
+            use_local_cmap=use_local_cmap,
+        )
 
     def _frame_entry_from_header(self, path, header):
         if header is None:
