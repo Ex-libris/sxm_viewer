@@ -38,7 +38,8 @@ def _update_spectro_stats_label(viewer, stats=None):
     if not hasattr(viewer, 'spectro_stats_label'):
         return
     if not viewer.show_spectra:
-        viewer.spectro_stats_label.setText("Spectros: hidden")
+        viewer.spectro_stats_label.setText("Spectroscopy overlays hidden")
+        viewer.spectro_stats_label.setToolTip("Spectroscopy overlays are currently hidden in thumbnails and preview.")
         return
     total = len(getattr(viewer, 'spectros', []) or [])
     single_count = sum(1 for s in getattr(viewer, 'spectros', []) if s.get('matrix_index') is None)
@@ -54,7 +55,11 @@ def _update_spectro_stats_label(viewer, stats=None):
     elif matrix_count == 0:
         matrix_desc = ""
     viewer.spectro_stats_label.setText(
-        f"Spectros: {total} (Single: {single_count}, Matrix datasets: {matrix_count}{matrix_desc})"
+        f"Spectra {total} | Single {single_count} | Matrix {matrix_count}{matrix_desc}"
+    )
+    viewer.spectro_stats_label.setToolTip(
+        f"Loaded spectroscopy entries: {total}. Single traces: {single_count}. "
+        f"Matrix datasets: {matrix_count}{matrix_desc}."
     )
 
 
