@@ -7369,7 +7369,11 @@ class MultiPreviewCanvas(FigureCanvas):
         if right <= left or top <= bottom:
             return None
 
-        xs = np.linspace(left, right, width_px, dtype=np.float64)
+        # The rotate handle marks the local "top" edge of the frame.
+        # The cropped result is defined so the opposite edge becomes the
+        # top of the output image, which is a 180-degree remap of the
+        # frame's local axes rather than a mirror.
+        xs = np.linspace(right, left, width_px, dtype=np.float64)
         ys = np.linspace(bottom, top, height_px, dtype=np.float64)
         gx, gy = np.meshgrid(xs, ys)
 
@@ -7423,8 +7427,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if sampled.size == 0:
             return None
         cropped_disp = np.asarray(sampled).reshape((height_px, width_px))
-        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
-        return np.array(cropped_arr, copy=True)
+        return np.array(cropped_disp, copy=True)
 
     def _build_cropped_view_from_selection(
         self,
