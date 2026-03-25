@@ -7369,11 +7369,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if right <= left or top <= bottom:
             return None
 
-        # The rotate handle marks the local "top" edge of the frame.
-        # The cropped result is defined so the opposite edge becomes the
-        # top of the output image, which is a 180-degree remap of the
-        # frame's local axes rather than a mirror.
-        xs = np.linspace(right, left, width_px, dtype=np.float64)
+        xs = np.linspace(left, right, width_px, dtype=np.float64)
         ys = np.linspace(bottom, top, height_px, dtype=np.float64)
         gx, gy = np.meshgrid(xs, ys)
 
@@ -7396,16 +7392,18 @@ class MultiPreviewCanvas(FigureCanvas):
             xlim0, xlim1 = float(xlim[0]), float(xlim[1])
             ylim0, ylim1 = float(ylim[0]), float(ylim[1])
 
-        if w <= 1 or abs(xlim1 - xlim0) <= 1e-15:
-            cols = np.zeros_like(gx)
-        else:
-            cols = (gx - xlim0) * (float(w - 1) / float(xlim1 - xlim0))
-            cols = np.clip(cols, 0.0, float(w - 1))
-        if h <= 1 or abs(ylim1 - ylim0) <= 1e-15:
-            rows = np.zeros_like(gy)
-        else:
-            rows = (gy - ylim0) * (float(h - 1) / float(ylim1 - ylim0))
-            rows = np.clip(rows, 0.0, float(h - 1))
+        def _coord_grid_to_index_grid(values, start, end, size):
+            if size <= 1 or abs(end - start) <= 1e-15:
+                return np.zeros_like(values, dtype=np.float64)
+            if end > start:
+                idx = (values - start) / (end - start)
+            else:
+                idx = (values - end) / (start - end)
+            idx = idx * float(size - 1)
+            return np.clip(idx, 0.0, float(size - 1))
+
+        cols = _coord_grid_to_index_grid(gx, xlim0, xlim1, w)
+        rows = _coord_grid_to_index_grid(gy, ylim0, ylim1, h)
 
         if _HAS_SCIPY and ndimage is not None:
             try:
