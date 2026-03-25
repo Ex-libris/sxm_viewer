@@ -129,7 +129,7 @@ def spawn_preview_popup(owner, views, title=None):
         except Exception:
             return 180
 
-    def _enforce_square_dialog():
+    def _enforce_square_dialog(*, respect_min_side: bool = True):
         if _square_resize_busy["active"]:
             return
         try:
@@ -149,7 +149,9 @@ def spawn_preview_popup(owner, views, title=None):
             min_side = _minimum_square_side()
             avail_w = max(1, dlg.width() - margins.left() - margins.right())
             avail_h = max(1, dlg.height() - margins.top() - margins.bottom())
-            side = max(min(avail_w, avail_h), min_side)
+            side = min(avail_w, avail_h)
+            if respect_min_side:
+                side = max(side, min_side)
             target_w = side + margins.left() + margins.right()
             target_h = side + margins.top() + margins.bottom()
             dlg_min = dlg.minimumSizeHint()
@@ -179,7 +181,7 @@ def spawn_preview_popup(owner, views, title=None):
                 dlg.setMinimumSize(0, 0)
                 _last_square_target["w"] = -1
                 _last_square_target["h"] = -1
-                _enforce_square_dialog()
+                _enforce_square_dialog(respect_min_side=True)
         except Exception:
             pass
 
@@ -190,7 +192,9 @@ def spawn_preview_popup(owner, views, title=None):
                 return
         except Exception:
             pass
-        _enforce_square_dialog()
+        # After a user drag-resize, keep the popup square without forcing it
+        # back up to the latest font-derived content hint.
+        _enforce_square_dialog(respect_min_side=False)
 
     def _schedule_resize(force=False):
         if force:
