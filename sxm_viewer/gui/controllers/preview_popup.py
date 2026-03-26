@@ -1,6 +1,8 @@
 """Helpers for building preview pop-out dialogs."""
 from __future__ import annotations
 
+import numpy as np
+
 from ..._shared import QtWidgets, QtCore
 from ..canvases.detail_preview_canvas import MultiPreviewCanvas
 from .profile import PopupProfileController
@@ -34,6 +36,56 @@ def _resolve_popup_channel_source(owner, views):
     }
 
 
+def _shift_view_relative_zero(owner, view, enabled: bool):
+    new_view = owner._copy_view_for_popup(view)
+    arr = new_view.get("arr")
+    if arr is None:
+        new_view["display_relative_zero"] = bool(enabled)
+        if not enabled:
+            new_view["zero_offset"] = None
+        return new_view
+    arr_np = np.asarray(arr, dtype=float)
+    is_relative = bool(new_view.get("display_relative_zero", False))
+    try:
+        zero_offset = float(new_view.get("zero_offset")) if new_view.get("zero_offset") is not None else None
+    except Exception:
+        zero_offset = None
+    if enabled and not is_relative:
+        finite = arr_np[np.isfinite(arr_np)]
+        zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        new_view["arr"] = arr_np - zero_offset
+        clim = new_view.get("clim")
+        if clim is not None:
+            try:
+                lo, hi = clim
+                new_view["clim"] = (float(lo) - zero_offset, float(hi) - zero_offset)
+            except Exception:
+                pass
+    elif not enabled and is_relative:
+        zero_offset = float(zero_offset or 0.0)
+        new_view["arr"] = arr_np + zero_offset
+        clim = new_view.get("clim")
+        if clim is not None:
+            try:
+                lo, hi = clim
+                new_view["clim"] = (float(lo) + zero_offset, float(hi) + zero_offset)
+            except Exception:
+                pass
+        zero_offset = None
+    else:
+        new_view["arr"] = np.array(arr_np, copy=True)
+        if enabled and zero_offset is None:
+            finite = arr_np[np.isfinite(arr_np)]
+            zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+    new_view["display_relative_zero"] = bool(enabled)
+    new_view["zero_offset"] = zero_offset if enabled else None
+    return new_view
+
+
+def _apply_popup_display_state(owner, views, *, relative_zero: bool):
+    return [_shift_view_relative_zero(owner, view, relative_zero) for view in (views or [])]
+
+
 def spawn_preview_popup(owner, views, title=None):
     """Create a preview popup dialog reusing the existing owner logic."""
     if not views:
@@ -55,6 +107,10 @@ def spawn_preview_popup(owner, views, title=None):
     layout.setSpacing(0)
     layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
     popup_source = _resolve_popup_channel_source(owner, views)
+    popup_display_state = {
+        "relative_zero": bool((views[0] or {}).get("display_relative_zero", getattr(owner, "display_units_relative", False)))
+        if views else bool(getattr(owner, "display_units_relative", False))
+    }
 
     # Use a default that we immediately adapt to the
     # aspect ratio of the underlying image so the popup
@@ -236,7 +292,7 @@ def spawn_preview_popup(owner, views, title=None):
     except Exception:
         pass
 
-    canvas.set_views([owner._copy_view_for_popup(v) for v in views])
+    canvas.set_views(_apply_popup_display_state(owner, views, relative_zero=popup_display_state["relative_zero"]))
     try:
         canvas.set_plot_font_family_callback(lambda fam: owner.set_plot_font_family(fam))
         canvas.set_plot_font_family(getattr(owner, "_plot_font_family", "sans-serif"))
@@ -269,6 +325,11 @@ def spawn_preview_popup(owner, views, title=None):
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_copy_feedback_handler(lambda view=None, info=None, host=dlg: owner._on_view_copied(view, info, target=host))
+    canvas.set_display_relative_zero_menu_callback(
+        lambda enabled: _set_popup_relative_zero(enabled),
+        state_cb=lambda: popup_display_state["relative_zero"],
+        tooltip="Display values relative to the current zero/reference",
+    )
 
     seq = views[0].get("crop_sequence") if views else None
     if hasattr(owner, "quick_crop_controller"):
@@ -307,6 +368,15 @@ def spawn_preview_popup(owner, views, title=None):
         canvas._undo_suspend_depth = max(0, getattr(canvas, "_undo_suspend_depth", 0) - 1)
     except Exception:
         pass
+
+    def _set_popup_relative_zero(enabled):
+        popup_display_state["relative_zero"] = bool(enabled)
+        if not getattr(canvas, "views", None):
+            return
+        canvas.set_views(
+            _apply_popup_display_state(owner, canvas.views, relative_zero=popup_display_state["relative_zero"]),
+            preserve_profiles=True,
+        )
 
     popup_header = None
     if popup_source is not None:
@@ -370,7 +440,14 @@ def spawn_preview_popup(owner, views, title=None):
                 popup_source["channel_idx"] = idx
                 canvas._popup_channel_source = dict(popup_source)
                 preserve_profiles = True
-                canvas.set_views([owner._copy_view_for_popup(bundle["view"])], preserve_profiles=preserve_profiles)
+                canvas.set_views(
+                    _apply_popup_display_state(
+                        owner,
+                        [bundle["view"]],
+                        relative_zero=popup_display_state["relative_zero"],
+                    ),
+                    preserve_profiles=preserve_profiles,
+                )
                 dlg.setWindowTitle(owner._friendly_view_title(bundle["view"], default="Preview"))
                 channel_combo.blockSignals(True)
                 channel_combo.setCurrentIndex(idx)

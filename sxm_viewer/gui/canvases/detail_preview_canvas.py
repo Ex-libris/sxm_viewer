@@ -137,6 +137,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._histogram_dialog_callback = None
         self._histogram_auto_callback = None
         self._histogram_reset_callback = None
+        self._display_relative_zero_menu_callback = None
+        self._display_relative_zero_menu_state_callback = None
+        self._display_relative_zero_menu_tooltip = ""
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._value_callback = None
@@ -562,6 +565,12 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_histogram_reset_callback(self, cb):
         """Register callback that resets contrast to the full data range."""
         self._histogram_reset_callback = cb
+
+    def set_display_relative_zero_menu_callback(self, cb, state_cb=None, tooltip=None):
+        """Register an optional popup-local menu action for relative-zero display."""
+        self._display_relative_zero_menu_callback = cb
+        self._display_relative_zero_menu_state_callback = state_cb
+        self._display_relative_zero_menu_tooltip = str(tooltip or "")
 
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
@@ -4984,6 +4993,17 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act = display_menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(bool(self._show_colorbar))
+        rel_zero_act = None
+        if callable(self._display_relative_zero_menu_callback):
+            rel_zero_act = display_menu.addAction("Values relative to zero/reference")
+            rel_zero_act.setCheckable(True)
+            try:
+                rel_zero_act.setChecked(bool(self._display_relative_zero_menu_state_callback()))
+            except Exception:
+                rel_zero_act.setChecked(False)
+            rel_zero_tip = self._display_relative_zero_menu_tooltip or "Display values relative to the current zero/reference"
+            rel_zero_act.setToolTip(rel_zero_tip)
+            rel_zero_act.setStatusTip(rel_zero_tip)
         cbar_orient_menu = display_menu.addMenu("Colorbar orientation")
         cbar_orient_group = QtWidgets.QActionGroup(self)
         cbar_orient_group.setExclusive(True)
@@ -5176,6 +5196,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._toggle_ticks()
         elif chosen == show_cbar_act:
             self._toggle_colorbar()
+        elif rel_zero_act and chosen == rel_zero_act:
+            try:
+                self._display_relative_zero_menu_callback(rel_zero_act.isChecked())
+            except Exception:
+                pass
         elif chosen == show_title_act:
             self.set_show_title(show_title_act.isChecked())
         elif chosen == acq_overlay_act:
