@@ -147,6 +147,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_popup_style_tooltip = ""
         self._stp_export_callback = None
         self._arrange_windows_callback = None
+        self._minimize_windows_callback = None
         self._value_callback = None
         self._undo_history = []
         self._undo_restore_in_progress = False
@@ -615,6 +616,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_arrange_callback(self, cb):
         """Register callback invoked when the user requests window tiling."""
         self._arrange_windows_callback = cb
+
+    def set_window_minimize_callback(self, cb):
+        """Register callback invoked when the user requests minimizing pop-out windows."""
+        self._minimize_windows_callback = cb
 
     def set_plot_font_family_callback(self, cb):
         """Register a callback used when the user picks a new plot font."""
@@ -5144,9 +5149,14 @@ class MultiPreviewCanvas(FigureCanvas):
         view_menu = menu.addMenu("View")
         reset_zoom_act = view_menu.addAction("Reset Zoom")
         arrange_act = None
+        minimize_act = None
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
             arrange_act = view_menu.addAction("Arrange pop-outs")
+        if callable(self._minimize_windows_callback):
+            if arrange_act is None:
+                view_menu.addSeparator()
+            minimize_act = view_menu.addAction("Minimize pop-outs")
 
         add_font_menu_action(
             menu,
@@ -5279,6 +5289,11 @@ class MultiPreviewCanvas(FigureCanvas):
         elif arrange_act and chosen == arrange_act:
             try:
                 self._arrange_windows_callback()
+            except Exception:
+                pass
+        elif minimize_act and chosen == minimize_act:
+            try:
+                self._minimize_windows_callback()
             except Exception:
                 pass
         elif angle_style_act and chosen == angle_style_act:

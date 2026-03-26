@@ -931,6 +931,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_tile_btn.setEnabled(False)
         self.quick_crop_tile_btn.clicked.connect(self.on_arrange_popouts)
         quick_detail_layout.addWidget(self.quick_crop_tile_btn)
+        self.quick_crop_minimize_btn = QtWidgets.QToolButton()
+        self.quick_crop_minimize_btn.setText("Minimize pop-outs")
+        self.quick_crop_minimize_btn.setToolTip("Minimize all open pop-out windows (Ctrl+Shift+M)")
+        self.quick_crop_minimize_btn.setEnabled(False)
+        self.quick_crop_minimize_btn.clicked.connect(self.on_minimize_popouts)
+        quick_detail_layout.addWidget(self.quick_crop_minimize_btn)
         quick_detail_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
         quick_detail_layout.addWidget(self.quick_crop_hint_lbl)
@@ -1039,6 +1045,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
+        self.preview_canvas.set_window_minimize_callback(self.on_minimize_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
         # Seed molecule recents from config and listen for updates
         try:
@@ -1086,6 +1093,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_template_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+T"), self)
         self.quick_crop_template_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_template_shortcut.activated.connect(lambda: self.on_show_crop_template_overlay_toggled(not self.show_crop_template_overlay))
+        self.quick_crop_minimize_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+M"), self)
+        self.quick_crop_minimize_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+        self.quick_crop_minimize_shortcut.activated.connect(self.on_minimize_popouts)
         self._apply_detail_view_theme()
         # apply saved metadata font size
         try:
@@ -1940,6 +1950,7 @@ QLabel:hover {{
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
         ) % color
 
@@ -4275,6 +4286,12 @@ QLabel:hover {{
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.arrange_popups()
+
+    def on_minimize_popouts(self):
+        """Minimize all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.minimize_popups()
 
     def _view_source_path(self, view):
         if not view:

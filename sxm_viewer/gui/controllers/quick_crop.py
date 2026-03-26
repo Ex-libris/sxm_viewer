@@ -483,7 +483,8 @@ class QuickCropController:
     def update_popup_actions(self):
         viewer = self.viewer
         tile_btn = getattr(viewer, 'quick_crop_tile_btn', None)
-        if tile_btn is None:
+        minimize_btn = getattr(viewer, 'quick_crop_minimize_btn', None)
+        if tile_btn is None and minimize_btn is None:
             return
         alive = []
         cleaned = []
@@ -497,7 +498,10 @@ class QuickCropController:
             except RuntimeError:
                 continue
         viewer._popup_refs = cleaned
-        tile_btn.setEnabled(bool(alive))
+        if tile_btn is not None:
+            tile_btn.setEnabled(bool(alive))
+        if minimize_btn is not None:
+            minimize_btn.setEnabled(bool(alive))
 
     def _crop_color_for_seq(self, seq: int):
         palette = [
@@ -527,6 +531,17 @@ class QuickCropController:
             dlg.setGeometry(x + 10, y + 10, tile_w - 20, tile_h - 20)
             dlg.raise_()
             dlg.activateWindow()
+
+    def minimize_popups(self):
+        viewer = self.viewer
+        popups = [dlg for dlg in getattr(viewer, '_popup_refs', []) if dlg and dlg.isVisible()]
+        if not popups:
+            return
+        for dlg in popups:
+            try:
+                dlg.showMinimized()
+            except Exception:
+                continue
 
     # ------------------------------------------------------------------
     def export_selected_crops(self):
