@@ -121,6 +121,11 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas._undo_suspend_depth += 1
     except Exception:
         pass
+    if restore_mode:
+        try:
+            canvas.set_render_suspended(True)
+        except Exception:
+            pass
     try:
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)

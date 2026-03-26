@@ -900,16 +900,21 @@ class SessionController:
                         has_geometry = True
                     except Exception:
                         pass
-                restored.append((dlg, has_geometry))
+                restored.append((dlg, canvas, has_geometry))
         finally:
             viewer._canvas_display_syncing = prev_display_sync
         shown = 0
         show_start = time.perf_counter()
-        for dlg, has_geometry in restored:
+        for dlg, canvas, has_geometry in restored:
             if dlg is None:
                 continue
             try:
                 dlg.setUpdatesEnabled(True)
+            except Exception:
+                pass
+            try:
+                if canvas is not None and hasattr(canvas, "set_render_suspended"):
+                    canvas.set_render_suspended(False)
             except Exception:
                 pass
             try:

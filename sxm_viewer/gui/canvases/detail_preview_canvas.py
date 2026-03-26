@@ -94,6 +94,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._resize_settle_timer.setSingleShot(True)
         self._resize_settle_timer.setInterval(140)
         self._resize_settle_timer.timeout.connect(self._finalize_after_resize)
+        self._render_suspended = False
+        self._render_pending = False
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._overlay_shortcuts = []
         self.views = []
@@ -428,11 +430,35 @@ class MultiPreviewCanvas(FigureCanvas):
         self._notify_views_callback()
 
     def draw(self):
+        if getattr(self, "_render_suspended", False):
+            self._render_pending = True
+            return
         try:
             super().draw()
+            self._render_pending = False
         except np.linalg.LinAlgError:
             # Ignore transient singular transforms during layout updates.
             return
+
+    def draw_idle(self):
+        if getattr(self, "_render_suspended", False):
+            self._render_pending = True
+            return
+        try:
+            super().draw_idle()
+        except np.linalg.LinAlgError:
+            return
+
+    def set_render_suspended(self, suspended: bool):
+        suspended = bool(suspended)
+        previously = bool(getattr(self, "_render_suspended", False))
+        self._render_suspended = suspended
+        if previously and not suspended and getattr(self, "_render_pending", False):
+            self._render_pending = False
+            try:
+                super().draw()
+            except np.linalg.LinAlgError:
+                return
 
     def set_compact_size_hints(self, enabled: bool = True):
         self._compact_size_hints = bool(enabled)
