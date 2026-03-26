@@ -430,12 +430,16 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
 
     def _set_popup_relative_zero(enabled):
         popup_display_state["relative_zero"] = bool(enabled)
+        canvas._popup_relative_zero_enabled = bool(enabled)
         if not getattr(canvas, "views", None):
             return
         canvas.set_views(
             _apply_popup_display_state(owner, canvas.views, relative_zero=popup_display_state["relative_zero"]),
             preserve_profiles=True,
         )
+
+    canvas._popup_relative_zero_enabled = bool(popup_display_state["relative_zero"])
+    canvas._popup_relative_zero_setter = _set_popup_relative_zero
 
     popup_header = None
     if popup_source is not None:

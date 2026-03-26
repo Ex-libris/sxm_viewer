@@ -1700,6 +1700,26 @@ QLabel:hover {{
         except Exception:
             scale = 1.0
         scale = max(0.6, min(2.5, scale))
+        rel_axes_enabled = None
+        try:
+            views = list(getattr(canvas, "views", []) or [])
+            if views and hasattr(canvas, "_use_relative_axes"):
+                rel_axes_enabled = bool(canvas._use_relative_axes(views[0]))
+            else:
+                rel_override = getattr(canvas, "_relative_axes_override", None)
+                rel_axes_enabled = None if rel_override is None else bool(rel_override)
+        except Exception:
+            rel_axes_enabled = None
+        rel_zero_enabled = None
+        try:
+            rel_zero_enabled = bool(getattr(canvas, "_popup_relative_zero_enabled"))
+        except Exception:
+            try:
+                views = list(getattr(canvas, "views", []) or [])
+                if views:
+                    rel_zero_enabled = bool((views[0] or {}).get("display_relative_zero", False))
+            except Exception:
+                rel_zero_enabled = None
         return {
             "plot_typography": {
                 "family": family,
@@ -1709,6 +1729,10 @@ QLabel:hover {{
             },
             "view_font_scale": scale,
             "display_options": self._canvas_display_state_from_canvas(canvas),
+            "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
+            "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
+            "relative_axes_enabled": rel_axes_enabled,
+            "relative_zero_enabled": rel_zero_enabled,
         }
 
     def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
@@ -1761,10 +1785,40 @@ QLabel:hover {{
                     else:
                         canvas._disconnect_scale_bar_events()
                 canvas._frame_fill_mode = bool(display.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False)))
-                rel_override = display.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None))
-                canvas._relative_axes_override = None if rel_override is None else bool(rel_override)
                 layout = str(display.get("view_layout", getattr(canvas, "_view_layout", "grid")) or "grid").strip().lower()
                 canvas._view_layout = layout if layout in ("grid", "stacked") else "grid"
+            except Exception:
+                pass
+        sb_settings = style_snapshot.get("scale_bar_settings")
+        if sb_settings is not None:
+            try:
+                canvas._scale_bar_settings = dict(sb_settings or {})
+            except Exception:
+                pass
+        sb_pos = style_snapshot.get("scale_bar_pos")
+        if sb_pos is not None:
+            try:
+                canvas._scale_bar_pos = tuple(sb_pos)
+            except Exception:
+                pass
+        rel_axes_enabled = style_snapshot.get("relative_axes_enabled", None)
+        if rel_axes_enabled is not None:
+            try:
+                canvas._relative_axes_override = bool(rel_axes_enabled)
+            except Exception:
+                pass
+        else:
+            try:
+                rel_override = display.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None))
+                canvas._relative_axes_override = None if rel_override is None else bool(rel_override)
+            except Exception:
+                pass
+        rel_zero_enabled = style_snapshot.get("relative_zero_enabled", None)
+        if rel_zero_enabled is not None:
+            try:
+                rel_zero_setter = getattr(canvas, "_popup_relative_zero_setter", None)
+                if callable(rel_zero_setter):
+                    rel_zero_setter(bool(rel_zero_enabled))
             except Exception:
                 pass
         if redraw:
