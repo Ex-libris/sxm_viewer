@@ -86,7 +86,7 @@ def _apply_popup_display_state(owner, views, *, relative_zero: bool):
     return [_shift_view_relative_zero(owner, view, relative_zero) for view in (views or [])]
 
 
-def spawn_preview_popup(owner, views, title=None, *, show_immediately=True):
+def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, restore_mode=False):
     """Create a preview popup dialog reusing the existing owner logic."""
     if not views:
         return None
@@ -127,36 +127,83 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True):
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
     except Exception:
         pass
-    try:
-        canvas.set_show_title(getattr(owner, "show_preview_title", True))
-    except Exception:
-        pass
-    try:
-        canvas.set_show_molecules(getattr(owner, "show_molecules", True))
-    except Exception:
-        pass
-    try:
-        canvas.set_show_acquisition_overlay(getattr(owner, "show_acquisition_overlay", False))
-    except Exception:
-        pass
-    try:
-        canvas.set_profile_label_mode(getattr(owner, "profile_label_mode", "length"))
-    except Exception:
-        pass
-    try:
-        # Keep data undistorted in popups.
-        canvas.set_fit_to_canvas(False)
-    except Exception:
-        pass
 
     source_canvas = getattr(owner, "preview_canvas", None)
-    canvas.set_view_layout(getattr(source_canvas, "_view_layout", "grid"))
-    try:
-        canvas.set_show_profile_overlays(getattr(source_canvas, "_show_profile_overlays", True))
-        canvas.set_show_angle_overlays(getattr(source_canvas, "_show_angle_overlays", True))
-        canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", True))
-    except Exception:
-        pass
+    rel_override = getattr(source_canvas, "_relative_axes_override", None)
+    if rel_override is None:
+        rel_override = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
+    frame_fill_initial = bool(getattr(source_canvas, "_frame_fill_mode", False))
+    measure_initial = bool(
+        getattr(source_canvas, "_profile_user_enabled", getattr(source_canvas, "profile_enabled", False))
+    )
+    angle_initial = bool(getattr(source_canvas, "angle_enabled", False))
+
+    if restore_mode:
+        try:
+            canvas._show_title = bool(getattr(owner, "show_preview_title", True))
+            canvas.show_molecules = bool(getattr(owner, "show_molecules", True))
+            canvas._show_acquisition_overlay = bool(getattr(owner, "show_acquisition_overlay", False))
+            canvas._profile_label_mode = str(getattr(owner, "profile_label_mode", "length") or "length")
+            canvas._fit_to_canvas = False
+            canvas._view_layout = str(getattr(source_canvas, "_view_layout", "grid") or "grid")
+            canvas._show_profile_overlays = bool(getattr(source_canvas, "_show_profile_overlays", True))
+            canvas._show_angle_overlays = bool(getattr(source_canvas, "_show_angle_overlays", True))
+            canvas._show_shortcut_hint = bool(getattr(source_canvas, "_show_shortcut_hint", True))
+            canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
+            canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
+            font_family = str(getattr(owner, "_plot_font_family", "sans-serif") or "sans-serif")
+            canvas._font_family = font_family
+            settings = dict(getattr(canvas, "_scale_bar_settings", {}) or {})
+            settings["font_family"] = font_family
+            canvas._scale_bar_settings = settings
+            canvas.scale_bar_enabled = bool(owner.scale_bar_cb.isChecked())
+            if canvas.scale_bar_enabled:
+                canvas._connect_scale_bar_events()
+            canvas._relative_axes_override = rel_override
+            canvas.molecule_palette = (getattr(owner, "molecule_palette", "cpk") or "cpk").lower()
+            if frame_fill_initial:
+                canvas._frame_fill_prev_state = {
+                    "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
+                    "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
+                    "show_title": bool(getattr(canvas, "_show_title", True)),
+                    "fit_to_canvas": bool(getattr(canvas, "_fit_to_canvas", False)),
+                }
+                canvas._show_ticks = False
+                canvas._show_colorbar = False
+                canvas._show_title = False
+                canvas._fit_to_canvas = False
+                canvas._frame_fill_mode = True
+        except Exception:
+            pass
+    else:
+        try:
+            canvas.set_show_title(getattr(owner, "show_preview_title", True))
+        except Exception:
+            pass
+        try:
+            canvas.set_show_molecules(getattr(owner, "show_molecules", True))
+        except Exception:
+            pass
+        try:
+            canvas.set_show_acquisition_overlay(getattr(owner, "show_acquisition_overlay", False))
+        except Exception:
+            pass
+        try:
+            canvas.set_profile_label_mode(getattr(owner, "profile_label_mode", "length"))
+        except Exception:
+            pass
+        try:
+            # Keep data undistorted in popups.
+            canvas.set_fit_to_canvas(False)
+        except Exception:
+            pass
+        canvas.set_view_layout(getattr(source_canvas, "_view_layout", "grid"))
+        try:
+            canvas.set_show_profile_overlays(getattr(source_canvas, "_show_profile_overlays", True))
+            canvas.set_show_angle_overlays(getattr(source_canvas, "_show_angle_overlays", True))
+            canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", True))
+        except Exception:
+            pass
 
     _square_resize_busy = {"active": False}
     _popup_resize_threshold_px = 2
@@ -303,7 +350,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True):
     canvas.set_views(_apply_popup_display_state(owner, views, relative_zero=popup_display_state["relative_zero"]))
     try:
         canvas.set_plot_font_family_callback(lambda fam: owner.set_plot_font_family(fam))
-        canvas.set_plot_font_family(getattr(owner, "_plot_font_family", "sans-serif"))
+        if not restore_mode:
+            canvas.set_plot_font_family(getattr(owner, "_plot_font_family", "sans-serif"))
     except Exception:
         pass
     def _on_popup_canvas_state_changed(_=None):
@@ -350,31 +398,25 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True):
     canvas.show_fixed_crop_template(False)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
-        canvas.set_molecule_palette(owner.molecule_palette, notify=False)
+        if not restore_mode:
+            canvas.set_molecule_palette(owner.molecule_palette, notify=False)
         canvas.set_molecule_palette_callback(owner._on_molecule_palette_changed)
         owner._popup_canvases.append(canvas)
     except Exception:
         pass
-
-    rel_override = getattr(source_canvas, "_relative_axes_override", None)
-    if rel_override is None:
-        rel_override = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
-    canvas.set_relative_axes_override(rel_override)
-
-    frame_fill_initial = bool(getattr(source_canvas, "_frame_fill_mode", False))
-    if frame_fill_initial:
-        try:
-            canvas.set_frame_fill_mode(True)
-        except Exception:
-            pass
-
-    measure_initial = bool(
-        getattr(source_canvas, "_profile_user_enabled", getattr(source_canvas, "profile_enabled", False))
-    )
-    angle_initial = bool(getattr(source_canvas, "angle_enabled", False))
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
-    profile_controller.set_initial_state(measure_initial)
-    canvas.set_angle_tool_enabled(angle_initial)
+    if not restore_mode:
+        canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
+        canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
+        canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
+        canvas.set_relative_axes_override(rel_override)
+        if frame_fill_initial:
+            try:
+                canvas.set_frame_fill_mode(True)
+            except Exception:
+                pass
+        profile_controller.set_initial_state(measure_initial)
+        canvas.set_angle_tool_enabled(angle_initial)
 
     try:
         canvas._undo_suspend_depth = max(0, getattr(canvas, "_undo_suspend_depth", 0) - 1)

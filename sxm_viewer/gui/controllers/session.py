@@ -871,6 +871,7 @@ class SessionController:
                         built_views,
                         title=snap.get("window_title") or "Preview",
                         show_immediately=False,
+                        restore_mode=True,
                     )
                 except Exception:
                     continue
