@@ -140,6 +140,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._display_relative_zero_menu_callback = None
         self._display_relative_zero_menu_state_callback = None
         self._display_relative_zero_menu_tooltip = ""
+        self._apply_popup_style_callback = None
+        self._apply_popup_style_label = "Apply this style to all pop-ups"
+        self._apply_popup_style_tooltip = ""
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._value_callback = None
@@ -571,6 +574,13 @@ class MultiPreviewCanvas(FigureCanvas):
         self._display_relative_zero_menu_callback = cb
         self._display_relative_zero_menu_state_callback = state_cb
         self._display_relative_zero_menu_tooltip = str(tooltip or "")
+
+    def set_apply_popup_style_callback(self, cb, label=None, tooltip=None):
+        """Register an optional action that applies this popup style to peer popups."""
+        self._apply_popup_style_callback = cb
+        if label:
+            self._apply_popup_style_label = str(label)
+        self._apply_popup_style_tooltip = str(tooltip or "")
 
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
@@ -5030,6 +5040,13 @@ class MultiPreviewCanvas(FigureCanvas):
         rel_axes_act = display_menu.addAction("Relative axes")
         rel_axes_act.setCheckable(True)
         rel_axes_act.setChecked(bool(self._use_relative_axes(view)))
+        apply_popup_style_act = None
+        if callable(self._apply_popup_style_callback):
+            display_menu.addSeparator()
+            apply_popup_style_act = display_menu.addAction(self._apply_popup_style_label or "Apply this style to all pop-ups")
+            popup_style_tip = self._apply_popup_style_tooltip or "Copy font size, typography and display layout from this popup to the other open pop-ups"
+            apply_popup_style_act.setToolTip(popup_style_tip)
+            apply_popup_style_act.setStatusTip(popup_style_tip)
 
         layout_menu = display_menu.addMenu("Layout")
         layout_grid_act = layout_menu.addAction("Grid")
@@ -5212,6 +5229,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._notify_views_callback()
         elif chosen == rel_axes_act:
             self.set_relative_axes_override(rel_axes_act.isChecked())
+        elif apply_popup_style_act and chosen == apply_popup_style_act:
+            try:
+                self._apply_popup_style_callback()
+            except Exception:
+                pass
         elif chosen == layout_grid_act:
             self.set_view_layout("grid")
         elif chosen == layout_stack_act:

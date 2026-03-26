@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -177,12 +178,16 @@ class SessionController:
         viewer = self.viewer
         if not isinstance(payload, dict):
             return False
+        t0 = time.perf_counter()
+        phase_t = t0
         image_folder = payload.get("image_folder") or ""
         if image_folder:
             try:
                 viewer.load_folder(Path(image_folder))
             except Exception:
                 pass
+        load_folder_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         spectra_folder = payload.get("spectra_folder") or ""
         if spectra_folder:
             try:
@@ -235,53 +240,22 @@ class SessionController:
         pending_preview = payload.get("last_preview")
         viewer.last_preview = None
         ui = payload.get("ui") or {}
-        try:
-            if hasattr(viewer, "thumb_sort_combo") and ui.get("thumb_sort"):
-                viewer.thumb_sort_combo.setCurrentText(ui.get("thumb_sort"))
-            if hasattr(viewer, "thumb_filter_combo") and ui.get("thumb_filter"):
-                viewer.thumb_filter_combo.setCurrentText(ui.get("thumb_filter"))
-            if hasattr(viewer, "thumb_cmap_combo") and ui.get("thumb_cmap"):
-                viewer.thumb_cmap_combo.setCurrentText(ui.get("thumb_cmap"))
-                viewer.on_thumb_cmap_changed(viewer.thumb_cmap_combo.currentIndex())
-            if hasattr(viewer, "preview_cmap_combo") and ui.get("preview_cmap"):
-                viewer.preview_cmap_combo.setCurrentText(ui.get("preview_cmap"))
-                viewer.on_preview_cmap_changed(viewer.preview_cmap_combo.currentIndex())
-            if hasattr(viewer, "channel_dropdown"):
-                idx = int(ui.get("channel_index", viewer.channel_dropdown.currentIndex()))
-                viewer.channel_dropdown.setCurrentIndex(max(0, idx))
-        except Exception:
-            pass
-        try:
-            viewer._apply_mode(int(ui.get("mode", viewer.MODE_BROWSE)), remember=False)
-        except Exception:
-            pass
-        try:
-            viewer.on_show_spectra_toggled(bool(ui.get("show_spectra", True)))
-            viewer.on_show_preview_spectra_toggled(bool(ui.get("show_preview_spectra", True)))
-            viewer.on_show_matrix_markers_toggled(bool(ui.get("show_matrix_markers", True)))
-            viewer.on_show_single_markers_toggled(bool(ui.get("show_single_markers", True)))
-            viewer.on_compact_markers_toggled(bool(ui.get("compact_markers", True)))
-            viewer.on_detail_dark_toggled(bool(ui.get("detail_dark_view", False)))
-            viewer.on_detail_grid_toggled(bool(ui.get("detail_grid_view", False)))
-            viewer.on_show_molecules_toggled(bool(ui.get("show_molecules", True)))
-            viewer.on_show_acquisition_overlay_toggled(bool(ui.get("show_acquisition_overlay", False)))
-            viewer.on_profile_label_mode_changed(ui.get("profile_label_mode", "length"))
-            viewer.on_relative_axes_toggled(bool(ui.get("relative_axes", False)))
-            viewer.on_unit_relative_toggled(bool(ui.get("display_units_relative", False)))
-            viewer.on_unit_display_toggled(bool(ui.get("display_units_si", False)))
-            viewer.on_scale_bar_toggled(bool(ui.get("scale_bar", False)))
-            viewer._on_toggle_preview_title(bool(ui.get("show_preview_title", True)))
-        except Exception:
-            pass
+        self._apply_ui_state_fast(ui)
+        apply_ui_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         try:
             viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
         except Exception:
             pass
+        thumbs_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         if pending_preview:
             try:
                 viewer.show_file_channel(pending_preview[0], pending_preview[1])
             except Exception:
                 pass
+        preview_build_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         preview_state = payload.get("preview_state") or {}
         preview = getattr(viewer, "preview_canvas", None)
         if preview:
@@ -328,6 +302,8 @@ class SessionController:
                 viewer=viewer,
                 require_view_match=True,
             )
+        preview_restore_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         canvas_state = payload.get("canvas_state")
         if canvas_state:
             try:
@@ -337,10 +313,176 @@ class SessionController:
                     win._restore_state(canvas_state)
             except Exception:
                 pass
+        canvas_window_dt = time.perf_counter() - phase_t
+        phase_t = time.perf_counter()
         popup_defs = payload.get("popup_canvases") or []
+        popup_stats = {"count": 0, "elapsed": 0.0}
         if popup_defs:
-            self._restore_popup_canvases(popup_defs, views_dir)
+            popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
+        total_dt = time.perf_counter() - t0
+        try:
+            log_status(
+                "[Session] load %.2fs | folder %.2fs | ui %.2fs | thumbs %.2fs | preview %.2fs + %.2fs | canvas %.2fs | popups %d in %.2fs"
+                % (
+                    total_dt,
+                    load_folder_dt,
+                    apply_ui_dt,
+                    thumbs_dt,
+                    preview_build_dt,
+                    preview_restore_dt,
+                    canvas_window_dt,
+                    int(popup_stats.get("count", 0)),
+                    float(popup_stats.get("elapsed", time.perf_counter() - phase_t)),
+                )
+            )
+        except Exception:
+            pass
         return True
+
+    @staticmethod
+    def _set_checked_silent(widget, checked):
+        if widget is None:
+            return
+        try:
+            prev = widget.blockSignals(True)
+            widget.setChecked(bool(checked))
+            widget.blockSignals(prev)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _set_current_text_silent(widget, text):
+        if widget is None or text in (None, ""):
+            return
+        try:
+            prev = widget.blockSignals(True)
+            widget.setCurrentText(str(text))
+            widget.blockSignals(prev)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _set_current_index_silent(widget, index):
+        if widget is None or index is None:
+            return
+        try:
+            prev = widget.blockSignals(True)
+            widget.setCurrentIndex(int(index))
+            widget.blockSignals(prev)
+        except Exception:
+            pass
+
+    def _apply_ui_state_fast(self, ui: dict):
+        viewer = self.viewer
+        if not isinstance(ui, dict):
+            ui = {}
+        try:
+            viewer.thumb_size_px = int(ui.get("thumb_size_px", getattr(viewer, "thumb_size_px", 160)) or getattr(viewer, "thumb_size_px", 160))
+        except Exception:
+            pass
+        self._set_current_text_silent(getattr(viewer, "thumb_sort_combo", None), ui.get("thumb_sort"))
+        self._set_current_text_silent(getattr(viewer, "thumb_filter_combo", None), ui.get("thumb_filter"))
+        self._set_current_text_silent(getattr(viewer, "thumb_cmap_combo", None), ui.get("thumb_cmap"))
+        self._set_current_text_silent(getattr(viewer, "preview_cmap_combo", None), ui.get("preview_cmap"))
+        try:
+            if hasattr(viewer, "thumb_cmap_combo"):
+                viewer.thumb_cmap = viewer.thumb_cmap_combo.currentText() or getattr(viewer, "thumb_cmap", "")
+        except Exception:
+            pass
+        try:
+            if hasattr(viewer, "preview_cmap_combo"):
+                viewer.preview_cmap = viewer.preview_cmap_combo.currentText() or getattr(viewer, "preview_cmap", "")
+        except Exception:
+            pass
+        if hasattr(viewer, "channel_dropdown"):
+            try:
+                idx = int(ui.get("channel_index", viewer.channel_dropdown.currentIndex()))
+            except Exception:
+                idx = viewer.channel_dropdown.currentIndex()
+            idx = max(0, min(idx, max(0, viewer.channel_dropdown.count() - 1)))
+            self._set_current_index_silent(viewer.channel_dropdown, idx)
+        try:
+            viewer._apply_mode(int(ui.get("mode", viewer.MODE_BROWSE)), remember=False)
+        except Exception:
+            pass
+
+        viewer.show_preview_title = bool(ui.get("show_preview_title", getattr(viewer, "show_preview_title", True)))
+        viewer.show_spectra = bool(ui.get("show_spectra", getattr(viewer, "show_spectra", True)))
+        viewer.show_preview_spectra = bool(ui.get("show_preview_spectra", getattr(viewer, "show_preview_spectra", True)))
+        viewer.show_matrix_markers = bool(ui.get("show_matrix_markers", getattr(viewer, "show_matrix_markers", True)))
+        viewer.show_single_markers = bool(ui.get("show_single_markers", getattr(viewer, "show_single_markers", True)))
+        viewer.compact_markers = bool(ui.get("compact_markers", getattr(viewer, "compact_markers", True)))
+        viewer.detail_dark_view = bool(ui.get("detail_dark_view", getattr(viewer, "detail_dark_view", False)))
+        viewer.detail_grid_view = bool(ui.get("detail_grid_view", getattr(viewer, "detail_grid_view", False)))
+        viewer.relative_axes = bool(ui.get("relative_axes", getattr(viewer, "relative_axes", False)))
+        viewer.display_units_relative = bool(ui.get("display_units_relative", getattr(viewer, "display_units_relative", False)))
+        viewer.display_units_si = bool(ui.get("display_units_si", getattr(viewer, "display_units_si", False)))
+        viewer.preview_locked = bool(ui.get("preview_locked", getattr(viewer, "preview_locked", False)))
+        viewer.show_molecules = bool(ui.get("show_molecules", getattr(viewer, "show_molecules", True)))
+        viewer.show_acquisition_overlay = bool(ui.get("show_acquisition_overlay", getattr(viewer, "show_acquisition_overlay", False)))
+        profile_label_mode = str(ui.get("profile_label_mode", getattr(viewer, "profile_label_mode", "length")) or "length").strip().lower()
+        if profile_label_mode not in {"length", "full", "hidden"}:
+            profile_label_mode = "length"
+        viewer.profile_label_mode = profile_label_mode
+
+        self._set_checked_silent(getattr(viewer, "unit_display_cb", None), viewer.display_units_si)
+        self._set_checked_silent(getattr(viewer, "unit_relative_cb", None), viewer.display_units_relative)
+        self._set_checked_silent(getattr(viewer, "relative_axes_cb", None), viewer.relative_axes)
+        self._set_checked_silent(getattr(viewer, "show_spectra_cb", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "scale_bar_cb", None), bool(ui.get("scale_bar", False)))
+        self._set_checked_silent(getattr(viewer, "preview_lock_cb", None), viewer.preview_locked)
+
+        for action_name, value in (
+            ("spectro_overlay_act", viewer.show_spectra),
+            ("matrix_markers_act", viewer.show_matrix_markers),
+            ("single_markers_act", viewer.show_single_markers),
+            ("compact_markers_act", viewer.compact_markers),
+            ("detail_dark_act", viewer.detail_dark_view),
+            ("detail_grid_act", viewer.detail_grid_view),
+            ("molecules_act", viewer.show_molecules),
+            ("acquisition_overlay_act", viewer.show_acquisition_overlay),
+        ):
+            self._set_checked_silent(getattr(viewer, action_name, None), value)
+        for key, action in (getattr(viewer, "profile_label_actions", {}) or {}).items():
+            self._set_checked_silent(action, key == profile_label_mode)
+        try:
+            if hasattr(viewer, "preview_detach_btn"):
+                viewer.preview_detach_btn.setEnabled(not viewer.preview_locked)
+        except Exception:
+            pass
+
+        try:
+            viewer._apply_detail_view_theme()
+        except Exception:
+            pass
+        try:
+            if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                if not getattr(viewer, "_spectros_loaded", False):
+                    viewer.ensure_spectros_loaded(refresh=False)
+                else:
+                    viewer._update_spectro_stats_label()
+            else:
+                viewer._clear_multi_spec_selection()
+                viewer._update_spectro_stats_label()
+        except Exception:
+            pass
+        try:
+            options = viewer._canvas_display_state_from_canvas(getattr(viewer, "preview_canvas", None))
+            options["show_molecules"] = viewer.show_molecules
+            options["show_acquisition_overlay"] = viewer.show_acquisition_overlay
+            options["scale_bar_enabled"] = bool(ui.get("scale_bar", False))
+            options["relative_axes_override"] = viewer.relative_axes
+            options["show_title"] = viewer.show_preview_title
+            viewer._apply_canvas_display_options(options, source_canvas=getattr(viewer, "preview_canvas", None), persist=False)
+        except Exception:
+            pass
+        try:
+            preview = getattr(viewer, "preview_canvas", None)
+            if preview is not None:
+                preview._profile_label_mode = profile_label_mode
+                preview._notify_views_callback()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def _capture_popup_snapshots(self, views_dir: Path):
@@ -383,6 +525,11 @@ class SessionController:
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "view_font_scale": float(getattr(canvas, "_view_font_scale", 1.0) or 1.0),
+            "plot_font_family": str(getattr(canvas, "_font_family", "") or ""),
+            "plot_font_bold": bool(getattr(canvas, "_plot_font_bold", False)),
+            "plot_font_italic": bool(getattr(canvas, "_plot_font_italic", False)),
+            "plot_font_underline": bool(getattr(canvas, "_plot_font_underline", False)),
             "profile_label_mode": str(getattr(canvas, "_profile_label_mode", "length") or "length"),
             "profile_state": self._safe_canvas_call(canvas, "export_profile_state"),
             "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
@@ -490,39 +637,42 @@ class SessionController:
     ):
         if canvas is None or not snapshot:
             return
-        layout = snapshot.get("view_layout")
-        if layout:
+        if viewer is not None and hasattr(viewer, "_apply_canvas_style_snapshot"):
             try:
-                canvas.set_view_layout(layout)
-            except Exception:
-                pass
-        rel_axes = snapshot.get("relative_axes_override")
-        try:
-            canvas.set_relative_axes_override(rel_axes)
-        except Exception:
-            pass
-        show_title = snapshot.get("show_title")
-        if show_title is not None:
-            try:
-                canvas.set_show_title(bool(show_title))
-            except Exception:
-                pass
-        show_acquisition_overlay = snapshot.get("show_acquisition_overlay")
-        if show_acquisition_overlay is not None:
-            try:
-                canvas.set_show_acquisition_overlay(bool(show_acquisition_overlay))
+                viewer._apply_canvas_style_snapshot(
+                    canvas,
+                    {
+                        "plot_typography": {
+                            "family": snapshot.get("plot_font_family") or getattr(canvas, "_font_family", ""),
+                            "bold": bool(snapshot.get("plot_font_bold", getattr(canvas, "_plot_font_bold", False))),
+                            "italic": bool(snapshot.get("plot_font_italic", getattr(canvas, "_plot_font_italic", False))),
+                            "underline": bool(snapshot.get("plot_font_underline", getattr(canvas, "_plot_font_underline", False))),
+                        },
+                        "view_font_scale": float(snapshot.get("view_font_scale", getattr(canvas, "_view_font_scale", 1.0)) or 1.0),
+                        "display_options": {
+                            "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
+                            "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
+                            "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical"),
+                            "show_title": bool(snapshot.get("show_title", getattr(canvas, "_show_title", True))),
+                            "show_acquisition_overlay": bool(snapshot.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
+                            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
+                            "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
+                            "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
+                            "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+                            "scale_bar_enabled": bool(snapshot.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False))),
+                            "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
+                            "relative_axes_override": snapshot.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None)),
+                            "view_layout": snapshot.get("view_layout", getattr(canvas, "_view_layout", "grid")),
+                        },
+                    },
+                    notify=False,
+                )
             except Exception:
                 pass
         profile_label_mode = snapshot.get("profile_label_mode")
         if profile_label_mode is not None:
             try:
-                canvas.set_profile_label_mode(profile_label_mode)
-            except Exception:
-                pass
-        scale_bar_enabled = snapshot.get("scale_bar_enabled")
-        if scale_bar_enabled is not None:
-            try:
-                canvas.enable_scale_bar(bool(scale_bar_enabled))
+                canvas._profile_label_mode = str(profile_label_mode or "length")
             except Exception:
                 pass
         sb_pos = snapshot.get("scale_bar_pos")
@@ -573,6 +723,10 @@ class SessionController:
                     canvas.apply_zoom_states(zoom_state)
                 except Exception:
                     pass
+        try:
+            canvas._apply_view_font_scale()
+        except Exception:
+            pass
 
     def _restore_view_specific_state(self, canvas, entries):
         if not entries or canvas is None:
@@ -671,8 +825,10 @@ class SessionController:
 
     def _restore_popup_canvases(self, popup_defs, views_dir: Path):
         if not popup_defs:
-            return
+            return {"count": 0, "elapsed": 0.0}
         viewer = self.viewer
+        start = time.perf_counter()
+        restored = []
         for snap in popup_defs:
             entries = snap.get("views") or []
             built_views = []
@@ -685,7 +841,11 @@ class SessionController:
             if not built_views:
                 continue
             try:
-                dlg = viewer._spawn_preview_popup(built_views, title=snap.get("window_title") or "Preview")
+                dlg = viewer._spawn_preview_popup(
+                    built_views,
+                    title=snap.get("window_title") or "Preview",
+                    show_immediately=False,
+                )
             except Exception:
                 continue
             canvas = None
@@ -694,15 +854,41 @@ class SessionController:
                 canvas = canvases[-1] if canvases else None
             except Exception:
                 canvas = None
+            try:
+                if dlg:
+                    dlg.setUpdatesEnabled(False)
+            except Exception:
+                pass
             if canvas:
                 self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
             geom = snap.get("window_geometry")
+            has_geometry = False
             if dlg and geom and len(geom) == 4:
                 try:
                     x, y, w, h = [int(v) for v in geom]
                     dlg.setGeometry(x, y, w, h)
+                    has_geometry = True
                 except Exception:
                     pass
+            restored.append((dlg, has_geometry))
+        shown = 0
+        for dlg, has_geometry in restored:
+            if dlg is None:
+                continue
+            try:
+                dlg.setUpdatesEnabled(True)
+            except Exception:
+                pass
+            try:
+                if hasattr(dlg, "_resume_preview_resize"):
+                    dlg._resume_preview_resize(force=not has_geometry)
+                else:
+                    dlg._preview_resize_paused = False
+                dlg.show()
+                shown += 1
+            except Exception:
+                continue
+        return {"count": shown, "elapsed": time.perf_counter() - start}
 
     # ------------------------------------------------------------------
     @staticmethod

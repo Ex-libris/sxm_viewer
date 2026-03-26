@@ -86,7 +86,7 @@ def _apply_popup_display_state(owner, views, *, relative_zero: bool):
     return [_shift_view_relative_zero(owner, view, relative_zero) for view in (views or [])]
 
 
-def spawn_preview_popup(owner, views, title=None):
+def spawn_preview_popup(owner, views, title=None, *, show_immediately=True):
     """Create a preview popup dialog reusing the existing owner logic."""
     if not views:
         return None
@@ -101,6 +101,7 @@ def spawn_preview_popup(owner, views, title=None):
     )
     dlg.setMinimumSize(0, 0)
     dlg.setWindowTitle(title or "Preview")
+    dlg._preview_resize_paused = not bool(show_immediately)
 
     layout = QtWidgets.QVBoxLayout(dlg)
     layout.setContentsMargins(6, 6, 6, 6)
@@ -253,6 +254,8 @@ def spawn_preview_popup(owner, views, title=None):
         _enforce_square_dialog(respect_min_side=False)
 
     def _schedule_resize(force=False):
+        if getattr(dlg, "_preview_resize_paused", False):
+            return
         if force:
             QtCore.QTimer.singleShot(0, lambda: _resize_to_canvas(force=True))
             return
@@ -261,6 +264,11 @@ def spawn_preview_popup(owner, views, title=None):
             resize_settle_timer.start()
         except Exception:
             QtCore.QTimer.singleShot(0, lambda: _resize_to_canvas(force=False))
+
+    def _resume_popup_resize(*, force=False):
+        dlg._preview_resize_paused = False
+        if force:
+            _schedule_resize(force=True)
 
     resize_sync_timer.timeout.connect(lambda: _resize_to_canvas(force=False))
     resize_settle_timer.timeout.connect(_enforce_square_when_idle)
@@ -329,6 +337,10 @@ def spawn_preview_popup(owner, views, title=None):
         lambda enabled: _set_popup_relative_zero(enabled),
         state_cb=lambda: popup_display_state["relative_zero"],
         tooltip="Display values relative to the current zero/reference",
+    )
+    canvas.set_apply_popup_style_callback(
+        lambda: owner._apply_popup_style_to_all(canvas),
+        tooltip="Copy font size, typography and display layout from this popup to the other open pop-outs",
     )
 
     seq = views[0].get("crop_sequence") if views else None
@@ -519,13 +531,17 @@ def spawn_preview_popup(owner, views, title=None):
     dlg.installEventFilter(key_filter)
     canvas.installEventFilter(key_filter)
 
-    _schedule_resize(force=True)
-    dlg.show()
-    if hasattr(owner, "_set_active_preview_popup"):
-        try:
-            owner._set_active_preview_popup(dlg, canvas)
-        except Exception:
-            pass
+    dlg._preview_popup_schedule_resize = _schedule_resize
+    dlg._resume_preview_resize = _resume_popup_resize
+    dlg._preview_canvas = canvas
+    if show_immediately:
+        _resume_popup_resize(force=True)
+        dlg.show()
+        if hasattr(owner, "_set_active_preview_popup"):
+            try:
+                owner._set_active_preview_popup(dlg, canvas)
+            except Exception:
+                pass
     owner._popup_refs.append(dlg)
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.update_popup_actions()

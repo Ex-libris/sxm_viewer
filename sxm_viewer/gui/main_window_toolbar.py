@@ -75,6 +75,12 @@ def create_main_toolbar(viewer):
 
     viewer.toolbar_open_act = toolbar.addAction(_icon("folder-open"), "Open folder")
     viewer.toolbar_open_act.triggered.connect(viewer.open_folder_dialog)
+    viewer.toolbar_load_session_act = toolbar.addAction(_icon("document-open"), "Load Session")
+    viewer.toolbar_load_session_act.setToolTip("Restore a saved SXM viewer session")
+    viewer.toolbar_load_session_act.triggered.connect(viewer.on_load_session)
+    viewer.toolbar_save_session_act = toolbar.addAction(_icon("document-save"), "Save Session")
+    viewer.toolbar_save_session_act.setToolTip("Save the current SXM viewer session")
+    viewer.toolbar_save_session_act.triggered.connect(viewer.on_save_session)
     toolbar.addSeparator()
 
     viewer.toolbar_canvas_btn = QPushButton("Open Canvas")

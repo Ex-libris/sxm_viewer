@@ -388,6 +388,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_open_act = None
         self.toolbar_export_png_act = None
         self.toolbar_export_xyz_act = None
+        self.toolbar_load_session_act = None
+        self.toolbar_save_session_act = None
         self.toolbar_adjust_act = None
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
@@ -1656,8 +1658,8 @@ QLabel:hover {{
                 new_view["arr"] = arr
         return new_view
 
-    def _spawn_preview_popup(self, views, title=None):
-        return spawn_preview_popup(self, views, title=title)
+    def _spawn_preview_popup(self, views, title=None, **kwargs):
+        return spawn_preview_popup(self, views, title=title, **kwargs)
 
     def _set_active_preview_popup(self, dlg=None, canvas=None):
         self._active_preview_popup = dlg
@@ -1667,6 +1669,130 @@ QLabel:hover {{
         if dlg is None or self._active_preview_popup is dlg:
             self._active_preview_popup = None
             self._active_preview_canvas = None
+
+    def _capture_canvas_style_snapshot(self, canvas=None):
+        canvas = canvas or getattr(self, "_active_preview_canvas", None) or getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return {}
+        try:
+            family = normalize_font_family(
+                getattr(canvas, "_font_family", getattr(self, "_plot_font_family", UI_FONT_FAMILY)),
+                UI_FONT_FAMILY,
+            )
+        except Exception:
+            family = getattr(self, "_plot_font_family", UI_FONT_FAMILY)
+        try:
+            scale = float(getattr(canvas, "_view_font_scale", 1.0) or 1.0)
+        except Exception:
+            scale = 1.0
+        scale = max(0.6, min(2.5, scale))
+        return {
+            "plot_typography": {
+                "family": family,
+                "bold": bool(getattr(canvas, "_plot_font_bold", False)),
+                "italic": bool(getattr(canvas, "_plot_font_italic", False)),
+                "underline": bool(getattr(canvas, "_plot_font_underline", False)),
+            },
+            "view_font_scale": scale,
+            "display_options": self._canvas_display_state_from_canvas(canvas),
+        }
+
+    def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True):
+        if canvas is None or not style_snapshot:
+            return False
+        typography = dict(style_snapshot.get("plot_typography") or {})
+        family = typography.get("family")
+        if family is not None:
+            try:
+                family = normalize_font_family(family, UI_FONT_FAMILY)
+                canvas._font_family = family
+                settings = dict(getattr(canvas, "_scale_bar_settings", {}) or {})
+                settings["font_family"] = family
+                canvas._scale_bar_settings = settings
+            except Exception:
+                pass
+        for key, attr in (
+            ("bold", "_plot_font_bold"),
+            ("italic", "_plot_font_italic"),
+            ("underline", "_plot_font_underline"),
+        ):
+            if key in typography:
+                try:
+                    setattr(canvas, attr, bool(typography.get(key)))
+                except Exception:
+                    pass
+        try:
+            canvas._view_font_scale = max(0.6, min(2.5, float(style_snapshot.get("view_font_scale", getattr(canvas, "_view_font_scale", 1.0)))))
+        except Exception:
+            pass
+        display = dict(style_snapshot.get("display_options") or {})
+        if display:
+            try:
+                canvas._show_ticks = bool(display.get("show_ticks", getattr(canvas, "_show_ticks", True)))
+                canvas._show_colorbar = bool(display.get("show_colorbar", getattr(canvas, "_show_colorbar", True)))
+                orient = str(display.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical").strip().lower()
+                canvas._colorbar_orientation = orient if orient in ("vertical", "horizontal") else "vertical"
+                canvas._show_title = bool(display.get("show_title", getattr(canvas, "_show_title", True)))
+                canvas._show_acquisition_overlay = bool(display.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False)))
+                canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True)))
+                canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
+                canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
+                canvas.show_molecules = bool(display.get("show_molecules", getattr(canvas, "show_molecules", True)))
+                desired_scale_bar = bool(display.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False)))
+                current_scale_bar = bool(getattr(canvas, "scale_bar_enabled", False))
+                canvas.scale_bar_enabled = desired_scale_bar
+                if desired_scale_bar != current_scale_bar:
+                    if desired_scale_bar:
+                        canvas._connect_scale_bar_events()
+                    else:
+                        canvas._disconnect_scale_bar_events()
+                canvas._frame_fill_mode = bool(display.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False)))
+                rel_override = display.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None))
+                canvas._relative_axes_override = None if rel_override is None else bool(rel_override)
+                layout = str(display.get("view_layout", getattr(canvas, "_view_layout", "grid")) or "grid").strip().lower()
+                canvas._view_layout = layout if layout in ("grid", "stacked") else "grid"
+            except Exception:
+                pass
+        try:
+            canvas._redraw()
+        except Exception:
+            try:
+                canvas.draw_idle()
+            except Exception:
+                pass
+        try:
+            canvas._apply_view_font_scale()
+        except Exception:
+            pass
+        if notify:
+            try:
+                canvas._notify_views_callback()
+            except Exception:
+                pass
+        return True
+
+    def _apply_popup_style_to_all(self, source_canvas=None):
+        source_canvas = source_canvas or getattr(self, "_active_preview_canvas", None)
+        if source_canvas is None:
+            return 0
+        style_snapshot = self._capture_canvas_style_snapshot(source_canvas)
+        if not style_snapshot:
+            return 0
+        count = 0
+        for canvas in list(getattr(self, "_popup_canvases", []) or []):
+            if canvas is None or canvas is source_canvas:
+                continue
+            try:
+                if self._apply_canvas_style_snapshot(canvas, style_snapshot, notify=True):
+                    count += 1
+            except Exception:
+                continue
+        if count:
+            try:
+                log_status(f"Applied popup style to {count} pop-out(s)")
+            except Exception:
+                pass
+        return count
 
     def _on_molecule_palette_changed(self, palette: str):
         palette = (palette or "cpk").lower()
