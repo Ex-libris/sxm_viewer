@@ -1697,7 +1697,7 @@ QLabel:hover {{
             "display_options": self._canvas_display_state_from_canvas(canvas),
         }
 
-    def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True):
+    def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
         if canvas is None or not style_snapshot:
             return False
         typography = dict(style_snapshot.get("plot_typography") or {})
@@ -1753,17 +1753,19 @@ QLabel:hover {{
                 canvas._view_layout = layout if layout in ("grid", "stacked") else "grid"
             except Exception:
                 pass
-        try:
-            canvas._redraw()
-        except Exception:
+        if redraw:
             try:
-                canvas.draw_idle()
+                canvas._redraw()
+            except Exception:
+                try:
+                    canvas.draw_idle()
+                except Exception:
+                    pass
+        else:
+            try:
+                canvas._apply_view_font_scale()
             except Exception:
                 pass
-        try:
-            canvas._apply_view_font_scale()
-        except Exception:
-            pass
         if notify:
             try:
                 canvas._notify_views_callback()

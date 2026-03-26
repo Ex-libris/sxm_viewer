@@ -316,13 +316,23 @@ class SessionController:
         canvas_window_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
         popup_defs = payload.get("popup_canvases") or []
-        popup_stats = {"count": 0, "elapsed": 0.0}
+        popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0}
         if popup_defs:
             popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
         total_dt = time.perf_counter() - t0
         try:
+            popup_count = int(popup_stats.get("count", 0))
+            popup_elapsed = float(popup_stats.get("elapsed", time.perf_counter() - phase_t))
+            popup_tail = f" | popups {popup_count} in {popup_elapsed:.2f}s"
+            if popup_count:
+                popup_tail += " [arrays %.2fs | spawn %.2fs | state %.2fs | show %.2fs]" % (
+                    float(popup_stats.get("arrays", 0.0)),
+                    float(popup_stats.get("spawn", 0.0)),
+                    float(popup_stats.get("state", 0.0)),
+                    float(popup_stats.get("show", 0.0)),
+                )
             log_status(
-                "[Session] load %.2fs | folder %.2fs | ui %.2fs | thumbs %.2fs | preview %.2fs + %.2fs | canvas %.2fs | popups %d in %.2fs"
+                "[Session] load %.2fs | folder %.2fs | ui %.2fs | thumbs %.2fs | preview %.2fs + %.2fs | canvas %.2fs%s"
                 % (
                     total_dt,
                     load_folder_dt,
@@ -331,8 +341,7 @@ class SessionController:
                     preview_build_dt,
                     preview_restore_dt,
                     canvas_window_dt,
-                    int(popup_stats.get("count", 0)),
-                    float(popup_stats.get("elapsed", time.perf_counter() - phase_t)),
+                    popup_tail,
                 )
             )
         except Exception:
@@ -637,6 +646,8 @@ class SessionController:
     ):
         if canvas is None or not snapshot:
             return
+        snapshot_views = snapshot.get("views") or []
+        snapshot_has_arrays = any(bool(entry.get("arr_file")) for entry in snapshot_views)
         if viewer is not None and hasattr(viewer, "_apply_canvas_style_snapshot"):
             try:
                 viewer._apply_canvas_style_snapshot(
@@ -666,6 +677,7 @@ class SessionController:
                         },
                     },
                     notify=False,
+                    redraw=True,
                 )
             except Exception:
                 pass
@@ -687,7 +699,6 @@ class SessionController:
                 canvas._scale_bar_settings = dict(sb_settings)
             except Exception:
                 pass
-        snapshot_views = snapshot.get("views") or []
         permit_view_state = True
         if require_view_match:
             permit_view_state = self._canvas_views_match_snapshot(canvas, snapshot_views)
@@ -711,7 +722,7 @@ class SessionController:
                 except Exception:
                     pass
             pipeline = snapshot.get("filter_pipeline")
-            if pipeline and viewer is not None:
+            if pipeline and viewer is not None and not snapshot_has_arrays:
                 try:
                     viewer._apply_filter_to_canvas(canvas, pipeline=pipeline, label=snapshot.get("filter_label"))
                 except Exception:
@@ -759,12 +770,17 @@ class SessionController:
             clim = entry.get("clim")
             if clim:
                 try:
-                    target["clim"] = tuple(clim)
-                    changed = True
+                    new_clim = tuple(clim)
+                    if tuple(target.get("clim") or ()) != new_clim:
+                        target["clim"] = new_clim
+                        changed = True
                 except Exception:
                     pass
             if entry.get("relative_axes") is not None:
-                target["relative_axes"] = bool(entry.get("relative_axes"))
+                rel_axes = bool(entry.get("relative_axes"))
+                if bool(target.get("relative_axes")) != rel_axes:
+                    target["relative_axes"] = rel_axes
+                    changed = True
         if changed:
             try:
                 canvas._redraw()
@@ -825,53 +841,69 @@ class SessionController:
 
     def _restore_popup_canvases(self, popup_defs, views_dir: Path):
         if not popup_defs:
-            return {"count": 0, "elapsed": 0.0}
+            return {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0}
         viewer = self.viewer
         start = time.perf_counter()
+        arrays_dt = 0.0
+        spawn_dt = 0.0
+        state_dt = 0.0
+        show_dt = 0.0
         restored = []
-        for snap in popup_defs:
-            entries = snap.get("views") or []
-            built_views = []
-            for entry in entries:
-                built = self._build_view_from_snapshot_entry(entry, views_dir)
-                if built is None:
-                    built_views = []
-                    break
-                built_views.append(built)
-            if not built_views:
-                continue
-            try:
-                dlg = viewer._spawn_preview_popup(
-                    built_views,
-                    title=snap.get("window_title") or "Preview",
-                    show_immediately=False,
-                )
-            except Exception:
-                continue
-            canvas = None
-            try:
-                canvases = getattr(viewer, "_popup_canvases", [])
-                canvas = canvases[-1] if canvases else None
-            except Exception:
-                canvas = None
-            try:
-                if dlg:
-                    dlg.setUpdatesEnabled(False)
-            except Exception:
-                pass
-            if canvas:
-                self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
-            geom = snap.get("window_geometry")
-            has_geometry = False
-            if dlg and geom and len(geom) == 4:
+        prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
+        viewer._canvas_display_syncing = True
+        try:
+            for snap in popup_defs:
+                entries = snap.get("views") or []
+                t_phase = time.perf_counter()
+                built_views = []
+                for entry in entries:
+                    built = self._build_view_from_snapshot_entry(entry, views_dir)
+                    if built is None:
+                        built_views = []
+                        break
+                    built_views.append(built)
+                arrays_dt += time.perf_counter() - t_phase
+                if not built_views:
+                    continue
+                t_phase = time.perf_counter()
                 try:
-                    x, y, w, h = [int(v) for v in geom]
-                    dlg.setGeometry(x, y, w, h)
-                    has_geometry = True
+                    dlg = viewer._spawn_preview_popup(
+                        built_views,
+                        title=snap.get("window_title") or "Preview",
+                        show_immediately=False,
+                    )
+                except Exception:
+                    continue
+                spawn_dt += time.perf_counter() - t_phase
+                canvas = None
+                try:
+                    canvases = getattr(viewer, "_popup_canvases", [])
+                    canvas = canvases[-1] if canvases else None
+                except Exception:
+                    canvas = None
+                try:
+                    if dlg:
+                        dlg.setUpdatesEnabled(False)
                 except Exception:
                     pass
-            restored.append((dlg, has_geometry))
+                t_phase = time.perf_counter()
+                if canvas:
+                    self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
+                state_dt += time.perf_counter() - t_phase
+                geom = snap.get("window_geometry")
+                has_geometry = False
+                if dlg and geom and len(geom) == 4:
+                    try:
+                        x, y, w, h = [int(v) for v in geom]
+                        dlg.setGeometry(x, y, w, h)
+                        has_geometry = True
+                    except Exception:
+                        pass
+                restored.append((dlg, has_geometry))
+        finally:
+            viewer._canvas_display_syncing = prev_display_sync
         shown = 0
+        show_start = time.perf_counter()
         for dlg, has_geometry in restored:
             if dlg is None:
                 continue
@@ -888,7 +920,15 @@ class SessionController:
                 shown += 1
             except Exception:
                 continue
-        return {"count": shown, "elapsed": time.perf_counter() - start}
+        show_dt += time.perf_counter() - show_start
+        return {
+            "count": shown,
+            "elapsed": time.perf_counter() - start,
+            "arrays": arrays_dt,
+            "spawn": spawn_dt,
+            "state": state_dt,
+            "show": show_dt,
+        }
 
     # ------------------------------------------------------------------
     @staticmethod
