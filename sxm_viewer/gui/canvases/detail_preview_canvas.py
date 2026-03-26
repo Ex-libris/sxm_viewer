@@ -34,6 +34,7 @@ from .molecular_overlay import (
     available_atom_palettes,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
+from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 
 try:
@@ -94,6 +95,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._resize_settle_timer.setSingleShot(True)
         self._resize_settle_timer.setInterval(140)
         self._resize_settle_timer.timeout.connect(self._finalize_after_resize)
+        self._render_suspended = False
+        self._render_pending = False
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._overlay_shortcuts = []
         self.views = []
@@ -137,8 +140,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self._histogram_dialog_callback = None
         self._histogram_auto_callback = None
         self._histogram_reset_callback = None
+        self._display_relative_zero_menu_callback = None
+        self._display_relative_zero_menu_state_callback = None
+        self._display_relative_zero_menu_tooltip = ""
+        self._apply_popup_style_callback = None
+        self._apply_popup_style_label = "Apply this style to all pop-ups"
+        self._apply_popup_style_tooltip = ""
         self._stp_export_callback = None
         self._arrange_windows_callback = None
+        self._minimize_windows_callback = None
         self._value_callback = None
         self._undo_history = []
         self._undo_restore_in_progress = False
@@ -422,11 +432,35 @@ class MultiPreviewCanvas(FigureCanvas):
         self._notify_views_callback()
 
     def draw(self):
+        if getattr(self, "_render_suspended", False):
+            self._render_pending = True
+            return
         try:
             super().draw()
+            self._render_pending = False
         except np.linalg.LinAlgError:
             # Ignore transient singular transforms during layout updates.
             return
+
+    def draw_idle(self):
+        if getattr(self, "_render_suspended", False):
+            self._render_pending = True
+            return
+        try:
+            super().draw_idle()
+        except np.linalg.LinAlgError:
+            return
+
+    def set_render_suspended(self, suspended: bool):
+        suspended = bool(suspended)
+        previously = bool(getattr(self, "_render_suspended", False))
+        self._render_suspended = suspended
+        if previously and not suspended and getattr(self, "_render_pending", False):
+            self._render_pending = False
+            try:
+                super().draw()
+            except np.linalg.LinAlgError:
+                return
 
     def set_compact_size_hints(self, enabled: bool = True):
         self._compact_size_hints = bool(enabled)
@@ -563,6 +597,19 @@ class MultiPreviewCanvas(FigureCanvas):
         """Register callback that resets contrast to the full data range."""
         self._histogram_reset_callback = cb
 
+    def set_display_relative_zero_menu_callback(self, cb, state_cb=None, tooltip=None):
+        """Register an optional popup-local menu action for relative-zero display."""
+        self._display_relative_zero_menu_callback = cb
+        self._display_relative_zero_menu_state_callback = state_cb
+        self._display_relative_zero_menu_tooltip = str(tooltip or "")
+
+    def set_apply_popup_style_callback(self, cb, label=None, tooltip=None):
+        """Register an optional action that applies this popup style to peer popups."""
+        self._apply_popup_style_callback = cb
+        if label:
+            self._apply_popup_style_label = str(label)
+        self._apply_popup_style_tooltip = str(tooltip or "")
+
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
         self._stp_export_callback = cb
@@ -570,6 +617,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_arrange_callback(self, cb):
         """Register callback invoked when the user requests window tiling."""
         self._arrange_windows_callback = cb
+
+    def set_window_minimize_callback(self, cb):
+        """Register callback invoked when the user requests minimizing pop-out windows."""
+        self._minimize_windows_callback = cb
 
     def set_plot_font_family_callback(self, cb):
         """Register a callback used when the user picks a new plot font."""
@@ -1489,6 +1540,12 @@ class MultiPreviewCanvas(FigureCanvas):
         cols = max(arr_w - 1, 1)
         rows = max(arr_h - 1, 1)
         def _axis_from_pixel(col, row):
+            row_use = float(row)
+            # Stored spectro marker rows are in thumbnail/image pixel space
+            # with row 0 at the top. Relative-axes preview flips the image and
+            # draws it with origin='lower', so convert to the displayed row.
+            if str(origin).lower() == 'lower' and rows > 0:
+                row_use = float(rows) - row_use
             if extent_used is not None and meta.get('shape'):
                 xmin, xmax, ymin, ymax = extent_used
                 span_x = xmax - xmin
@@ -1501,12 +1558,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     y_axis = ymax if str(origin).lower() == 'upper' else ymin
                 else:
                     if str(origin).lower() == 'upper':
-                        y_axis = ymax - (row / float(rows)) * span_y
+                        y_axis = ymax - (row_use / float(rows)) * span_y
                     else:
-                        y_axis = ymin + (row / float(rows)) * span_y
+                        y_axis = ymin + (row_use / float(rows)) * span_y
                 return x_axis, y_axis
             x_axis = ex0 if cols == 0 else ex0 + (col / float(cols)) * (ex1 - ex0)
-            y_axis = ey0 if rows == 0 else ey0 + (row / float(rows)) * (ey1 - ey0)
+            y_axis = ey0 if rows == 0 else ey0 + (row_use / float(rows)) * (ey1 - ey0)
             return x_axis, y_axis
         normal_xs = []
         normal_ys = []
@@ -2208,6 +2265,128 @@ class MultiPreviewCanvas(FigureCanvas):
             return self.grab()
         except Exception:
             return None
+
+    def _set_axes_titles_visible(self, visible: bool):
+        changed = []
+        for ax in getattr(self.fig, "axes", []) or []:
+            try:
+                title_artist = ax.title
+            except Exception:
+                continue
+            if title_artist is None:
+                continue
+            try:
+                title_text = str(title_artist.get_text() or "").strip()
+                was_visible = bool(title_artist.get_visible())
+            except Exception:
+                continue
+            if not title_text or was_visible == bool(visible):
+                continue
+            try:
+                title_artist.set_visible(bool(visible))
+                changed.append((title_artist, was_visible))
+            except Exception:
+                continue
+        return changed
+
+    def _render_displayed_pixmap(self, *, show_titles=True):
+        buf = io.BytesIO()
+        title_state = []
+
+        def _save():
+            nonlocal title_state
+            if not show_titles:
+                title_state = self._set_axes_titles_visible(False)
+            try:
+                self.fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+            finally:
+                if title_state:
+                    for title_artist, was_visible in title_state:
+                        try:
+                            title_artist.set_visible(bool(was_visible))
+                        except Exception:
+                            pass
+
+        self._save_current_figure_without_shortcut_hint(_save)
+        data = buf.getvalue()
+        if not data:
+            return None
+        pixmap = QtGui.QPixmap()
+        if not pixmap.loadFromData(data, "PNG"):
+            return None
+        if title_state:
+            self.draw_idle()
+        return pixmap
+
+    def _resolve_powerpoint_label(self, view=None):
+        if isinstance(view, dict):
+            title = str(view.get("title") or "").strip()
+            if title:
+                return title
+            path_text = str(view.get("path") or "").strip()
+            if path_text:
+                return Path(path_text).stem
+
+        if len(self.views or []) == 1:
+            only_view = self.views[0] or {}
+            title = str(only_view.get("title") or "").strip()
+            if title:
+                return title
+
+        try:
+            window = self.window()
+        except Exception:
+            window = None
+        if window is not None:
+            try:
+                window_title = str(window.windowTitle() or "").strip()
+            except Exception:
+                window_title = ""
+            if window_title and window_title.lower() != "sxm viewer":
+                return window_title
+        return None
+
+    def _show_powerpoint_success(self, slide_number, shape_name):
+        _ = shape_name
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            f"Sent to slide {slide_number}",
+            self,
+            self.rect(),
+            2500,
+        )
+
+    def _send_displayed_to_powerpoint(self, view=None, *, new_slide=True):
+        label_text = self._resolve_powerpoint_label(view)
+        hide_titles = bool(label_text) and len(self.views or []) == 1
+        pixmap = self._render_displayed_pixmap(show_titles=not hide_titles)
+        if pixmap is None or pixmap.isNull():
+            pixmap = self.get_overview_pixmap()
+
+        try:
+            slide_number, shape_name = send_pixmap_to_ppt(
+                pixmap,
+                label=label_text,
+                new_slide=bool(new_slide),
+            )
+        except ConnectionError:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "PowerPoint",
+                "PowerPoint is not running. Please open a presentation first.",
+            )
+            return
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self, "PowerPoint", "No image to send.")
+            return
+        except EnvironmentError as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
+            return
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
+            return
+
+        self._show_powerpoint_success(slide_number, shape_name)
 
     def set_value_callback(self, cb):
         self._value_callback = cb
@@ -4978,6 +5157,17 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act = display_menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(bool(self._show_colorbar))
+        rel_zero_act = None
+        if callable(self._display_relative_zero_menu_callback):
+            rel_zero_act = display_menu.addAction("Values relative to zero/reference")
+            rel_zero_act.setCheckable(True)
+            try:
+                rel_zero_act.setChecked(bool(self._display_relative_zero_menu_state_callback()))
+            except Exception:
+                rel_zero_act.setChecked(False)
+            rel_zero_tip = self._display_relative_zero_menu_tooltip or "Display values relative to the current zero/reference"
+            rel_zero_act.setToolTip(rel_zero_tip)
+            rel_zero_act.setStatusTip(rel_zero_tip)
         cbar_orient_menu = display_menu.addMenu("Colorbar orientation")
         cbar_orient_group = QtWidgets.QActionGroup(self)
         cbar_orient_group.setExclusive(True)
@@ -5004,6 +5194,13 @@ class MultiPreviewCanvas(FigureCanvas):
         rel_axes_act = display_menu.addAction("Relative axes")
         rel_axes_act.setCheckable(True)
         rel_axes_act.setChecked(bool(self._use_relative_axes(view)))
+        apply_popup_style_act = None
+        if callable(self._apply_popup_style_callback):
+            display_menu.addSeparator()
+            apply_popup_style_act = display_menu.addAction(self._apply_popup_style_label or "Apply this style to all pop-ups")
+            popup_style_tip = self._apply_popup_style_tooltip or "Copy font size, typography and display layout from this popup to the other open pop-ups"
+            apply_popup_style_act.setToolTip(popup_style_tip)
+            apply_popup_style_act.setStatusTip(popup_style_tip)
 
         layout_menu = display_menu.addMenu("Layout")
         layout_grid_act = layout_menu.addAction("Grid")
@@ -5045,6 +5242,15 @@ class MultiPreviewCanvas(FigureCanvas):
         copy_act = copy_menu.addAction("Copy data image only (PNG)")
         copy_svg_act = copy_menu.addAction("Copy data view as SVG (vector)")
 
+        send_ppt_act = menu.addAction("Send to PowerPoint")
+        send_ppt_current_act = menu.addAction("Send to Current Slide")
+        ppt_supported, ppt_reason = powerpoint_support_status()
+        if not ppt_supported:
+            send_ppt_act.setEnabled(False)
+            send_ppt_current_act.setEnabled(False)
+            send_ppt_act.setToolTip(ppt_reason or "")
+            send_ppt_current_act.setToolTip(ppt_reason or "")
+
         export_menu = menu.addMenu("Save / Export")
         save_act = export_menu.addAction("Save data image as PNG...")
         save_svg_act = export_menu.addAction("Save displayed view as SVG...")
@@ -5075,9 +5281,14 @@ class MultiPreviewCanvas(FigureCanvas):
         view_menu = menu.addMenu("View")
         reset_zoom_act = view_menu.addAction("Reset Zoom")
         arrange_act = None
+        minimize_act = None
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
             arrange_act = view_menu.addAction("Arrange pop-outs")
+        if callable(self._minimize_windows_callback):
+            if arrange_act is None:
+                view_menu.addSeparator()
+            minimize_act = view_menu.addAction("Minimize pop-outs")
 
         add_font_menu_action(
             menu,
@@ -5108,6 +5319,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._copy_displayed("png")
         elif chosen == copy_disp_svg:
             self._copy_displayed("svg")
+        elif chosen == send_ppt_act:
+            self._send_displayed_to_powerpoint(view, new_slide=True)
+        elif chosen == send_ppt_current_act:
+            self._send_displayed_to_powerpoint(view, new_slide=False)
         elif chosen == save_act:
             self._save_view_to_file(view)
         elif chosen == save_svg_act:
@@ -5170,6 +5385,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._toggle_ticks()
         elif chosen == show_cbar_act:
             self._toggle_colorbar()
+        elif rel_zero_act and chosen == rel_zero_act:
+            try:
+                self._display_relative_zero_menu_callback(rel_zero_act.isChecked())
+            except Exception:
+                pass
         elif chosen == show_title_act:
             self.set_show_title(show_title_act.isChecked())
         elif chosen == acq_overlay_act:
@@ -5181,6 +5401,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._notify_views_callback()
         elif chosen == rel_axes_act:
             self.set_relative_axes_override(rel_axes_act.isChecked())
+        elif apply_popup_style_act and chosen == apply_popup_style_act:
+            try:
+                self._apply_popup_style_callback()
+            except Exception:
+                pass
         elif chosen == layout_grid_act:
             self.set_view_layout("grid")
         elif chosen == layout_stack_act:
@@ -5200,6 +5425,11 @@ class MultiPreviewCanvas(FigureCanvas):
         elif arrange_act and chosen == arrange_act:
             try:
                 self._arrange_windows_callback()
+            except Exception:
+                pass
+        elif minimize_act and chosen == minimize_act:
+            try:
+                self._minimize_windows_callback()
             except Exception:
                 pass
         elif angle_style_act and chosen == angle_style_act:

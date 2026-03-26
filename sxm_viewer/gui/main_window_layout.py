@@ -269,6 +269,10 @@ def _ensure_display_menu(viewer):
     arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
     arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
     arrange_act.triggered.connect(viewer.on_arrange_popouts)
+    minimize_act = viewer.display_menu.addAction("Minimize pop-outs")
+    minimize_act.setToolTip("Minimize all open preview/spectroscopy/profile windows (Ctrl+Shift+M)")
+    minimize_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
+    minimize_act.triggered.connect(viewer.on_minimize_popouts)
     return viewer.display_menu
 
 

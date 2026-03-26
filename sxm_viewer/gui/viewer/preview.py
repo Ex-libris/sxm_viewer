@@ -595,7 +595,10 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "extent": display_extent,
         "extent_raw": adjusted_extent,
         "cmap": cmap_to_use,
+        "unit_normalized": unit_normalized,
         "unit": display_unit,
+        "display_relative_zero": bool(getattr(viewer, "display_units_relative", False)),
+        "zero_offset": zero_offset,
         "title": title_text,
         "colorbar_label": colorbar_label,
         "axis_unit": axis_unit,
@@ -742,7 +745,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'extent': display_extent,
         'extent_raw': adjusted_extent,
         'cmap': cmap_to_use,
+        'unit_normalized': unit_normalized,
         'unit': display_unit,
+        'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
+        'zero_offset': zero_offset,
         'title': title_text,
         'colorbar_label': colorbar_label,
         'axis_unit': axis_unit,
@@ -771,7 +777,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             cmap2 = viewer._resolve_extra_spec_cmap(spec, file_key)
             arr2_adj, adj2_extent = viewer._apply_adjustments_for_channel(file_key, idx2, arr2_conv, base_extent)
             extent2 = viewer._display_extent(adj2_extent, header)
-            unit2_display, arr2_display, _ = viewer._scale_unit_for_display(unit2_final, arr2_adj)
+            unit2_display, arr2_display, zero2_offset = viewer._scale_unit_for_display(unit2_final, arr2_adj)
             caption2 = fd2.get('Caption', fd2.get('FileName', ''))
             if datetime_txt:
                 title2 = f"{Path(header_path).name}  {caption2}  {datetime_txt}"
@@ -785,7 +791,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2['channel_index'] = int(idx2)
             clim2 = _auto_preview_clim(arr2_display)
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
-                     'cmap': cmap2, 'unit': unit2_display, 'title': title2,
+                     'cmap': cmap2, 'unit_normalized': unit2_final, 'unit': unit2_display,
+                     'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
+                     'zero_offset': zero2_offset,
+                     'title': title2,
                      'colorbar_label': cbar_label2, 'axis_unit': axis_unit,
                      'relative_axes': bool(viewer.relative_axes), 'meta': meta2,
                      'path': str(header_path), 'channel_idx': int(idx2),

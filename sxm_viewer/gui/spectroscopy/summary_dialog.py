@@ -37,6 +37,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ..ppt_mixin import PPTContextMenuMixin
 from ..thumbnail_render import (
     array_to_qimage,
     _ThumbnailJobSignals,
@@ -89,6 +90,7 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         self.preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_lbl.setMinimumSize(220, 200)
         self.preview_lbl.setStyleSheet("QLabel { border: 1px solid #555; background: #111; }")
+        PPTContextMenuMixin.install(self.preview_lbl, label_text=f"{Path(self._file_key).name} preview")
         top_row.addWidget(self.preview_lbl, 1)
         side_v = QtWidgets.QVBoxLayout()
         self.channel_combo = QtWidgets.QComboBox()
@@ -159,6 +161,8 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
                 return
             idx = self.channel_combo.currentData() if self.channel_combo.count() else 0
             fd = self._fds[int(idx)] if idx is not None and 0 <= int(idx) < len(self._fds) else self._fds[0]
+            channel_label = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
+            self.preview_lbl.ppt_image_label = f"{Path(self._file_key).name} - {channel_label}"
             unit_final, arr = self.viewer._get_filtered_channel_array(self._file_key, self._fds.index(fd), self._header, fd)
             unit_disp, arr_disp, _ = self.viewer._scale_unit_for_display(unit_final, arr)
             arr_disp = self.viewer._downsample_for_thumbnail(arr_disp, 240, 200)

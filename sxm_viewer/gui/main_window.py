@@ -325,6 +325,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.image_time_index = {}
         self._spectro_popups = []
         self._popup_refs = []
+        self._deferred_popup_entries = []
+        self._deferred_popup_serial = 0
         self._multi_spectro_popups = []
         self._multi_single_popup_anchor = None
         self._last_clicked_spec = None
@@ -388,12 +390,23 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_open_act = None
         self.toolbar_export_png_act = None
         self.toolbar_export_xyz_act = None
+        self.toolbar_load_session_act = None
+        self.toolbar_save_session_act = None
+        self.toolbar_popups_btn = None
+        self.toolbar_popups_menu = None
         self.toolbar_adjust_act = None
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
         self.toolbar_load_mol_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
+        self._session_activity_strip = None
+        self._session_activity_title = None
+        self._session_activity_detail = None
+        self._session_activity_progress = None
+        self._session_activity_hide_timer = QtCore.QTimer(self)
+        self._session_activity_hide_timer.setSingleShot(True)
+        self._session_activity_hide_timer.timeout.connect(self._hide_session_activity)
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(LEFT_PANEL_SPACING)
@@ -918,6 +931,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_tile_btn.setEnabled(False)
         self.quick_crop_tile_btn.clicked.connect(self.on_arrange_popouts)
         quick_detail_layout.addWidget(self.quick_crop_tile_btn)
+        self.quick_crop_minimize_btn = QtWidgets.QToolButton()
+        self.quick_crop_minimize_btn.setText("Minimize pop-outs")
+        self.quick_crop_minimize_btn.setToolTip("Minimize all open pop-out windows (Ctrl+Shift+M)")
+        self.quick_crop_minimize_btn.setEnabled(False)
+        self.quick_crop_minimize_btn.clicked.connect(self.on_minimize_popouts)
+        quick_detail_layout.addWidget(self.quick_crop_minimize_btn)
         quick_detail_layout.addStretch(1)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
         quick_detail_layout.addWidget(self.quick_crop_hint_lbl)
@@ -959,7 +978,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.setMinimumWidth(240)
         self.preview_canvas.setToolTip(
             "Preview area:\n"
-            "  Right-click for copy/save options\n"
+            "  Right-click for copy/save/PowerPoint options\n"
             "  Enable 'Measure profile' for line sampling\n"
             "  Ctrl+C copies the displayed preview as PNG"
         )
@@ -1026,6 +1045,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
+        self.preview_canvas.set_window_minimize_callback(self.on_minimize_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
         # Seed molecule recents from config and listen for updates
         try:
@@ -1073,6 +1093,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_template_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+T"), self)
         self.quick_crop_template_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_template_shortcut.activated.connect(lambda: self.on_show_crop_template_overlay_toggled(not self.show_crop_template_overlay))
+        self.quick_crop_minimize_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+M"), self)
+        self.quick_crop_minimize_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+        self.quick_crop_minimize_shortcut.activated.connect(self.on_minimize_popouts)
         self._apply_detail_view_theme()
         # apply saved metadata font size
         try:
@@ -1164,15 +1187,18 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
 
         toolbar = self._create_toolbar()
+        session_activity = self._create_session_activity_strip()
         container_layout = QtWidgets.QVBoxLayout()
         container_layout.setContentsMargins(0, 0, 0, 0)
         self.shortcuts_panel = self._create_shortcuts_panel()
         container_layout.addWidget(self.shortcuts_panel)
         if toolbar is not None:
             container_layout.addWidget(toolbar)
+        container_layout.addWidget(session_activity)
         container_layout.addWidget(main_splitter)
         self.setLayout(container_layout)
         self._set_shortcuts_panel_visible(self.show_shortcuts_panel, remember=False)
+        self._refresh_deferred_popup_ui()
         # Ensure optimal initial thumbnail layout
         QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
 
@@ -1656,8 +1682,8 @@ QLabel:hover {{
                 new_view["arr"] = arr
         return new_view
 
-    def _spawn_preview_popup(self, views, title=None):
-        return spawn_preview_popup(self, views, title=title)
+    def _spawn_preview_popup(self, views, title=None, **kwargs):
+        return spawn_preview_popup(self, views, title=title, **kwargs)
 
     def _set_active_preview_popup(self, dlg=None, canvas=None):
         self._active_preview_popup = dlg
@@ -1667,6 +1693,186 @@ QLabel:hover {{
         if dlg is None or self._active_preview_popup is dlg:
             self._active_preview_popup = None
             self._active_preview_canvas = None
+
+    def _capture_canvas_style_snapshot(self, canvas=None):
+        canvas = canvas or getattr(self, "_active_preview_canvas", None) or getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return {}
+        try:
+            family = normalize_font_family(
+                getattr(canvas, "_font_family", getattr(self, "_plot_font_family", UI_FONT_FAMILY)),
+                UI_FONT_FAMILY,
+            )
+        except Exception:
+            family = getattr(self, "_plot_font_family", UI_FONT_FAMILY)
+        try:
+            scale = float(getattr(canvas, "_view_font_scale", 1.0) or 1.0)
+        except Exception:
+            scale = 1.0
+        scale = max(0.6, min(2.5, scale))
+        rel_axes_enabled = None
+        try:
+            views = list(getattr(canvas, "views", []) or [])
+            if views and hasattr(canvas, "_use_relative_axes"):
+                rel_axes_enabled = bool(canvas._use_relative_axes(views[0]))
+            else:
+                rel_override = getattr(canvas, "_relative_axes_override", None)
+                rel_axes_enabled = None if rel_override is None else bool(rel_override)
+        except Exception:
+            rel_axes_enabled = None
+        rel_zero_enabled = None
+        try:
+            rel_zero_enabled = bool(getattr(canvas, "_popup_relative_zero_enabled"))
+        except Exception:
+            try:
+                views = list(getattr(canvas, "views", []) or [])
+                if views:
+                    rel_zero_enabled = bool((views[0] or {}).get("display_relative_zero", False))
+            except Exception:
+                rel_zero_enabled = None
+        return {
+            "plot_typography": {
+                "family": family,
+                "bold": bool(getattr(canvas, "_plot_font_bold", False)),
+                "italic": bool(getattr(canvas, "_plot_font_italic", False)),
+                "underline": bool(getattr(canvas, "_plot_font_underline", False)),
+            },
+            "view_font_scale": scale,
+            "display_options": self._canvas_display_state_from_canvas(canvas),
+            "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
+            "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
+            "relative_axes_enabled": rel_axes_enabled,
+            "relative_zero_enabled": rel_zero_enabled,
+        }
+
+    def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
+        if canvas is None or not style_snapshot:
+            return False
+        typography = dict(style_snapshot.get("plot_typography") or {})
+        family = typography.get("family")
+        if family is not None:
+            try:
+                family = normalize_font_family(family, UI_FONT_FAMILY)
+                canvas._font_family = family
+                settings = dict(getattr(canvas, "_scale_bar_settings", {}) or {})
+                settings["font_family"] = family
+                canvas._scale_bar_settings = settings
+            except Exception:
+                pass
+        for key, attr in (
+            ("bold", "_plot_font_bold"),
+            ("italic", "_plot_font_italic"),
+            ("underline", "_plot_font_underline"),
+        ):
+            if key in typography:
+                try:
+                    setattr(canvas, attr, bool(typography.get(key)))
+                except Exception:
+                    pass
+        try:
+            canvas._view_font_scale = max(0.6, min(2.5, float(style_snapshot.get("view_font_scale", getattr(canvas, "_view_font_scale", 1.0)))))
+        except Exception:
+            pass
+        display = dict(style_snapshot.get("display_options") or {})
+        if display:
+            try:
+                canvas._show_ticks = bool(display.get("show_ticks", getattr(canvas, "_show_ticks", True)))
+                canvas._show_colorbar = bool(display.get("show_colorbar", getattr(canvas, "_show_colorbar", True)))
+                orient = str(display.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical").strip().lower()
+                canvas._colorbar_orientation = orient if orient in ("vertical", "horizontal") else "vertical"
+                canvas._show_title = bool(display.get("show_title", getattr(canvas, "_show_title", True)))
+                canvas._show_acquisition_overlay = bool(display.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False)))
+                canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True)))
+                canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
+                canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
+                canvas.show_molecules = bool(display.get("show_molecules", getattr(canvas, "show_molecules", True)))
+                desired_scale_bar = bool(display.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False)))
+                current_scale_bar = bool(getattr(canvas, "scale_bar_enabled", False))
+                canvas.scale_bar_enabled = desired_scale_bar
+                if desired_scale_bar != current_scale_bar:
+                    if desired_scale_bar:
+                        canvas._connect_scale_bar_events()
+                    else:
+                        canvas._disconnect_scale_bar_events()
+                canvas._frame_fill_mode = bool(display.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False)))
+                layout = str(display.get("view_layout", getattr(canvas, "_view_layout", "grid")) or "grid").strip().lower()
+                canvas._view_layout = layout if layout in ("grid", "stacked") else "grid"
+            except Exception:
+                pass
+        sb_settings = style_snapshot.get("scale_bar_settings")
+        if sb_settings is not None:
+            try:
+                canvas._scale_bar_settings = dict(sb_settings or {})
+            except Exception:
+                pass
+        sb_pos = style_snapshot.get("scale_bar_pos")
+        if sb_pos is not None:
+            try:
+                canvas._scale_bar_pos = tuple(sb_pos)
+            except Exception:
+                pass
+        rel_axes_enabled = style_snapshot.get("relative_axes_enabled", None)
+        if rel_axes_enabled is not None:
+            try:
+                canvas._relative_axes_override = bool(rel_axes_enabled)
+            except Exception:
+                pass
+        else:
+            try:
+                rel_override = display.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None))
+                canvas._relative_axes_override = None if rel_override is None else bool(rel_override)
+            except Exception:
+                pass
+        rel_zero_enabled = style_snapshot.get("relative_zero_enabled", None)
+        if rel_zero_enabled is not None:
+            try:
+                rel_zero_setter = getattr(canvas, "_popup_relative_zero_setter", None)
+                if callable(rel_zero_setter):
+                    rel_zero_setter(bool(rel_zero_enabled))
+            except Exception:
+                pass
+        if redraw:
+            try:
+                canvas._redraw()
+            except Exception:
+                try:
+                    canvas.draw_idle()
+                except Exception:
+                    pass
+        else:
+            try:
+                canvas._apply_view_font_scale()
+            except Exception:
+                pass
+        if notify:
+            try:
+                canvas._notify_views_callback()
+            except Exception:
+                pass
+        return True
+
+    def _apply_popup_style_to_all(self, source_canvas=None):
+        source_canvas = source_canvas or getattr(self, "_active_preview_canvas", None)
+        if source_canvas is None:
+            return 0
+        style_snapshot = self._capture_canvas_style_snapshot(source_canvas)
+        if not style_snapshot:
+            return 0
+        count = 0
+        for canvas in list(getattr(self, "_popup_canvases", []) or []):
+            if canvas is None or canvas is source_canvas:
+                continue
+            try:
+                if self._apply_canvas_style_snapshot(canvas, style_snapshot, notify=True):
+                    count += 1
+            except Exception:
+                continue
+        if count:
+            try:
+                log_status(f"Applied popup style to {count} pop-out(s)")
+            except Exception:
+                pass
+        return count
 
     def _on_molecule_palette_changed(self, palette: str):
         palette = (palette or "cpk").lower()
@@ -1744,6 +1950,7 @@ QLabel:hover {{
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
         ) % color
 
@@ -2277,6 +2484,229 @@ QLabel:hover {{
     def _update_toolbar_actions(self, enabled: bool):
         return main_window_toolbar.update_toolbar_actions(self, enabled)
 
+    def _create_session_activity_strip(self):
+        strip = QtWidgets.QFrame(self)
+        strip.setObjectName("sessionActivityStrip")
+        strip.setVisible(False)
+        strip.setStyleSheet(
+            """
+            QFrame#sessionActivityStrip {
+                border: 1px solid #b8cbe8;
+                border-radius: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(238,244,255,235),
+                    stop:1 rgba(247,250,255,235));
+            }
+            QLabel#sessionActivityTitle {
+                color: #14345f;
+                font-weight: 600;
+            }
+            QLabel#sessionActivityDetail {
+                color: #38506f;
+            }
+            QProgressBar#sessionActivityProgress {
+                min-height: 14px;
+                border-radius: 7px;
+                background: rgba(255,255,255,185);
+                border: 1px solid #c4d3ea;
+                text-align: center;
+                color: #17395f;
+                font-weight: 600;
+            }
+            QProgressBar#sessionActivityProgress::chunk {
+                border-radius: 7px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3276ff,
+                    stop:1 #67b8ff);
+            }
+            """
+        )
+        layout = QtWidgets.QHBoxLayout(strip)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        title = QtWidgets.QLabel("Session activity", strip)
+        title.setObjectName("sessionActivityTitle")
+        detail = QtWidgets.QLabel("", strip)
+        detail.setObjectName("sessionActivityDetail")
+        detail.setWordWrap(True)
+        text_col.addWidget(title)
+        text_col.addWidget(detail)
+
+        progress = QtWidgets.QProgressBar(strip)
+        progress.setObjectName("sessionActivityProgress")
+        progress.setTextVisible(True)
+        progress.setMinimumWidth(220)
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        progress.setFormat("%p%")
+
+        layout.addLayout(text_col, 1)
+        layout.addWidget(progress, 0)
+
+        self._session_activity_strip = strip
+        self._session_activity_title = title
+        self._session_activity_detail = detail
+        self._session_activity_progress = progress
+        return strip
+
+    def _set_session_activity(self, message, detail="", value=None, stage="loading", visible=True, hide_delay_ms=0):
+        strip = getattr(self, "_session_activity_strip", None)
+        title = getattr(self, "_session_activity_title", None)
+        detail_label = getattr(self, "_session_activity_detail", None)
+        progress = getattr(self, "_session_activity_progress", None)
+        if strip is None or title is None or detail_label is None or progress is None:
+            return
+        try:
+            self._session_activity_hide_timer.stop()
+        except Exception:
+            pass
+        palettes = {
+            "loading": ("#3276ff", "#67b8ff", "#b8cbe8"),
+            "hydrating": ("#1ea57c", "#63d3b0", "#a8dacd"),
+            "popup": ("#d8891f", "#efbc52", "#e4cca5"),
+            "complete": ("#2a9d5b", "#68c788", "#b5d8bf"),
+            "error": ("#c94b4b", "#ef8686", "#e3bbbb"),
+        }
+        start_color, end_color, border_color = palettes.get(stage, palettes["loading"])
+        try:
+            strip.setStyleSheet(
+                f"""
+                QFrame#sessionActivityStrip {{
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(248,250,255,238),
+                        stop:1 rgba(255,255,255,230));
+                }}
+                QLabel#sessionActivityTitle {{
+                    color: #14345f;
+                    font-weight: 600;
+                }}
+                QLabel#sessionActivityDetail {{
+                    color: #38506f;
+                }}
+                QProgressBar#sessionActivityProgress {{
+                    min-height: 14px;
+                    border-radius: 7px;
+                    background: rgba(255,255,255,185);
+                    border: 1px solid {border_color};
+                    text-align: center;
+                    color: #17395f;
+                    font-weight: 600;
+                }}
+                QProgressBar#sessionActivityProgress::chunk {{
+                    border-radius: 7px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 {start_color},
+                        stop:1 {end_color});
+                }}
+                """
+            )
+        except Exception:
+            pass
+        title.setText(str(message or "Session activity"))
+        detail_label.setText(str(detail or ""))
+        if value is None:
+            progress.setRange(0, 0)
+            progress.setFormat("")
+        else:
+            progress.setRange(0, 100)
+            progress.setValue(max(0, min(100, int(value))))
+            progress.setFormat("%p%")
+        strip.setVisible(bool(visible))
+        if hide_delay_ms and visible:
+            self._session_activity_hide_timer.start(int(max(0, hide_delay_ms)))
+
+    def _hide_session_activity(self):
+        strip = getattr(self, "_session_activity_strip", None)
+        progress = getattr(self, "_session_activity_progress", None)
+        if progress is not None:
+            try:
+                progress.setRange(0, 100)
+                progress.setValue(0)
+                progress.setFormat("%p%")
+            except Exception:
+                pass
+        if strip is not None:
+            strip.setVisible(False)
+
+    def _describe_deferred_popup_entry(self, entry):
+        if not isinstance(entry, dict):
+            return "Deferred pop-up"
+        title = str(entry.get("title") or "").strip()
+        if title:
+            return title
+        snapshot = entry.get("snapshot") or {}
+        title = str(snapshot.get("window_title") or "").strip()
+        if title:
+            return title
+        first_view = ((snapshot.get("views") or [{}]) or [{}])[0]
+        meta = first_view.get("meta") or {}
+        file_name = meta.get("file_name") or Path(str(first_view.get("path") or "")).name
+        channel = meta.get("channel") or ""
+        if file_name and channel:
+            return f"{file_name} | {channel}"
+        if file_name:
+            return str(file_name)
+        return "Deferred pop-up"
+
+    def _rebuild_deferred_popup_menu(self):
+        menu = getattr(self, "toolbar_popups_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        entries = list(getattr(self, "_deferred_popup_entries", []) or [])
+        if not entries:
+            empty_act = menu.addAction("No deferred pop-ups")
+            empty_act.setEnabled(False)
+            return
+        header_act = menu.addAction(f"{len(entries)} deferred pop-up{'s' if len(entries) != 1 else ''}")
+        header_act.setEnabled(False)
+        menu.addSeparator()
+        restore_all = menu.addAction(f"Restore all ({len(entries)})")
+        restore_all.triggered.connect(lambda: self.session_controller.restore_all_deferred_popups())
+        menu.addSeparator()
+        metrics = None
+        try:
+            metrics = self.fontMetrics()
+        except Exception:
+            metrics = None
+        for entry in entries:
+            text = self._describe_deferred_popup_entry(entry)
+            if metrics is not None:
+                try:
+                    text = metrics.elidedText(text, QtCore.Qt.ElideRight, 340)
+                except Exception:
+                    pass
+            act = menu.addAction(text)
+            act.triggered.connect(partial(self.session_controller.restore_deferred_popup, entry_id=entry.get("id")))
+
+    def _refresh_deferred_popup_ui(self):
+        btn = getattr(self, "toolbar_popups_btn", None)
+        if btn is None:
+            return
+        count = len(getattr(self, "_deferred_popup_entries", []) or [])
+        btn.setEnabled(count > 0)
+        btn.setText(f"Pop-ups ({count})" if count else "Pop-ups")
+        btn.setToolTip(
+            "Restore deferred session pop-outs on demand."
+            if count
+            else "No deferred session pop-outs are waiting."
+        )
+        try:
+            btn.setStyleSheet(
+                "QToolButton { font-weight: 600; color: #7a4d00; }"
+                if count
+                else ""
+            )
+        except Exception:
+            pass
+        self._rebuild_deferred_popup_menu()
+
     def _step_channel(self, delta: int):
         combo = getattr(self, "channel_dropdown", None)
         if combo is None or combo.count() <= 0 or not combo.isEnabled():
@@ -2587,6 +3017,8 @@ QLabel:hover {{
         self._spectros_loaded = False
         self._spectros_pending = False
         self.spectro_thumb_channel_by_path = {}
+        self._deferred_popup_entries = []
+        self._deferred_popup_serial = 0
         try:
             self._thumb_generation += 1
         except Exception:
@@ -2630,6 +3062,14 @@ QLabel:hover {{
             pass
         try:
             self._update_spectro_stats_label()
+        except Exception:
+            pass
+        try:
+            self._refresh_deferred_popup_ui()
+        except Exception:
+            pass
+        try:
+            self._hide_session_activity()
         except Exception:
             pass
 
@@ -3846,6 +4286,12 @@ QLabel:hover {{
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.arrange_popups()
+
+    def on_minimize_popouts(self):
+        """Minimize all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.minimize_popups()
 
     def _view_source_path(self, view):
         if not view:
