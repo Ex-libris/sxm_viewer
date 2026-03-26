@@ -595,6 +595,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "extent": display_extent,
         "extent_raw": adjusted_extent,
         "cmap": cmap_to_use,
+        "unit_normalized": unit_normalized,
         "unit": display_unit,
         "display_relative_zero": bool(getattr(viewer, "display_units_relative", False)),
         "zero_offset": zero_offset,
@@ -744,6 +745,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'extent': display_extent,
         'extent_raw': adjusted_extent,
         'cmap': cmap_to_use,
+        'unit_normalized': unit_normalized,
         'unit': display_unit,
         'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
         'zero_offset': zero_offset,
@@ -789,7 +791,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2['channel_index'] = int(idx2)
             clim2 = _auto_preview_clim(arr2_display)
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
-                     'cmap': cmap2, 'unit': unit2_display,
+                     'cmap': cmap2, 'unit_normalized': unit2_final, 'unit': unit2_display,
                      'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
                      'zero_offset': zero2_offset,
                      'title': title2,

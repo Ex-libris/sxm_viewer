@@ -1,13 +1,15 @@
 """Session save/load controller for SXM Viewer."""
 from __future__ import annotations
 
+import copy
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
-from ..._shared import QtWidgets, log_status, np
+from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 
 
 class SessionController:
@@ -66,8 +68,10 @@ class SessionController:
         data_dir = session_path.parent / f"{session_path.stem}_data"
         processed_dir = data_dir / "processed"
         views_dir = data_dir / "views"
+        thumbs_dir = data_dir / "thumbs"
         os.makedirs(processed_dir, exist_ok=True)
         os.makedirs(views_dir, exist_ok=True)
+        os.makedirs(thumbs_dir, exist_ok=True)
         processed = {}
         try:
             if viewer.last_preview:
@@ -116,8 +120,20 @@ class SessionController:
             preview,
             views_dir,
             prefix="preview",
-            include_arrays=False,
+            include_arrays=True,
         )
+        session_headers = {}
+        for key, pair in (getattr(viewer, "headers", {}) or {}).items():
+            if getattr(viewer, "_is_processed_key", lambda _k: False)(key):
+                continue
+            try:
+                header, fds = pair
+            except Exception:
+                continue
+            session_headers[str(key)] = {
+                "header": header or {},
+                "fds": fds or [],
+            }
         win = viewer._canvas_window_ref()
         if win is not None and win.isVisible():
             try:
@@ -154,6 +170,7 @@ class SessionController:
             "image_folder": str(getattr(viewer, "last_dir", "") or ""),
             "spectra_folder": str(getattr(viewer, "spec_folder_path", "") or ""),
             "files": [str(p) for p in (getattr(viewer, "files", []) or [])],
+            "headers": session_headers,
             "processed": processed,
             "image_adjustments": getattr(viewer, "image_adjustments", {}),
             "thumbnail_filters": getattr(viewer, "thumbnail_filters", {}),
@@ -167,6 +184,7 @@ class SessionController:
             "ui": ui_state,
             "preview_state": preview_state,
             "preview_canvas_snapshot": preview_canvas_snapshot,
+            "thumbnail_snapshot": self._capture_thumbnail_snapshot(thumbs_dir),
             "canvas_state": canvas_state,
             "data_dir": data_dir.name,
             "popup_canvases": self._capture_popup_snapshots(views_dir),
@@ -174,10 +192,148 @@ class SessionController:
         return self._jsonify(payload)
 
     # ------------------------------------------------------------------
+    def _apply_cached_session_state(self, payload: dict, session_path: Path):
+        viewer = self.viewer
+        t0 = time.perf_counter()
+        phase_t = t0
+        try:
+            viewer.clear_loaded_images()
+        except Exception:
+            pass
+
+        image_folder = payload.get("image_folder") or ""
+        if image_folder:
+            try:
+                viewer.last_dir = Path(image_folder)
+            except Exception:
+                pass
+            try:
+                viewer.path_le.setText(str(image_folder))
+            except Exception:
+                pass
+        spectra_folder = payload.get("spectra_folder") or ""
+        if spectra_folder:
+            try:
+                viewer.spec_folder_path = Path(spectra_folder)
+            except Exception:
+                pass
+            try:
+                viewer.spec_folder_le.setText(str(spectra_folder))
+            except Exception:
+                pass
+
+        data_dir = payload.get("data_dir") or ""
+        data_dir = session_path.parent / data_dir if data_dir else session_path.parent
+        processed_dir = data_dir / "processed"
+        views_dir = data_dir / "views"
+        thumbs_dir = data_dir / "thumbs"
+
+        self._restore_headers_from_payload(payload.get("headers") or {})
+        self._restore_processed_views_payload(payload.get("processed") or {}, processed_dir)
+        session_files = self._session_files_from_payload(payload)
+        if session_files:
+            viewer.files = session_files
+        try:
+            viewer._build_image_timestamp_index()
+            viewer._rebuild_frame_map_entries()
+        except Exception:
+            pass
+        load_folder_dt = time.perf_counter() - phase_t
+
+        phase_t = time.perf_counter()
+        self._apply_basic_session_payload(payload)
+        self._restore_channel_dropdown_from_headers()
+        ui = payload.get("ui") or {}
+        self._apply_ui_state_fast(ui, load_spectros=False)
+        apply_ui_dt = time.perf_counter() - phase_t
+
+        phase_t = time.perf_counter()
+        thumb_snapshot = payload.get("thumbnail_snapshot") or {}
+        self._restore_thumbnail_snapshot(thumb_snapshot, thumbs_dir)
+        thumbs_dt = time.perf_counter() - phase_t
+
+        phase_t = time.perf_counter()
+        pending_preview = payload.get("last_preview")
+        preview_state = payload.get("preview_state") or {}
+        preview_snapshot = payload.get("preview_canvas_snapshot") or {}
+        self._restore_preview_from_snapshot(pending_preview, preview_snapshot, preview_state, views_dir)
+        preview_build_dt = 0.0
+        self._restore_canvas_snapshot(
+            getattr(viewer, "preview_canvas", None),
+            preview_snapshot,
+            views_dir,
+            viewer=viewer,
+            require_view_match=True,
+        )
+        preview_restore_dt = time.perf_counter() - phase_t
+
+        phase_t = time.perf_counter()
+        canvas_state = payload.get("canvas_state")
+        if canvas_state:
+            try:
+                viewer._on_open_canvas()
+                win = viewer._canvas_window_ref()
+                if win:
+                    win._restore_state(canvas_state)
+            except Exception:
+                pass
+        canvas_window_dt = time.perf_counter() - phase_t
+
+        phase_t = time.perf_counter()
+        popup_defs = payload.get("popup_canvases") or []
+        popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0, "lazy": 0}
+        if popup_defs:
+            popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
+        total_dt = time.perf_counter() - t0
+
+        try:
+            viewer._update_toolbar_actions(bool(getattr(viewer, "files", []) or []))
+        except Exception:
+            pass
+        self._schedule_session_hydration(payload, session_path)
+
+        try:
+            popup_count = int(popup_stats.get("count", 0))
+            popup_elapsed = float(popup_stats.get("elapsed", time.perf_counter() - phase_t))
+            popup_tail = f" | popups {popup_count} in {popup_elapsed:.2f}s"
+            if popup_count:
+                popup_tail += " [arrays %.2fs | spawn %.2fs | state %.2fs | show %.2fs]" % (
+                    float(popup_stats.get("arrays", 0.0)),
+                    float(popup_stats.get("spawn", 0.0)),
+                    float(popup_stats.get("state", 0.0)),
+                    float(popup_stats.get("show", 0.0)),
+                )
+                popup_lazy = int(popup_stats.get("lazy", 0) or 0)
+                if popup_lazy:
+                    popup_tail += f" | lazy {popup_lazy}"
+            log_status(
+                "[Session] load %.2fs | folder %.2fs | ui %.2fs | thumbs %.2fs | preview %.2fs + %.2fs | canvas %.2fs%s"
+                % (
+                    total_dt,
+                    load_folder_dt,
+                    apply_ui_dt,
+                    thumbs_dt,
+                    preview_build_dt,
+                    preview_restore_dt,
+                    canvas_window_dt,
+                    popup_tail,
+                )
+            )
+        except Exception:
+            pass
+        return True
+
+    # ------------------------------------------------------------------
     def _apply_session_state(self, payload: dict, session_path: Path):
         viewer = self.viewer
         if not isinstance(payload, dict):
             return False
+        preview_snapshot = payload.get("preview_canvas_snapshot") or {}
+        if (
+            payload.get("headers")
+            and any(bool(entry.get("arr_file")) for entry in (preview_snapshot.get("views") or []))
+        ):
+            return self._apply_cached_session_state(payload, session_path)
         t0 = time.perf_counter()
         phase_t = t0
         image_folder = payload.get("image_folder") or ""
@@ -316,7 +472,7 @@ class SessionController:
         canvas_window_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
         popup_defs = payload.get("popup_canvases") or []
-        popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0}
+        popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0, "lazy": 0}
         if popup_defs:
             popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
         total_dt = time.perf_counter() - t0
@@ -331,6 +487,9 @@ class SessionController:
                     float(popup_stats.get("state", 0.0)),
                     float(popup_stats.get("show", 0.0)),
                 )
+                popup_lazy = int(popup_stats.get("lazy", 0) or 0)
+                if popup_lazy:
+                    popup_tail += f" | lazy {popup_lazy}"
             log_status(
                 "[Session] load %.2fs | folder %.2fs | ui %.2fs | thumbs %.2fs | preview %.2fs + %.2fs | canvas %.2fs%s"
                 % (
@@ -381,7 +540,7 @@ class SessionController:
         except Exception:
             pass
 
-    def _apply_ui_state_fast(self, ui: dict):
+    def _apply_ui_state_fast(self, ui: dict, *, load_spectros: bool = True):
         viewer = self.viewer
         if not isinstance(ui, dict):
             ui = {}
@@ -464,17 +623,23 @@ class SessionController:
             viewer._apply_detail_view_theme()
         except Exception:
             pass
-        try:
-            if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
-                if not getattr(viewer, "_spectros_loaded", False):
-                    viewer.ensure_spectros_loaded(refresh=False)
+        if load_spectros:
+            try:
+                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                    if not getattr(viewer, "_spectros_loaded", False):
+                        viewer.ensure_spectros_loaded(refresh=False)
+                    else:
+                        viewer._update_spectro_stats_label()
                 else:
+                    viewer._clear_multi_spec_selection()
                     viewer._update_spectro_stats_label()
-            else:
-                viewer._clear_multi_spec_selection()
+            except Exception:
+                pass
+        else:
+            try:
                 viewer._update_spectro_stats_label()
-        except Exception:
-            pass
+            except Exception:
+                pass
         try:
             options = viewer._canvas_display_state_from_canvas(getattr(viewer, "preview_canvas", None))
             options["show_molecules"] = viewer.show_molecules
@@ -494,10 +659,364 @@ class SessionController:
             pass
 
     # ------------------------------------------------------------------
+    def _capture_thumbnail_snapshot(self, thumbs_dir: Path):
+        viewer = self.viewer
+        items = []
+        for idx, key in enumerate([str(fp) for fp in list(getattr(viewer, "current_thumb_files", []) or []) if str(fp)]):
+            lbl = (getattr(viewer, "_thumb_labels", {}) or {}).get(key)
+            if lbl is None:
+                continue
+            try:
+                pix = lbl.pixmap()
+            except Exception:
+                pix = None
+            if pix is None or pix.isNull():
+                continue
+            fname = f"thumb_{idx:03d}.png"
+            try:
+                pix.save(str(thumbs_dir / fname), "PNG")
+            except Exception:
+                continue
+            try:
+                dims = lbl.property("thumb_dims") or (pix.width(), pix.height())
+            except Exception:
+                dims = (pix.width(), pix.height())
+            items.append({
+                "file_key": key,
+                "png_file": fname,
+                "thumb_dims": [int(dims[0]), int(dims[1])],
+            })
+        if not items:
+            return None
+        selected = getattr(viewer, "selected_file_for_thumbs", None)
+        return {
+            "channel_index": int(getattr(viewer, "channel_dropdown", None).currentIndex()) if hasattr(viewer, "channel_dropdown") else 0,
+            "thumb_size_px": int(getattr(viewer, "thumb_size_px", 160) or 160),
+            "selected_file": str(selected) if selected else None,
+            "items": items,
+        }
+
+    def _restore_headers_from_payload(self, headers_payload):
+        viewer = self.viewer
+        viewer.headers = {}
+        for key, entry in (headers_payload or {}).items():
+            try:
+                viewer.headers[str(key)] = (
+                    entry.get("header") or {},
+                    entry.get("fds") or [],
+                )
+            except Exception:
+                continue
+
+    def _restore_channel_dropdown_from_headers(self):
+        viewer = self.viewer
+        if not getattr(viewer, "headers", None):
+            try:
+                viewer.channel_dropdown.blockSignals(True)
+                viewer.channel_dropdown.clear()
+                viewer.channel_dropdown.setEnabled(False)
+            except Exception:
+                pass
+            finally:
+                try:
+                    viewer.channel_dropdown.blockSignals(False)
+                except Exception:
+                    pass
+            return
+        try:
+            first_key = next(iter(viewer.headers))
+            _, first_fds = viewer.headers[first_key]
+        except Exception:
+            first_fds = []
+        labels = []
+        for idx, fd in enumerate(first_fds or []):
+            cap = fd.get("Caption", fd.get("FileName", f"chan{idx}"))
+            labels.append(f"{idx}: {cap}")
+        try:
+            max_channels = max(len(v[1]) for v in viewer.headers.values())
+        except Exception:
+            max_channels = len(labels)
+        if max_channels > len(labels):
+            for idx in range(len(labels), max_channels):
+                labels.append(f"{idx}: chan{idx}")
+        try:
+            viewer.channel_dropdown.blockSignals(True)
+            viewer.channel_dropdown.clear()
+            for lab in labels:
+                viewer.channel_dropdown.addItem(lab)
+                viewer.channel_dropdown.setItemData(viewer.channel_dropdown.count() - 1, lab, QtCore.Qt.ToolTipRole)
+            viewer.channel_dropdown.setMinimumWidth(240)
+            viewer.channel_dropdown.setEnabled(bool(labels))
+        except Exception:
+            pass
+        finally:
+            try:
+                viewer.channel_dropdown.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            viewer._sync_channel_nav_buttons()
+        except Exception:
+            pass
+
+    def _restore_thumbnail_snapshot(self, snapshot: dict, thumbs_dir: Path):
+        viewer = self.viewer
+        if not snapshot:
+            return 0
+        viewer.clear_thumbs()
+        items = list(snapshot.get("items") or [])
+        if not items:
+            return 0
+        try:
+            viewer.thumb_size_px = int(snapshot.get("thumb_size_px", getattr(viewer, "thumb_size_px", 160)) or getattr(viewer, "thumb_size_px", 160))
+        except Exception:
+            pass
+        try:
+            vp = getattr(viewer, "_thumb_viewport", None)
+            avail_w = vp.width() if vp is not None else (viewer.thumb_container.width() if hasattr(viewer, "thumb_container") else 800)
+        except Exception:
+            avail_w = 800
+        try:
+            thumb_w = int(items[0].get("thumb_dims", [viewer.thumb_size_px, int(round(viewer.thumb_size_px * 0.75))])[0])
+            thumb_h = int(items[0].get("thumb_dims", [viewer.thumb_size_px, int(round(viewer.thumb_size_px * 0.75))])[1])
+        except Exception:
+            thumb_w = int(getattr(viewer, "thumb_size_px", 160))
+            thumb_h = int(round(thumb_w * 0.75))
+        card_w = thumb_w + 24
+        cols = max(1, min(12, int(avail_w / max(1, card_w))))
+        viewer.thumb_grid_columns = cols
+        viewer._thumb_card_height = thumb_h + 48
+        viewer.current_thumb_files = []
+        viewer.current_thumbnail_entries = []
+        viewer.current_thumbnail_kind_by_key = {}
+        viewer._thumb_meta = {}
+        viewer._thumb_loaded = set()
+        viewer._thumb_inflight = set()
+        row = 0
+        col = 0
+        restored = 0
+        for item in items:
+            key = str(item.get("file_key") or "")
+            png_file = str(item.get("png_file") or "")
+            if not key or not png_file:
+                continue
+            pix = QtGui.QPixmap(str(thumbs_dir / png_file))
+            if pix.isNull():
+                continue
+            lbl = QtWidgets.QLabel()
+            lbl.setAlignment(QtCore.Qt.AlignCenter)
+            lbl.setProperty("file_path", key)
+            lbl.setProperty("channel_index", int(snapshot.get("channel_index", getattr(viewer, "last_channel_index", 0)) or 0))
+            lbl.setProperty("spec_markers", [])
+            lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
+            lbl.setProperty("drag_start", None)
+            lbl.setProperty("dragging", False)
+            lbl.setPixmap(pix)
+            lbl.setMouseTracking(True)
+            lbl.mousePressEvent = viewer._make_thumb_press_handler(lbl)
+            lbl.mouseReleaseEvent = viewer._make_thumb_release_handler(lbl)
+            lbl.mouseMoveEvent = viewer._make_thumb_move_handler(lbl)
+            lbl.mouseDoubleClickEvent = viewer._make_thumb_double_handler(lbl)
+            lbl.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            lbl.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
+            vbox = QtWidgets.QVBoxLayout()
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(2)
+            card = QtWidgets.QFrame()
+            card.setFrameShape(QtWidgets.QFrame.StyledPanel)
+            card.setLineWidth(0)
+            card_layout = QtWidgets.QVBoxLayout(card)
+            card_layout.setContentsMargins(4, 4, 4, 4)
+            card_layout.setSpacing(4)
+            vbox.addWidget(lbl)
+            cap = QtWidgets.QLabel(Path(key).name)
+            cap.setAlignment(QtCore.Qt.AlignCenter)
+            cap.setMaximumHeight(18)
+            cap.setFont(QtGui.QFont("Segoe UI", 9))
+            cap.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            cap.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
+            vbox.addWidget(cap)
+            card_layout.addLayout(vbox)
+            viewer.thumb_layout.addWidget(card, row, col)
+            viewer.thumb_widgets[key] = card
+            viewer._thumb_labels[key] = lbl
+            viewer.current_thumb_files.append(key)
+            viewer.current_thumbnail_entries.append({"kind": "image", "key": key})
+            viewer.current_thumbnail_kind_by_key[key] = "image"
+            viewer._thumb_loaded.add(key)
+            restored += 1
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+        try:
+            viewer.selected_file_for_thumbs = snapshot.get("selected_file")
+            viewer._refresh_thumb_selection_styles()
+        except Exception:
+            pass
+        return restored
+
+    def _restore_preview_from_snapshot(self, pending_preview, preview_snapshot: dict, preview_state: dict, views_dir: Path):
+        viewer = self.viewer
+        preview = getattr(viewer, "preview_canvas", None)
+        if preview is None or not preview_snapshot:
+            return False
+        built_views = []
+        for entry in preview_snapshot.get("views") or []:
+            built = self._build_view_from_snapshot_entry(entry, views_dir)
+            if built is None:
+                return False
+            built_views.append(built)
+        if not built_views:
+            return False
+        try:
+            if pending_preview and len(pending_preview) >= 2:
+                viewer.last_preview = (str(pending_preview[0]), int(pending_preview[1]))
+            else:
+                meta = built_views[0].get("meta") or {}
+                file_path = built_views[0].get("path") or meta.get("file_path")
+                ch_idx = built_views[0].get("channel_idx", meta.get("channel_index", 0))
+                viewer.last_preview = (str(file_path), int(ch_idx))
+        except Exception:
+            pass
+        try:
+            if hasattr(viewer, "adjust_image_btn"):
+                viewer.adjust_image_btn.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            if viewer.last_preview:
+                viewer.selected_file_for_thumbs = str(viewer.last_preview[0])
+                viewer._refresh_thumb_selection_styles()
+                viewer._update_frame_map_active(str(viewer.last_preview[0]))
+        except Exception:
+            pass
+        try:
+            preview.set_views(built_views, preserve_profiles=False)
+        except Exception:
+            return False
+        first_view = built_views[0] if built_views else {}
+        meta = first_view.get("meta") or {}
+        file_key = str(first_view.get("path") or meta.get("file_path") or "")
+        try:
+            ch_idx = int(first_view.get("channel_idx", meta.get("channel_index", 0)) or 0)
+        except Exception:
+            ch_idx = 0
+        try:
+            header_path = Path(file_key)
+            header, fds = viewer.headers.get(file_key, (None, None))
+            fd = fds[ch_idx] if fds and 0 <= ch_idx < len(fds) else {}
+            html = viewer._build_metadata_html(
+                header_path,
+                header or {},
+                fd or {},
+                ch_idx,
+                first_view.get("unit_normalized") or first_view.get("unit") or fd.get("PhysUnit", ""),
+                first_view.get("unit") or "",
+                np.asarray(first_view.get("arr")),
+                first_view.get("zero_offset"),
+            )
+            viewer.meta_box.setHtml(html)
+        except Exception:
+            try:
+                viewer.meta_box.setPlainText(f"File: {Path(file_key).name}")
+            except Exception:
+                pass
+        return True
+
+    def _schedule_session_hydration(self, payload: dict, session_path: Path):
+        serial = int(getattr(self, "_session_hydration_serial", 0)) + 1
+        self._session_hydration_serial = serial
+        QtCore.QTimer.singleShot(0, lambda s=serial, p=payload, sp=Path(session_path): self._run_session_hydration(s, p, sp))
+
+    def _run_session_hydration(self, serial: int, payload: dict, session_path: Path):
+        if int(getattr(self, "_session_hydration_serial", 0)) != int(serial):
+            return
+        viewer = self.viewer
+        start = time.perf_counter()
+        preview_dt = 0.0
+        thumbs_dt = 0.0
+        spectro_dt = 0.0
+        missing = 0
+        spectro_rebuilt_preview = False
+        try:
+            files = [str(p) for p in (payload.get("files") or []) if str(p) and not viewer._is_processed_key(str(p))]
+            missing = sum(1 for p in files if not Path(p).exists())
+        except Exception:
+            missing = 0
+
+        spectra_folder = payload.get("spectra_folder") or ""
+        if spectra_folder:
+            t_phase = time.perf_counter()
+            try:
+                viewer._set_spec_folder(Path(spectra_folder))
+            except Exception:
+                pass
+            try:
+                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                    viewer.ensure_spectros_loaded(refresh=False)
+                    spectro_rebuilt_preview = True
+            except Exception:
+                pass
+            spectro_dt = time.perf_counter() - t_phase
+
+        t_phase = time.perf_counter()
+        try:
+            viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        thumbs_dt = time.perf_counter() - t_phase
+
+        preview_ref = payload.get("last_preview")
+        preview_key = None
+        try:
+            if preview_ref and len(preview_ref) >= 2:
+                preview_key = (str(preview_ref[0]), int(preview_ref[1]))
+        except Exception:
+            preview_key = None
+        t_phase = time.perf_counter()
+        try:
+            current_preview = getattr(viewer, "last_preview", None)
+            if preview_key and current_preview == preview_key:
+                preview_path_ok = viewer._is_processed_key(preview_key[0]) or Path(preview_key[0]).exists()
+                if preview_path_ok and not spectro_rebuilt_preview:
+                    viewer.show_file_channel(preview_key[0], preview_key[1])
+                data_dir = payload.get("data_dir") or ""
+                data_dir = session_path.parent / data_dir if data_dir else session_path.parent
+                views_dir = data_dir / "views"
+                preview_snapshot = payload.get("preview_canvas_snapshot")
+                if preview_snapshot and preview_path_ok:
+                    self._restore_canvas_snapshot(
+                        getattr(viewer, "preview_canvas", None),
+                        preview_snapshot,
+                        views_dir,
+                        viewer=viewer,
+                        require_view_match=True,
+                    )
+        except Exception:
+            pass
+        preview_dt = time.perf_counter() - t_phase
+
+        try:
+            log_status(
+                "[Session] hydrate %.2fs | thumbs %.2fs | preview %.2fs | spectros %.2fs | missing %d"
+                % (
+                    time.perf_counter() - start,
+                    thumbs_dt,
+                    preview_dt,
+                    spectro_dt,
+                    int(missing),
+                )
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
     def _capture_popup_snapshots(self, views_dir: Path):
         viewer = self.viewer
         canvases = list(getattr(viewer, "_popup_canvases", []) or [])
         snapshots = []
+        captured_dialog_ids = set()
         for idx, canvas in enumerate(canvases):
             snap = self._capture_canvas_snapshot(canvas, views_dir, prefix=f"popup{idx}", include_arrays=True)
             if not snap:
@@ -508,6 +1027,7 @@ class SessionController:
             except Exception:
                 dlg = None
             if dlg is not None:
+                captured_dialog_ids.add(id(dlg))
                 try:
                     if hasattr(dlg, "isVisible") and not dlg.isVisible():
                         continue
@@ -523,7 +1043,64 @@ class SessionController:
                 except Exception:
                     pass
             snapshots.append(snap)
+        lazy_idx = 0
+        for dlg in list(getattr(viewer, "_popup_refs", []) or []):
+            if dlg is None or id(dlg) in captured_dialog_ids:
+                continue
+            snap = getattr(dlg, "_lazy_popup_snapshot", None)
+            source_dir = getattr(dlg, "_lazy_popup_views_dir", None)
+            if not snap or not source_dir:
+                continue
+            try:
+                if hasattr(dlg, "isVisible") and not dlg.isVisible():
+                    continue
+            except Exception:
+                pass
+            cloned = self._clone_lazy_popup_snapshot(snap, Path(source_dir), views_dir, prefix=f"lazy{lazy_idx}")
+            if not cloned:
+                continue
+            try:
+                geo = dlg.geometry()
+                cloned["window_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
+            except Exception:
+                pass
+            try:
+                cloned["window_title"] = dlg.windowTitle()
+            except Exception:
+                pass
+            snapshots.append(cloned)
+            lazy_idx += 1
         return snapshots
+
+    def _clone_lazy_popup_snapshot(self, snapshot: dict, source_views_dir: Path, dest_views_dir: Path, prefix: str):
+        if not snapshot:
+            return None
+        try:
+            cloned = copy.deepcopy(snapshot)
+        except Exception:
+            cloned = dict(snapshot)
+        cloned_views = []
+        for idx, entry in enumerate(snapshot.get("views") or []):
+            try:
+                new_entry = copy.deepcopy(entry)
+            except Exception:
+                new_entry = dict(entry or {})
+            arr_file = entry.get("arr_file")
+            if arr_file:
+                src_path = source_views_dir / str(arr_file)
+                dst_name = f"{prefix}_v{idx}.npy"
+                dst_path = dest_views_dir / dst_name
+                try:
+                    if src_path.exists():
+                        shutil.copyfile(src_path, dst_path)
+                        new_entry["arr_file"] = dst_name
+                    else:
+                        new_entry["arr_file"] = None
+                except Exception:
+                    new_entry["arr_file"] = None
+            cloned_views.append(new_entry)
+        cloned["views"] = cloned_views
+        return cloned
 
     def _capture_canvas_snapshot(self, canvas, views_dir: Path, prefix: str, include_arrays: bool):
         if canvas is None:
@@ -635,6 +1212,53 @@ class SessionController:
             return method()
         except Exception:
             return None
+
+    def _restore_processed_views_payload(self, processed_payload: dict, processed_dir: Path):
+        viewer = self.viewer
+        viewer._processed_views = {}
+        for key, entry in (processed_payload or {}).items():
+            try:
+                arr_by_channel = {}
+                for ch_idx, rel_path in (entry.get("arr_files") or {}).items():
+                    arr_path = processed_dir / Path(rel_path).name
+                    if arr_path.exists():
+                        arr_by_channel[int(ch_idx)] = np.load(arr_path, allow_pickle=False)
+                header = entry.get("header") or {}
+                fds = entry.get("fds") or []
+                viewer._processed_views[str(key)] = {
+                    "arr_by_channel": arr_by_channel,
+                    "header": header,
+                    "fds": fds,
+                    "channel_idx": entry.get("channel_idx"),
+                    "source": entry.get("source"),
+                    "label": entry.get("label"),
+                    "op": entry.get("op"),
+                }
+                viewer.headers[str(key)] = (header, fds)
+            except Exception:
+                continue
+
+    def _session_files_from_payload(self, payload: dict):
+        viewer = self.viewer
+        session_files = []
+        for fp in payload.get("files", []) or []:
+            path_str = str(fp)
+            if viewer._is_processed_key(path_str) and path_str in getattr(viewer, "_processed_views", {}):
+                session_files.append(Path(path_str))
+            elif Path(path_str).exists():
+                session_files.append(Path(path_str))
+        return session_files
+
+    def _apply_basic_session_payload(self, payload: dict):
+        viewer = self.viewer
+        viewer.image_adjustments = payload.get("image_adjustments") or {}
+        viewer.thumbnail_filters = payload.get("thumbnail_filters") or {}
+        viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
+        viewer.extra_view_specs = payload.get("extra_view_specs") or []
+        viewer.tags = payload.get("tags") or {}
+        viewer.molecule_overlays = payload.get("molecule_overlays") or {}
+        viewer.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
+        viewer.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
 
     def _restore_canvas_snapshot(
         self,
@@ -839,58 +1463,278 @@ class SessionController:
                 return None
         return view
 
+    def _spawn_lazy_popup_shell(self, snapshot: dict, views_dir: Path):
+        viewer = self.viewer
+        dlg = QtWidgets.QDialog(viewer)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.setWindowFlags(
+            dlg.windowFlags()
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowMaximizeButtonHint
+            | QtCore.Qt.WindowSystemMenuHint
+        )
+        dlg.setMinimumSize(220, 140)
+        dlg.setWindowTitle(snapshot.get("window_title") or "Preview")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        title = QtWidgets.QLabel("Preview pending", dlg)
+        title_font = title.font()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        body = QtWidgets.QLabel(
+            "This pop-out will be restored when you focus or click it.",
+            dlg,
+        )
+        body.setWordWrap(True)
+        layout.addWidget(body, 1)
+        restore_btn = QtWidgets.QPushButton("Restore now", dlg)
+        layout.addWidget(restore_btn)
+
+        dlg._lazy_popup_snapshot = copy.deepcopy(snapshot)
+        dlg._lazy_popup_views_dir = Path(views_dir)
+        dlg._lazy_popup_ready = False
+        dlg._lazy_popup_hydrating = False
+        dlg._lazy_popup_message_label = body
+        dlg._lazy_popup_restore_btn = restore_btn
+
+        def _queue_hydrate():
+            if not getattr(dlg, "_lazy_popup_ready", False):
+                return
+            if getattr(dlg, "_lazy_popup_hydrating", False):
+                return
+            dlg._lazy_popup_hydrating = True
+            try:
+                restore_btn.setEnabled(False)
+            except Exception:
+                pass
+            try:
+                body.setText("Restoring preview...")
+            except Exception:
+                pass
+            QtCore.QTimer.singleShot(0, lambda: self._hydrate_lazy_popup_shell(dlg))
+
+        restore_btn.clicked.connect(_queue_hydrate)
+
+        class _LazyPopupShellFilter(QtCore.QObject):
+            def eventFilter(self, obj, event):
+                if not getattr(dlg, "_lazy_popup_ready", False):
+                    return False
+                etype = event.type()
+                if etype in (
+                    QtCore.QEvent.MouseButtonPress,
+                    QtCore.QEvent.MouseButtonDblClick,
+                    QtCore.QEvent.FocusIn,
+                    QtCore.QEvent.WindowActivate,
+                ):
+                    _queue_hydrate()
+                elif etype == QtCore.QEvent.KeyPress:
+                    _queue_hydrate()
+                    return True
+                return False
+
+        dlg._lazy_popup_filter = _LazyPopupShellFilter(dlg)
+        dlg.installEventFilter(dlg._lazy_popup_filter)
+        body.installEventFilter(dlg._lazy_popup_filter)
+        title.installEventFilter(dlg._lazy_popup_filter)
+
+        viewer._popup_refs.append(dlg)
+        if hasattr(viewer, "quick_crop_controller"):
+            viewer.quick_crop_controller.update_popup_actions()
+
+        def _on_popup_closed(_=None):
+            if dlg in getattr(viewer, "_popup_refs", []):
+                viewer._popup_refs.remove(dlg)
+            if hasattr(viewer, "quick_crop_controller"):
+                viewer.quick_crop_controller.update_popup_actions()
+            if hasattr(viewer, "_clear_active_preview_popup"):
+                try:
+                    viewer._clear_active_preview_popup(dlg)
+                except Exception:
+                    pass
+
+        dlg.finished.connect(_on_popup_closed)
+        QtCore.QTimer.singleShot(0, lambda: setattr(dlg, "_lazy_popup_ready", True))
+        return dlg
+
+    def _hydrate_lazy_popup_shell(self, shell):
+        if shell is None:
+            return None
+        viewer = self.viewer
+        snapshot = getattr(shell, "_lazy_popup_snapshot", None)
+        views_dir = getattr(shell, "_lazy_popup_views_dir", None)
+        message = getattr(shell, "_lazy_popup_message_label", None)
+        button = getattr(shell, "_lazy_popup_restore_btn", None)
+        if not snapshot or not views_dir:
+            return None
+        prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
+        viewer._canvas_display_syncing = True
+        try:
+            entries = snapshot.get("views") or []
+            built_views = []
+            for entry in entries:
+                built = self._build_view_from_snapshot_entry(entry, Path(views_dir))
+                if built is None:
+                    built_views = []
+                    break
+                built_views.append(built)
+            if not built_views:
+                raise RuntimeError("missing popup view data")
+            try:
+                shell_geom = shell.geometry()
+            except Exception:
+                shell_geom = None
+            try:
+                shell_state = shell.windowState()
+            except Exception:
+                shell_state = QtCore.Qt.WindowNoState
+            try:
+                shell_visible = bool(shell.isVisible())
+            except Exception:
+                shell_visible = True
+            try:
+                shell_active = bool(shell.isActiveWindow())
+            except Exception:
+                shell_active = False
+            dlg = viewer._spawn_preview_popup(
+                built_views,
+                title=shell.windowTitle() or snapshot.get("window_title") or "Preview",
+                show_immediately=False,
+                restore_mode=True,
+            )
+            canvas = None
+            try:
+                canvases = getattr(viewer, "_popup_canvases", [])
+                canvas = canvases[-1] if canvases else None
+            except Exception:
+                canvas = None
+            try:
+                if dlg:
+                    dlg.setUpdatesEnabled(False)
+            except Exception:
+                pass
+            if canvas:
+                self._restore_canvas_snapshot(canvas, snapshot, Path(views_dir), viewer=viewer)
+            if dlg and shell_geom is not None:
+                try:
+                    dlg.setGeometry(shell_geom)
+                except Exception:
+                    pass
+            if dlg:
+                try:
+                    dlg.setWindowState(shell_state)
+                except Exception:
+                    pass
+                try:
+                    dlg.setUpdatesEnabled(True)
+                except Exception:
+                    pass
+            try:
+                if canvas is not None and hasattr(canvas, "set_render_suspended"):
+                    canvas.set_render_suspended(False)
+            except Exception:
+                pass
+            if dlg:
+                try:
+                    if hasattr(dlg, "_resume_preview_resize"):
+                        dlg._resume_preview_resize(force=False)
+                    else:
+                        dlg._preview_resize_paused = False
+                except Exception:
+                    pass
+                if shell_visible:
+                    dlg.show()
+                if shell_active:
+                    try:
+                        dlg.raise_()
+                        dlg.activateWindow()
+                    except Exception:
+                        pass
+            try:
+                shell.close()
+            except Exception:
+                pass
+            return dlg
+        except Exception as exc:
+            try:
+                if message is not None:
+                    message.setText(f"Unable to restore popup:\n{exc}")
+            except Exception:
+                pass
+            try:
+                if button is not None:
+                    button.setEnabled(True)
+            except Exception:
+                pass
+            shell._lazy_popup_hydrating = False
+            return None
+        finally:
+            viewer._canvas_display_syncing = prev_display_sync
+
     def _restore_popup_canvases(self, popup_defs, views_dir: Path):
         if not popup_defs:
-            return {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0}
+            return {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0, "lazy": 0}
         viewer = self.viewer
         start = time.perf_counter()
         arrays_dt = 0.0
         spawn_dt = 0.0
         state_dt = 0.0
         show_dt = 0.0
+        lazy_count = 0
         restored = []
+        lazy_mode = len(popup_defs) > 1
         prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
         viewer._canvas_display_syncing = True
         try:
             for snap in popup_defs:
-                entries = snap.get("views") or []
                 t_phase = time.perf_counter()
-                built_views = []
-                for entry in entries:
-                    built = self._build_view_from_snapshot_entry(entry, views_dir)
-                    if built is None:
-                        built_views = []
-                        break
-                    built_views.append(built)
-                arrays_dt += time.perf_counter() - t_phase
-                if not built_views:
-                    continue
-                t_phase = time.perf_counter()
-                try:
-                    dlg = viewer._spawn_preview_popup(
-                        built_views,
-                        title=snap.get("window_title") or "Preview",
-                        show_immediately=False,
-                        restore_mode=True,
-                    )
-                except Exception:
-                    continue
-                spawn_dt += time.perf_counter() - t_phase
-                canvas = None
-                try:
-                    canvases = getattr(viewer, "_popup_canvases", [])
-                    canvas = canvases[-1] if canvases else None
-                except Exception:
+                if lazy_mode:
+                    try:
+                        dlg = self._spawn_lazy_popup_shell(snap, views_dir)
+                    except Exception:
+                        continue
                     canvas = None
+                    lazy_count += 1
+                else:
+                    entries = snap.get("views") or []
+                    built_views = []
+                    for entry in entries:
+                        built = self._build_view_from_snapshot_entry(entry, views_dir)
+                        if built is None:
+                            built_views = []
+                            break
+                        built_views.append(built)
+                    arrays_dt += time.perf_counter() - t_phase
+                    if not built_views:
+                        continue
+                    t_phase = time.perf_counter()
+                    try:
+                        dlg = viewer._spawn_preview_popup(
+                            built_views,
+                            title=snap.get("window_title") or "Preview",
+                            show_immediately=False,
+                            restore_mode=True,
+                        )
+                    except Exception:
+                        continue
+                    canvas = None
+                    try:
+                        canvases = getattr(viewer, "_popup_canvases", [])
+                        canvas = canvases[-1] if canvases else None
+                    except Exception:
+                        canvas = None
+                spawn_dt += time.perf_counter() - t_phase
                 try:
                     if dlg:
                         dlg.setUpdatesEnabled(False)
                 except Exception:
                     pass
-                t_phase = time.perf_counter()
-                if canvas:
-                    self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
-                state_dt += time.perf_counter() - t_phase
+                if not lazy_mode:
+                    t_phase = time.perf_counter()
+                    if canvas:
+                        self._restore_canvas_snapshot(canvas, snap, views_dir, viewer=viewer)
+                    state_dt += time.perf_counter() - t_phase
                 geom = snap.get("window_geometry")
                 has_geometry = False
                 if dlg and geom and len(geom) == 4:
@@ -913,7 +1757,7 @@ class SessionController:
             except Exception:
                 pass
             try:
-                if canvas is not None and hasattr(canvas, "set_render_suspended"):
+                if canvas is not None and hasattr(canvas, "set_render_suspended") and not lazy_mode:
                     canvas.set_render_suspended(False)
             except Exception:
                 pass
@@ -934,6 +1778,7 @@ class SessionController:
             "spawn": spawn_dt,
             "state": state_dt,
             "show": show_dt,
+            "lazy": lazy_count,
         }
 
     # ------------------------------------------------------------------
