@@ -978,7 +978,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.setMinimumWidth(240)
         self.preview_canvas.setToolTip(
             "Preview area:\n"
-            "  Right-click for copy/save options\n"
+            "  Right-click for copy/save/PowerPoint options\n"
             "  Enable 'Measure profile' for line sampling\n"
             "  Ctrl+C copies the displayed preview as PNG"
         )

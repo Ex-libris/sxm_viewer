@@ -34,6 +34,7 @@ from .molecular_overlay import (
     available_atom_palettes,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
+from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 
 try:
@@ -2264,6 +2265,128 @@ class MultiPreviewCanvas(FigureCanvas):
             return self.grab()
         except Exception:
             return None
+
+    def _set_axes_titles_visible(self, visible: bool):
+        changed = []
+        for ax in getattr(self.fig, "axes", []) or []:
+            try:
+                title_artist = ax.title
+            except Exception:
+                continue
+            if title_artist is None:
+                continue
+            try:
+                title_text = str(title_artist.get_text() or "").strip()
+                was_visible = bool(title_artist.get_visible())
+            except Exception:
+                continue
+            if not title_text or was_visible == bool(visible):
+                continue
+            try:
+                title_artist.set_visible(bool(visible))
+                changed.append((title_artist, was_visible))
+            except Exception:
+                continue
+        return changed
+
+    def _render_displayed_pixmap(self, *, show_titles=True):
+        buf = io.BytesIO()
+        title_state = []
+
+        def _save():
+            nonlocal title_state
+            if not show_titles:
+                title_state = self._set_axes_titles_visible(False)
+            try:
+                self.fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+            finally:
+                if title_state:
+                    for title_artist, was_visible in title_state:
+                        try:
+                            title_artist.set_visible(bool(was_visible))
+                        except Exception:
+                            pass
+
+        self._save_current_figure_without_shortcut_hint(_save)
+        data = buf.getvalue()
+        if not data:
+            return None
+        pixmap = QtGui.QPixmap()
+        if not pixmap.loadFromData(data, "PNG"):
+            return None
+        if title_state:
+            self.draw_idle()
+        return pixmap
+
+    def _resolve_powerpoint_label(self, view=None):
+        if isinstance(view, dict):
+            title = str(view.get("title") or "").strip()
+            if title:
+                return title
+            path_text = str(view.get("path") or "").strip()
+            if path_text:
+                return Path(path_text).stem
+
+        if len(self.views or []) == 1:
+            only_view = self.views[0] or {}
+            title = str(only_view.get("title") or "").strip()
+            if title:
+                return title
+
+        try:
+            window = self.window()
+        except Exception:
+            window = None
+        if window is not None:
+            try:
+                window_title = str(window.windowTitle() or "").strip()
+            except Exception:
+                window_title = ""
+            if window_title and window_title.lower() != "sxm viewer":
+                return window_title
+        return None
+
+    def _show_powerpoint_success(self, slide_number, shape_name):
+        _ = shape_name
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            f"Sent to slide {slide_number}",
+            self,
+            self.rect(),
+            2500,
+        )
+
+    def _send_displayed_to_powerpoint(self, view=None, *, new_slide=True):
+        label_text = self._resolve_powerpoint_label(view)
+        hide_titles = bool(label_text) and len(self.views or []) == 1
+        pixmap = self._render_displayed_pixmap(show_titles=not hide_titles)
+        if pixmap is None or pixmap.isNull():
+            pixmap = self.get_overview_pixmap()
+
+        try:
+            slide_number, shape_name = send_pixmap_to_ppt(
+                pixmap,
+                label=label_text,
+                new_slide=bool(new_slide),
+            )
+        except ConnectionError:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "PowerPoint",
+                "PowerPoint is not running. Please open a presentation first.",
+            )
+            return
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self, "PowerPoint", "No image to send.")
+            return
+        except EnvironmentError as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
+            return
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
+            return
+
+        self._show_powerpoint_success(slide_number, shape_name)
 
     def set_value_callback(self, cb):
         self._value_callback = cb
@@ -5119,6 +5242,15 @@ class MultiPreviewCanvas(FigureCanvas):
         copy_act = copy_menu.addAction("Copy data image only (PNG)")
         copy_svg_act = copy_menu.addAction("Copy data view as SVG (vector)")
 
+        send_ppt_act = menu.addAction("Send to PowerPoint")
+        send_ppt_current_act = menu.addAction("Send to Current Slide")
+        ppt_supported, ppt_reason = powerpoint_support_status()
+        if not ppt_supported:
+            send_ppt_act.setEnabled(False)
+            send_ppt_current_act.setEnabled(False)
+            send_ppt_act.setToolTip(ppt_reason or "")
+            send_ppt_current_act.setToolTip(ppt_reason or "")
+
         export_menu = menu.addMenu("Save / Export")
         save_act = export_menu.addAction("Save data image as PNG...")
         save_svg_act = export_menu.addAction("Save displayed view as SVG...")
@@ -5187,6 +5319,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._copy_displayed("png")
         elif chosen == copy_disp_svg:
             self._copy_displayed("svg")
+        elif chosen == send_ppt_act:
+            self._send_displayed_to_powerpoint(view, new_slide=True)
+        elif chosen == send_ppt_current_act:
+            self._send_displayed_to_powerpoint(view, new_slide=False)
         elif chosen == save_act:
             self._save_view_to_file(view)
         elif chosen == save_svg_act:

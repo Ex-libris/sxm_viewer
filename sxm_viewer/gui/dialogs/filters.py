@@ -74,6 +74,7 @@ from ...data.io import (
     _load_binary_with_inference,
     _binary_dtype_candidates,
 )
+from ..ppt_mixin import PPTContextMenuMixin
 from ...data.spectroscopy import (
     parse_spectroscopy_file,
     fit_parabola_bias,
@@ -171,6 +172,7 @@ class CustomFilterDialog(QtWidgets.QDialog):
         self.preview_label.setFixedHeight(160)
         self.preview_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
+        PPTContextMenuMixin.install(self.preview_label, label_text="Filter preview")
         layout.addWidget(self.preview_label)
         name_row = QtWidgets.QHBoxLayout()
         name_row.addWidget(QtWidgets.QLabel("Name prefix:"))
