@@ -325,6 +325,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.image_time_index = {}
         self._spectro_popups = []
         self._popup_refs = []
+        self._deferred_popup_entries = []
+        self._deferred_popup_serial = 0
         self._multi_spectro_popups = []
         self._multi_single_popup_anchor = None
         self._last_clicked_spec = None
@@ -390,12 +392,21 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_export_xyz_act = None
         self.toolbar_load_session_act = None
         self.toolbar_save_session_act = None
+        self.toolbar_popups_btn = None
+        self.toolbar_popups_menu = None
         self.toolbar_adjust_act = None
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
         self.toolbar_load_mol_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
+        self._session_activity_strip = None
+        self._session_activity_title = None
+        self._session_activity_detail = None
+        self._session_activity_progress = None
+        self._session_activity_hide_timer = QtCore.QTimer(self)
+        self._session_activity_hide_timer.setSingleShot(True)
+        self._session_activity_hide_timer.timeout.connect(self._hide_session_activity)
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(LEFT_PANEL_SPACING)
@@ -1166,15 +1177,18 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
 
         toolbar = self._create_toolbar()
+        session_activity = self._create_session_activity_strip()
         container_layout = QtWidgets.QVBoxLayout()
         container_layout.setContentsMargins(0, 0, 0, 0)
         self.shortcuts_panel = self._create_shortcuts_panel()
         container_layout.addWidget(self.shortcuts_panel)
         if toolbar is not None:
             container_layout.addWidget(toolbar)
+        container_layout.addWidget(session_activity)
         container_layout.addWidget(main_splitter)
         self.setLayout(container_layout)
         self._set_shortcuts_panel_visible(self.show_shortcuts_panel, remember=False)
+        self._refresh_deferred_popup_ui()
         # Ensure optimal initial thumbnail layout
         QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
 
@@ -2405,6 +2419,229 @@ QLabel:hover {{
     def _update_toolbar_actions(self, enabled: bool):
         return main_window_toolbar.update_toolbar_actions(self, enabled)
 
+    def _create_session_activity_strip(self):
+        strip = QtWidgets.QFrame(self)
+        strip.setObjectName("sessionActivityStrip")
+        strip.setVisible(False)
+        strip.setStyleSheet(
+            """
+            QFrame#sessionActivityStrip {
+                border: 1px solid #b8cbe8;
+                border-radius: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(238,244,255,235),
+                    stop:1 rgba(247,250,255,235));
+            }
+            QLabel#sessionActivityTitle {
+                color: #14345f;
+                font-weight: 600;
+            }
+            QLabel#sessionActivityDetail {
+                color: #38506f;
+            }
+            QProgressBar#sessionActivityProgress {
+                min-height: 14px;
+                border-radius: 7px;
+                background: rgba(255,255,255,185);
+                border: 1px solid #c4d3ea;
+                text-align: center;
+                color: #17395f;
+                font-weight: 600;
+            }
+            QProgressBar#sessionActivityProgress::chunk {
+                border-radius: 7px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3276ff,
+                    stop:1 #67b8ff);
+            }
+            """
+        )
+        layout = QtWidgets.QHBoxLayout(strip)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        title = QtWidgets.QLabel("Session activity", strip)
+        title.setObjectName("sessionActivityTitle")
+        detail = QtWidgets.QLabel("", strip)
+        detail.setObjectName("sessionActivityDetail")
+        detail.setWordWrap(True)
+        text_col.addWidget(title)
+        text_col.addWidget(detail)
+
+        progress = QtWidgets.QProgressBar(strip)
+        progress.setObjectName("sessionActivityProgress")
+        progress.setTextVisible(True)
+        progress.setMinimumWidth(220)
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        progress.setFormat("%p%")
+
+        layout.addLayout(text_col, 1)
+        layout.addWidget(progress, 0)
+
+        self._session_activity_strip = strip
+        self._session_activity_title = title
+        self._session_activity_detail = detail
+        self._session_activity_progress = progress
+        return strip
+
+    def _set_session_activity(self, message, detail="", value=None, stage="loading", visible=True, hide_delay_ms=0):
+        strip = getattr(self, "_session_activity_strip", None)
+        title = getattr(self, "_session_activity_title", None)
+        detail_label = getattr(self, "_session_activity_detail", None)
+        progress = getattr(self, "_session_activity_progress", None)
+        if strip is None or title is None or detail_label is None or progress is None:
+            return
+        try:
+            self._session_activity_hide_timer.stop()
+        except Exception:
+            pass
+        palettes = {
+            "loading": ("#3276ff", "#67b8ff", "#b8cbe8"),
+            "hydrating": ("#1ea57c", "#63d3b0", "#a8dacd"),
+            "popup": ("#d8891f", "#efbc52", "#e4cca5"),
+            "complete": ("#2a9d5b", "#68c788", "#b5d8bf"),
+            "error": ("#c94b4b", "#ef8686", "#e3bbbb"),
+        }
+        start_color, end_color, border_color = palettes.get(stage, palettes["loading"])
+        try:
+            strip.setStyleSheet(
+                f"""
+                QFrame#sessionActivityStrip {{
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(248,250,255,238),
+                        stop:1 rgba(255,255,255,230));
+                }}
+                QLabel#sessionActivityTitle {{
+                    color: #14345f;
+                    font-weight: 600;
+                }}
+                QLabel#sessionActivityDetail {{
+                    color: #38506f;
+                }}
+                QProgressBar#sessionActivityProgress {{
+                    min-height: 14px;
+                    border-radius: 7px;
+                    background: rgba(255,255,255,185);
+                    border: 1px solid {border_color};
+                    text-align: center;
+                    color: #17395f;
+                    font-weight: 600;
+                }}
+                QProgressBar#sessionActivityProgress::chunk {{
+                    border-radius: 7px;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 {start_color},
+                        stop:1 {end_color});
+                }}
+                """
+            )
+        except Exception:
+            pass
+        title.setText(str(message or "Session activity"))
+        detail_label.setText(str(detail or ""))
+        if value is None:
+            progress.setRange(0, 0)
+            progress.setFormat("")
+        else:
+            progress.setRange(0, 100)
+            progress.setValue(max(0, min(100, int(value))))
+            progress.setFormat("%p%")
+        strip.setVisible(bool(visible))
+        if hide_delay_ms and visible:
+            self._session_activity_hide_timer.start(int(max(0, hide_delay_ms)))
+
+    def _hide_session_activity(self):
+        strip = getattr(self, "_session_activity_strip", None)
+        progress = getattr(self, "_session_activity_progress", None)
+        if progress is not None:
+            try:
+                progress.setRange(0, 100)
+                progress.setValue(0)
+                progress.setFormat("%p%")
+            except Exception:
+                pass
+        if strip is not None:
+            strip.setVisible(False)
+
+    def _describe_deferred_popup_entry(self, entry):
+        if not isinstance(entry, dict):
+            return "Deferred pop-up"
+        title = str(entry.get("title") or "").strip()
+        if title:
+            return title
+        snapshot = entry.get("snapshot") or {}
+        title = str(snapshot.get("window_title") or "").strip()
+        if title:
+            return title
+        first_view = ((snapshot.get("views") or [{}]) or [{}])[0]
+        meta = first_view.get("meta") or {}
+        file_name = meta.get("file_name") or Path(str(first_view.get("path") or "")).name
+        channel = meta.get("channel") or ""
+        if file_name and channel:
+            return f"{file_name} | {channel}"
+        if file_name:
+            return str(file_name)
+        return "Deferred pop-up"
+
+    def _rebuild_deferred_popup_menu(self):
+        menu = getattr(self, "toolbar_popups_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        entries = list(getattr(self, "_deferred_popup_entries", []) or [])
+        if not entries:
+            empty_act = menu.addAction("No deferred pop-ups")
+            empty_act.setEnabled(False)
+            return
+        header_act = menu.addAction(f"{len(entries)} deferred pop-up{'s' if len(entries) != 1 else ''}")
+        header_act.setEnabled(False)
+        menu.addSeparator()
+        restore_all = menu.addAction(f"Restore all ({len(entries)})")
+        restore_all.triggered.connect(lambda: self.session_controller.restore_all_deferred_popups())
+        menu.addSeparator()
+        metrics = None
+        try:
+            metrics = self.fontMetrics()
+        except Exception:
+            metrics = None
+        for entry in entries:
+            text = self._describe_deferred_popup_entry(entry)
+            if metrics is not None:
+                try:
+                    text = metrics.elidedText(text, QtCore.Qt.ElideRight, 340)
+                except Exception:
+                    pass
+            act = menu.addAction(text)
+            act.triggered.connect(partial(self.session_controller.restore_deferred_popup, entry_id=entry.get("id")))
+
+    def _refresh_deferred_popup_ui(self):
+        btn = getattr(self, "toolbar_popups_btn", None)
+        if btn is None:
+            return
+        count = len(getattr(self, "_deferred_popup_entries", []) or [])
+        btn.setEnabled(count > 0)
+        btn.setText(f"Pop-ups ({count})" if count else "Pop-ups")
+        btn.setToolTip(
+            "Restore deferred session pop-outs on demand."
+            if count
+            else "No deferred session pop-outs are waiting."
+        )
+        try:
+            btn.setStyleSheet(
+                "QToolButton { font-weight: 600; color: #7a4d00; }"
+                if count
+                else ""
+            )
+        except Exception:
+            pass
+        self._rebuild_deferred_popup_menu()
+
     def _step_channel(self, delta: int):
         combo = getattr(self, "channel_dropdown", None)
         if combo is None or combo.count() <= 0 or not combo.isEnabled():
@@ -2715,6 +2952,8 @@ QLabel:hover {{
         self._spectros_loaded = False
         self._spectros_pending = False
         self.spectro_thumb_channel_by_path = {}
+        self._deferred_popup_entries = []
+        self._deferred_popup_serial = 0
         try:
             self._thumb_generation += 1
         except Exception:
@@ -2758,6 +2997,14 @@ QLabel:hover {{
             pass
         try:
             self._update_spectro_stats_label()
+        except Exception:
+            pass
+        try:
+            self._refresh_deferred_popup_ui()
+        except Exception:
+            pass
+        try:
+            self._hide_session_activity()
         except Exception:
             pass
 

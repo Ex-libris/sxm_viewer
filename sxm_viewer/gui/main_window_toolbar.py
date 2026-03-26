@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui
+from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import QIcon
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import QToolBar, QPushButton
@@ -81,6 +81,15 @@ def create_main_toolbar(viewer):
     viewer.toolbar_save_session_act = toolbar.addAction(_icon("document-save"), "Save Session")
     viewer.toolbar_save_session_act.setToolTip("Save the current SXM viewer session")
     viewer.toolbar_save_session_act.triggered.connect(viewer.on_save_session)
+    viewer.toolbar_popups_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_popups_btn.setText("Pop-ups")
+    viewer.toolbar_popups_btn.setToolTip("Restore deferred session pop-outs on demand")
+    viewer.toolbar_popups_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+    viewer.toolbar_popups_menu = QtWidgets.QMenu(viewer.toolbar_popups_btn)
+    viewer.toolbar_popups_menu.aboutToShow.connect(viewer._rebuild_deferred_popup_menu)
+    viewer.toolbar_popups_btn.setMenu(viewer.toolbar_popups_menu)
+    viewer.toolbar_popups_btn.setEnabled(False)
+    toolbar.addWidget(viewer.toolbar_popups_btn)
     toolbar.addSeparator()
 
     viewer.toolbar_canvas_btn = QPushButton("Open Canvas")

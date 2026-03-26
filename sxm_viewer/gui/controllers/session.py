@@ -18,6 +18,115 @@ class SessionController:
     def __init__(self, viewer):
         self.viewer = viewer
 
+    def _pump_ui(self):
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        try:
+            app.processEvents(
+                QtCore.QEventLoop.ExcludeUserInputEvents | QtCore.QEventLoop.ExcludeSocketNotifiers,
+                25,
+            )
+        except Exception:
+            try:
+                app.processEvents()
+            except Exception:
+                pass
+
+    def _set_session_activity(self, message, detail="", value=None, stage="loading", hide_delay_ms=0):
+        viewer = self.viewer
+        cb = getattr(viewer, "_set_session_activity", None)
+        if callable(cb):
+            try:
+                cb(
+                    message,
+                    detail=detail,
+                    value=value,
+                    stage=stage,
+                    visible=True,
+                    hide_delay_ms=hide_delay_ms,
+                )
+            except Exception:
+                pass
+        self._pump_ui()
+
+    def _hide_session_activity(self):
+        viewer = self.viewer
+        cb = getattr(viewer, "_hide_session_activity", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _deferred_popup_title(self, snapshot: dict):
+        if not isinstance(snapshot, dict):
+            return "Deferred pop-up"
+        title = str(snapshot.get("window_title") or "").strip()
+        if title:
+            return title
+        first_view = ((snapshot.get("views") or [{}]) or [{}])[0]
+        meta = first_view.get("meta") or {}
+        file_name = meta.get("file_name") or Path(str(first_view.get("path") or "")).name
+        channel = meta.get("channel") or ""
+        if file_name and channel:
+            return f"{file_name} | {channel}"
+        if file_name:
+            return str(file_name)
+        return "Deferred pop-up"
+
+    def _register_deferred_popup(self, snapshot: dict, views_dir: Path):
+        viewer = self.viewer
+        if not snapshot:
+            return None
+        try:
+            stored_snapshot = copy.deepcopy(snapshot)
+        except Exception:
+            stored_snapshot = dict(snapshot)
+        try:
+            viewer._deferred_popup_serial = int(getattr(viewer, "_deferred_popup_serial", 0)) + 1
+        except Exception:
+            viewer._deferred_popup_serial = 1
+        entry = {
+            "id": int(getattr(viewer, "_deferred_popup_serial", 1)),
+            "snapshot": stored_snapshot,
+            "views_dir": Path(views_dir),
+            "title": self._deferred_popup_title(stored_snapshot),
+        }
+        entries = list(getattr(viewer, "_deferred_popup_entries", []) or [])
+        entries.append(entry)
+        viewer._deferred_popup_entries = entries
+        try:
+            viewer._refresh_deferred_popup_ui()
+        except Exception:
+            pass
+        return entry
+
+    def _remove_deferred_popup(self, entry_id):
+        viewer = self.viewer
+        if entry_id is None:
+            return
+        current = list(getattr(viewer, "_deferred_popup_entries", []) or [])
+        viewer._deferred_popup_entries = [e for e in current if int(e.get("id", -1)) != int(entry_id)]
+        try:
+            viewer._refresh_deferred_popup_ui()
+        except Exception:
+            pass
+
+    def _lookup_deferred_popup(self, entry_id=None, entry=None):
+        viewer = self.viewer
+        if isinstance(entry, dict):
+            return entry
+        if entry_id is None:
+            return None
+        for candidate in list(getattr(viewer, "_deferred_popup_entries", []) or []):
+            try:
+                if int(candidate.get("id", -1)) == int(entry_id):
+                    return candidate
+            except Exception:
+                continue
+        return None
+
     # ------------------------------------------------------------------
     def save_session(self):
         viewer = self.viewer
@@ -55,11 +164,30 @@ class SessionController:
             return
         session_path = Path(path)
         try:
+            self._set_session_activity(
+                "Opening session...",
+                detail=session_path.name,
+                value=6,
+                stage="loading",
+            )
             with open(session_path, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
+            self._set_session_activity(
+                "Applying saved workspace...",
+                detail="Restoring cached preview state and deferred pop-ups.",
+                value=12,
+                stage="loading",
+            )
             if self._apply_session_state(payload, session_path):
                 log_status(f"Loaded session from {session_path}")
         except Exception as exc:
+            self._set_session_activity(
+                "Unable to load session",
+                detail=str(exc),
+                value=100,
+                stage="error",
+                hide_delay_ms=3500,
+            )
             QtWidgets.QMessageBox.warning(viewer, "Load session", f"Unable to load session: {exc}")
 
     # ------------------------------------------------------------------
@@ -200,6 +328,12 @@ class SessionController:
             viewer.clear_loaded_images()
         except Exception:
             pass
+        self._set_session_activity(
+            "Restoring session cache...",
+            detail="Applying saved headers and cached image state.",
+            value=18,
+            stage="loading",
+        )
 
         image_folder = payload.get("image_folder") or ""
         if image_folder:
@@ -241,6 +375,12 @@ class SessionController:
         load_folder_dt = time.perf_counter() - phase_t
 
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session cache...",
+            detail="Applying saved UI state.",
+            value=34,
+            stage="loading",
+        )
         self._apply_basic_session_payload(payload)
         self._restore_channel_dropdown_from_headers()
         ui = payload.get("ui") or {}
@@ -248,11 +388,23 @@ class SessionController:
         apply_ui_dt = time.perf_counter() - phase_t
 
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session cache...",
+            detail="Painting cached thumbnails.",
+            value=48,
+            stage="loading",
+        )
         thumb_snapshot = payload.get("thumbnail_snapshot") or {}
         self._restore_thumbnail_snapshot(thumb_snapshot, thumbs_dir)
         thumbs_dt = time.perf_counter() - phase_t
 
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session cache...",
+            detail="Painting cached preview.",
+            value=64,
+            stage="loading",
+        )
         pending_preview = payload.get("last_preview")
         preview_state = payload.get("preview_state") or {}
         preview_snapshot = payload.get("preview_canvas_snapshot") or {}
@@ -283,6 +435,12 @@ class SessionController:
         popup_defs = payload.get("popup_canvases") or []
         popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0, "lazy": 0}
         if popup_defs:
+            self._set_session_activity(
+                "Restoring session cache...",
+                detail=f"Deferring {len(popup_defs)} pop-up{'s' if len(popup_defs) != 1 else ''} to the Pop-ups menu.",
+                value=78,
+                stage="loading",
+            )
             popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
         total_dt = time.perf_counter() - t0
 
@@ -291,6 +449,16 @@ class SessionController:
         except Exception:
             pass
         self._schedule_session_hydration(payload, session_path)
+        popup_lazy = int(popup_stats.get("lazy", 0) or 0)
+        hydrate_detail = "Refreshing live thumbnails and preview in the background."
+        if popup_lazy:
+            hydrate_detail += f" {popup_lazy} pop-up{'s' if popup_lazy != 1 else ''} are ready in the Pop-ups menu."
+        self._set_session_activity(
+            "Session ready",
+            detail=hydrate_detail,
+            value=84,
+            stage="hydrating",
+        )
 
         try:
             popup_count = int(popup_stats.get("count", 0))
@@ -328,6 +496,12 @@ class SessionController:
         viewer = self.viewer
         if not isinstance(payload, dict):
             return False
+        try:
+            viewer._deferred_popup_entries = []
+            viewer._deferred_popup_serial = 0
+            viewer._refresh_deferred_popup_ui()
+        except Exception:
+            pass
         preview_snapshot = payload.get("preview_canvas_snapshot") or {}
         if (
             payload.get("headers")
@@ -336,6 +510,12 @@ class SessionController:
             return self._apply_cached_session_state(payload, session_path)
         t0 = time.perf_counter()
         phase_t = t0
+        self._set_session_activity(
+            "Restoring session...",
+            detail="Loading source folder and rebuilding live state.",
+            value=18,
+            stage="loading",
+        )
         image_folder = payload.get("image_folder") or ""
         if image_folder:
             try:
@@ -344,6 +524,12 @@ class SessionController:
                 pass
         load_folder_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session...",
+            detail="Applying saved UI state.",
+            value=38,
+            stage="loading",
+        )
         spectra_folder = payload.get("spectra_folder") or ""
         if spectra_folder:
             try:
@@ -399,12 +585,24 @@ class SessionController:
         self._apply_ui_state_fast(ui)
         apply_ui_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session...",
+            detail="Rebuilding thumbnails.",
+            value=56,
+            stage="loading",
+        )
         try:
             viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
         except Exception:
             pass
         thumbs_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
+        self._set_session_activity(
+            "Restoring session...",
+            detail="Rebuilding preview.",
+            value=70,
+            stage="loading",
+        )
         if pending_preview:
             try:
                 viewer.show_file_channel(pending_preview[0], pending_preview[1])
@@ -474,8 +672,25 @@ class SessionController:
         popup_defs = payload.get("popup_canvases") or []
         popup_stats = {"count": 0, "elapsed": 0.0, "arrays": 0.0, "spawn": 0.0, "state": 0.0, "show": 0.0, "lazy": 0}
         if popup_defs:
+            self._set_session_activity(
+                "Restoring session...",
+                detail=f"Deferring {len(popup_defs)} pop-up{'s' if len(popup_defs) != 1 else ''} to the Pop-ups menu.",
+                value=84,
+                stage="loading",
+            )
             popup_stats = self._restore_popup_canvases(popup_defs, views_dir)
         total_dt = time.perf_counter() - t0
+        popup_lazy = int(popup_stats.get("lazy", 0) or 0)
+        done_detail = "Session is ready."
+        if popup_lazy:
+            done_detail += f" {popup_lazy} pop-up{'s' if popup_lazy != 1 else ''} were deferred to the Pop-ups menu."
+        self._set_session_activity(
+            "Session fully restored",
+            detail=done_detail,
+            value=100,
+            stage="complete",
+            hide_delay_ms=2400,
+        )
         try:
             popup_count = int(popup_stats.get("count", 0))
             popup_elapsed = float(popup_stats.get("elapsed", time.perf_counter() - phase_t))
@@ -939,6 +1154,12 @@ class SessionController:
         spectro_dt = 0.0
         missing = 0
         spectro_rebuilt_preview = False
+        self._set_session_activity(
+            "Hydrating live session data...",
+            detail="Refreshing spectroscopy links, thumbnails and preview from source data.",
+            value=86,
+            stage="hydrating",
+        )
         try:
             files = [str(p) for p in (payload.get("files") or []) if str(p) and not viewer._is_processed_key(str(p))]
             missing = sum(1 for p in files if not Path(p).exists())
@@ -948,6 +1169,12 @@ class SessionController:
         spectra_folder = payload.get("spectra_folder") or ""
         if spectra_folder:
             t_phase = time.perf_counter()
+            self._set_session_activity(
+                "Hydrating live session data...",
+                detail="Refreshing spectroscopy links.",
+                value=89,
+                stage="hydrating",
+            )
             try:
                 viewer._set_spec_folder(Path(spectra_folder))
             except Exception:
@@ -961,6 +1188,12 @@ class SessionController:
             spectro_dt = time.perf_counter() - t_phase
 
         t_phase = time.perf_counter()
+        self._set_session_activity(
+            "Hydrating live session data...",
+            detail="Refreshing live thumbnails.",
+            value=92,
+            stage="hydrating",
+        )
         try:
             viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
         except Exception:
@@ -980,6 +1213,12 @@ class SessionController:
             if preview_key and current_preview == preview_key:
                 preview_path_ok = viewer._is_processed_key(preview_key[0]) or Path(preview_key[0]).exists()
                 if preview_path_ok and not spectro_rebuilt_preview:
+                    self._set_session_activity(
+                        "Hydrating live session data...",
+                        detail="Refreshing live preview.",
+                        value=97,
+                        stage="hydrating",
+                    )
                     viewer.show_file_channel(preview_key[0], preview_key[1])
                 data_dir = payload.get("data_dir") or ""
                 data_dir = session_path.parent / data_dir if data_dir else session_path.parent
@@ -998,6 +1237,17 @@ class SessionController:
         preview_dt = time.perf_counter() - t_phase
 
         try:
+            popup_pending = len(list(getattr(viewer, "_deferred_popup_entries", []) or []))
+            detail = "Session is fully live."
+            if popup_pending:
+                detail += f" {popup_pending} deferred pop-up{'s' if popup_pending != 1 else ''} remain available in the Pop-ups menu."
+            self._set_session_activity(
+                "Session fully ready",
+                detail=detail,
+                value=100,
+                stage="complete",
+                hide_delay_ms=3200,
+            )
             log_status(
                 "[Session] hydrate %.2fs | thumbs %.2fs | preview %.2fs | spectros %.2fs | missing %d"
                 % (
@@ -1066,6 +1316,20 @@ class SessionController:
                 pass
             try:
                 cloned["window_title"] = dlg.windowTitle()
+            except Exception:
+                pass
+            snapshots.append(cloned)
+            lazy_idx += 1
+        for entry in list(getattr(viewer, "_deferred_popup_entries", []) or []):
+            snap = entry.get("snapshot")
+            source_dir = entry.get("views_dir")
+            if not snap or not source_dir:
+                continue
+            cloned = self._clone_lazy_popup_snapshot(snap, Path(source_dir), views_dir, prefix=f"deferred{lazy_idx}")
+            if not cloned:
+                continue
+            try:
+                cloned["window_title"] = entry.get("title") or cloned.get("window_title")
             except Exception:
                 pass
             snapshots.append(cloned)
@@ -1463,6 +1727,180 @@ class SessionController:
                 return None
         return view
 
+    def _restore_popup_dialog_from_snapshot(
+        self,
+        snapshot: dict,
+        views_dir: Path,
+        *,
+        geometry=None,
+        window_state=None,
+        visible=True,
+        active=False,
+        title=None,
+    ):
+        viewer = self.viewer
+        if not snapshot or not views_dir:
+            raise RuntimeError("missing popup view data")
+        prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
+        viewer._canvas_display_syncing = True
+        try:
+            entries = snapshot.get("views") or []
+            built_views = []
+            for entry in entries:
+                built = self._build_view_from_snapshot_entry(entry, Path(views_dir))
+                if built is None:
+                    built_views = []
+                    break
+                built_views.append(built)
+            if not built_views:
+                raise RuntimeError("missing popup view data")
+            dlg = viewer._spawn_preview_popup(
+                built_views,
+                title=title or snapshot.get("window_title") or "Preview",
+                show_immediately=False,
+                restore_mode=True,
+            )
+            canvas = None
+            try:
+                canvases = getattr(viewer, "_popup_canvases", [])
+                canvas = canvases[-1] if canvases else None
+            except Exception:
+                canvas = None
+            try:
+                if dlg:
+                    dlg.setUpdatesEnabled(False)
+            except Exception:
+                pass
+            if canvas:
+                self._restore_canvas_snapshot(canvas, snapshot, Path(views_dir), viewer=viewer)
+            geom = geometry or snapshot.get("window_geometry")
+            has_geometry = False
+            if dlg and geom and len(geom) == 4:
+                try:
+                    x, y, w, h = [int(v) for v in geom]
+                    dlg.setGeometry(x, y, w, h)
+                    has_geometry = True
+                except Exception:
+                    pass
+            if dlg and window_state is not None:
+                try:
+                    dlg.setWindowState(window_state)
+                except Exception:
+                    pass
+            try:
+                if dlg:
+                    dlg.setUpdatesEnabled(True)
+            except Exception:
+                pass
+            try:
+                if canvas is not None and hasattr(canvas, "set_render_suspended"):
+                    canvas.set_render_suspended(False)
+            except Exception:
+                pass
+            if dlg:
+                try:
+                    if hasattr(dlg, "_resume_preview_resize"):
+                        dlg._resume_preview_resize(force=not has_geometry)
+                    else:
+                        dlg._preview_resize_paused = False
+                except Exception:
+                    pass
+                if visible:
+                    dlg.show()
+                if active:
+                    try:
+                        dlg.raise_()
+                        dlg.activateWindow()
+                    except Exception:
+                        pass
+            return dlg
+        finally:
+            viewer._canvas_display_syncing = prev_display_sync
+
+    def restore_deferred_popup(self, entry_id=None, entry=None, *, show_activity=True, activate=True):
+        popup_entry = self._lookup_deferred_popup(entry_id=entry_id, entry=entry)
+        if not popup_entry:
+            return None
+        title = str(popup_entry.get("title") or self._deferred_popup_title(popup_entry.get("snapshot") or {}))
+        if show_activity:
+            self._set_session_activity(
+                "Restoring deferred pop-up...",
+                detail=title,
+                value=40,
+                stage="popup",
+            )
+        try:
+            dlg = self._restore_popup_dialog_from_snapshot(
+                popup_entry.get("snapshot") or {},
+                Path(popup_entry.get("views_dir")),
+                visible=True,
+                active=activate,
+                title=title,
+            )
+        except Exception as exc:
+            if show_activity:
+                self._set_session_activity(
+                    "Unable to restore pop-up",
+                    detail=f"{title}: {exc}",
+                    value=100,
+                    stage="error",
+                    hide_delay_ms=3200,
+                )
+            return None
+        self._remove_deferred_popup(popup_entry.get("id"))
+        if show_activity:
+            remaining = len(list(getattr(self.viewer, "_deferred_popup_entries", []) or []))
+            detail = title
+            if remaining:
+                detail += f" | {remaining} deferred remaining in Pop-ups"
+            self._set_session_activity(
+                "Pop-up restored",
+                detail=detail,
+                value=100,
+                stage="complete",
+                hide_delay_ms=1800,
+            )
+        return dlg
+
+    def restore_all_deferred_popups(self):
+        viewer = self.viewer
+        entries = list(getattr(viewer, "_deferred_popup_entries", []) or [])
+        total = len(entries)
+        if total <= 0:
+            self._set_session_activity(
+                "No deferred pop-ups",
+                detail="There are no pending session pop-outs to restore.",
+                value=100,
+                stage="complete",
+                hide_delay_ms=1400,
+            )
+            return []
+        restored = []
+        for idx, entry in enumerate(entries, start=1):
+            title = str(entry.get("title") or self._deferred_popup_title(entry.get("snapshot") or {}))
+            self._set_session_activity(
+                "Restoring deferred pop-ups...",
+                detail=f"{title} ({idx}/{total})",
+                value=int(round((idx - 1) * 100.0 / max(1, total))),
+                stage="popup",
+            )
+            dlg = self.restore_deferred_popup(
+                entry=entry,
+                show_activity=False,
+                activate=(idx == total),
+            )
+            if dlg is not None:
+                restored.append(dlg)
+            self._pump_ui()
+        self._set_session_activity(
+            "Deferred pop-ups restored",
+            detail=f"{len(restored)} pop-up{'s' if len(restored) != 1 else ''} are now open.",
+            value=100,
+            stage="complete",
+            hide_delay_ms=2200,
+        )
+        return restored
+
     def _spawn_lazy_popup_shell(self, snapshot: dict, views_dir: Path):
         viewer = self.viewer
         dlg = QtWidgets.QDialog(viewer)
@@ -1561,26 +1999,13 @@ class SessionController:
     def _hydrate_lazy_popup_shell(self, shell):
         if shell is None:
             return None
-        viewer = self.viewer
         snapshot = getattr(shell, "_lazy_popup_snapshot", None)
         views_dir = getattr(shell, "_lazy_popup_views_dir", None)
         message = getattr(shell, "_lazy_popup_message_label", None)
         button = getattr(shell, "_lazy_popup_restore_btn", None)
         if not snapshot or not views_dir:
             return None
-        prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
-        viewer._canvas_display_syncing = True
         try:
-            entries = snapshot.get("views") or []
-            built_views = []
-            for entry in entries:
-                built = self._build_view_from_snapshot_entry(entry, Path(views_dir))
-                if built is None:
-                    built_views = []
-                    break
-                built_views.append(built)
-            if not built_views:
-                raise RuntimeError("missing popup view data")
             try:
                 shell_geom = shell.geometry()
             except Exception:
@@ -1597,60 +2022,15 @@ class SessionController:
                 shell_active = bool(shell.isActiveWindow())
             except Exception:
                 shell_active = False
-            dlg = viewer._spawn_preview_popup(
-                built_views,
+            dlg = self._restore_popup_dialog_from_snapshot(
+                snapshot,
+                Path(views_dir),
+                geometry=shell_geom,
+                window_state=shell_state,
+                visible=shell_visible,
+                active=shell_active,
                 title=shell.windowTitle() or snapshot.get("window_title") or "Preview",
-                show_immediately=False,
-                restore_mode=True,
             )
-            canvas = None
-            try:
-                canvases = getattr(viewer, "_popup_canvases", [])
-                canvas = canvases[-1] if canvases else None
-            except Exception:
-                canvas = None
-            try:
-                if dlg:
-                    dlg.setUpdatesEnabled(False)
-            except Exception:
-                pass
-            if canvas:
-                self._restore_canvas_snapshot(canvas, snapshot, Path(views_dir), viewer=viewer)
-            if dlg and shell_geom is not None:
-                try:
-                    dlg.setGeometry(shell_geom)
-                except Exception:
-                    pass
-            if dlg:
-                try:
-                    dlg.setWindowState(shell_state)
-                except Exception:
-                    pass
-                try:
-                    dlg.setUpdatesEnabled(True)
-                except Exception:
-                    pass
-            try:
-                if canvas is not None and hasattr(canvas, "set_render_suspended"):
-                    canvas.set_render_suspended(False)
-            except Exception:
-                pass
-            if dlg:
-                try:
-                    if hasattr(dlg, "_resume_preview_resize"):
-                        dlg._resume_preview_resize(force=False)
-                    else:
-                        dlg._preview_resize_paused = False
-                except Exception:
-                    pass
-                if shell_visible:
-                    dlg.show()
-                if shell_active:
-                    try:
-                        dlg.raise_()
-                        dlg.activateWindow()
-                    except Exception:
-                        pass
             try:
                 shell.close()
             except Exception:
@@ -1669,8 +2049,6 @@ class SessionController:
                 pass
             shell._lazy_popup_hydrating = False
             return None
-        finally:
-            viewer._canvas_display_syncing = prev_display_sync
 
     def _restore_popup_canvases(self, popup_defs, views_dir: Path):
         if not popup_defs:
@@ -1683,7 +2061,7 @@ class SessionController:
         show_dt = 0.0
         lazy_count = 0
         restored = []
-        lazy_mode = len(popup_defs) > 1
+        lazy_mode = True
         prev_display_sync = bool(getattr(viewer, "_canvas_display_syncing", False))
         viewer._canvas_display_syncing = True
         try:
@@ -1691,11 +2069,12 @@ class SessionController:
                 t_phase = time.perf_counter()
                 if lazy_mode:
                     try:
-                        dlg = self._spawn_lazy_popup_shell(snap, views_dir)
+                        self._register_deferred_popup(snap, views_dir)
                     except Exception:
                         continue
-                    canvas = None
                     lazy_count += 1
+                    spawn_dt += time.perf_counter() - t_phase
+                    continue
                 else:
                     entries = snap.get("views") or []
                     built_views = []
@@ -1772,7 +2151,7 @@ class SessionController:
                 continue
         show_dt += time.perf_counter() - show_start
         return {
-            "count": shown,
+            "count": shown + lazy_count,
             "elapsed": time.perf_counter() - start,
             "arrays": arrays_dt,
             "spawn": spawn_dt,
