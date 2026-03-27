@@ -149,6 +149,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._minimize_windows_callback = None
+        self._restore_windows_callback = None
+        self._close_windows_callback = None
         self._value_callback = None
         self._undo_history = []
         self._undo_restore_in_progress = False
@@ -398,7 +400,10 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_fit_to_canvas(self, enabled: bool):
         """If enabled, stretch view axes to fill the available canvas area."""
-        self._fit_to_canvas = bool(enabled)
+        enabled = bool(enabled)
+        if enabled == self._fit_to_canvas:
+            return
+        self._fit_to_canvas = enabled
         self._redraw()
 
     def set_frame_fill_mode(self, enabled: bool):
@@ -621,6 +626,14 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_minimize_callback(self, cb):
         """Register callback invoked when the user requests minimizing pop-out windows."""
         self._minimize_windows_callback = cb
+
+    def set_window_restore_callback(self, cb):
+        """Register callback invoked when the user requests restoring minimized pop-out windows."""
+        self._restore_windows_callback = cb
+
+    def set_window_close_callback(self, cb):
+        """Register callback invoked when the user requests closing all pop-out windows."""
+        self._close_windows_callback = cb
 
     def set_plot_font_family_callback(self, cb):
         """Register a callback used when the user picks a new plot font."""
@@ -5282,13 +5295,28 @@ class MultiPreviewCanvas(FigureCanvas):
         reset_zoom_act = view_menu.addAction("Reset Zoom")
         arrange_act = None
         minimize_act = None
+        restore_act = None
+        close_all_act = None
+        window_actions_added = False
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
+            window_actions_added = True
             arrange_act = view_menu.addAction("Arrange pop-outs")
         if callable(self._minimize_windows_callback):
-            if arrange_act is None:
+            if not window_actions_added:
                 view_menu.addSeparator()
+                window_actions_added = True
             minimize_act = view_menu.addAction("Minimize pop-outs")
+        if callable(self._restore_windows_callback):
+            if not window_actions_added:
+                view_menu.addSeparator()
+                window_actions_added = True
+            restore_act = view_menu.addAction("Restore pop-outs")
+        if callable(self._close_windows_callback):
+            if not window_actions_added:
+                view_menu.addSeparator()
+                window_actions_added = True
+            close_all_act = view_menu.addAction("Close all pop-outs")
 
         add_font_menu_action(
             menu,
@@ -5430,6 +5458,16 @@ class MultiPreviewCanvas(FigureCanvas):
         elif minimize_act and chosen == minimize_act:
             try:
                 self._minimize_windows_callback()
+            except Exception:
+                pass
+        elif restore_act and chosen == restore_act:
+            try:
+                self._restore_windows_callback()
+            except Exception:
+                pass
+        elif close_all_act and chosen == close_all_act:
+            try:
+                self._close_windows_callback()
             except Exception:
                 pass
         elif angle_style_act and chosen == angle_style_act:
@@ -6945,13 +6983,21 @@ class MultiPreviewCanvas(FigureCanvas):
         return True
 
     def show_fixed_crop_template(self, visible: bool):
-        self._fixed_crop_template_visible = bool(visible)
+        visible = bool(visible)
+        if visible == self._fixed_crop_template_visible:
+            if visible:
+                self._ensure_fixed_crop_template_for_transform()
+            return
+        self._fixed_crop_template_visible = visible
         if self._fixed_crop_template_visible:
             self._ensure_fixed_crop_template_for_transform()
         self._redraw()
 
     def show_fixed_crop_history(self, visible: bool):
-        self._fixed_crop_history_visible = bool(visible)
+        visible = bool(visible)
+        if visible == self._fixed_crop_history_visible:
+            return
+        self._fixed_crop_history_visible = visible
         self._redraw()
 
     def is_fixed_crop_history_visible(self):
@@ -8161,6 +8207,35 @@ class MultiPreviewCanvas(FigureCanvas):
         cropped_disp = np.asarray(sampled).reshape((height_px, width_px))
         return np.array(cropped_disp, copy=True)
 
+    def _extract_axis_aligned_crop(self, view, pixel_bounds):
+        if view is None or not pixel_bounds:
+            return None
+        arr_obj = view.get("arr")
+        if arr_obj is None:
+            return None
+        arr = np.asarray(arr_obj)
+        if arr.ndim < 2 or arr.size == 0:
+            return None
+        flip = self._use_relative_axes(view)
+        arr_disp = np.flipud(arr) if flip else arr
+        h, w = arr_disp.shape[:2]
+        if h <= 0 or w <= 0:
+            return None
+        try:
+            c0, c1, r0, r1 = [int(v) for v in pixel_bounds]
+        except Exception:
+            return None
+        left = max(0, min(c0, c1))
+        right = min(w - 1, max(c0, c1))
+        top = max(0, min(r0, r1))
+        bottom = min(h - 1, max(r0, r1))
+        if right < left or bottom < top:
+            return None
+        cropped_disp = arr_disp[top:bottom + 1, left:right + 1]
+        if cropped_disp.size == 0:
+            return None
+        return np.array(cropped_disp, copy=True)
+
     def _build_cropped_view_from_selection(
         self,
         view,
@@ -8172,6 +8247,7 @@ class MultiPreviewCanvas(FigureCanvas):
         angle=0.0,
         update_size=False,
         auto_virtual_copy=False,
+        prompt_virtual_copy=True,
     ):
         if view is None or ax is None:
             return False
@@ -8224,6 +8300,8 @@ class MultiPreviewCanvas(FigureCanvas):
         new_view["title"] = f"{view.get('title') or 'crop'} [crop]"
         if auto_virtual_copy:
             new_view["_auto_virtual_copy"] = True
+        elif not prompt_virtual_copy:
+            new_view["_skip_virtual_copy_prompt"] = True
         if entry and entry.get("sequence") is not None:
             new_view["crop_sequence"] = entry["sequence"]
             entry["view_snapshot"] = dict(new_view)
@@ -8252,10 +8330,13 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         angle = float(template.get("rotate", 0.0) or 0.0)
         bounds_data = (geom["left"], geom["right"], geom["bottom"], geom["top"])
-        cropped_arr = self._extract_rotated_crop(view, ax, bounds_data, width, height, angle)
+        pixel_bounds = tuple(int(v) for v in (template.get("pixel_bounds") or geom.get("pixel_bounds") or (0, 0, 0, 0)))
+        if abs(angle) <= 1e-9:
+            cropped_arr = self._extract_axis_aligned_crop(view, pixel_bounds)
+        else:
+            cropped_arr = self._extract_rotated_crop(view, ax, bounds_data, width, height, angle)
         if cropped_arr is None:
             return False
-        pixel_bounds = tuple(int(v) for v in (template.get("pixel_bounds") or geom.get("pixel_bounds") or (0, 0, 0, 0)))
         ok = self._build_cropped_view_from_selection(
             view=view,
             ax=ax,
@@ -8302,7 +8383,11 @@ class MultiPreviewCanvas(FigureCanvas):
         if not bounds_data:
             return False
         angle = float(template.get("rotate", 0.0) or 0.0)
-        cropped_arr = self._extract_rotated_crop(view, ax, bounds_data, width, height, angle)
+        pixel_bounds = (c0, c1, r0, r1)
+        if abs(angle) <= 1e-9:
+            cropped_arr = self._extract_axis_aligned_crop(view, pixel_bounds)
+        else:
+            cropped_arr = self._extract_rotated_crop(view, ax, bounds_data, width, height, angle)
         if cropped_arr is None:
             return False
         return self._build_cropped_view_from_selection(
@@ -8310,11 +8395,12 @@ class MultiPreviewCanvas(FigureCanvas):
             ax=ax,
             cropped_arr=cropped_arr,
             bounds_data=bounds_data,
-            pixel_bounds=(c0, c1, r0, r1),
+            pixel_bounds=pixel_bounds,
             square=bool(template.get("square", False)),
             angle=angle,
             update_size=False,
             auto_virtual_copy=False,
+            prompt_virtual_copy=False,
         )
 
 

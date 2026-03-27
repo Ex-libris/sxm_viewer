@@ -1046,6 +1046,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_window_minimize_callback(self.on_minimize_popouts)
+        self.preview_canvas.set_window_restore_callback(self.on_restore_popouts)
+        self.preview_canvas.set_window_close_callback(self.on_close_popouts)
         self.preview_canvas.set_fixed_crop_history_callback(self._on_fixed_crop_history_updated)
         # Seed molecule recents from config and listen for updates
         try:
@@ -1897,6 +1899,7 @@ QLabel:hover {{
         if not view:
             return
         auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
+        skip_virtual_copy_prompt = bool(view.get("_skip_virtual_copy_prompt", False))
         # Offer to save crop as a virtual copy in thumbnails, unless explicitly
         # requested by the crop tool for frictionless iterative workflows.
         try:
@@ -1904,7 +1907,7 @@ QLabel:hover {{
             if path:
                 if auto_virtual_copy:
                     self._create_virtual_crop_view(view)
-                else:
+                elif not skip_virtual_copy_prompt:
                     ret = QtWidgets.QMessageBox.question(
                         self,
                         "Save crop",
@@ -4292,6 +4295,18 @@ QLabel:hover {{
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.minimize_popups()
+
+    def on_restore_popouts(self):
+        """Restore minimized pop-out dialogs to their previous on-screen size."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.restore_popups()
+
+    def on_close_popouts(self):
+        """Close all tracked pop-out dialogs without clearing crop history."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.close_tracked_popups()
 
     def _view_source_path(self, view):
         if not view:

@@ -486,18 +486,7 @@ class QuickCropController:
         minimize_btn = getattr(viewer, 'quick_crop_minimize_btn', None)
         if tile_btn is None and minimize_btn is None:
             return
-        alive = []
-        cleaned = []
-        for dlg in list(getattr(viewer, '_popup_refs', [])):
-            if dlg is None:
-                continue
-            try:
-                if dlg.isVisible():
-                    alive.append(dlg)
-                cleaned.append(dlg)
-            except RuntimeError:
-                continue
-        viewer._popup_refs = cleaned
+        alive = self._tracked_popups()
         if tile_btn is not None:
             tile_btn.setEnabled(bool(alive))
         if minimize_btn is not None:
@@ -513,9 +502,29 @@ class QuickCropController:
         except Exception:
             return palette[0]
 
-    def arrange_popups(self):
+    def _tracked_popups(self):
         viewer = self.viewer
-        popups = [dlg for dlg in getattr(viewer, '_popup_refs', []) if dlg and dlg.isVisible()]
+        alive = []
+        cleaned = []
+        seen = set()
+        for dlg in list(getattr(viewer, '_popup_refs', [])):
+            if dlg is None:
+                continue
+            ident = id(dlg)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            try:
+                if dlg.isVisible() or dlg.isMinimized():
+                    alive.append(dlg)
+                cleaned.append(dlg)
+            except RuntimeError:
+                continue
+        viewer._popup_refs = cleaned
+        return alive
+
+    def arrange_popups(self):
+        popups = self._tracked_popups()
         if not popups:
             return
         screen = QtWidgets.QApplication.primaryScreen()
@@ -528,13 +537,17 @@ class QuickCropController:
             row, col = divmod(idx, cols)
             x = geom.left() + col * tile_w
             y = geom.top() + row * tile_h
-            dlg.setGeometry(x + 10, y + 10, tile_w - 20, tile_h - 20)
-            dlg.raise_()
-            dlg.activateWindow()
+            try:
+                if dlg.isMinimized() or (dlg.windowState() & QtCore.Qt.WindowMaximized):
+                    dlg.showNormal()
+                dlg.setGeometry(x + 10, y + 10, tile_w - 20, tile_h - 20)
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                continue
 
     def minimize_popups(self):
-        viewer = self.viewer
-        popups = [dlg for dlg in getattr(viewer, '_popup_refs', []) if dlg and dlg.isVisible()]
+        popups = self._tracked_popups()
         if not popups:
             return
         for dlg in popups:
@@ -542,6 +555,30 @@ class QuickCropController:
                 dlg.showMinimized()
             except Exception:
                 continue
+
+    def restore_popups(self):
+        popups = self._tracked_popups()
+        if not popups:
+            return
+        for dlg in popups:
+            try:
+                if dlg.isMinimized() or (dlg.windowState() & QtCore.Qt.WindowMinimized):
+                    dlg.showNormal()
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                continue
+
+    def close_tracked_popups(self):
+        popups = list(self._tracked_popups())
+        if not popups:
+            return
+        for dlg in popups:
+            try:
+                dlg.close()
+            except Exception:
+                continue
+        self.update_popup_actions()
 
     # ------------------------------------------------------------------
     def export_selected_crops(self):

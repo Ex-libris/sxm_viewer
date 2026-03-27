@@ -273,6 +273,12 @@ def _ensure_display_menu(viewer):
     minimize_act.setToolTip("Minimize all open preview/spectroscopy/profile windows (Ctrl+Shift+M)")
     minimize_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
     minimize_act.triggered.connect(viewer.on_minimize_popouts)
+    restore_act = viewer.display_menu.addAction("Restore pop-outs")
+    restore_act.setToolTip("Restore any minimized pop-out windows to their previous size")
+    restore_act.triggered.connect(viewer.on_restore_popouts)
+    close_all_act = viewer.display_menu.addAction("Close all pop-outs")
+    close_all_act.setToolTip("Close all open preview/spectroscopy/profile windows")
+    close_all_act.triggered.connect(viewer.on_close_popouts)
     return viewer.display_menu
 
 
