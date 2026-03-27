@@ -73,7 +73,6 @@ def _shift_view_relative_zero(owner, view, enabled: bool):
                 pass
         zero_offset = None
     else:
-        new_view["arr"] = np.array(arr_np, copy=True)
         if enabled and zero_offset is None:
             finite = arr_np[np.isfinite(arr_np)]
             zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
@@ -121,11 +120,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas._undo_suspend_depth += 1
     except Exception:
         pass
-    if restore_mode:
-        try:
-            canvas.set_render_suspended(True)
-        except Exception:
-            pass
+    try:
+        canvas.set_render_suspended(True)
+    except Exception:
+        pass
     try:
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
@@ -207,6 +205,28 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas.set_show_profile_overlays(getattr(source_canvas, "_show_profile_overlays", True))
             canvas.set_show_angle_overlays(getattr(source_canvas, "_show_angle_overlays", True))
             canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", True))
+        except Exception:
+            pass
+        try:
+            canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
+            canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
+            canvas._relative_axes_override = rel_override
+            canvas.molecule_palette = (getattr(owner, "molecule_palette", "cpk") or "cpk").lower()
+            canvas.scale_bar_enabled = bool(owner.scale_bar_cb.isChecked())
+            if canvas.scale_bar_enabled:
+                canvas._connect_scale_bar_events()
+            if frame_fill_initial:
+                canvas._frame_fill_prev_state = {
+                    "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
+                    "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
+                    "show_title": bool(getattr(canvas, "_show_title", True)),
+                    "fit_to_canvas": bool(getattr(canvas, "_fit_to_canvas", False)),
+                }
+                canvas._show_ticks = False
+                canvas._show_colorbar = False
+                canvas._show_title = False
+                canvas._fit_to_canvas = False
+                canvas._frame_fill_mode = True
         except Exception:
             pass
 
@@ -367,9 +387,6 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         except Exception:
             pass
     canvas.set_views_callback(_on_popup_canvas_state_changed)
-    canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
-    canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
-    canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
     canvas.set_crop_callback(lambda v: owner._on_preview_crop(v))
     canvas.set_virtual_copy_callback(lambda v: owner._create_virtual_copy_from_popup_view(v))
     canvas.set_double_click_callback(
@@ -406,23 +423,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.show_fixed_crop_template(False)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
-        if not restore_mode:
-            canvas.set_molecule_palette(owner.molecule_palette, notify=False)
         canvas.set_molecule_palette_callback(owner._on_molecule_palette_changed)
         owner._popup_canvases.append(canvas)
     except Exception:
         pass
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
     if not restore_mode:
-        canvas.enable_scale_bar(owner.scale_bar_cb.isChecked())
-        canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
-        canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
-        canvas.set_relative_axes_override(rel_override)
-        if frame_fill_initial:
-            try:
-                canvas.set_frame_fill_mode(True)
-            except Exception:
-                pass
         profile_controller.set_initial_state(measure_initial)
         canvas.set_angle_tool_enabled(angle_initial)
 
@@ -589,13 +595,23 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     dlg._resume_preview_resize = _resume_popup_resize
     dlg._preview_canvas = canvas
     if show_immediately:
-        _resume_popup_resize(force=True)
         dlg.show()
+        if not restore_mode:
+            try:
+                canvas.set_render_suspended(False)
+            except Exception:
+                pass
+        _resume_popup_resize(force=True)
         if hasattr(owner, "_set_active_preview_popup"):
             try:
                 owner._set_active_preview_popup(dlg, canvas)
             except Exception:
                 pass
+    elif not restore_mode:
+        try:
+            canvas.set_render_suspended(False)
+        except Exception:
+            pass
     owner._popup_refs.append(dlg)
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.update_popup_actions()

@@ -1899,6 +1899,7 @@ QLabel:hover {{
         if not view:
             return
         auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
+        skip_virtual_copy_prompt = bool(view.get("_skip_virtual_copy_prompt", False))
         # Offer to save crop as a virtual copy in thumbnails, unless explicitly
         # requested by the crop tool for frictionless iterative workflows.
         try:
@@ -1906,7 +1907,7 @@ QLabel:hover {{
             if path:
                 if auto_virtual_copy:
                     self._create_virtual_crop_view(view)
-                else:
+                elif not skip_virtual_copy_prompt:
                     ret = QtWidgets.QMessageBox.question(
                         self,
                         "Save crop",
