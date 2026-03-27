@@ -1751,43 +1751,94 @@ class MultiPreviewCanvas(FigureCanvas):
         
         return size, label
 
-    def _add_scale_bar(self, ax, view):
+    def _scale_bar_span(self, ax, view):
+        width = 0.0
+        unit = view.get('axis_unit') or 'nm'
+        try:
+            xlim = ax.get_xlim()
+            width = abs(float(xlim[1]) - float(xlim[0]))
+        except Exception:
+            width = 0.0
+        if width > 0:
+            if view.get('extent') is None and view.get('extent_raw') is None:
+                unit = 'px'
+            return width, unit
         extent = view.get('extent')
         if extent is None:
-            # Fallback for pixel coords
+            extent = view.get('extent_raw')
+        if extent is None:
             h, w = np.shape(view['arr'])
-            width = w
-            unit = 'px'
-        else:
-            width = abs(extent[1] - extent[0])
-            unit = view.get('axis_unit') or 'nm'
-            
+            return float(w), 'px'
+        return abs(extent[1] - extent[0]), unit
+
+    def _add_scale_bar(self, ax, view):
+        width, unit = self._scale_bar_span(ax, view)
         size, label = self._calculate_best_scale_bar(width, unit)
+        label = label if label and str(label).strip() else None
         
         font_scale = getattr(self, '_view_font_scale', 1.0)
+        dark = bool(self._detail_dark)
+        default_color = '#f5f5f5' if dark else '#111111'
+        sb_settings = getattr(self, '_scale_bar_settings', {})
+        sb_text_col = sb_settings.get('text_color') or default_color
+        sb_bar_col = sb_settings.get('bar_color') or default_color
+        font_family = sb_settings.get('font_family', 'sans-serif')
         sb = AnchoredSizeBar(ax.transData, size, label, 
                              loc='center',  # Anchor point on the artist itself
                              pad=0.4, borderpad=0, sep=3, 
                              frameon=False, 
                              size_vertical=width*0.004*font_scale,
-                             color='white',
+                             color=sb_bar_col,
                              label_top=True,
                              bbox_to_anchor=self._scale_bar_pos,
                              bbox_transform=ax.transAxes)
         
         # Apply font scaling
         sb.size_bar.get_children()[0].set_linewidth(0) # remove border if any
+        try:
+            sb.size_bar.get_children()[0].set_color(sb_bar_col)
+        except Exception:
+            pass
         text = sb.txt_label.get_children()[0]
+        text.set_color(sb_text_col)
+        text.set_fontfamily(font_family)
         text.set_fontsize(10 * font_scale)
         text.set_fontweight('bold')
         try:
-            apply_text_style(text, family=getattr(self, "_font_family", None), **self._plot_style_state())
+            apply_text_style(text, family=font_family, **self._plot_style_state())
         except Exception:
             pass
         sb.set_zorder(20)
         
         ax.add_artist(sb)
         self._scale_bar_artists.append(sb)
+
+    def _refresh_scale_bars(self, ax=None, redraw: bool = False):
+        keep = []
+        for sb in list(self._scale_bar_artists):
+            sb_ax = getattr(sb, "axes", None)
+            if ax is not None and sb_ax is not ax:
+                keep.append(sb)
+                continue
+            try:
+                sb.remove()
+            except Exception:
+                if ax is not None and sb_ax is not ax:
+                    keep.append(sb)
+        self._scale_bar_artists = keep
+        if not self.scale_bar_enabled:
+            if redraw:
+                self.draw_idle()
+            return
+        for target_ax, view in list(self._ax_view_map.items()):
+            if ax is not None and target_ax is not ax:
+                continue
+            try:
+                self._add_scale_bar(target_ax, view)
+            except Exception:
+                continue
+        if redraw:
+            self.draw_idle()
 
     def _on_sb_press(self, event):
         if not self.scale_bar_enabled: return
@@ -5579,6 +5630,7 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 continue
         if did:
+            self._refresh_scale_bars()
             self.draw_idle()
 
     def _toggle_colorbar_orientation(self):
@@ -5641,6 +5693,7 @@ class MultiPreviewCanvas(FigureCanvas):
         new_ylim = self._clamp_limits(new_ylim, base_ylim)
         ax.set_xlim(new_xlim)
         ax.set_ylim(new_ylim)
+        self._refresh_scale_bars(ax=ax)
         self.draw_idle()
 
     def _clamp_limits(self, new_lim, base_lim):
@@ -5760,6 +5813,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
             updated = True
         if updated:
+            self._refresh_scale_bars()
             self.draw_idle()
 
     def _display_extent_for_view(self, view, extent):
