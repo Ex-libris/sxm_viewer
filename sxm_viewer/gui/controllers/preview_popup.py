@@ -386,6 +386,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_window_minimize_callback(owner.on_minimize_popouts)
+    canvas.set_window_restore_callback(owner.on_restore_popouts)
+    canvas.set_window_close_callback(owner.on_close_popouts)
     canvas.set_copy_feedback_handler(lambda view=None, info=None, host=dlg: owner._on_view_copied(view, info, target=host))
     canvas.set_display_relative_zero_menu_callback(
         lambda enabled: _set_popup_relative_zero(enabled),

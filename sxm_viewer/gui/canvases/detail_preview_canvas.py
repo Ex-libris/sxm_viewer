@@ -149,6 +149,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._minimize_windows_callback = None
+        self._restore_windows_callback = None
+        self._close_windows_callback = None
         self._value_callback = None
         self._undo_history = []
         self._undo_restore_in_progress = False
@@ -621,6 +623,14 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_window_minimize_callback(self, cb):
         """Register callback invoked when the user requests minimizing pop-out windows."""
         self._minimize_windows_callback = cb
+
+    def set_window_restore_callback(self, cb):
+        """Register callback invoked when the user requests restoring minimized pop-out windows."""
+        self._restore_windows_callback = cb
+
+    def set_window_close_callback(self, cb):
+        """Register callback invoked when the user requests closing all pop-out windows."""
+        self._close_windows_callback = cb
 
     def set_plot_font_family_callback(self, cb):
         """Register a callback used when the user picks a new plot font."""
@@ -5282,13 +5292,28 @@ class MultiPreviewCanvas(FigureCanvas):
         reset_zoom_act = view_menu.addAction("Reset Zoom")
         arrange_act = None
         minimize_act = None
+        restore_act = None
+        close_all_act = None
+        window_actions_added = False
         if callable(self._arrange_windows_callback):
             view_menu.addSeparator()
+            window_actions_added = True
             arrange_act = view_menu.addAction("Arrange pop-outs")
         if callable(self._minimize_windows_callback):
-            if arrange_act is None:
+            if not window_actions_added:
                 view_menu.addSeparator()
+                window_actions_added = True
             minimize_act = view_menu.addAction("Minimize pop-outs")
+        if callable(self._restore_windows_callback):
+            if not window_actions_added:
+                view_menu.addSeparator()
+                window_actions_added = True
+            restore_act = view_menu.addAction("Restore pop-outs")
+        if callable(self._close_windows_callback):
+            if not window_actions_added:
+                view_menu.addSeparator()
+                window_actions_added = True
+            close_all_act = view_menu.addAction("Close all pop-outs")
 
         add_font_menu_action(
             menu,
@@ -5430,6 +5455,16 @@ class MultiPreviewCanvas(FigureCanvas):
         elif minimize_act and chosen == minimize_act:
             try:
                 self._minimize_windows_callback()
+            except Exception:
+                pass
+        elif restore_act and chosen == restore_act:
+            try:
+                self._restore_windows_callback()
+            except Exception:
+                pass
+        elif close_all_act and chosen == close_all_act:
+            try:
+                self._close_windows_callback()
             except Exception:
                 pass
         elif angle_style_act and chosen == angle_style_act:
