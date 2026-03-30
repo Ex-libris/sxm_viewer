@@ -1365,6 +1365,9 @@ class ProfileDialog(QtWidgets.QDialog):
     def set_add_overlay_callback(self, cb):
         self._add_overlay_cb = cb
 
+    def set_delete_overlay_callback(self, cb):
+        self._delete_overlay_cb = cb
+
     def set_marker_positions(self, positions, domain=None):
         if self._marker_syncing:
             return
