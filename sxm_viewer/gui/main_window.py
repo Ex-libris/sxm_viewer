@@ -38,6 +38,9 @@ from ..config import (
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
+
+RECENT_FOLDER_LIMIT = 30
+RECENT_SESSION_FOLDER_LIMIT = 30
 from ..data.spectroscopy import is_matrix_file_entry
 from ..processing.filters import (
     flatten_remove_median,
@@ -2851,6 +2854,9 @@ QLabel:hover {{
             act = menu.addAction(path)
             act.setToolTip(path)
             act.triggered.connect(lambda checked=False, p=path: self.load_folder(Path(p)))
+        menu.addSeparator()
+        clear_act = menu.addAction("Clear recent folders")
+        clear_act.triggered.connect(self._clear_recent_dirs)
 
     def _record_recent_dir(self, folder: Path):
         folder_path = Path(folder)
@@ -2867,8 +2873,14 @@ QLabel:hover {{
                     continue
             recents.append(p)
         recents.insert(0, folder_str)
-        self.recent_dirs = recents[:8]
+        self.recent_dirs = recents[:RECENT_FOLDER_LIMIT]
         self.config["recent_dirs"] = self.recent_dirs
+        save_config(self.config)
+        self._refresh_recent_dirs_menu()
+
+    def _clear_recent_dirs(self):
+        self.recent_dirs = []
+        self.config["recent_dirs"] = []
         save_config(self.config)
         self._refresh_recent_dirs_menu()
 
@@ -2892,6 +2904,9 @@ QLabel:hover {{
                 act.triggered.connect(
                     lambda checked=False, p=path: self.on_load_session_from_dir(Path(p))
                 )
+            menu.addSeparator()
+            clear_act = menu.addAction("Clear recent session folders")
+            clear_act.triggered.connect(self._clear_recent_session_dirs)
 
     def _record_recent_session_dir(self, folder: Path):
         folder_path = Path(folder)
@@ -2908,8 +2923,14 @@ QLabel:hover {{
                     continue
             recents.append(p)
         recents.insert(0, folder_str)
-        self.recent_session_dirs = recents[:10]
+        self.recent_session_dirs = recents[:RECENT_SESSION_FOLDER_LIMIT]
         self.config["recent_session_dirs"] = self.recent_session_dirs
+        save_config(self.config)
+        self._refresh_recent_session_dirs_menu()
+
+    def _clear_recent_session_dirs(self):
+        self.recent_session_dirs = []
+        self.config["recent_session_dirs"] = []
         save_config(self.config)
         self._refresh_recent_session_dirs_menu()
 
