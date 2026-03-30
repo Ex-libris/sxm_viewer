@@ -71,6 +71,72 @@ def _resize_to_shape(arr, shape):
     return _resize_nearest(data, shape)
 
 
+def _coord_to_fractional_index(coord, start, end, size):
+    """Map axis-space coordinates onto fractional pixel indices for resampling."""
+    if size <= 1 or abs(float(end) - float(start)) <= 1e-12:
+        return np.zeros_like(coord, dtype=float)
+    coord_arr = np.asarray(coord, dtype=float)
+    if float(end) > float(start):
+        t_val = (coord_arr - float(start)) / float(end - start)
+    else:
+        t_val = (coord_arr - float(end)) / float(start - end)
+    return t_val * float(size - 1)
+
+
+def _axis_coords_for_size(start, end, size):
+    """Return the axis coordinate of each pixel index using the canvas' extent convention."""
+    if size <= 0:
+        return np.empty((0,), dtype=float)
+    if size == 1:
+        return np.array([float(end if float(end) <= float(start) else start)], dtype=float)
+    frac = np.linspace(0.0, 1.0, int(size), dtype=float)
+    if float(end) > float(start):
+        return float(start) + (float(end) - float(start)) * frac
+    return float(end) + (float(start) - float(end)) * frac
+
+
+def _resample_to_reference_grid(arr, source_extent, ref_shape, ref_extent):
+    """Resample an image onto the reference snapshot grid using the physical extents when available."""
+    data = np.asarray(arr, dtype=float)
+    if tuple(data.shape[:2]) == tuple(ref_shape) and (
+        source_extent is None or ref_extent is None or tuple(source_extent) == tuple(ref_extent)
+    ):
+        return np.array(data, copy=True)
+    if source_extent is None or ref_extent is None or not _HAS_SCIPY or ndimage is None:
+        return _resize_to_shape(data, ref_shape)
+    try:
+        sx0, sx1, sy1, sy0 = (float(v) for v in source_extent)
+        rx0, rx1, ry1, ry0 = (float(v) for v in ref_extent)
+    except Exception:
+        return _resize_to_shape(data, ref_shape)
+    data_filled, finite, fill = _finite_fill(data)
+    ref_h = max(1, int(ref_shape[0]))
+    ref_w = max(1, int(ref_shape[1]))
+    world_x = _axis_coords_for_size(rx0, rx1, ref_w)
+    world_y = _axis_coords_for_size(ry1, ry0, ref_h)
+    grid_x, grid_y = np.meshgrid(world_x, world_y)
+    src_cols = _coord_to_fractional_index(grid_x, sx0, sx1, data.shape[1])
+    src_rows = _coord_to_fractional_index(grid_y, sy1, sy0, data.shape[0])
+    coords = np.vstack([src_rows.ravel(), src_cols.ravel()])
+    sampled = ndimage.map_coordinates(
+        data_filled,
+        coords,
+        order=1,
+        mode="constant",
+        cval=fill,
+    ).reshape((ref_h, ref_w))
+    sampled_mask = ndimage.map_coordinates(
+        finite.astype(float),
+        coords,
+        order=0,
+        mode="constant",
+        cval=0.0,
+    ).reshape((ref_h, ref_w)) > 0.5
+    sampled = np.array(sampled, copy=True)
+    sampled[~sampled_mask] = np.nan
+    return sampled
+
+
 def _window(shape):
     if len(shape) != 2:
         return 1.0
@@ -238,6 +304,20 @@ def _alignment_metrics(reference, moving):
     }
 
 
+def _alignment_score(reference, moving):
+    """Collapse compare metrics into a single score for local rigid-refinement searches."""
+    metrics = _alignment_metrics(reference, moving)
+    corr = metrics.get("corr")
+    coverage = float(metrics.get("coverage", 0.0) or 0.0)
+    rmse = metrics.get("rmse")
+    if corr is None or not np.isfinite(corr):
+        corr = -1.0
+    if rmse is None or not np.isfinite(rmse):
+        rmse = 1e9
+    score = float(corr) + (0.25 * coverage) - (0.05 * float(rmse))
+    return score, metrics
+
+
 def _image_center_xy(shape):
     """Return the pixel-space center used by scipy-style in-place rotations."""
     height = int(shape[0]) if shape else 0
@@ -305,14 +385,57 @@ def _wrap_angle_deg(angle_deg):
     return 180.0 if wrapped == -180.0 else wrapped
 
 
+def _pairwise_angle_candidates(points_a, points_b):
+    """Derive rigid-rotation guesses from the directions of matched landmark pairs."""
+    pts_a = np.asarray(points_a, dtype=float)
+    pts_b = np.asarray(points_b, dtype=float)
+    if pts_a.shape != pts_b.shape or pts_a.ndim != 2 or pts_a.shape[0] < 2:
+        return []
+    candidates = []
+    seen = set()
+    for i in range(int(pts_a.shape[0]) - 1):
+        for j in range(i + 1, int(pts_a.shape[0])):
+            vec_a = pts_a[j] - pts_a[i]
+            vec_b = pts_b[j] - pts_b[i]
+            if np.linalg.norm(vec_a) < 1e-6 or np.linalg.norm(vec_b) < 1e-6:
+                continue
+            angle_a = float(np.degrees(np.arctan2(vec_a[1], vec_a[0])))
+            angle_b = float(np.degrees(np.arctan2(vec_b[1], vec_b[0])))
+            candidate = _wrap_angle_deg(angle_a - angle_b)
+            key = round(candidate, 6)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+    return candidates
+
+
+def _best_rigid_angle_candidate(points_a, points_b, moving_shape, seed_angle):
+    """Pick the lowest-residual coarse angle before local rigid refinement."""
+    candidates = [_wrap_angle_deg(seed_angle)]
+    candidates.extend(_pairwise_angle_candidates(points_a, points_b))
+    # A full coarse sweep keeps the fit robust when the initial seed lands in the
+    # wrong basin, which can happen with sparse or symmetric landmark choices.
+    candidates.extend(np.linspace(-180.0, 178.0, 180))
+    best = None
+    seen = set()
+    for angle in candidates:
+        trial_angle = _wrap_angle_deg(angle)
+        key = round(trial_angle, 6)
+        if key in seen:
+            continue
+        seen.add(key)
+        shift_x, shift_y, rmse = _fit_shift_for_rotation(points_a, points_b, moving_shape, trial_angle)
+        if best is None or rmse < best[3]:
+            best = (trial_angle, shift_x, shift_y, rmse)
+    return best
+
+
 def _refine_rigid_angle(points_a, points_b, moving_shape, seed_angle):
     """Refine the rigid-fit angle against the dialog's actual landmark residual model."""
-    best = None
+    best = _best_rigid_angle_candidate(points_a, points_b, moving_shape, seed_angle)
     for step, radius in ((1.0, 12.0), (0.2, 2.0), (0.05, 0.4)):
-        if best is None:
-            center = float(seed_angle)
-        else:
-            center = float(best[0])
+        center = float(seed_angle) if best is None else float(best[0])
         count = max(3, int(round((2.0 * radius) / step)) + 1)
         angles = np.linspace(center - radius, center + radius, count)
         current_best = best
@@ -347,6 +470,11 @@ def _fit_rigid_from_points(points_a, points_b, moving_shape):
         shift_x, shift_y, rmse = _fit_shift_for_rotation(pts_a, pts_b, moving_shape, angle)
         return angle, shift_x, shift_y, rmse
     return refined
+
+
+def _is_rigid_mode(mode_text):
+    """Return True when the selected compare mode is the rotation+translation variant."""
+    return str(mode_text or "").strip().lower().startswith("rigid")
 
 
 class ImageCompareController:
@@ -606,8 +734,10 @@ class ImageCompareDialog(QtWidgets.QDialog):
         controls.setSpacing(8)
         controls.addWidget(QtWidgets.QLabel("Auto mode:", self))
         self.auto_mode_combo = QtWidgets.QComboBox(self)
-        self.auto_mode_combo.addItems(["Translate", "Rigid"])
-        self.auto_mode_combo.setToolTip("Translate estimates x/y shift. Rigid searches rotation + shift.")
+        self.auto_mode_combo.addItems(["Translate only", "Rigid (rotate + shift)"])
+        self.auto_mode_combo.setToolTip(
+            "Translate only keeps the current rotation fixed. Rigid solves rotation plus translation."
+        )
         controls.addWidget(self.auto_mode_combo)
         controls.addWidget(QtWidgets.QLabel("Intensity:", self))
         self.intensity_combo = QtWidgets.QComboBox(self)
@@ -665,9 +795,9 @@ class ImageCompareDialog(QtWidgets.QDialog):
         landmark_row.addWidget(self.pick_landmarks_btn)
         landmark_row.addWidget(QtWidgets.QLabel("Point fit:", self))
         self.landmark_mode_combo = QtWidgets.QComboBox(self)
-        self.landmark_mode_combo.addItems(["Translate", "Rigid"])
+        self.landmark_mode_combo.addItems(["Rigid (rotate + shift)", "Translate only"])
         self.landmark_mode_combo.setToolTip(
-            "Translate uses one or more pairs. Rigid uses two or more pairs to solve rotation and shift."
+            "Rigid uses two or more pairs to solve rotation plus shift. Translate only keeps rotation fixed."
         )
         self.landmark_mode_combo.currentIndexChanged.connect(lambda *_args: self._update_landmark_status())
         landmark_row.addWidget(self.landmark_mode_combo)
@@ -745,6 +875,7 @@ class ImageCompareDialog(QtWidgets.QDialog):
         self.label_a.setText(_safe_label(snapshot_a))
         self.label_b.setText(_safe_label(snapshot_b))
         self.metrics_label.setText("Both compare slots must be populated to render the comparison.")
+        self._set_transform_controls(0.0, 0.0, 0.0)
         self.canvas.clear_views()
         self._update_landmark_status()
 
@@ -758,7 +889,12 @@ class ImageCompareDialog(QtWidgets.QDialog):
             self.set_slots_pending(snapshot_a, snapshot_b)
             return
         self._base_a = np.array(snapshot_a.get("arr"), copy=True)
-        self._base_b = _resize_to_shape(snapshot_b.get("arr"), self._base_a.shape)
+        self._base_b = _resample_to_reference_grid(
+            snapshot_b.get("arr"),
+            snapshot_b.get("extent"),
+            self._base_a.shape,
+            snapshot_a.get("extent"),
+        )
         self._landmark_pairs = []
         self._last_landmark_rmse = None
         self._clear_landmark_overlays()
@@ -767,6 +903,7 @@ class ImageCompareDialog(QtWidgets.QDialog):
             spin.blockSignals(True)
             spin.setRange(-span, span)
             spin.blockSignals(False)
+        self._set_transform_controls(0.0, 0.0, 0.0)
         self.setWindowTitle(f"Compare A/B - {_safe_label(snapshot_a)} vs {_safe_label(snapshot_b)}")
         self._update_landmark_status()
         self._schedule_update(immediate=True)
@@ -778,17 +915,21 @@ class ImageCompareDialog(QtWidgets.QDialog):
             return
         self._update_timer.start()
 
-    def _reset_transform(self):
-        """Reset manual alignment without clearing the current landmark pairs."""
+    def _set_transform_controls(self, rotation_deg, shift_x, shift_y):
+        """Update the transform widgets atomically so new slots do not inherit stale alignment."""
         self.rotation_spin.blockSignals(True)
         self.shift_x_spin.blockSignals(True)
         self.shift_y_spin.blockSignals(True)
-        self.rotation_spin.setValue(0.0)
-        self.shift_x_spin.setValue(0.0)
-        self.shift_y_spin.setValue(0.0)
+        self.rotation_spin.setValue(float(rotation_deg))
+        self.shift_x_spin.setValue(float(shift_x))
+        self.shift_y_spin.setValue(float(shift_y))
         self.rotation_spin.blockSignals(False)
         self.shift_x_spin.blockSignals(False)
         self.shift_y_spin.blockSignals(False)
+
+    def _reset_transform(self):
+        """Reset manual alignment without clearing the current landmark pairs."""
+        self._set_transform_controls(0.0, 0.0, 0.0)
         self._schedule_update(immediate=True)
 
     def _swap_slots(self):
@@ -799,9 +940,9 @@ class ImageCompareDialog(QtWidgets.QDialog):
         """Estimate a transform from the image content instead of user-supplied landmarks."""
         if self._base_a is None or self._base_b is None:
             return
-        mode = str(self.auto_mode_combo.currentText() or "Translate")
+        mode = str(self.auto_mode_combo.currentText() or "Translate only")
         try:
-            if mode == "Rigid":
+            if _is_rigid_mode(mode):
                 rotation, shift_x, shift_y = self._estimate_rigid_transform(self._base_a, self._base_b)
                 self.rotation_spin.setValue(rotation)
             else:
@@ -846,6 +987,59 @@ class ImageCompareDialog(QtWidgets.QDialog):
             shift_x /= scale
             shift_y /= scale
         return float(angle), float(shift_x), float(shift_y)
+
+    def _refine_rigid_transform_from_seed(self, reference, moving, seed_rotation, seed_shift_x, seed_shift_y):
+        """Refine a landmark-seeded rigid transform against the image content on the compare grid."""
+        if not _HAS_SCIPY or ndimage is None:
+            return float(seed_rotation), float(seed_shift_x), float(seed_shift_y)
+        ref_ds, mov_ds, scale = self._downsample_pair(reference, moving)
+        seed_rotation = float(seed_rotation)
+        seed_shift_x = float(seed_shift_x)
+        seed_shift_y = float(seed_shift_y)
+        scaled_seed_x = seed_shift_x * scale
+        scaled_seed_y = seed_shift_y * scale
+        best = None
+        try:
+            initial_aligned, _ = _transform_with_mask(mov_ds, seed_rotation, scaled_seed_x, scaled_seed_y)
+            initial_score, initial_metrics = _alignment_score(ref_ds, initial_aligned)
+            best = (
+                _wrap_angle_deg(seed_rotation),
+                float(initial_score),
+                float(scaled_seed_x),
+                float(scaled_seed_y),
+                initial_metrics,
+            )
+        except Exception:
+            best = None
+        for radius, step in ((10.0, 1.0), (2.0, 0.25), (0.4, 0.05)):
+            center = float(seed_rotation) if best is None else float(best[0])
+            count = max(3, int(round((2.0 * radius) / step)) + 1)
+            angles = np.linspace(center - radius, center + radius, count)
+            current_best = best
+            for angle in angles:
+                trial_angle = _wrap_angle_deg(angle)
+                try:
+                    shift_x, shift_y = self._estimate_translation(ref_ds, mov_ds, trial_angle)
+                    aligned, _ = _transform_with_mask(mov_ds, trial_angle, shift_x, shift_y)
+                    score, metrics = _alignment_score(ref_ds, aligned)
+                except Exception:
+                    continue
+                if current_best is None or score > current_best[1]:
+                    current_best = (
+                        float(trial_angle),
+                        float(score),
+                        float(shift_x),
+                        float(shift_y),
+                        metrics,
+                    )
+            best = current_best
+        if best is None:
+            return float(seed_rotation), float(seed_shift_x), float(seed_shift_y)
+        angle, _score, shift_x_ds, shift_y_ds, _metrics = best
+        if abs(scale - 1.0) > 1e-9:
+            shift_x_ds /= scale
+            shift_y_ds /= scale
+        return float(angle), float(shift_x_ds), float(shift_y_ds)
 
     def _downsample_pair(self, reference, moving, max_size=256):
         ref = np.asarray(reference, dtype=float)
@@ -972,33 +1166,49 @@ class ImageCompareDialog(QtWidgets.QDialog):
 
     def _on_pick_landmarks_toggled(self, _checked):
         """Update the instruction label when interactive landmark picking is toggled."""
+        if self.pick_landmarks_btn.isChecked() and not self._landmark_pairs:
+            try:
+                self._set_transform_controls(0.0, 0.0, 0.0)
+                self._schedule_update(immediate=True)
+            except Exception:
+                pass
         self._update_landmark_status()
         if self.pick_landmarks_btn.isChecked():
             self._show_landmark_hint("Click a reference point in A, then the matching point in B.")
 
     def _fit_from_landmarks(self):
-        """Solve the manual alignment from the currently completed landmark pairs."""
+        """Solve the exact landmark-defined alignment from the currently completed point pairs."""
         if self._base_a is None or self._base_b is None:
             return
         points_a, points_b = self._complete_landmark_arrays()
-        mode = str(self.landmark_mode_combo.currentText() or "Translate")
+        mode = str(self.landmark_mode_combo.currentText() or "Rigid (rotate + shift)")
+        rigid_hint = None
         try:
-            if mode == "Rigid":
+            if _is_rigid_mode(mode):
                 rotation, shift_x, shift_y, rmse = _fit_rigid_from_points(points_a, points_b, self._base_b.shape)
             else:
                 rotation, shift_x, shift_y, rmse = _fit_translation_from_points(points_a, points_b)
-            self.rotation_spin.blockSignals(True)
-            self.shift_x_spin.blockSignals(True)
-            self.shift_y_spin.blockSignals(True)
-            self.rotation_spin.setValue(rotation)
-            self.shift_x_spin.setValue(shift_x)
-            self.shift_y_spin.setValue(shift_y)
-            self.rotation_spin.blockSignals(False)
-            self.shift_x_spin.blockSignals(False)
-            self.shift_y_spin.blockSignals(False)
+                if int(points_a.shape[0]) >= 2:
+                    try:
+                        rigid_rotation, rigid_dx, rigid_dy, rigid_rmse = _fit_rigid_from_points(
+                            points_a,
+                            points_b,
+                            self._base_b.shape,
+                        )
+                        if np.isfinite(rigid_rmse) and rigid_rmse + 1e-6 < (0.75 * max(rmse, 1e-6)):
+                            rigid_hint = (
+                                "Translate-only fit keeps rotation fixed. "
+                                f"Rigid fit would reduce point RMSE to {rigid_rmse:.2f} px "
+                                f"(rot={rigid_rotation:.2f} deg, dx={rigid_dx:.2f} px, dy={rigid_dy:.2f} px)."
+                            )
+                    except Exception:
+                        rigid_hint = None
+            self._set_transform_controls(rotation, shift_x, shift_y)
             self._last_landmark_rmse = float(rmse)
             self._update_landmark_status()
             self._schedule_update(immediate=True)
+            if rigid_hint:
+                self._show_landmark_hint(rigid_hint)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Image comparison", f"Unable to fit the selected landmarks.\n{exc}")
 
@@ -1028,7 +1238,8 @@ class ImageCompareDialog(QtWidgets.QDialog):
         total_pairs = len(self._landmark_pairs)
         expected = self._expected_landmark_target()
         next_index = total_pairs + 1 if expected == "a" else total_pairs
-        required_pairs = 2 if str(self.landmark_mode_combo.currentText() or "Translate") == "Rigid" else 1
+        mode_text = str(self.landmark_mode_combo.currentText() or "Rigid (rotate + shift)")
+        required_pairs = 2 if _is_rigid_mode(mode_text) else 1
         if self._base_a is None or self._base_b is None:
             text = "Landmarks unavailable until both compare slots are set."
         elif self.pick_landmarks_btn.isChecked():
@@ -1038,7 +1249,8 @@ class ImageCompareDialog(QtWidgets.QDialog):
         else:
             text = "Toggle 'Pick landmarks' to add matching A/B reference points."
         if self._base_a is not None and complete_pairs < required_pairs:
-            text += f" {required_pairs} complete pair(s) required for {self.landmark_mode_combo.currentText().lower()} fit."
+            fit_kind = "rigid" if _is_rigid_mode(mode_text) else "translate-only"
+            text += f" {required_pairs} complete pair(s) required for {fit_kind} fit."
         if self._last_landmark_rmse is not None and np.isfinite(self._last_landmark_rmse):
             text += f" Fit RMSE: {self._last_landmark_rmse:.2f} px."
         self.landmark_status.setText(text)
@@ -1121,14 +1333,7 @@ class ImageCompareDialog(QtWidgets.QDialog):
         arr = np.asarray(view.get("arr")) if view.get("arr") is not None else None
         if arr is None or arr.ndim < 2 or arr.size == 0:
             raise ValueError("The clicked comparison image is empty.")
-        height, width = arr.shape[:2]
-        point = np.array(
-            [
-                float(self.canvas._axis_coord_to_pixel_float(view, event.xdata, width, "x", ax=ax)),
-                float(self.canvas._axis_coord_to_pixel_float(view, event.ydata, height, "y", ax=ax)),
-            ],
-            dtype=float,
-        )
+        point = self._axis_to_display_pixel(ax, view, event.xdata, event.ydata)
         if role == "a":
             if not self._point_in_bounds(point, self._base_a.shape):
                 raise ValueError("A landmark click must stay inside the visible image.")
@@ -1205,7 +1410,7 @@ class ImageCompareDialog(QtWidgets.QDialog):
 
     def _add_landmark_marker(self, ax, view, point, index, *, color):
         """Draw a single numbered landmark marker on the provided compare axis."""
-        coords = self._pixel_to_axis_coords(view, point)
+        coords = self._pixel_to_axis_coords(ax, view, point)
         if coords is None:
             return
         x_val, y_val = coords
@@ -1231,11 +1436,88 @@ class ImageCompareDialog(QtWidgets.QDialog):
         )
         self._landmark_overlay_artists.extend([scatter, text])
 
-    def _pixel_to_axis_coords(self, view, point):
-        """Convert stored pixel-space landmarks back into the current axis coordinate system."""
-        if view is None or point is None:
+    def _display_meta(self, ax, view):
+        """Return the rendered extent/origin/shape tuple used by matplotlib for this compare axis."""
+        meta = dict(getattr(self.canvas, "_image_meta", {}).get(ax) or {})
+        extent = meta.get("extent")
+        origin = str(meta.get("origin", "upper") or "upper").lower()
+        shape = meta.get("shape")
+        if not shape:
+            arr = np.asarray(view.get("arr")) if view and view.get("arr") is not None else None
+            if arr is not None and arr.ndim >= 2:
+                shape = arr.shape[:2]
+        if extent is None:
+            try:
+                extent = self.canvas._view_extent(view)
+            except Exception:
+                extent = None
+        try:
+            shape = tuple(shape) if shape is not None else None
+        except Exception:
+            shape = None
+        return extent, origin, shape
+
+    def _axis_to_display_pixel(self, ax, view, x_val, y_val):
+        """Map displayed axis coordinates onto the rendered image pixel grid for this axis."""
+        extent, origin, shape = self._display_meta(ax, view)
+        if shape and len(shape) >= 2 and extent is not None and len(extent) == 4:
+            height = int(shape[0])
+            width = int(shape[1])
+            cols = max(width - 1, 1)
+            rows = max(height - 1, 1)
+            xmin, xmax, ymin, ymax = (float(v) for v in extent)
+            span_x = float(xmax - xmin)
+            span_y = float(ymax - ymin)
+            col = 0.0 if abs(span_x) <= 1e-12 else ((float(x_val) - xmin) / span_x) * float(cols)
+            if abs(span_y) <= 1e-12:
+                row_use = 0.0
+            elif origin == "upper":
+                row_use = ((ymax - float(y_val)) / span_y) * float(rows)
+            else:
+                row_use = ((float(y_val) - ymin) / span_y) * float(rows)
+            row = float(rows) - row_use if origin == "lower" and rows > 0 else row_use
+            return np.array(
+                [
+                    float(np.clip(col, 0.0, max(0.0, float(width - 1)))),
+                    float(np.clip(row, 0.0, max(0.0, float(height - 1)))),
+                ],
+                dtype=float,
+            )
+        arr = np.asarray(view.get("arr")) if view is not None and view.get("arr") is not None else None
+        if arr is None or arr.ndim < 2 or arr.size == 0:
+            return np.zeros((2,), dtype=float)
+        height, width = arr.shape[:2]
+        return np.array(
+            [
+                float(self.canvas._axis_coord_to_pixel_float(view, x_val, width, "x", ax=ax)),
+                float(self.canvas._axis_coord_to_pixel_float(view, y_val, height, "y", ax=ax)),
+            ],
+            dtype=float,
+        )
+
+    def _display_pixel_to_axis(self, ax, view, point):
+        """Map stored image pixel coordinates back onto the rendered axis coordinates."""
+        if point is None:
             return None
-        arr = np.asarray(view.get("arr")) if view.get("arr") is not None else None
+        extent, origin, shape = self._display_meta(ax, view)
+        if shape and len(shape) >= 2 and extent is not None and len(extent) == 4:
+            height = int(shape[0])
+            width = int(shape[1])
+            cols = max(width - 1, 1)
+            rows = max(height - 1, 1)
+            xmin, xmax, ymin, ymax = (float(v) for v in extent)
+            col = float(point[0])
+            row = float(point[1])
+            row_use = float(rows) - row if origin == "lower" and rows > 0 else row
+            x_axis = xmin if cols == 0 else xmin + (col / float(cols)) * (xmax - xmin)
+            if rows == 0:
+                y_axis = ymax if origin == "upper" else ymin
+            elif origin == "upper":
+                y_axis = ymax - (row_use / float(rows)) * (ymax - ymin)
+            else:
+                y_axis = ymin + (row_use / float(rows)) * (ymax - ymin)
+            return float(x_axis), float(y_axis)
+        arr = np.asarray(view.get("arr")) if view is not None and view.get("arr") is not None else None
         if arr is None or arr.ndim < 2 or arr.size == 0:
             return None
         height, width = arr.shape[:2]
@@ -1247,9 +1529,13 @@ class ImageCompareDialog(QtWidgets.QDialog):
             extent = None
         if extent is None:
             return x_idx, y_idx
-        x_val = float(self.canvas._index_to_axis_coord(x_idx, extent[0], extent[1], width))
-        y_val = float(self.canvas._index_to_axis_coord(y_idx, extent[2], extent[3], height))
-        return x_val, y_val
+        x_axis = float(self.canvas._index_to_axis_coord(x_idx, extent[0], extent[1], width))
+        y_axis = float(self.canvas._index_to_axis_coord(y_idx, extent[2], extent[3], height))
+        return x_axis, y_axis
+
+    def _pixel_to_axis_coords(self, ax, view, point):
+        """Convert stored pixel-space landmarks back into the current axis coordinate system."""
+        return self._display_pixel_to_axis(ax, view, point)
 
     def _show_landmark_hint(self, text):
         """Show lightweight point-picking feedback without interrupting the dialog workflow."""
