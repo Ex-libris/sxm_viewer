@@ -1551,14 +1551,50 @@ class ProfileDialog(QtWidgets.QDialog):
         if callable(self._add_overlay_cb):
             self._add_overlay_cb()
 
-    def _delete_selected_profile(self):
+    def _selected_overlay_index(self):
+        """Return the currently selected saved-profile index, if any."""
+        candidates = []
         current = self.profile_list.currentItem()
-        idx = current.data(QtCore.Qt.UserRole) if current is not None else None
+        if current is not None:
+            candidates.append(current)
+        for item in self.profile_list.selectedItems():
+            if item not in candidates:
+                candidates.append(item)
+        for item in candidates:
+            try:
+                idx = item.data(QtCore.Qt.UserRole)
+            except Exception:
+                idx = None
+            if idx is None:
+                continue
+            try:
+                return int(idx)
+            except Exception:
+                continue
+        current_key = getattr(self, "_current_marker_key", None)
+        if current_key is not None:
+            try:
+                return int(current_key)
+            except Exception:
+                pass
+        return None
+
+    def _delete_selected_profile(self):
+        idx = self._selected_overlay_index()
         if idx is None:
             QtWidgets.QMessageBox.information(self, "Delete profile", "Select an overlay to delete.")
             return
         if callable(self._delete_overlay_cb):
-            self._delete_overlay_cb(idx)
+            removed = bool(self._delete_overlay_cb(idx))
+            if removed and 0 <= idx < len(self._saved):
+                saved = list(self._saved)
+                saved.pop(idx)
+                self.update_profiles(
+                    self._active,
+                    saved,
+                    activate_overlay_callback=self._activate_overlay_cb,
+                    highlight_overlay_callback=self._highlight_overlay_cb,
+                )
 
     def closeEvent(self, event):
         try:
