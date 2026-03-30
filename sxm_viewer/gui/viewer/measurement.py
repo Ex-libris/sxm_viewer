@@ -281,6 +281,22 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                 except Exception:
                     pass
             marker_update_cb = _marker_update
+        style_update_cb = None
+        if canvas is not None and hasattr(canvas, 'set_profile_style'):
+            def _style_update(profile_key, **changes):
+                try:
+                    return canvas.set_profile_style(profile_key, **changes)
+                except Exception:
+                    return False
+            style_update_cb = _style_update
+        palette_cb = None
+        if canvas is not None and hasattr(canvas, 'apply_profile_palette'):
+            def _palette_update(name):
+                try:
+                    return canvas.apply_profile_palette(name)
+                except Exception:
+                    return False
+            palette_cb = _palette_update
         if not hasattr(viewer, '_profile_dialog') or viewer._profile_dialog is None:
             dark_pref = bool(getattr(viewer, 'dark_mode', False))
             viewer._profile_dialog = ProfileDialog(active_profile, saved_profiles, parent=viewer, unit=ref_unit, y_label=y_label,
@@ -291,6 +307,8 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                                                   marker_update_callback=marker_update_cb,
                                                   marker_select_callback=marker_select_cb,
                                                   add_overlay_callback=add_overlay_cb,
+                                                  style_update_callback=style_update_cb,
+                                                  palette_callback=palette_cb,
                                                   dark_mode=dark_pref)
             if hasattr(viewer._profile_dialog, 'set_preserve_profiles_callback'):
                 viewer._profile_dialog.set_preserve_profiles_callback(
@@ -310,6 +328,10 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                 viewer._profile_dialog.set_marker_select_callback(marker_select_cb)
             if hasattr(viewer._profile_dialog, 'set_add_overlay_callback'):
                 viewer._profile_dialog.set_add_overlay_callback(add_overlay_cb)
+            if hasattr(viewer._profile_dialog, 'set_style_update_callback'):
+                viewer._profile_dialog.set_style_update_callback(style_update_cb)
+            if hasattr(viewer._profile_dialog, 'set_palette_callback'):
+                viewer._profile_dialog.set_palette_callback(palette_cb)
             if hasattr(viewer._profile_dialog, 'set_preserve_profiles_callback'):
                 viewer._profile_dialog.set_preserve_profiles_callback(
                     _set_preserve, enabled=getattr(viewer, 'preserve_profiles_on_channel_change', True)

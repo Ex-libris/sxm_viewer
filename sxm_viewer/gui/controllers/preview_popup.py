@@ -1,6 +1,8 @@
 """Helpers for building preview pop-out dialogs."""
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 
 from ..._shared import QtWidgets, QtCore
@@ -85,7 +87,7 @@ def _apply_popup_display_state(owner, views, *, relative_zero: bool):
     return [_shift_view_relative_zero(owner, view, relative_zero) for view in (views or [])]
 
 
-def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, restore_mode=False):
+def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, restore_mode=False, source_canvas=None):
     """Create a preview popup dialog reusing the existing owner logic."""
     if not views:
         return None
@@ -131,7 +133,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     except Exception:
         pass
 
-    source_canvas = getattr(owner, "preview_canvas", None)
+    source_canvas = source_canvas or getattr(owner, "preview_canvas", None)
     rel_override = getattr(source_canvas, "_relative_axes_override", None)
     if rel_override is None:
         rel_override = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
@@ -140,6 +142,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         getattr(source_canvas, "_profile_user_enabled", getattr(source_canvas, "profile_enabled", False))
     )
     angle_initial = bool(getattr(source_canvas, "angle_enabled", False))
+    profile_state_initial = None
+    if source_canvas is not None and hasattr(source_canvas, "export_profile_state"):
+        try:
+            profile_state_initial = copy.deepcopy(source_canvas.export_profile_state())
+        except Exception:
+            profile_state_initial = None
 
     if restore_mode:
         try:
@@ -373,6 +381,14 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         pass
 
     canvas.set_views(_apply_popup_display_state(owner, views, relative_zero=popup_display_state["relative_zero"]))
+    if profile_state_initial is not None and hasattr(canvas, "import_profile_state"):
+        try:
+            canvas.import_profile_state(profile_state_initial, emit=False)
+            if profile_state_initial.get("saved") and hasattr(canvas, "set_show_profile_overlays"):
+                canvas.set_show_profile_overlays(True)
+            canvas.draw_idle()
+        except Exception:
+            pass
     try:
         canvas.set_plot_font_family_callback(lambda fam: owner.set_plot_font_family(fam))
         if not restore_mode:
@@ -394,6 +410,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             owner,
             [owner._copy_view_for_popup(v)] if v else [],
             title=owner._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
+            source_canvas=canvas,
         )
     )
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
@@ -584,6 +601,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
                             owner,
                             [owner._copy_view_for_popup(v) for v in self.canvas.views],
                             title="Preview copy",
+                            source_canvas=self.canvas,
                         )
                     except Exception:
                         pass

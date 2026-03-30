@@ -105,6 +105,10 @@ class PopupProfileController:
             active = canvas._build_profile_data(
                 canvas.profile_pts,
                 color=getattr(canvas, "_active_profile_color", "#fbc02d"),
+                lw=getattr(canvas, "_active_profile_lw", 2.0),
+                line_style=getattr(canvas, "_active_profile_line_style", "-"),
+                marker_style=getattr(canvas, "_active_profile_marker_style", "o"),
+                marker_size=getattr(canvas, "_active_profile_marker_size", 7.0),
                 view=canvas.views[0] if canvas.views else None,
             )
         except Exception:
@@ -117,6 +121,10 @@ class PopupProfileController:
                     data = canvas._build_profile_data(
                         entry.get("pts"),
                         color=entry.get("color"),
+                        lw=entry.get("lw"),
+                        line_style=entry.get("line_style"),
+                        marker_style=entry.get("marker_style"),
+                        marker_size=entry.get("marker_size"),
                         view=canvas.views[0] if canvas.views else None,
                     )
                 if data:
@@ -126,7 +134,127 @@ class PopupProfileController:
         return active, saved
 
     # ------------------------------------------------------------------
+    def _build_dialog_callbacks(self):
+        """Mirror the main profile-dialog callbacks for popup canvases."""
+        canvas = self.canvas
+        activate_cb = None
+        if canvas is not None and hasattr(canvas, "activate_saved_profile"):
+            def _activate(idx):
+                try:
+                    if canvas.activate_saved_profile(idx):
+                        return True
+                except Exception:
+                    pass
+                return False
+
+            activate_cb = _activate
+
+        highlight_cb = None
+        if canvas is not None and hasattr(canvas, "highlight_saved_profile"):
+            def _highlight(idx):
+                try:
+                    canvas.highlight_saved_profile(idx)
+                    return True
+                except Exception:
+                    return False
+
+            highlight_cb = _highlight
+
+        marker_select_cb = None
+        if canvas is not None and hasattr(canvas, "set_profile_marker_key"):
+            def _marker_select(idx):
+                try:
+                    canvas.set_profile_marker_key(idx)
+                except Exception:
+                    pass
+
+            marker_select_cb = _marker_select
+
+        delete_cb = None
+        if canvas is not None and hasattr(canvas, "remove_saved_profile"):
+            def _delete(idx):
+                try:
+                    return canvas.remove_saved_profile(idx)
+                except Exception:
+                    return False
+
+            delete_cb = _delete
+
+        add_overlay_cb = None
+        if canvas is not None and hasattr(canvas, "snapshot_active_profile"):
+            def _add_overlay():
+                try:
+                    canvas.snapshot_active_profile()
+                except Exception:
+                    pass
+
+            add_overlay_cb = _add_overlay
+
+        label_scale_cb = None
+        if canvas is not None and hasattr(canvas, "set_profile_label_scale"):
+            label_scale_cb = canvas.set_profile_label_scale
+
+        marker_update_cb = None
+        if canvas is not None and hasattr(canvas, "set_profile_marker_positions"):
+            def _marker_update(positions, domain):
+                try:
+                    canvas.set_profile_marker_positions(positions, domain=domain, emit=False)
+                except Exception:
+                    pass
+
+            marker_update_cb = _marker_update
+
+        style_update_cb = None
+        if canvas is not None and hasattr(canvas, "set_profile_style"):
+            def _style_update(profile_key, **changes):
+                try:
+                    return canvas.set_profile_style(profile_key, **changes)
+                except Exception:
+                    return False
+
+            style_update_cb = _style_update
+
+        palette_cb = None
+        if canvas is not None and hasattr(canvas, "apply_profile_palette"):
+            def _palette_update(name):
+                try:
+                    return canvas.apply_profile_palette(name)
+                except Exception:
+                    return False
+
+            palette_cb = _palette_update
+
+        return (
+            activate_cb,
+            highlight_cb,
+            delete_cb,
+            add_overlay_cb,
+            label_scale_cb,
+            marker_update_cb,
+            marker_select_cb,
+            style_update_cb,
+            palette_cb,
+        )
+
+    # ------------------------------------------------------------------
     def _ensure_profile_dialog(self, active, saved):
+        (
+            activate_cb,
+            highlight_cb,
+            delete_cb,
+            add_overlay_cb,
+            label_scale_cb,
+            marker_update_cb,
+            marker_select_cb,
+            style_update_cb,
+            palette_cb,
+        ) = self._build_dialog_callbacks()
+        if saved and hasattr(self.canvas, "set_show_profile_overlays"):
+            try:
+                if not bool(getattr(self.canvas, "_show_profile_overlays", True)):
+                    self.canvas.set_show_profile_overlays(True)
+            except Exception:
+                pass
         dlg = self._dialog
         if dlg is None:
             unit = None
@@ -137,7 +265,22 @@ class PopupProfileController:
                 y_label = view.get("colorbar_label") or view.get("unit")
             except Exception:
                 pass
-            dlg = ProfileDialog(active, saved, parent=self.owner, unit=unit, y_label=y_label)
+            dlg = ProfileDialog(
+                active,
+                saved,
+                parent=self.owner,
+                unit=unit,
+                y_label=y_label,
+                activate_overlay_callback=activate_cb,
+                highlight_overlay_callback=highlight_cb,
+                label_scale_callback=label_scale_cb,
+                delete_overlay_callback=delete_cb,
+                marker_update_callback=marker_update_cb,
+                marker_select_callback=marker_select_cb,
+                add_overlay_callback=add_overlay_cb,
+                style_update_callback=style_update_cb,
+                palette_callback=palette_cb,
+            )
             dlg.setWindowTitle(f"{self.title} (popup)")
             try:
                 dlg.set_context_source(
@@ -152,7 +295,28 @@ class PopupProfileController:
             dlg.finished.connect(lambda _=None: self._clear_dialog())
             self._dialog = dlg
         else:
-            dlg.update_profiles(active, saved)
+            if hasattr(dlg, "set_label_scale_callback"):
+                dlg.set_label_scale_callback(label_scale_cb)
+            if hasattr(dlg, "set_marker_update_callback"):
+                dlg.set_marker_update_callback(marker_update_cb)
+            if hasattr(dlg, "set_marker_select_callback"):
+                dlg.set_marker_select_callback(marker_select_cb)
+            if hasattr(dlg, "set_add_overlay_callback"):
+                dlg.set_add_overlay_callback(add_overlay_cb)
+            if hasattr(dlg, "set_delete_overlay_callback"):
+                dlg.set_delete_overlay_callback(delete_cb)
+            else:
+                dlg._delete_overlay_cb = delete_cb
+            if hasattr(dlg, "set_style_update_callback"):
+                dlg.set_style_update_callback(style_update_cb)
+            if hasattr(dlg, "set_palette_callback"):
+                dlg.set_palette_callback(palette_cb)
+            dlg.update_profiles(
+                active,
+                saved,
+                activate_overlay_callback=activate_cb,
+                highlight_overlay_callback=highlight_cb,
+            )
         dlg.show()
         self._dock_dialog_near_canvas(dlg)
         try:
