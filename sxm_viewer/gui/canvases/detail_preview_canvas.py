@@ -2609,11 +2609,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self.profile_enabled = enable
         if enable:
             self._connect_profile_events()
-            self._ensure_profile_artists()
-            try:
-                self._emit_profile()
-            except Exception:
-                pass
+            if self.profile_pts is not None:
+                self._ensure_profile_artists()
+                try:
+                    self._emit_profile()
+                except Exception:
+                    pass
         else:
             self._disconnect_profile_events()
             self._clear_profile_artists()
@@ -2700,23 +2701,9 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.main_ax is None:
             return
         if self._profile_line is None:
-            # initialize points centered if not set
             if self.profile_pts is None:
-                try:
-                    v0 = self.views[0]
-                    arr = np.asarray(v0['arr'])
-                    h, w = arr.shape
-                    if v0.get('extent') is None:
-                        x0 = w*0.25; y0 = h*0.5; x1 = w*0.75; y1 = h*0.5
-                    else:
-                        xmin, xmax, ymin, ymax = v0['extent'][0], v0['extent'][1], v0['extent'][2], v0['extent'][3]
-                        # our code sets extent as [0, XRange, YRange, 0], so choose a centered horizontal line
-                        x0 = xmin + 0.25*(xmax - xmin); x1 = xmin + 0.75*(xmax - xmin)
-                        y0 = ymax + 0.5*(ymin - ymax); y1 = y0
-                except Exception:
-                    x0 = 0.25; x1 = 0.75; y0 = y1 = 0.5
-                self._set_profile_pts((x0, y0, x1, y1))
-            x0, y0, x1, y1 = self.profile_pts or (x0, y0, x1, y1)
+                return
+            x0, y0, x1, y1 = self.profile_pts
             self._set_profile_pts((x0, y0, x1, y1))
             x0, y0, x1, y1 = self.profile_pts
             color = self._active_profile_color
