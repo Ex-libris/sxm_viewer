@@ -168,10 +168,10 @@ class SessionController:
         else:
             session_path = Path(session_path)
         try:
-            record_recent = getattr(viewer, "_record_recent_session_dir", None)
+            record_recent = getattr(viewer, "_record_recent_session", None)
             if callable(record_recent):
                 try:
-                    record_recent(session_path.parent)
+                    record_recent(session_path)
                 except Exception:
                     pass
             self._set_session_activity(

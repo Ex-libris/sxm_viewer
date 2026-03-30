@@ -40,7 +40,7 @@ from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
 
 RECENT_FOLDER_LIMIT = 30
-RECENT_SESSION_FOLDER_LIMIT = 30
+RECENT_SESSION_LIMIT = 30
 from ..data.spectroscopy import is_matrix_file_entry
 from ..processing.filters import (
     flatten_remove_median,
@@ -160,15 +160,16 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.recent_dirs.append(str(Path(entry)))
             except Exception:
                 continue
-        raw_session_recents = self.config.get("recent_session_dirs", [])
-        self.recent_session_dirs = []
+        raw_session_recents = self.config.get("recent_session_paths", self.config.get("recent_session_dirs", []))
+        self.recent_session_paths = []
         for entry in raw_session_recents:
             if not entry:
                 continue
             try:
-                self.recent_session_dirs.append(str(Path(entry)))
+                self.recent_session_paths.append(str(Path(entry)))
             except Exception:
                 continue
+        self._normalize_recent_session_history(persist=True)
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
         default_cmap = "Blues_r"
         thumb_cfg = self.config.get("thumbnail_cmap")
@@ -2893,49 +2894,113 @@ QLabel:hover {{
             if menu is None:
                 continue
             menu.clear()
-            recents = getattr(self, "recent_session_dirs", [])
+            recents = getattr(self, "recent_session_paths", [])
             if not recents:
-                act = menu.addAction("No recent session folders")
+                act = menu.addAction("No recent sessions")
                 act.setEnabled(False)
                 continue
             for path in recents:
-                act = menu.addAction(path)
-                act.setToolTip(path)
+                try:
+                    session_path = Path(path)
+                except Exception:
+                    session_path = Path(str(path))
+                act = menu.addAction(str(session_path))
+                act.setToolTip(str(session_path))
                 act.triggered.connect(
-                    lambda checked=False, p=path: self.on_load_session_from_dir(Path(p))
+                    lambda checked=False, p=str(session_path): self.on_load_recent_session(Path(p))
                 )
             menu.addSeparator()
-            clear_act = menu.addAction("Clear recent session folders")
+            clear_act = menu.addAction("Clear recent sessions")
             clear_act.triggered.connect(self._clear_recent_session_dirs)
 
-    def _record_recent_session_dir(self, folder: Path):
-        folder_path = Path(folder)
-        folder_str = str(folder_path)
+    def _normalize_recent_session_history(self, persist=False):
         recents = []
-        for p in getattr(self, "recent_session_dirs", []):
+        has_session_file = False
+        for p in getattr(self, "recent_session_paths", []):
             if not p:
                 continue
             try:
-                if Path(p).resolve() == folder_path.resolve():
+                candidate = Path(p)
+            except Exception:
+                continue
+            if str(candidate) not in recents:
+                recents.append(str(candidate))
+            try:
+                if candidate.suffix.lower() == ".json":
+                    has_session_file = True
+            except Exception:
+                pass
+        if has_session_file:
+            recents = [p for p in recents if Path(p).suffix.lower() == ".json"]
+        recents = recents[:RECENT_SESSION_LIMIT]
+        changed = recents != list(getattr(self, "recent_session_paths", []))
+        self.recent_session_paths = recents
+        if persist and changed:
+            self.config["recent_session_paths"] = self.recent_session_paths
+            self.config.pop("recent_session_dirs", None)
+            save_config(self.config)
+        return changed
+
+    def _record_recent_session(self, session_path: Path):
+        session_path = Path(session_path)
+        session_str = str(session_path)
+        recents = []
+        for p in getattr(self, "recent_session_paths", []):
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() == session_path.resolve():
                     continue
             except Exception:
-                if p == folder_str:
+                if p == session_str:
                     continue
             recents.append(p)
-        recents.insert(0, folder_str)
-        self.recent_session_dirs = recents[:RECENT_SESSION_FOLDER_LIMIT]
-        self.config["recent_session_dirs"] = self.recent_session_dirs
+        recents.insert(0, session_str)
+        self.recent_session_paths = recents[:RECENT_SESSION_LIMIT]
+        self._normalize_recent_session_history(persist=False)
+        self.config["recent_session_paths"] = self.recent_session_paths
+        self.config.pop("recent_session_dirs", None)
         save_config(self.config)
         self._refresh_recent_session_dirs_menu()
 
     def _clear_recent_session_dirs(self):
-        self.recent_session_dirs = []
-        self.config["recent_session_dirs"] = []
+        self.recent_session_paths = []
+        self.config["recent_session_paths"] = []
+        self.config.pop("recent_session_dirs", None)
         save_config(self.config)
         self._refresh_recent_session_dirs_menu()
 
-    def on_load_session_from_dir(self, folder: Path):
-        self.session_controller.load_session(start_dir=Path(folder))
+    def _resolve_recent_session_target(self, session_path: Path):
+        session_path = Path(session_path)
+        if session_path.is_file():
+            return session_path
+        if not session_path.is_dir():
+            return None
+        preferred = session_path / "sxm_session.json"
+        if preferred.exists():
+            return preferred
+        try:
+            json_files = sorted(
+                (p for p in session_path.glob("*.json") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            json_files = []
+        if json_files:
+            return json_files[0]
+        return None
+
+    def on_load_recent_session(self, session_path: Path):
+        session_path = Path(session_path)
+        resolved = self._resolve_recent_session_target(session_path)
+        if resolved is not None:
+            self.session_controller.load_session(session_path=resolved)
+            return
+        if session_path.exists() and session_path.is_dir():
+            self.session_controller.load_session(start_dir=session_path)
+            return
+        self.session_controller.load_session(session_path=session_path)
 
     def _on_recent_molecules_updated(self, paths):
         """Persist recent molecule file paths to config (up to 8)."""
