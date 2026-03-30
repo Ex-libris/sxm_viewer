@@ -400,6 +400,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.set_histogram_dialog_callback(lambda c: owner._open_histogram_dialog(c))
     canvas.set_histogram_auto_callback(lambda c: owner._auto_contrast(c))
     canvas.set_histogram_reset_callback(lambda c: owner._reset_contrast(c))
+    canvas.set_compare_menu_callback(
+        lambda action, view, c=canvas: owner.on_compare_menu_action(action, view, c),
+        state_cb=owner.compare_menu_state,
+    )
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_window_minimize_callback(owner.on_minimize_popouts)
