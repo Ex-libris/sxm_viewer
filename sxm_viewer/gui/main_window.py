@@ -334,6 +334,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
         self.spectro_compare_controller = SpectroCompareController(self)
+        from .controllers.image_compare import ImageCompareController
+
+        self.image_compare_controller = ImageCompareController(self)
         self.thumb_multi_select = set()
         self.spectro_thumb_multi_select = set()
         self.current_spectro_thumb_files = []
@@ -1043,6 +1046,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
         self.preview_canvas.set_histogram_auto_callback(lambda c: self._auto_contrast(c))
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
+        self.preview_canvas.set_compare_menu_callback(
+            lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
+            state_cb=self.compare_menu_state,
+        )
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_window_minimize_callback(self.on_minimize_popouts)
@@ -4307,6 +4314,19 @@ QLabel:hover {{
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.close_tracked_popups()
+
+    def compare_menu_state(self):
+        """Expose transient A/B compare-slot state for preview context menus."""
+        controller = getattr(self, "image_compare_controller", None)
+        if controller:
+            return controller.menu_state()
+        return {}
+
+    def on_compare_menu_action(self, action, view, canvas=None):
+        """Route preview compare-menu actions through the shared image compare controller."""
+        controller = getattr(self, "image_compare_controller", None)
+        if controller:
+            controller.handle_menu_action(action, view, canvas=canvas)
 
     def _view_source_path(self, view):
         if not view:

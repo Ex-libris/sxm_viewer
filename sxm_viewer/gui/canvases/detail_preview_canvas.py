@@ -146,6 +146,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_popup_style_callback = None
         self._apply_popup_style_label = "Apply this style to all pop-ups"
         self._apply_popup_style_tooltip = ""
+        self._compare_menu_callback = None
+        self._compare_menu_state_callback = None
         self._stp_export_callback = None
         self._arrange_windows_callback = None
         self._minimize_windows_callback = None
@@ -203,6 +205,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_highlight_cb = None
         self._profile_label_scale = 1.0
         self._profile_label_mode = "length"
+        self._measurement_shortcuts_enabled = True
         self._view_font_scale = 1.0
         self._font_family = normalize_font_family(matplotlib.rcParams.get("font.family", [None])[0], "sans-serif")
         self._plot_font_bold = bool(getattr(parent, "_plot_font_bold", False))
@@ -350,6 +353,10 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_angle_tool_enabled(self, enabled: bool):
         self.enable_angle(bool(enabled))
+
+    def set_measurement_shortcuts_enabled(self, enabled: bool):
+        """Enable or disable Ctrl-based quick profile/angle shortcuts for this canvas."""
+        self._measurement_shortcuts_enabled = bool(enabled)
 
     def clear_measurement_overlays(self):
         try:
@@ -614,6 +621,11 @@ class MultiPreviewCanvas(FigureCanvas):
         if label:
             self._apply_popup_style_label = str(label)
         self._apply_popup_style_tooltip = str(tooltip or "")
+
+    def set_compare_menu_callback(self, cb, state_cb=None):
+        """Register compare-menu handlers used to populate A/B view comparisons from right-clicks."""
+        self._compare_menu_callback = cb
+        self._compare_menu_state_callback = state_cb
 
     def set_stp_export_callback(self, cb):
         """Register callback for WSxM STP export requests."""
@@ -4597,6 +4609,7 @@ class MultiPreviewCanvas(FigureCanvas):
         quick_profile = (
             event.button == 1
             and ax is self.main_ax
+            and bool(getattr(self, "_measurement_shortcuts_enabled", True))
             and bool(mods_qt & QtCore.Qt.ControlModifier)
             and not bool(mods_qt & QtCore.Qt.AltModifier)
             and not bool(mods_qt & QtCore.Qt.ShiftModifier)
@@ -4604,6 +4617,7 @@ class MultiPreviewCanvas(FigureCanvas):
         quick_angle = (
             event.button == 1
             and ax is self.main_ax
+            and bool(getattr(self, "_measurement_shortcuts_enabled", True))
             and bool(mods_qt & QtCore.Qt.ControlModifier)
             and bool(mods_qt & QtCore.Qt.AltModifier)
             and not bool(mods_qt & QtCore.Qt.ShiftModifier)
@@ -5189,6 +5203,9 @@ class MultiPreviewCanvas(FigureCanvas):
         angle_tool_act = quick_menu.addAction("Angle tool  (Ctrl+Alt+Click)")
         angle_tool_act.setCheckable(True)
         angle_tool_act.setChecked(bool(self.angle_enabled))
+        if not bool(getattr(self, "_measurement_shortcuts_enabled", True)):
+            profile_tool_act.setEnabled(False)
+            angle_tool_act.setEnabled(False)
         quick_menu.addSeparator()
         edit_crop_frame_act = quick_menu.addAction("Edit crop frame")
         edit_crop_frame_act.setCheckable(True)
@@ -5341,6 +5358,40 @@ class MultiPreviewCanvas(FigureCanvas):
                 act.setToolTip(p)
                 recent_actions[act] = p
         clear_mols_act = molecules_menu.addAction("Clear Molecules")
+
+        compare_set_a_act = None
+        compare_set_b_act = None
+        compare_with_a_act = None
+        compare_with_b_act = None
+        compare_open_act = None
+        compare_swap_act = None
+        compare_clear_act = None
+        if callable(self._compare_menu_callback) and view is not None:
+            compare_state = {}
+            if callable(self._compare_menu_state_callback):
+                try:
+                    compare_state = dict(self._compare_menu_state_callback() or {})
+                except Exception:
+                    compare_state = {}
+            compare_menu = menu.addMenu("Compare")
+            label_a = str(compare_state.get("label_a") or "Empty")
+            label_b = str(compare_state.get("label_b") or "Empty")
+            compare_menu.setToolTip(f"A: {label_a}\nB: {label_b}")
+            compare_set_a_act = compare_menu.addAction("Set This View as Compare A")
+            compare_set_a_act.setToolTip(f"Current A: {label_a}")
+            compare_set_b_act = compare_menu.addAction("Set This View as Compare B")
+            compare_set_b_act.setToolTip(f"Current B: {label_b}")
+            compare_menu.addSeparator()
+            compare_with_a_act = compare_menu.addAction("Compare A with This")
+            compare_with_a_act.setEnabled(bool(compare_state.get("has_a")))
+            compare_with_b_act = compare_menu.addAction("Compare B with This")
+            compare_with_b_act.setEnabled(bool(compare_state.get("has_b")))
+            compare_open_act = compare_menu.addAction("Open A/B Comparison")
+            compare_open_act.setEnabled(bool(compare_state.get("has_a")) and bool(compare_state.get("has_b")))
+            compare_swap_act = compare_menu.addAction("Swap A and B")
+            compare_swap_act.setEnabled(bool(compare_state.get("has_a")) and bool(compare_state.get("has_b")))
+            compare_clear_act = compare_menu.addAction("Clear Compare Selection")
+            compare_clear_act.setEnabled(bool(compare_state.get("has_a")) or bool(compare_state.get("has_b")))
 
         view_menu = menu.addMenu("View")
         reset_zoom_act = view_menu.addAction("Reset Zoom")
@@ -5501,6 +5552,41 @@ class MultiPreviewCanvas(FigureCanvas):
             self.add_molecule(recent_actions[chosen])
         elif chosen == clear_mols_act:
             self._clear_molecules()
+        elif compare_set_a_act and chosen == compare_set_a_act:
+            try:
+                self._compare_menu_callback("set_a", view, self)
+            except Exception:
+                pass
+        elif compare_set_b_act and chosen == compare_set_b_act:
+            try:
+                self._compare_menu_callback("set_b", view, self)
+            except Exception:
+                pass
+        elif compare_with_a_act and chosen == compare_with_a_act:
+            try:
+                self._compare_menu_callback("compare_with_a", view, self)
+            except Exception:
+                pass
+        elif compare_with_b_act and chosen == compare_with_b_act:
+            try:
+                self._compare_menu_callback("compare_with_b", view, self)
+            except Exception:
+                pass
+        elif compare_open_act and chosen == compare_open_act:
+            try:
+                self._compare_menu_callback("open_compare", view, self)
+            except Exception:
+                pass
+        elif compare_swap_act and chosen == compare_swap_act:
+            try:
+                self._compare_menu_callback("swap_compare", view, self)
+            except Exception:
+                pass
+        elif compare_clear_act and chosen == compare_clear_act:
+            try:
+                self._compare_menu_callback("clear_compare", view, self)
+            except Exception:
+                pass
         elif arrange_act and chosen == arrange_act:
             try:
                 self._arrange_windows_callback()
