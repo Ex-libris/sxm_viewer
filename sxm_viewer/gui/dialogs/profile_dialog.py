@@ -118,6 +118,7 @@ from ..thumbnail_render import (
     save_wsxm_xyz,
 )
 from ..canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
+from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle, list_color_cycles
 from .profile_data import axis_label, format_marker_delta, format_stats_text, fmt_length
 
 class ProfileDialog(QtWidgets.QDialog):
@@ -126,7 +127,8 @@ class ProfileDialog(QtWidgets.QDialog):
                  activate_overlay_callback=None, highlight_overlay_callback=None,
                  label_scale_callback=None, delete_overlay_callback=None,
                  marker_update_callback=None, marker_select_callback=None,
-                 add_overlay_callback=None, dark_mode=False):
+                 add_overlay_callback=None, style_update_callback=None,
+                 palette_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
         self.setWindowFlags(
@@ -163,6 +165,9 @@ class ProfileDialog(QtWidgets.QDialog):
         self._marker_update_cb = marker_update_callback
         self._marker_key_cb = marker_select_callback
         self._add_overlay_cb = add_overlay_callback
+        self._style_update_cb = style_update_callback
+        self._palette_cb = palette_callback
+        self._profile_palette_name = DEFAULT_COLOR_CYCLE
         self._marker_syncing = False
         self._marker_positions_by_key = {}
         self._marker_domain_by_key = {}
@@ -336,8 +341,10 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.profile_list.setAlternatingRowColors(True)
         self.profile_list.setUniformItemSizes(True)
+        self.profile_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.profile_list.itemDoubleClicked.connect(self._on_profile_item_activated)
         self.profile_list.currentItemChanged.connect(self._on_profile_item_selected)
+        self.profile_list.customContextMenuRequested.connect(self._on_profile_list_context_menu)
         info_layout.addWidget(QtWidgets.QLabel("Profiles"))
         info_layout.addWidget(self.profile_list, 1)
         btn_layout = QtWidgets.QHBoxLayout()
@@ -377,6 +384,12 @@ class ProfileDialog(QtWidgets.QDialog):
         self._delete_shortcut.activated.connect(self._delete_selected_profile)
         self._delete_shortcut_back = QtWidgets.QShortcut(QtGui.QKeySequence("Backspace"), self)
         self._delete_shortcut_back.activated.connect(self._delete_selected_profile)
+        self._delete_list_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Delete"), self.profile_list)
+        self._delete_list_shortcut.setContext(QtCore.Qt.WidgetShortcut)
+        self._delete_list_shortcut.activated.connect(self._delete_selected_profile)
+        self._delete_list_shortcut_back = QtWidgets.QShortcut(QtGui.QKeySequence("Backspace"), self.profile_list)
+        self._delete_list_shortcut_back.setContext(QtCore.Qt.WidgetShortcut)
+        self._delete_list_shortcut_back.activated.connect(self._delete_selected_profile)
         self._context_source = None
         self._context_syncing = False
         self._preserve_cb = None
@@ -385,6 +398,51 @@ class ProfileDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         copy_png = menu.addAction("Copy plot (PNG)")
         copy_svg = menu.addAction("Copy plot (SVG)")
+        menu.addSeparator()
+        target_idx = self._selected_overlay_index()
+        target_active = target_idx is None
+        style_target = "Active profile" if target_active else f"Overlay {int(target_idx) + 1}"
+        style_menu = menu.addMenu(f"Style {style_target}")
+        pick_color_act = style_menu.addAction("Pick color...")
+        width_menu = style_menu.addMenu("Line thickness")
+        width_actions = {}
+        current_lw = self._profile_value(target_idx, "lw", 1.5 if not target_active else 2.0)
+        for width in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0):
+            act = width_menu.addAction(f"{width:.1f} pt")
+            act.setCheckable(True)
+            act.setChecked(abs(float(current_lw) - width) < 1e-6)
+            width_actions[act] = width
+        line_menu = style_menu.addMenu("Line style")
+        line_actions = {}
+        current_line_style = self._profile_value(target_idx, "line_style", "-" if target_active else "--")
+        for label, value in (("Solid", "-"), ("Dashed", "--"), ("Dotted", ":"), ("Dash-dot", "-."), ("None", "None")):
+            act = line_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(str(current_line_style) == value)
+            line_actions[act] = value
+        marker_menu = style_menu.addMenu("Marker shape")
+        marker_actions = {}
+        current_marker = self._profile_value(target_idx, "marker_style", "o")
+        for label, value in (("Circle", "o"), ("Square", "s"), ("Triangle", "^"), ("Diamond", "D"), ("Plus", "+"), ("Cross", "x"), ("Star", "*"), ("None", "None")):
+            act = marker_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(str(current_marker) == value)
+            marker_actions[act] = value
+        marker_size_menu = style_menu.addMenu("Marker size")
+        marker_size_actions = {}
+        current_marker_size = self._profile_value(target_idx, "marker_size", 7.0 if target_active else 5.0)
+        for size in (3.0, 5.0, 7.0, 9.0, 12.0):
+            act = marker_size_menu.addAction(f"{size:.0f} pt")
+            act.setCheckable(True)
+            act.setChecked(abs(float(current_marker_size) - size) < 1e-6)
+            marker_size_actions[act] = size
+        palette_menu = menu.addMenu("Apply Color Palette")
+        palette_actions = {}
+        for name in list_color_cycles():
+            act = palette_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == self._profile_palette_name)
+            palette_actions[act] = name
         add_font_menu_action(
             menu,
             self,
@@ -398,6 +456,76 @@ class ProfileDialog(QtWidgets.QDialog):
             self._copy_plot("png")
         elif action == copy_svg:
             self._copy_plot("svg")
+        elif action == pick_color_act:
+            current = QtGui.QColor(self._profile_value(target_idx, "color", "#fbc02d"))
+            picked = QtWidgets.QColorDialog.getColor(current, self, f"Select color for {style_target}")
+            if picked.isValid():
+                self._apply_profile_style_change(target_idx, color=picked.name())
+        elif action in width_actions:
+            self._apply_profile_style_change(target_idx, lw=width_actions[action])
+        elif action in line_actions:
+            self._apply_profile_style_change(target_idx, line_style=line_actions[action])
+        elif action in marker_actions:
+            self._apply_profile_style_change(target_idx, marker_style=marker_actions[action])
+        elif action in marker_size_actions:
+            self._apply_profile_style_change(target_idx, marker_size=marker_size_actions[action])
+        elif action in palette_actions:
+            self._apply_palette_change(palette_actions[action])
+
+    def _on_profile_list_context_menu(self, pos):
+        self._on_context_menu(self.canvas.mapFromGlobal(self.profile_list.viewport().mapToGlobal(pos)))
+
+    def _profile_value(self, profile_key, field, default=None):
+        if profile_key is None:
+            dataset = self._active or {}
+        elif 0 <= int(profile_key) < len(self._saved):
+            dataset = self._saved[int(profile_key)] or {}
+        else:
+            dataset = {}
+        return dataset.get(field, default)
+
+    def _apply_profile_style_change(self, profile_key, **changes):
+        updated = False
+        if callable(self._style_update_cb):
+            try:
+                updated = bool(self._style_update_cb(profile_key, **changes))
+            except Exception:
+                updated = False
+        target = self._active if profile_key is None else (self._saved[int(profile_key)] if 0 <= int(profile_key) < len(self._saved) else None)
+        if target is not None:
+            target.update(changes)
+            updated = True or updated
+        if updated:
+            current = profile_key
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+            self.select_overlay(current)
+
+    def _apply_palette_change(self, palette_name):
+        colors = get_color_cycle(palette_name)
+        if not colors:
+            return
+        if callable(self._palette_cb):
+            try:
+                self._palette_cb(palette_name)
+            except Exception:
+                pass
+        self._profile_palette_name = palette_name
+        color_iter = iter(colors)
+        if self._active is not None:
+            self._active["color"] = next(color_iter, colors[0])
+        for idx, entry in enumerate(self._saved):
+            entry["color"] = colors[(idx + 1) % len(colors)]
+        self.update_profiles(
+            self._active,
+            self._saved,
+            activate_overlay_callback=self._activate_overlay_cb,
+            highlight_overlay_callback=self._highlight_overlay_cb,
+        )
 
     def _font_style_state(self):
         return {
@@ -1199,9 +1327,6 @@ class ProfileDialog(QtWidgets.QDialog):
         show_points = bool(self.show_points_cb.isChecked()) if hasattr(self, 'show_points_cb') else False
         show_lines = bool(self.show_lines_cb.isChecked()) if hasattr(self, 'show_lines_cb') else True
         precision_mode = bool(self.precision_cb.isChecked()) if hasattr(self, 'precision_cb') else False
-        marker_style = 'o' if show_points else None
-        line_style = '-' if show_lines else 'None'
-        marker_size = 3.0 if show_points else None
         marker_alpha = 0.55 if show_points else 1.0
         line_alpha_active = 0.9 if show_lines else marker_alpha
         line_alpha_overlay = 0.65 if show_lines else marker_alpha
@@ -1222,8 +1347,15 @@ class ProfileDialog(QtWidgets.QDialog):
             if x is None or y is None:
                 continue
             color = data.get('color') or ('#ffd54f' if is_active else '#80cbc4')
-            lw = 1.5 if is_active else 1.0
+            lw = float(data.get('lw') or (1.5 if is_active else 1.0))
             alpha = line_alpha_active if is_active else line_alpha_overlay
+            style_line = data.get('line_style') or ('-' if is_active else '--')
+            if not show_lines or str(style_line).lower() == 'none':
+                style_line = 'None'
+            style_marker = data.get('marker_style') or 'o'
+            if not show_points or str(style_marker).lower() == 'none':
+                style_marker = None
+            marker_size = float(data.get('marker_size') or (3.5 if is_active else 3.0)) if style_marker else None
             
             # Determine axis
             target_ax = self.ax
@@ -1241,10 +1373,10 @@ class ProfileDialog(QtWidgets.QDialog):
 
             line, = target_ax.plot(
                 x, y, color=color, lw=lw, label=label,
-                linestyle=line_style, marker=marker_style, markersize=marker_size,
-                markeredgewidth=0.9 if show_points else 0.0,
-                markerfacecolor='none' if show_points else color,
-                markeredgecolor=color if show_points else 'none',
+                linestyle=style_line, marker=style_marker, markersize=marker_size,
+                markeredgewidth=0.9 if style_marker else 0.0,
+                markerfacecolor='none' if style_marker else color,
+                markeredgecolor=color if style_marker else 'none',
                 markevery=1,
                 alpha=alpha,
             )
@@ -1367,6 +1499,12 @@ class ProfileDialog(QtWidgets.QDialog):
 
     def set_delete_overlay_callback(self, cb):
         self._delete_overlay_cb = cb
+
+    def set_style_update_callback(self, cb):
+        self._style_update_cb = cb
+
+    def set_palette_callback(self, cb):
+        self._palette_cb = cb
 
     def set_marker_positions(self, positions, domain=None):
         if self._marker_syncing:

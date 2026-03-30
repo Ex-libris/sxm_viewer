@@ -266,6 +266,8 @@ def _ensure_display_menu(viewer):
     load_session_act = viewer.display_menu.addAction("Load session...")
     load_session_act.setToolTip("Restore a previously saved viewer session")
     load_session_act.triggered.connect(viewer.on_load_session)
+    viewer.load_session_recent_menu = viewer.display_menu.addMenu("Recent session folders")
+    viewer._refresh_recent_session_dirs_menu()
     arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
     arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
     arrange_act.triggered.connect(viewer.on_arrange_popouts)

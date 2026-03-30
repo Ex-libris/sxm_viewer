@@ -75,9 +75,19 @@ def create_main_toolbar(viewer):
 
     viewer.toolbar_open_act = toolbar.addAction(_icon("folder-open"), "Open folder")
     viewer.toolbar_open_act.triggered.connect(viewer.open_folder_dialog)
-    viewer.toolbar_load_session_act = toolbar.addAction(_icon("document-open"), "Load Session")
+    viewer.toolbar_load_session_act = QtWidgets.QAction(_icon("document-open"), "Load Session", viewer)
     viewer.toolbar_load_session_act.setToolTip("Restore a saved SXM viewer session")
     viewer.toolbar_load_session_act.triggered.connect(viewer.on_load_session)
+    viewer.toolbar_load_session_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_load_session_btn.setDefaultAction(viewer.toolbar_load_session_act)
+    viewer.toolbar_load_session_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+    viewer.toolbar_load_session_menu = QtWidgets.QMenu(viewer.toolbar_load_session_btn)
+    viewer.toolbar_load_session_btn.setMenu(viewer.toolbar_load_session_menu)
+    toolbar.addWidget(viewer.toolbar_load_session_btn)
+    try:
+        viewer._refresh_recent_session_dirs_menu()
+    except Exception:
+        pass
     viewer.toolbar_save_session_act = toolbar.addAction(_icon("document-save"), "Save Session")
     viewer.toolbar_save_session_act.setToolTip("Save the current SXM viewer session")
     viewer.toolbar_save_session_act.triggered.connect(viewer.on_save_session)

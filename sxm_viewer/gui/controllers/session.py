@@ -152,18 +152,28 @@ class SessionController:
             QtWidgets.QMessageBox.warning(viewer, "Save session", f"Unable to save session: {exc}")
 
     # ------------------------------------------------------------------
-    def load_session(self):
+    def load_session(self, start_dir=None, session_path=None):
         viewer = self.viewer
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            viewer,
-            "Load session",
-            str(Path(getattr(viewer, "last_dir", "."))),
-            "SXM Session (*.json)",
-        )
-        if not path:
-            return
-        session_path = Path(path)
+        if session_path is None:
+            start_path = Path(start_dir) if start_dir is not None else Path(getattr(viewer, "last_dir", "."))
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                viewer,
+                "Load session",
+                str(start_path),
+                "SXM Session (*.json)",
+            )
+            if not path:
+                return
+            session_path = Path(path)
+        else:
+            session_path = Path(session_path)
         try:
+            record_recent = getattr(viewer, "_record_recent_session_dir", None)
+            if callable(record_recent):
+                try:
+                    record_recent(session_path.parent)
+                except Exception:
+                    pass
             self._set_session_activity(
                 "Opening session...",
                 detail=session_path.name,

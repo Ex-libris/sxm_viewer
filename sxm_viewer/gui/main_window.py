@@ -157,6 +157,15 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.recent_dirs.append(str(Path(entry)))
             except Exception:
                 continue
+        raw_session_recents = self.config.get("recent_session_dirs", [])
+        self.recent_session_dirs = []
+        for entry in raw_session_recents:
+            if not entry:
+                continue
+            try:
+                self.recent_session_dirs.append(str(Path(entry)))
+            except Exception:
+                continue
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
         default_cmap = "Blues_r"
         thumb_cfg = self.config.get("thumbnail_cmap")
@@ -394,6 +403,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_export_png_act = None
         self.toolbar_export_xyz_act = None
         self.toolbar_load_session_act = None
+        self.toolbar_load_session_btn = None
+        self.toolbar_load_session_menu = None
         self.toolbar_save_session_act = None
         self.toolbar_popups_btn = None
         self.toolbar_popups_menu = None
@@ -2860,6 +2871,50 @@ QLabel:hover {{
         self.config["recent_dirs"] = self.recent_dirs
         save_config(self.config)
         self._refresh_recent_dirs_menu()
+
+    def _refresh_recent_session_dirs_menu(self):
+        menus = [
+            getattr(self, "load_session_recent_menu", None),
+            getattr(self, "toolbar_load_session_menu", None),
+        ]
+        for menu in menus:
+            if menu is None:
+                continue
+            menu.clear()
+            recents = getattr(self, "recent_session_dirs", [])
+            if not recents:
+                act = menu.addAction("No recent session folders")
+                act.setEnabled(False)
+                continue
+            for path in recents:
+                act = menu.addAction(path)
+                act.setToolTip(path)
+                act.triggered.connect(
+                    lambda checked=False, p=path: self.on_load_session_from_dir(Path(p))
+                )
+
+    def _record_recent_session_dir(self, folder: Path):
+        folder_path = Path(folder)
+        folder_str = str(folder_path)
+        recents = []
+        for p in getattr(self, "recent_session_dirs", []):
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() == folder_path.resolve():
+                    continue
+            except Exception:
+                if p == folder_str:
+                    continue
+            recents.append(p)
+        recents.insert(0, folder_str)
+        self.recent_session_dirs = recents[:10]
+        self.config["recent_session_dirs"] = self.recent_session_dirs
+        save_config(self.config)
+        self._refresh_recent_session_dirs_menu()
+
+    def on_load_session_from_dir(self, folder: Path):
+        self.session_controller.load_session(start_dir=Path(folder))
 
     def _on_recent_molecules_updated(self, paths):
         """Persist recent molecule file paths to config (up to 8)."""

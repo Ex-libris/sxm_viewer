@@ -105,6 +105,10 @@ class PopupProfileController:
             active = canvas._build_profile_data(
                 canvas.profile_pts,
                 color=getattr(canvas, "_active_profile_color", "#fbc02d"),
+                lw=getattr(canvas, "_active_profile_lw", 2.0),
+                line_style=getattr(canvas, "_active_profile_line_style", "-"),
+                marker_style=getattr(canvas, "_active_profile_marker_style", "o"),
+                marker_size=getattr(canvas, "_active_profile_marker_size", 7.0),
                 view=canvas.views[0] if canvas.views else None,
             )
         except Exception:
@@ -117,6 +121,10 @@ class PopupProfileController:
                     data = canvas._build_profile_data(
                         entry.get("pts"),
                         color=entry.get("color"),
+                        lw=entry.get("lw"),
+                        line_style=entry.get("line_style"),
+                        marker_style=entry.get("marker_style"),
+                        marker_size=entry.get("marker_size"),
                         view=canvas.views[0] if canvas.views else None,
                     )
                 if data:
@@ -196,6 +204,26 @@ class PopupProfileController:
 
             marker_update_cb = _marker_update
 
+        style_update_cb = None
+        if canvas is not None and hasattr(canvas, "set_profile_style"):
+            def _style_update(profile_key, **changes):
+                try:
+                    return canvas.set_profile_style(profile_key, **changes)
+                except Exception:
+                    return False
+
+            style_update_cb = _style_update
+
+        palette_cb = None
+        if canvas is not None and hasattr(canvas, "apply_profile_palette"):
+            def _palette_update(name):
+                try:
+                    return canvas.apply_profile_palette(name)
+                except Exception:
+                    return False
+
+            palette_cb = _palette_update
+
         return (
             activate_cb,
             highlight_cb,
@@ -204,6 +232,8 @@ class PopupProfileController:
             label_scale_cb,
             marker_update_cb,
             marker_select_cb,
+            style_update_cb,
+            palette_cb,
         )
 
     # ------------------------------------------------------------------
@@ -216,6 +246,8 @@ class PopupProfileController:
             label_scale_cb,
             marker_update_cb,
             marker_select_cb,
+            style_update_cb,
+            palette_cb,
         ) = self._build_dialog_callbacks()
         if saved and hasattr(self.canvas, "set_show_profile_overlays"):
             try:
@@ -246,6 +278,8 @@ class PopupProfileController:
                 marker_update_callback=marker_update_cb,
                 marker_select_callback=marker_select_cb,
                 add_overlay_callback=add_overlay_cb,
+                style_update_callback=style_update_cb,
+                palette_callback=palette_cb,
             )
             dlg.setWindowTitle(f"{self.title} (popup)")
             try:
@@ -273,6 +307,10 @@ class PopupProfileController:
                 dlg.set_delete_overlay_callback(delete_cb)
             else:
                 dlg._delete_overlay_cb = delete_cb
+            if hasattr(dlg, "set_style_update_callback"):
+                dlg.set_style_update_callback(style_update_cb)
+            if hasattr(dlg, "set_palette_callback"):
+                dlg.set_palette_callback(palette_cb)
             dlg.update_profiles(
                 active,
                 saved,
