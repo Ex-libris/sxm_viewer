@@ -943,51 +943,10 @@ def _make_thumb_move_handler(viewer, label_widget):
         start = label_widget.property("drag_start")
         if start is not None and event.buttons() & QtCore.Qt.LeftButton and not dragging:
             if (event.pos() - start).manhattanLength() >= 10:
-                fp = label_widget.property("file_path")
-                ch_idx = int(label_widget.property("channel_index"))
-                cmap = viewer.preview_cmap_combo.currentText() or viewer.preview_cmap
-                selected = set(getattr(viewer, "thumb_multi_select", set()) or [])
-                # Always include the current drag origin in the payload and respect any existing selection,
-                # so users don't need to keep modifiers pressed while starting the drag.
-                if selected:
-                    selected.add(str(fp))
-                    payload = {
-                        "items": sorted(selected),
-                        "channel_index": ch_idx,
-                        "cmap": cmap,
-                    }
-                else:
-                    payload = {
-                        "file_path": fp,
-                        "channel_index": ch_idx,
-                        "cmap": cmap,
-                    }
-                if hasattr(viewer, "_ensure_canvas_for_drag"):
-                    viewer._ensure_canvas_for_drag()
-                drag_parent = label_widget
-                try:
-                    if isinstance(viewer, QtWidgets.QWidget):
-                        drag_parent = viewer
-                except Exception:
-                    pass
-                if sip.isdeleted(drag_parent):
-                    drag_parent = label_widget
-                drag = QtGui.QDrag(drag_parent)
-                mime = QtCore.QMimeData()
-                try:
-                    mime.setData("application/x-sxm-view", json.dumps(payload).encode("utf-8"))
-                except Exception:
-                    pass
-                pix = label_widget.pixmap()
-                if pix is not None:
-                    mime.setImageData(pix.toImage())
-                    drag.setPixmap(pix)
-                drag.setMimeData(mime)
-                if not _safe_set_property(label_widget, "dragging", True):
-                    return
-                drag.exec_(QtCore.Qt.CopyAction)
-                _safe_set_property(label_widget, "dragging", False)
-                _safe_set_property(label_widget, "drag_start", None)
+                # Thumbnail drag-to-canvas is intentionally disabled.
+                # Keep the movement threshold so a drag gesture does not
+                # fall through into a normal click on release.
+                _safe_set_property(label_widget, "dragging", True)
                 return
         if not viewer._handle_spec_hover(label_widget, event):
             QtWidgets.QLabel.mouseMoveEvent(label_widget, event)
