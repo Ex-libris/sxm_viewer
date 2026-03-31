@@ -185,6 +185,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_state_syncing = False
         self._profile_state_deferred = False
         self._profile_user_enabled = False
+        self._profile_quick_transient = False
         self._profile_update_timer = QtCore.QTimer(self)
         self._profile_update_timer.setSingleShot(True)
         self._profile_update_timer.setInterval(50)
@@ -353,6 +354,40 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._emit_profile()
             except Exception:
                 pass
+
+    def deactivate_profile_tool(self, *, clear_active: bool = True, clear_saved: bool = False):
+        """Disable profile interaction while optionally preserving saved overlays."""
+        self._profile_user_enabled = False
+        self._profile_quick_transient = False
+        if self.profile_enabled:
+            try:
+                self._disconnect_profile_events()
+            except Exception:
+                pass
+        self.profile_enabled = False
+        if clear_active:
+            try:
+                self._clear_profile_artists()
+            except Exception:
+                pass
+            self.profile_pts = None
+            self._active_profile_original_color = None
+            self._profile_marker_positions = None
+            self._profile_marker_domain = None
+            try:
+                self._clear_profile_hud()
+            except Exception:
+                pass
+        if clear_saved:
+            try:
+                self._clear_saved_profile_artists(notify=False)
+            except Exception:
+                pass
+        try:
+            self._emit_profile_state()
+        except Exception:
+            pass
+        self.draw_idle()
 
     def set_angle_tool_enabled(self, enabled: bool):
         self.enable_angle(bool(enabled))
@@ -4607,6 +4642,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._profile_state_deferred:
             self._profile_state_deferred = False
             self._flush_profile_state()
+        if getattr(self, "_profile_quick_transient", False):
+            self.deactivate_profile_tool(clear_active=False, clear_saved=False)
 
     def _profile_animation_artists(self):
         artists = [
@@ -4994,6 +5031,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 was_enabled = bool(self.profile_enabled)
                 if not self.profile_enabled:
                     self.set_profile_tool_enabled(True)
+                    self._profile_quick_transient = True
                 if not was_enabled:
                     # Start the first profile drag immediately when the tool
                     # is activated via Ctrl+Click.

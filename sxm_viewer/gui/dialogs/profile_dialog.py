@@ -175,6 +175,15 @@ class ProfileDialog(QtWidgets.QDialog):
         self._last_saved_count = 0
         self._toggle_buttons = []
         self._advanced_controls_visible = False
+        self._legend_visible = True
+        self._legend_loc = 'upper right'
+        self._legend_fontsize = 8.0
+        self._legend_frame_fill_visible = True
+        self._legend_outline_visible = True
+        self._legend_outline_width = 1.0
+        self._legend_custom_anchor = None
+        self._legend_artist = None
+        self._legend_drag = None
         owner = self.parent()
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
@@ -399,6 +408,55 @@ class ProfileDialog(QtWidgets.QDialog):
         copy_png = menu.addAction("Copy plot (PNG)")
         copy_svg = menu.addAction("Copy plot (SVG)")
         menu.addSeparator()
+        legend = self.ax.get_legend()
+        legend_menu = menu.addMenu("Legend")
+        show_legend_act = legend_menu.addAction("Show legend")
+        show_legend_act.setCheckable(True)
+        show_legend_act.setChecked(bool(self._legend_visible))
+        font_menu = legend_menu.addMenu("Font size")
+        font_actions = {}
+        for size in (7.0, 8.0, 9.0, 10.0, 12.0, 14.0):
+            act = font_menu.addAction(f"{size:.0f} pt")
+            act.setCheckable(True)
+            act.setChecked(abs(float(self._legend_fontsize) - size) < 1e-6)
+            font_actions[act] = size
+        pos_menu = legend_menu.addMenu("Position")
+        pos_actions = {}
+        for label, value in (
+            ("Upper right", "upper right"),
+            ("Upper left", "upper left"),
+            ("Lower right", "lower right"),
+            ("Lower left", "lower left"),
+            ("Upper center", "upper center"),
+            ("Lower center", "lower center"),
+            ("Center right", "center right"),
+            ("Center left", "center left"),
+            ("Center", "center"),
+        ):
+            act = pos_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self._legend_custom_anchor is None and self._legend_loc == value)
+            pos_actions[act] = value
+        legend_menu.addSeparator()
+        frame_fill_act = legend_menu.addAction("Fill background")
+        frame_fill_act.setCheckable(True)
+        frame_fill_act.setChecked(bool(self._legend_frame_fill_visible))
+        outline_act = legend_menu.addAction("Show outline")
+        outline_act.setCheckable(True)
+        outline_act.setChecked(bool(self._legend_outline_visible))
+        outline_width_menu = legend_menu.addMenu("Outline thickness")
+        outline_width_actions = {}
+        for width in (0.5, 1.0, 1.5, 2.0, 3.0):
+            act = outline_width_menu.addAction(f"{width:.1f} pt")
+            act.setCheckable(True)
+            act.setChecked(abs(float(self._legend_outline_width) - width) < 1e-6)
+            outline_width_actions[act] = width
+        reset_drag_act = legend_menu.addAction("Reset dragged position")
+        reset_drag_act.setEnabled(self._legend_custom_anchor is not None)
+        if legend is not None:
+            legend_menu.addSeparator()
+            drag_hint_act = legend_menu.addAction("Drag legend with left mouse")
+            drag_hint_act.setEnabled(False)
         target_idx = self._selected_overlay_index()
         target_active = target_idx is None
         style_target = "Active profile" if target_active else f"Overlay {int(target_idx) + 1}"
@@ -456,6 +514,48 @@ class ProfileDialog(QtWidgets.QDialog):
             self._copy_plot("png")
         elif action == copy_svg:
             self._copy_plot("svg")
+        elif action == show_legend_act:
+            self._legend_visible = bool(show_legend_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action in font_actions:
+            self._legend_fontsize = float(font_actions[action])
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action in pos_actions:
+            self._legend_loc = pos_actions[action]
+            self._legend_custom_anchor = None
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == frame_fill_act:
+            self._legend_frame_fill_visible = bool(frame_fill_act.isChecked())
+            self._apply_plot_theme()
+        elif action == outline_act:
+            self._legend_outline_visible = bool(outline_act.isChecked())
+            self._apply_plot_theme()
+        elif action in outline_width_actions:
+            self._legend_outline_width = float(outline_width_actions[action])
+            self._apply_plot_theme()
+        elif action == reset_drag_act:
+            self._legend_custom_anchor = None
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
         elif action == pick_color_act:
             current = QtGui.QColor(self._profile_value(target_idx, "color", "#fbc02d"))
             picked = QtWidgets.QColorDialog.getColor(current, self, f"Select color for {style_target}")
@@ -740,6 +840,7 @@ class ProfileDialog(QtWidgets.QDialog):
             title = self.ax.get_title()
             if title:
                 apply_text_style(self.ax.title, family=self._plot_font_family, **style)
+            self._apply_legend_style()
         except Exception:
             pass
         for widget in (self.stats, self.marker_info):
@@ -1144,6 +1245,25 @@ class ProfileDialog(QtWidgets.QDialog):
         return None
 
     def _on_marker_press(self, event):
+        legend = self.ax.get_legend()
+        if (
+            event is not None
+            and event.button == 1
+            and event.inaxes is self.ax
+            and legend is not None
+            and legend.get_visible()
+        ):
+            try:
+                renderer = self.canvas.figure.canvas.get_renderer()
+                bbox = legend.get_window_extent(renderer=renderer)
+                if bbox.contains(event.x, event.y):
+                    self._legend_drag = (
+                        float(event.x - bbox.x0),
+                        float(event.y - bbox.y1),
+                    )
+                    return
+            except Exception:
+                pass
         if not self._markers_enabled:
             return
         if event.button != 1:
@@ -1175,6 +1295,20 @@ class ProfileDialog(QtWidgets.QDialog):
         self.canvas.draw_idle()
 
     def _on_marker_move(self, event):
+        if self._legend_drag is not None:
+            if event.inaxes is not self.ax or event.x is None or event.y is None:
+                return
+            try:
+                dx, dy = self._legend_drag
+                top_left_display = (float(event.x - dx), float(event.y - dy))
+                anchor = self.ax.transAxes.inverted().transform(top_left_display)
+                self._legend_custom_anchor = (float(anchor[0]), float(anchor[1]))
+                self._legend_loc = 'upper left'
+                self._apply_legend_style()
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
         if not self._markers_enabled:
             return
         if self._marker_drag_idx is None and self._marker_arrow_drag is None:
@@ -1210,6 +1344,7 @@ class ProfileDialog(QtWidgets.QDialog):
             self.canvas.draw_idle()
 
     def _on_marker_release(self, event):
+        self._legend_drag = None
         if not self._markers_enabled:
             return
         self._marker_drag_idx = None
@@ -1406,9 +1541,24 @@ class ProfileDialog(QtWidgets.QDialog):
                 self.ax.tick_params(which='minor', length=2.0, width=0.5, color='#6b6b6b')
             except Exception:
                 pass
-        if len(datasets) > 1:
+        if len(datasets) > 1 and self._legend_visible:
             try:
-                self.ax.legend(fontsize=8, loc='upper right')
+                legend_kwargs = {
+                    "fontsize": self._legend_fontsize * getattr(self, "_font_scale", 1.0),
+                    "loc": self._legend_loc,
+                }
+                if self._legend_custom_anchor is not None:
+                    legend_kwargs["loc"] = "upper left"
+                    legend_kwargs["bbox_to_anchor"] = self._legend_custom_anchor
+                    legend_kwargs["bbox_transform"] = self.ax.transAxes
+                self.ax.legend(**legend_kwargs)
+            except Exception:
+                pass
+        else:
+            try:
+                existing = self.ax.get_legend()
+                if existing is not None:
+                    existing.remove()
             except Exception:
                 pass
         self._apply_plot_theme()
@@ -1559,6 +1709,33 @@ class ProfileDialog(QtWidgets.QDialog):
         self._dark_background = bool(self.dark_bg_cb.isChecked())
         self._apply_plot_theme()
 
+    def _apply_legend_style(self):
+        legend = self.ax.get_legend()
+        self._legend_artist = legend
+        if legend is None:
+            return
+        dark = bool(self._dark_background)
+        ax_face = '#14161c' if dark else '#ffffff'
+        text = '#f5f5f5' if dark else '#111111'
+        try:
+            legend.set_visible(bool(self._legend_visible))
+            if self._legend_custom_anchor is not None:
+                legend.set_bbox_to_anchor(self._legend_custom_anchor, transform=self.ax.transAxes)
+                legend._loc = 2  # upper left
+            else:
+                legend.set_bbox_to_anchor(None)
+            frame = legend.get_frame()
+            frame.set_facecolor(ax_face if self._legend_frame_fill_visible else ax_face)
+            frame.set_alpha(0.88 if self._legend_frame_fill_visible else 0.0)
+            frame.set_linewidth(float(self._legend_outline_width))
+            frame.set_edgecolor(text if self._legend_outline_visible else 'none')
+            for txt in legend.get_texts():
+                txt.set_color(text)
+                txt.set_fontsize(self._legend_fontsize * getattr(self, '_font_scale', 1.0))
+                apply_text_style(txt, family=self._plot_font_family, **self._font_style_state())
+        except Exception:
+            pass
+
     def _apply_plot_theme(self):
         dark = bool(self._dark_background)
         fig_face = '#111217' if dark else '#ffffff'
@@ -1588,15 +1765,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 self.ax.grid(False)
         except Exception:
             pass
-        legend = self.ax.get_legend()
-        if legend is not None:
-            try:
-                legend.get_frame().set_facecolor(ax_face)
-                legend.get_frame().set_edgecolor(text)
-                for txt in legend.get_texts():
-                    txt.set_color(text)
-            except Exception:
-                pass
+        self._apply_legend_style()
         self._apply_toggle_button_styles()
         if self._marker_positions and len(self._marker_positions) >= 2:
             self._update_marker_annotation(abs(self._marker_positions[1] - self._marker_positions[0]))
