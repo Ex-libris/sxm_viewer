@@ -1,6 +1,5 @@
 """Enhanced canvas window with modern UI/UX and polished aesthetics."""
 from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 import math
@@ -1163,6 +1162,21 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             )
             if item is not None:
                 group[kind] = item
+        if group:
+            shared_width = None
+            for item in group.values():
+                try:
+                    width = float(item.get_canvas_width())
+                except Exception:
+                    width = None
+                if width is not None:
+                    shared_width = width if shared_width is None else max(shared_width, width)
+            if shared_width is not None:
+                for item in group.values():
+                    try:
+                        item.set_canvas_width(shared_width)
+                    except Exception:
+                        continue
         return group if group else None
 
     def _find_kind_channel_indices(self, fds: list) -> dict:

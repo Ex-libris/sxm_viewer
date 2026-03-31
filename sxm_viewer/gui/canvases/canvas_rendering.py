@@ -106,7 +106,7 @@ def _normalize_extent(extent):
     return (x0, x1, ymin, ymax)
 
 
-def _draw_molecules(ax, molecules, palette):
+def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
     if not molecules:
         return
     try:
@@ -124,9 +124,23 @@ def _draw_molecules(ax, molecules, palette):
         if coords is None or len(coords) == 0:
             continue
 
-        xs = np.asarray(coords[:, 0], dtype=float)
-        ys = np.asarray(coords[:, 1], dtype=float)
-        zs = np.asarray(coords[:, 2], dtype=float) if coords.shape[1] >= 3 else np.zeros(len(coords))
+        xs_full = np.asarray(coords[:, 0], dtype=float)
+        ys_full = np.asarray(coords[:, 1], dtype=float)
+        zs_full = np.asarray(coords[:, 2], dtype=float) if coords.shape[1] >= 3 else np.zeros(len(coords))
+        xs = xs_full
+        ys = ys_full
+        zs = zs_full
+        if not show_hydrogens:
+            keep = np.array([(str(el).strip().upper() != "H") for el in getattr(mol, "elements", [])], dtype=bool)
+            if keep.size == len(xs) and np.any(keep):
+                xs = xs[keep]
+                ys = ys[keep]
+                zs = zs[keep]
+                elements = [el for el, k in zip(getattr(mol, "elements", []), keep) if k]
+            else:
+                elements = list(getattr(mol, "elements", []))
+        else:
+            elements = list(getattr(mol, "elements", []))
         order = np.argsort(zs)
         display_mode = str(getattr(mol, "display_mode", "Atoms + Bonds") or "Atoms + Bonds").lower()
         bond_color = getattr(mol, "bond_color_override", None) or "#e8edf4"
@@ -137,7 +151,12 @@ def _draw_molecules(ax, molecules, palette):
             for bond in getattr(mol, "bonds", []) or []:
                 try:
                     i, j = int(bond[0]), int(bond[1])
-                    ax.plot([xs[i], xs[j]], [ys[i], ys[j]], color=bond_color, linewidth=line_width, alpha=0.85, zorder=5)
+                    if not show_hydrogens:
+                        ei = (mol.elements[i] if i < len(mol.elements) else "") or ""
+                        ej = (mol.elements[j] if j < len(mol.elements) else "") or ""
+                        if str(ei).strip().upper() == "H" or str(ej).strip().upper() == "H":
+                            continue
+                    ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85, zorder=5)
                 except Exception:
                     continue
 
@@ -146,7 +165,7 @@ def _draw_molecules(ax, molecules, palette):
 
         for idx in order:
             try:
-                element = (mol.elements[idx] if idx < len(mol.elements) else "C") or "C"
+                element = (elements[idx] if idx < len(elements) else "C") or "C"
                 color = getattr(mol, "atom_color_override", None) or get_atom_color(element, palette)
                 radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
                 radius *= float(getattr(mol, "scale", 0.1)) * float(getattr(mol, "radius_scale", 1.0))
@@ -191,6 +210,7 @@ def render_tile_figure_mpl(
     show_molecules=False,
     molecules=None,
     molecule_palette="pymol",
+    show_hydrogens=True,
 ):
     """Build a Matplotlib figure for a canvas tile, including annotations."""
     import matplotlib
@@ -236,9 +256,12 @@ def render_tile_figure_mpl(
         extra_tick_margin = min(0.18, max(0.06, (tick_fs * 2.2) / max(1.0, height_px)))
     top_margin = 0.98 - (extra_tick_margin if normalized_position == "top" else 0.0)
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=frame_color or "#070707")
+    side_margin = 0.02
+    if rendered_colorbar and show_colorbar_ticks and normalized_position in ("top", "bottom"):
+        side_margin = min(0.12, max(0.055, (tick_fs * 1.7) / max(1.0, width_px)))
     fig.subplots_adjust(
-        left=0.0,
-        right=1.0,
+        left=side_margin,
+        right=1.0 - side_margin,
         top=top_margin,
         bottom=bottom_margin + (extra_tick_margin if normalized_position == "bottom" else 0.0),
     )
@@ -393,7 +416,7 @@ def render_tile_figure_mpl(
                 pass
 
     if show_molecules and molecules:
-        _draw_molecules(ax, molecules, molecule_palette)
+        _draw_molecules(ax, molecules, molecule_palette, show_hydrogens=show_hydrogens)
 
     overlay_lines = []
     if show_overlay_main and overlay_main:
@@ -479,6 +502,7 @@ def render_tile_mpl(
     show_molecules=False,
     molecules=None,
     molecule_palette="pymol",
+    show_hydrogens=True,
 ):
     """Render a canvas tile through Matplotlib, including annotations."""
     import matplotlib
@@ -519,6 +543,7 @@ def render_tile_mpl(
         show_molecules=show_molecules,
         molecules=molecules,
         molecule_palette=molecule_palette,
+        show_hydrogens=show_hydrogens,
     )
     canvas = FigureCanvasAgg(fig)
     canvas.draw()

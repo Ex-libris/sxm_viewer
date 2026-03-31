@@ -1331,9 +1331,11 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
                 self._colorbars.append(cbar)
             title = v.get('title', '')
-            if title:
+            if title and self._show_title:
                 ax.set_title(title, fontsize=9)
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
+            else:
+                ax.set_title("")
             ax.tick_params(labelsize=8)
             for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
                 apply_text_style(lbl, family=self._font_family, **self._plot_style_state())

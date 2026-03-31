@@ -5,7 +5,7 @@ import io
 
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame
-from .molecular_overlay import Molecule
+from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color
 
 
 def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
@@ -148,7 +148,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             | QtWidgets.QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
-        self.setAcceptedMouseButtons(QtCore.Qt.LeftButton | QtCore.Qt.RightButton)
+        self.setAcceptedMouseButtons(QtCore.Qt.LeftButton | QtCore.Qt.RightButton | QtCore.Qt.MiddleButton)
         self._arr = np.asarray(arr)
         self._cmap = cmap
         self._title = title
@@ -166,8 +166,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._show_colorbar = True
         self._show_colorbar_ticks = True
         self._canvas_width = float(canvas_width)
-        self._full_dpi = 200
-        self._fast_dpi = 96
+        self._full_dpi = 320
+        self._fast_dpi = 180
         self._fast_render = False
         self._colorbar_width = 16
         self._colorbar_mode = "bottom"
@@ -210,6 +210,15 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._molecule_state: list[dict] = []
         self._show_molecules = False
         self._molecule_palette = "pymol"
+        self._show_hydrogens = True
+        self._molecule_drag_idx: int | None = None
+        self._molecule_drag_mode: str | None = None
+        self._molecule_drag_start_data: tuple[float, float] | None = None
+        self._molecule_drag_start_scene: QtCore.QPointF | None = None
+        self._molecule_drag_start_offset = None
+        self._molecule_drag_start_angles = None
+        self._molecule_history: list[list[dict]] = []
+        self._molecule_props_dialog = None
         self._refresh_metadata_text()
         self._render_pending = True
         self._render_now()
@@ -374,6 +383,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             show_molecules=self._show_molecules,
             molecules=self._molecule_state,
             molecule_palette=self._molecule_palette,
+            show_hydrogens=self._show_hydrogens,
         )
         self.prepareGeometryChange()
         self._rendered_pixmap = pixmap
@@ -525,6 +535,26 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             self._resize_start_canvas_width = self._canvas_width
             event.accept()
             return
+        mol_idx = self._molecule_hit(event.pos())
+        if mol_idx is not None and event.button() in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton):
+            molecules = self._molecule_objects()
+            if 0 <= mol_idx < len(molecules):
+                data_pos = self._local_to_data(event.pos())
+                if data_pos is not None:
+                    self._push_molecule_snapshot()
+                    self._molecule_drag_idx = mol_idx
+                    self._molecule_drag_start_data = data_pos
+                    self._molecule_drag_start_scene = event.scenePos()
+                    self._molecule_drag_start_offset = molecules[mol_idx].offset.copy()
+                    self._molecule_drag_start_angles = molecules[mol_idx].angles.copy()
+                    if event.button() == QtCore.Qt.MiddleButton or (event.modifiers() & QtCore.Qt.ControlModifier and event.modifiers() & QtCore.Qt.ShiftModifier):
+                        self._molecule_drag_mode = "rotate_3d"
+                    elif event.modifiers() & QtCore.Qt.ShiftModifier:
+                        self._molecule_drag_mode = "rotate_z"
+                    else:
+                        self._molecule_drag_mode = "translate"
+                    event.accept()
+                    return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -535,6 +565,38 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
                 self._alt_duplicated = True
                 event.accept()
                 return
+
+        if self._molecule_drag_idx is not None:
+            molecules = self._molecule_objects()
+            if 0 <= self._molecule_drag_idx < len(molecules):
+                mol = molecules[self._molecule_drag_idx]
+                if self._molecule_drag_mode == "translate":
+                    data_pos = self._local_to_data(event.pos())
+                    if data_pos is not None and self._molecule_drag_start_data is not None and self._molecule_drag_start_offset is not None:
+                        dx = data_pos[0] - self._molecule_drag_start_data[0]
+                        dy = data_pos[1] - self._molecule_drag_start_data[1]
+                        mol.offset = self._molecule_drag_start_offset + np.array([dx, dy, 0.0], dtype=float)
+                elif self._molecule_drag_mode == "rotate_z":
+                    data_pos = self._local_to_data(event.pos())
+                    if data_pos is not None and self._molecule_drag_start_data is not None and self._molecule_drag_start_offset is not None and self._molecule_drag_start_angles is not None:
+                        center = self._molecule_drag_start_offset
+                        v_start = np.array([self._molecule_drag_start_data[0] - center[0], self._molecule_drag_start_data[1] - center[1]], dtype=float)
+                        v_now = np.array([data_pos[0] - center[0], data_pos[1] - center[1]], dtype=float)
+                        if np.linalg.norm(v_start) > 1e-6 and np.linalg.norm(v_now) > 1e-6:
+                            a0 = np.arctan2(v_start[1], v_start[0])
+                            a1 = np.arctan2(v_now[1], v_now[0])
+                            mol.angles = self._molecule_drag_start_angles.copy()
+                            mol.angles[2] += float(np.degrees(a1 - a0))
+                elif self._molecule_drag_mode == "rotate_3d":
+                    if self._molecule_drag_start_scene is not None and self._molecule_drag_start_angles is not None:
+                        dx = event.scenePos().x() - self._molecule_drag_start_scene.x()
+                        dy = event.scenePos().y() - self._molecule_drag_start_scene.y()
+                        mol.angles = self._molecule_drag_start_angles.copy()
+                        mol.angles[0] += dy * 0.45
+                        mol.angles[1] += dx * 0.45
+                self._store_molecule_objects(molecules)
+            event.accept()
+            return
         
         if self._resizing and self._resize_origin is not None:
             delta = event.pos() - self._resize_origin
@@ -554,6 +616,19 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     def mouseReleaseEvent(self, event):
         if hasattr(self, '_alt_duplicated'):
             delattr(self, '_alt_duplicated')
+
+        if self._molecule_drag_idx is not None:
+            self._molecule_drag_idx = None
+            self._molecule_drag_mode = None
+            self._molecule_drag_start_data = None
+            self._molecule_drag_start_scene = None
+            self._molecule_drag_start_offset = None
+            self._molecule_drag_start_angles = None
+            event.accept()
+            if self._parent_window is not None:
+                self._parent_window._persist_item_molecules(self)
+                self._parent_window._push_undo_state()
+            return
         
         if self._resizing:
             self._resizing = False
@@ -573,6 +648,11 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             self._parent_window._push_undo_state()
 
     def contextMenuEvent(self, event):
+        mol_idx = self._molecule_hit(event.pos())
+        if mol_idx is not None:
+            self._show_molecule_menu(event.screenPos(), mol_idx)
+            event.accept()
+            return
         menu = QtWidgets.QMenu()
 
         duplicate_action = menu.addAction("Duplicate")
@@ -854,7 +934,8 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             "text_scale": self._fixed_text_scale_value if self._use_fixed_text_scale else None,
             "show_molecules": self._show_molecules,
             "molecule_palette": self._molecule_palette,
-            "molecule_state": [dict(entry) for entry in (self._molecule_state or [])],
+            "molecule_state": self.export_molecule_state(),
+            "show_hydrogens": self._show_hydrogens,
         }
 
     def apply_state(self, state: dict):
@@ -874,6 +955,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self.set_show_molecules(state.get("show_molecules", self._show_molecules))
         self.set_molecule_palette(state.get("molecule_palette", self._molecule_palette))
         self.set_molecule_state(state.get("molecule_state") or [])
+        self._show_hydrogens = bool(state.get("show_hydrogens", self._show_hydrogens))
         self.set_colorbar_mode(state.get("colorbar_mode", self._colorbar_mode))
         self._kind = state.get("kind", self._kind)
         canvas_width = state.get("canvas_width")
@@ -974,6 +1056,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             mol = Molecule(path)
         except Exception:
             return False
+        try:
+            if self._extent and len(self._extent) == 4:
+                x0, x1, y1, y0 = [float(v) for v in self._extent]
+                mol.offset = np.array([(x0 + x1) / 2.0, (y0 + y1) / 2.0, 0.0], dtype=float)
+        except Exception:
+            pass
         payload = self.export_molecule_state()
         payload.append(mol.to_dict())
         self._molecule_state = payload
@@ -991,6 +1079,207 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
     def set_molecule_palette(self, palette: str):
         self._molecule_palette = str(palette or "pymol").lower()
         self._update_rendered_pixmap()
+
+    def _push_molecule_snapshot(self):
+        snap = self.export_molecule_state()
+        self._molecule_history.append(snap)
+        if len(self._molecule_history) > 20:
+            self._molecule_history = self._molecule_history[-20:]
+
+    def undo_last_molecule_change(self) -> bool:
+        if not self._molecule_history:
+            return False
+        self.set_molecule_state(self._molecule_history.pop())
+        return True
+
+    def _image_rect(self) -> QtCore.QRectF:
+        width, height = self._tile_image_size()
+        x = 0.0
+        y = 0.0
+        if self._show_colorbar and self._colorbar_mode == "left":
+            x += self._colorbar_thickness() + self._colorbar_padding_x
+        if self._show_colorbar and self._colorbar_mode == "top":
+            y += self._colorbar_thickness() + self._colorbar_pad_y
+        return QtCore.QRectF(x, y, width, height)
+
+    def _normalized_extent(self):
+        if not self._extent or len(self._extent) != 4:
+            return None
+        try:
+            x0, x1, y1, y0 = [float(v) for v in self._extent]
+        except Exception:
+            return None
+        return float(x0), float(x1), min(float(y0), float(y1)), max(float(y0), float(y1))
+
+    def _local_to_data(self, pos: QtCore.QPointF):
+        rect = self._image_rect()
+        if not rect.contains(pos):
+            return None
+        extent = self._normalized_extent()
+        if extent is None:
+            return None
+        x0, x1, ymin, ymax = extent
+        if rect.width() <= 0 or rect.height() <= 0:
+            return None
+        fx = (pos.x() - rect.left()) / rect.width()
+        fy = (pos.y() - rect.top()) / rect.height()
+        x = x0 + fx * (x1 - x0)
+        y = ymax - fy * (ymax - ymin)
+        return float(x), float(y)
+
+    def _data_to_local(self, x: float, y: float) -> QtCore.QPointF | None:
+        rect = self._image_rect()
+        extent = self._normalized_extent()
+        if extent is None or rect.width() <= 0 or rect.height() <= 0:
+            return None
+        x0, x1, ymin, ymax = extent
+        if abs(x1 - x0) < 1e-12 or abs(ymax - ymin) < 1e-12:
+            return None
+        fx = (float(x) - x0) / (x1 - x0)
+        fy = (ymax - float(y)) / (ymax - ymin)
+        return QtCore.QPointF(rect.left() + fx * rect.width(), rect.top() + fy * rect.height())
+
+    def _molecule_objects(self):
+        objs = []
+        for entry in self._molecule_state or []:
+            try:
+                objs.append(Molecule.from_dict(entry))
+            except Exception:
+                continue
+        return objs
+
+    def _store_molecule_objects(self, molecules):
+        self._molecule_state = [mol.to_dict() for mol in (molecules or [])]
+        self._update_rendered_pixmap()
+
+    def _molecule_hit(self, pos: QtCore.QPointF):
+        if not self._show_molecules or not self._molecule_state:
+            return None
+        best = None
+        best_d2 = None
+        molecules = self._molecule_objects()
+        for mol_idx, mol in reversed(list(enumerate(molecules))):
+            try:
+                coords = mol.get_transformed_coordinates()
+            except Exception:
+                continue
+            if coords is None or len(coords) == 0:
+                continue
+            for atom_idx, coord in enumerate(coords):
+                try:
+                    if not self._show_hydrogens and atom_idx < len(mol.elements) and str(mol.elements[atom_idx]).strip().upper() == "H":
+                        continue
+                    local = self._data_to_local(coord[0], coord[1])
+                    if local is None:
+                        continue
+                    dx = local.x() - pos.x()
+                    dy = local.y() - pos.y()
+                    d2 = dx * dx + dy * dy
+                    if best_d2 is None or d2 < best_d2:
+                        best_d2 = d2
+                        best = mol_idx
+                except Exception:
+                    continue
+        if best is not None and best_d2 is not None and best_d2 <= 18.0 * 18.0:
+            return best
+        return None
+
+    def _show_molecule_menu(self, screen_pos, mol_idx: int):
+        molecules = self._molecule_objects()
+        if not (0 <= mol_idx < len(molecules)):
+            return
+        mol = molecules[mol_idx]
+        menu = QtWidgets.QMenu()
+        props_act = menu.addAction("Properties (Rotate/Scale)...")
+        show_h_act = menu.addAction("Show hydrogens")
+        show_h_act.setCheckable(True)
+        show_h_act.setChecked(self._show_hydrogens)
+        palette_menu = menu.addMenu("Palette")
+        palette_actions = {}
+        current_pal = (self._molecule_palette or "pymol").lower()
+        for pal in available_atom_palettes():
+            act = palette_menu.addAction(pal.title())
+            act.setCheckable(True)
+            act.setChecked(pal == current_pal)
+            palette_actions[act] = pal
+        menu.addSeparator()
+        dup_act = menu.addAction("Duplicate")
+        del_act = menu.addAction("Delete")
+        clear_act = menu.addAction("Clear all molecules")
+        undo_act = menu.addAction("Undo last molecule change")
+        action = menu.exec_(screen_pos)
+        if action is None:
+            return
+        if action == props_act:
+            self._open_molecule_properties(mol_idx)
+            return
+        if action == show_h_act:
+            self._show_hydrogens = show_h_act.isChecked()
+            self._update_rendered_pixmap()
+            if self._parent_window is not None:
+                self._parent_window._push_undo_state()
+            return
+        if action in palette_actions:
+            self._molecule_palette = palette_actions[action]
+            self._update_rendered_pixmap()
+            if self._parent_window is not None:
+                self._parent_window._persist_item_molecules(self)
+                self._parent_window._push_undo_state()
+            return
+        if action == dup_act:
+            self._push_molecule_snapshot()
+            clone = mol.copy()
+            clone.offset = clone.offset + np.array([0.6, 0.6, 0.0], dtype=float)
+            molecules.append(clone)
+            self._store_molecule_objects(molecules)
+        elif action == del_act:
+            self._push_molecule_snapshot()
+            del molecules[mol_idx]
+            self._store_molecule_objects(molecules)
+        elif action == clear_act:
+            self._push_molecule_snapshot()
+            self.clear_molecules()
+        elif action == undo_act:
+            self.undo_last_molecule_change()
+        else:
+            return
+        if self._parent_window is not None:
+            self._parent_window._persist_item_molecules(self)
+            self._parent_window._push_undo_state()
+
+    def _open_molecule_properties(self, mol_idx: int):
+        molecules = self._molecule_objects()
+        if not (0 <= mol_idx < len(molecules)):
+            return
+        mol = molecules[mol_idx]
+        original = mol.to_dict()
+        def _apply():
+            updated = self._molecule_objects()
+            if 0 <= mol_idx < len(updated):
+                updated[mol_idx] = mol
+                self._store_molecule_objects(updated)
+                if self._parent_window is not None:
+                    self._parent_window._persist_item_molecules(self)
+        dlg = MoleculePropertiesDialog(mol, parent=self._parent_window, callback=_apply)
+        self._molecule_props_dialog = dlg
+        dlg.finished.connect(lambda _res: self._finalize_molecule_dialog_change(original, mol_idx, mol))
+        dlg.show()
+
+    def _finalize_molecule_dialog_change(self, original_state: dict, mol_idx: int, edited_mol: Molecule):
+        try:
+            new_state = edited_mol.to_dict()
+        except Exception:
+            return
+        if new_state == original_state:
+            return
+        self._push_molecule_snapshot()
+        molecules = self._molecule_objects()
+        if 0 <= mol_idx < len(molecules):
+            molecules[mol_idx] = edited_mol
+            self._store_molecule_objects(molecules)
+            if self._parent_window is not None:
+                self._parent_window._persist_item_molecules(self)
+                self._parent_window._push_undo_state()
 
     def set_text_color_override(self, color: QtGui.QColor | None):
         self._text_color_override = color
@@ -1078,6 +1367,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             show_molecules=self._show_molecules,
             molecules=self._molecule_state,
             molecule_palette=self._molecule_palette,
+            show_hydrogens=self._show_hydrogens,
         )
 
     def _copy_svg_to_clipboard(self):
