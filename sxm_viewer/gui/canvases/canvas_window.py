@@ -65,7 +65,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._global_text_color: QtGui.QColor | None = None
         self._global_show_scale_bar = False
         self._global_scale_bar_length_nm: float | None = None
-        self._metadata_bar_default = True
+        self._metadata_bar_default = False
+        self._metadata_unit_default = True
         self._colorbar_mode = "bottom"
         self._undo_stack = []
         self._undo_index = -1
@@ -171,6 +172,21 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self.remove_btn,
         ):
             widget.setEnabled(enabled)
+
+    def _selected_canvas_items(self):
+        try:
+            return [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
+        except Exception:
+            return []
+
+    def _apply_to_canvas_items(self, fn, *, selected_only: bool = False):
+        items = self._selected_canvas_items() if selected_only else [i for i in self.scene.items() if isinstance(i, CanvasImageItem)]
+        for item in items:
+            try:
+                fn(item)
+            except Exception:
+                continue
+        return items
 
     def _on_selection_changed(self):
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
@@ -279,9 +295,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _on_scale_bar_toggled(self, checked: bool):
         self._global_show_scale_bar = bool(checked)
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_show_scale_bar(self._global_show_scale_bar)
+        self._apply_to_canvas_items(lambda item: item.set_show_scale_bar(self._global_show_scale_bar))
 
     def _on_scale_bar_size_changed(self, text: str):
         if text.lower().startswith("auto"):
@@ -322,6 +336,31 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self._sync_all_colorbars()
         self._push_undo_state()
 
+    def _on_apply_cmap_to_selected(self, name: str):
+        if not name:
+            return
+        selected = self._selected_canvas_items()
+        if not selected and self._selected_item is not None:
+            selected = [self._selected_item]
+        if not selected:
+            return
+        for item in selected:
+            item.set_cmap(name)
+            kind = item.kind or self._infer_kind_for_item(item)
+            if kind:
+                self._kind_cmap[kind] = name
+        if self._sync_colorbars:
+            self._sync_all_colorbars()
+        self._push_undo_state()
+
+    def _on_copy_cmap(self):
+        if self._selected_item is None:
+            return
+        cmap = self._selected_item.cmap
+        for item in self._selected_canvas_items():
+            item.set_cmap(cmap)
+        self._push_undo_state()
+
     def _on_range_changed(self):
         if self._selected_item is None:
             return
@@ -344,6 +383,21 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self._sync_all_colorbars()
         self._push_undo_state()
 
+    def _on_auto_range_selected(self):
+        selected = self._selected_canvas_items()
+        if not selected and self._selected_item is not None:
+            selected = [self._selected_item]
+        if not selected:
+            return
+        for item in selected:
+            item.set_range(None, None)
+        if self._selected_item in selected:
+            self.vmin_edit.setText("")
+            self.vmax_edit.setText("")
+        if self._sync_colorbars:
+            self._sync_all_colorbars()
+        self._push_undo_state()
+
     def _on_copy_range(self):
         if self._selected_item is None:
             return
@@ -353,6 +407,20 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem) and item.isSelected():
                 item.set_range(vmin, vmax)
         self._push_undo_state()
+
+    def _on_metadata_bar_toggled(self, checked: bool):
+        self._metadata_bar_default = bool(checked)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+
+    def _on_metadata_unit_toggled(self, checked: bool):
+        self._metadata_unit_default = bool(checked)
+        self._apply_to_canvas_items(lambda item: item.set_metadata_unit_visible(self._metadata_unit_default))
+
+    def _on_global_show_title_toggled(self, checked: bool):
+        self._global_show_title = bool(checked)
+        self._apply_to_canvas_items(lambda item: item.set_show_title(self._global_show_title))
 
     def _on_duplicate_item(self):
         if self._selected_item is None:
@@ -380,6 +448,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
 
     def _on_overlay_file_toggled(self, checked: bool):
         self._show_overlay_file = bool(checked)
@@ -387,6 +456,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
                 item.set_metadata_file_visible(self._show_overlay_file)
 
     def _metadata_bar_visible_default(self) -> bool:
@@ -670,9 +740,14 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         item.set_kind(kind)
         item.set_scale_info(disp_extent, axis_unit)
         item.set_overlay_text(overlay_txt, file_overlay)
+        item.set_show_title(self._global_show_title)
         item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
         item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+        item.set_metadata_unit_visible(self._metadata_unit_default)
+        item.set_metadata_file_visible(self._show_overlay_file)
+        item.set_show_colorbar(self._global_show_colorbar)
         item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
+        item.set_colorbar_mode(self._colorbar_mode)
         item._fixed_text_scale_value = self._global_text_scale
         item._use_fixed_text_scale = True
         item.set_text_color_override(self._global_text_color)
@@ -959,6 +1034,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
+                item.set_show_title(self._global_show_title)
                 item._fixed_text_scale_value = self._global_text_scale
                 item._use_fixed_text_scale = True
                 item.set_locked_text_scale(None)

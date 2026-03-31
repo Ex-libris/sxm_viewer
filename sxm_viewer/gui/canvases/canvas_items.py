@@ -17,13 +17,24 @@ def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
     actions["reset_alignment"] = menu.addAction("Reset alignment")
     menu.addSeparator()
 
-    actions["sync_ranges"] = menu.addAction("Sync ranges")
+    range_menu = menu.addMenu("Range")
+    actions["auto_range"] = range_menu.addAction("Auto range for selected")
+    actions["copy_range"] = range_menu.addAction("Copy range to selected")
+    range_menu.addSeparator()
+    actions["sync_ranges"] = range_menu.addAction("Sync ranges")
     actions["sync_ranges"].setCheckable(True)
     actions["sync_ranges"].setChecked(bool(getattr(parent, "_sync_colorbars", False)))
 
-    actions["sync_colors_by_channel"] = menu.addAction("Sync colors by channel")
+    cmap_menu = menu.addMenu("Colormap")
+    actions["copy_cmap"] = cmap_menu.addAction("Copy colormap to selected")
+    cmap_menu.addSeparator()
+    actions["sync_colors_by_channel"] = cmap_menu.addAction("Sync colors by channel")
     actions["sync_colors_by_channel"].setCheckable(True)
     actions["sync_colors_by_channel"].setChecked(bool(getattr(parent, "_sync_by_channel", False)))
+    cmap_actions = {}
+    for cmap_name in ("viridis", "plasma", "magma", "inferno", "cividis", "afmhot", "gray", "Blues_r", "RdBu_r"):
+        cmap_actions[cmap_menu.addAction(cmap_name)] = cmap_name
+    actions["cmap_actions"] = cmap_actions
 
     menu.addSeparator()
     overlay_menu = menu.addMenu("Overlay")
@@ -42,6 +53,43 @@ def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
     actions["snap_grid"].setCheckable(True)
     actions["snap_grid"].setChecked(bool(getattr(view, "_snap_to_grid", False)))
     actions["canvas_color"] = view_menu.addAction("Canvas color...")
+
+    display_menu = menu.addMenu("Display")
+    actions["show_metadata_bar"] = display_menu.addAction("Show metadata bar")
+    actions["show_metadata_bar"].setCheckable(True)
+    actions["show_metadata_bar"].setChecked(bool(getattr(parent, "_metadata_bar_default", True)))
+    actions["show_unit_badge"] = display_menu.addAction("Show unit badge")
+    actions["show_unit_badge"].setCheckable(True)
+    actions["show_unit_badge"].setChecked(bool(getattr(parent, "_metadata_unit_default", True)))
+    actions["show_title"] = display_menu.addAction("Show title")
+    actions["show_title"].setCheckable(True)
+    actions["show_title"].setChecked(bool(getattr(parent, "_global_show_title", False)))
+    display_menu.addSeparator()
+    actions["show_colorbar"] = display_menu.addAction("Show colorbar")
+    actions["show_colorbar"].setCheckable(True)
+    actions["show_colorbar"].setChecked(bool(getattr(parent, "_global_show_colorbar", True)))
+    actions["show_colorbar_ticks"] = display_menu.addAction("Show colorbar ticks")
+    actions["show_colorbar_ticks"].setCheckable(True)
+    actions["show_colorbar_ticks"].setChecked(bool(getattr(parent, "_global_show_colorbar_ticks", True)))
+    actions["show_scale_bar"] = display_menu.addAction("Show scale bar")
+    actions["show_scale_bar"].setCheckable(True)
+    actions["show_scale_bar"].setChecked(bool(getattr(parent, "_global_show_scale_bar", False)))
+    cbar_menu = display_menu.addMenu("Colorbar position")
+    cbar_position_actions = {}
+    current_mode = str(getattr(parent, "_colorbar_mode", "bottom") or "bottom")
+    for mode, label in (
+        ("bottom", "Bottom"),
+        ("top", "Top"),
+        ("left", "Left"),
+        ("right", "Right"),
+        ("inset", "Inset"),
+        ("none", "Hidden"),
+    ):
+        act = cbar_menu.addAction(label)
+        act.setCheckable(True)
+        act.setChecked(current_mode == mode)
+        cbar_position_actions[act] = mode
+    actions["cbar_position_actions"] = cbar_position_actions
 
     layout_menu = menu.addMenu("Layout")
     actions["layout_2x2"] = layout_menu.addAction("2x2")
@@ -145,6 +193,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._metadata_height = 24
         self._metadata_padding = 8
         self._metadata_bar_visible = True
+        self._metadata_unit_visible = True
         self._metadata_file_visible = False
         self._metadata_left_text = ""
         self._metadata_right_text = ""
@@ -493,24 +542,34 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         view = getattr(parent, "view", None)
         if parent is None or view is None:
             return
+        cmap_actions = canvas_actions.get("cmap_actions") or {}
+        cbar_position_actions = canvas_actions.get("cbar_position_actions") or {}
         if action == canvas_actions.get("align_selected"):
             parent._on_align_selected()
         elif action == canvas_actions.get("align_by_channel"):
             parent._on_align_by_channels()
         elif action == canvas_actions.get("reset_alignment"):
             parent._reset_locked_alignment()
+        elif action == canvas_actions.get("auto_range"):
+            parent._on_auto_range_selected()
+        elif action == canvas_actions.get("copy_range"):
+            parent._on_copy_range()
         elif action == canvas_actions.get("sync_ranges"):
             checked = canvas_actions["sync_ranges"].isChecked()
             if hasattr(parent, "sync_cbar_check"):
                 parent.sync_cbar_check.setChecked(checked)
             else:
                 parent._on_sync_colorbars_toggled(checked)
+        elif action == canvas_actions.get("copy_cmap"):
+            parent._on_copy_cmap()
         elif action == canvas_actions.get("sync_colors_by_channel"):
             checked = canvas_actions["sync_colors_by_channel"].isChecked()
             if hasattr(parent, "sync_by_channel_check"):
                 parent.sync_by_channel_check.setChecked(checked)
             else:
                 parent._on_sync_by_channel_toggled(checked)
+        elif action in cmap_actions:
+            parent._on_apply_cmap_to_selected(cmap_actions[action])
         elif action == canvas_actions.get("overlay_info"):
             checked = canvas_actions["overlay_info"].isChecked()
             if hasattr(parent, "overlay_info_check"):
@@ -537,6 +596,20 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
                 view.set_snap_to_grid(checked)
         elif action == canvas_actions.get("canvas_color"):
             parent._on_canvas_color_clicked()
+        elif action == canvas_actions.get("show_metadata_bar"):
+            parent._on_metadata_bar_toggled(canvas_actions["show_metadata_bar"].isChecked())
+        elif action == canvas_actions.get("show_unit_badge"):
+            parent._on_metadata_unit_toggled(canvas_actions["show_unit_badge"].isChecked())
+        elif action == canvas_actions.get("show_title"):
+            parent._on_global_show_title_toggled(canvas_actions["show_title"].isChecked())
+        elif action == canvas_actions.get("show_colorbar"):
+            parent._on_global_show_colorbar_toggled(canvas_actions["show_colorbar"].isChecked())
+        elif action == canvas_actions.get("show_colorbar_ticks"):
+            parent._on_global_show_colorbar_ticks_toggled(canvas_actions["show_colorbar_ticks"].isChecked())
+        elif action == canvas_actions.get("show_scale_bar"):
+            parent._on_scale_bar_toggled(canvas_actions["show_scale_bar"].isChecked())
+        elif action in cbar_position_actions:
+            parent._on_colorbar_position_changed(cbar_position_actions[action])
         elif action == canvas_actions.get("layout_2x2"):
             parent._apply_layout("2x2")
         elif action == canvas_actions.get("layout_1x3"):
@@ -586,6 +659,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._colorbar_mode = normalized
         self._update_rendered_pixmap()
 
+    def set_show_title(self, show: bool):
+        self._show_title = bool(show)
+        self._update_rendered_pixmap()
+
     def set_scale_info(self, extent, axis_unit: str | None):
         self._extent = extent
         self._axis_unit = axis_unit or ""
@@ -610,6 +687,11 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._metadata_bar_visible = bool(visible)
         self._update_rendered_pixmap()
 
+    def set_metadata_unit_visible(self, visible: bool):
+        self._metadata_unit_visible = bool(visible)
+        self._refresh_metadata_text()
+        self._update_rendered_pixmap()
+
     def set_metadata_file_visible(self, visible: bool):
         self._metadata_file_visible = bool(visible)
         self._refresh_metadata_text()
@@ -617,7 +699,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
 
     def _refresh_metadata_text(self):
         right_parts = []
-        if self._axis_unit:
+        if self._metadata_unit_visible and self._axis_unit:
             right_parts.append(self._axis_unit)
         if self._metadata_file_visible and self._overlay_file_text:
             right_parts.append(self._overlay_file_text)
@@ -654,6 +736,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             "canvas_width": self._canvas_width,
             "show_colorbar": self._show_colorbar,
             "show_colorbar_ticks": self._show_colorbar_ticks,
+            "show_title": self._show_title,
+            "show_metadata_bar": self._metadata_bar_visible,
+            "show_metadata_unit": self._metadata_unit_visible,
+            "show_metadata_file": self._metadata_file_visible,
+            "show_scale_bar": self._show_scale_bar,
+            "colorbar_mode": self._colorbar_mode,
             "kind": self._kind,
             "text_scale": self._fixed_text_scale_value if self._use_fixed_text_scale else None,
         }
@@ -667,6 +755,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self.set_range(vmin, vmax)
         self.set_show_colorbar(state.get("show_colorbar", True))
         self.set_show_colorbar_ticks(state.get("show_colorbar_ticks", True))
+        self.set_show_title(state.get("show_title", self._show_title))
+        self.set_metadata_bar_visible(state.get("show_metadata_bar", self._metadata_bar_visible))
+        self.set_metadata_unit_visible(state.get("show_metadata_unit", self._metadata_unit_visible))
+        self.set_metadata_file_visible(state.get("show_metadata_file", self._metadata_file_visible))
+        self.set_show_scale_bar(state.get("show_scale_bar", self._show_scale_bar))
+        self.set_colorbar_mode(state.get("colorbar_mode", self._colorbar_mode))
         self._kind = state.get("kind", self._kind)
         canvas_width = state.get("canvas_width")
         if canvas_width is not None:
