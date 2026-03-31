@@ -197,6 +197,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._metadata_file_visible = False
         self._metadata_left_text = ""
         self._metadata_right_text = ""
+        self._quick_chip_rects: dict[str, QtCore.QRectF] = {}
         self._refresh_metadata_text()
         self._render_pending = True
         self._render_now()
@@ -380,6 +381,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if self._rendered_pixmap is None:
             return
         painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
         bg_color = self._frame_color or QtGui.QColor("#070707")
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QBrush(bg_color))
@@ -392,6 +394,77 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             painter.setPen(pen)
             painter.setBrush(QtCore.Qt.NoBrush)
             painter.drawRect(self._rect)
+            self._draw_quick_toggle_chips(painter)
+        else:
+            self._quick_chip_rects = {}
+
+    def _chip_specs(self):
+        return [
+            ("title", "T", self._show_title, "Toggle title"),
+            ("scale", "S", self._show_scale_bar, "Toggle scale bar"),
+            ("cbar", "C", self._show_colorbar, "Toggle colorbar"),
+            ("meta", "M", self._metadata_bar_visible, "Toggle metadata bar"),
+            ("unit", "U", self._metadata_unit_visible, "Toggle unit badge"),
+            ("file", "F", self._metadata_file_visible, "Toggle filename badge"),
+        ]
+
+    def _draw_quick_toggle_chips(self, painter: QtGui.QPainter):
+        chips = self._chip_specs()
+        if not chips:
+            self._quick_chip_rects = {}
+            return
+        text_color = self._text_color_override if self._text_color_override is not None else None
+        if text_color is None or not text_color.isValid():
+            text_color = QtGui.QColor(_text_color_for_frame(self._frame_color.name() if isinstance(self._frame_color, QtGui.QColor) else "#070707"))
+        inactive_text = QtGui.QColor("#c9d1d9")
+        active_fill = QtGui.QColor("#1f6feb")
+        inactive_fill = QtGui.QColor(15, 18, 22, 210)
+        border_col = QtGui.QColor(255, 255, 255, 35)
+        chip_h = 20.0
+        chip_w = 24.0
+        gap = 4.0
+        x = 8.0
+        y = 8.0
+        self._quick_chip_rects = {}
+        font = painter.font()
+        font.setPointSizeF(max(7.5, font.pointSizeF() if font.pointSizeF() > 0 else 8.0))
+        font.setBold(True)
+        painter.setFont(font)
+        for key, label, enabled, _tip in chips:
+            rect = QtCore.QRectF(x, y, chip_w, chip_h)
+            path = QtGui.QPainterPath()
+            path.addRoundedRect(rect, 6.0, 6.0)
+            painter.setPen(QtGui.QPen(border_col, 1))
+            painter.setBrush(active_fill if enabled else inactive_fill)
+            painter.drawPath(path)
+            painter.setPen(text_color if enabled else inactive_text)
+            painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+            self._quick_chip_rects[key] = rect
+            x += chip_w + gap
+
+    def _chip_at_pos(self, pos: QtCore.QPointF) -> str | None:
+        for key, rect in self._quick_chip_rects.items():
+            if rect.contains(pos):
+                return key
+        return None
+
+    def _toggle_quick_chip(self, key: str):
+        if key == "title":
+            self.set_show_title(not self._show_title)
+        elif key == "scale":
+            self.set_show_scale_bar(not self._show_scale_bar)
+        elif key == "cbar":
+            self.set_show_colorbar(not self._show_colorbar)
+        elif key == "meta":
+            self.set_metadata_bar_visible(not self._metadata_bar_visible)
+        elif key == "unit":
+            self.set_metadata_unit_visible(not self._metadata_unit_visible)
+        elif key == "file":
+            self.set_metadata_file_visible(not self._metadata_file_visible)
+        else:
+            return
+        if self._parent_window is not None:
+            self._parent_window._on_item_overlay_chip_toggled(self, key)
 
     def hoverEnterEvent(self, event):
         if self._resize_handle_rect().contains(event.pos()):
@@ -403,9 +476,15 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self.setCursor(QtCore.Qt.ArrowCursor)
 
     def hoverMoveEvent(self, event):
-        if self._resize_handle_rect().contains(event.pos()):
+        chip_key = self._chip_at_pos(event.pos())
+        if chip_key:
+            tip = next((tip for key, _label, _enabled, tip in self._chip_specs() if key == chip_key), "")
+            self.setToolTip(tip)
+            self.setCursor(QtCore.Qt.PointingHandCursor)
+        elif self._resize_handle_rect().contains(event.pos()):
             self.setCursor(QtCore.Qt.SizeFDiagCursor)
         else:
+            self.setToolTip("")
             self.setCursor(QtCore.Qt.OpenHandCursor)
         super().hoverMoveEvent(event)
 
@@ -413,6 +492,13 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if event.button() == QtCore.Qt.RightButton:
             if not self.isSelected():
                 self.setSelected(True)
+            event.accept()
+            return
+        chip_key = self._chip_at_pos(event.pos())
+        if event.button() == QtCore.Qt.LeftButton and chip_key:
+            if not self.isSelected():
+                self.setSelected(True)
+            self._toggle_quick_chip(chip_key)
             event.accept()
             return
         if event.button() == QtCore.Qt.LeftButton and self._resize_handle_rect().contains(event.pos()):

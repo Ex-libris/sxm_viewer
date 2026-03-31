@@ -32,6 +32,17 @@ def _format_scale_bar_label(length: float, unit: str) -> str:
         return ""
     if abs(length) < 1e-6:
         return f"0 {unit}".strip()
+    unit_norm = (unit or "").strip().lower()
+    if unit_norm == "nm":
+        if abs(length) < 1.0:
+            return f"{length * 1000:.0f} pm"
+        if abs(length) >= 1000.0:
+            return f"{length / 1000.0:.2g} um"
+        return f"{length:g} nm"
+    if unit_norm in ("um", "µm"):
+        if abs(length) < 1.0:
+            return f"{length * 1000:.0f} nm"
+        return f"{length:g} um"
     if abs(length) >= 100 or abs(length) < 0.01:
         return f"{length:.2g} {unit}".strip()
     if abs(length) < 1:
@@ -119,6 +130,7 @@ def render_tile_figure_mpl(
 
     matplotlib.use("Agg")
     from matplotlib.figure import Figure
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
     width_px = max(2, int(round(width_px)))
     height_px = max(2, int(round(height_px)))
@@ -277,49 +289,40 @@ def render_tile_figure_mpl(
 
     if show_scale_bar and scale_bar_length and scale_bar_width:
         try:
-            length_frac = float(scale_bar_length) / max(1e-6, float(scale_bar_width))
+            bar_size = float(scale_bar_length)
+            bar_width = float(scale_bar_width)
         except Exception:
-            length_frac = 0.0
-        if 0.02 < length_frac < 0.9:
-            bar_y = 0.06
-            bar_x = 0.08
-            bar_h = max(0.003, min(0.02, 0.006 * text_scale))
-            ax.plot(
-                [bar_x, bar_x + length_frac],
-                [bar_y, bar_y],
-                color=text_color,
-                linewidth=max(1.2, 1.5 * text_scale),
-                transform=ax.transAxes,
-                solid_capstyle="butt",
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x, bar_x],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x + length_frac, bar_x + length_frac],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.text(
-                bar_x + length_frac / 2.0,
-                bar_y + (bar_h * 2.5),
-                _format_scale_bar_label(float(scale_bar_length), scale_bar_unit),
-                color=text_color,
-                fontsize=max(2.0, 7.0 * text_scale),
-                ha="center",
-                va="bottom",
-                transform=ax.transAxes,
-                zorder=5,
-            )
+            bar_size = 0.0
+            bar_width = 0.0
+        if bar_size > 0.0 and bar_width > 0.0:
+            try:
+                sb = AnchoredSizeBar(
+                    ax.transData,
+                    bar_size,
+                    _format_scale_bar_label(bar_size, scale_bar_unit),
+                    loc="center",
+                    pad=0.35,
+                    borderpad=0,
+                    sep=3,
+                    frameon=False,
+                    size_vertical=max(bar_width * 0.004 * text_scale, bar_width * 0.0015),
+                    color=text_color,
+                    label_top=True,
+                    bbox_to_anchor=(0.88, 0.08),
+                    bbox_transform=ax.transAxes,
+                )
+                try:
+                    sb.size_bar.get_children()[0].set_linewidth(0)
+                except Exception:
+                    pass
+                text = sb.txt_label.get_children()[0]
+                text.set_color(text_color)
+                text.set_fontsize(max(2.0, 8.5 * text_scale))
+                text.set_fontweight("bold")
+                sb.set_zorder(6)
+                ax.add_artist(sb)
+            except Exception:
+                pass
 
     overlay_lines = []
     if show_overlay_main and overlay_main:

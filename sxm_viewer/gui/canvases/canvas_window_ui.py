@@ -139,6 +139,17 @@ def build_toolbar(window):
     view_layout.addWidget(window.canvas_color_btn)
     row1.addWidget(view_group)
 
+    row1.addWidget(create_separator())
+
+    preset_group, preset_layout = create_toolbar_group("Preset")
+    window.display_preset_combo = QtWidgets.QComboBox()
+    for label in ("Custom", "Clean", "Analysis", "Publication"):
+        window.display_preset_combo.addItem(label)
+    window.apply_preset_btn = QtWidgets.QPushButton("Apply")
+    preset_layout.addWidget(window.display_preset_combo)
+    preset_layout.addWidget(window.apply_preset_btn)
+    row1.addWidget(preset_group)
+
     row1.addStretch(1)
     main_layout.addLayout(row1)
 
@@ -176,6 +187,23 @@ def build_toolbar(window):
     overlay_layout.addWidget(window.overlay_info_check)
     overlay_layout.addWidget(window.overlay_file_check)
     row2.addWidget(overlay_group)
+
+    row2.addWidget(create_separator())
+
+    display_group, display_layout = create_toolbar_group("Display")
+    window.toolbar_show_title_check = QtWidgets.QCheckBox("Title")
+    window.toolbar_show_title_check.setChecked(window._global_show_title)
+    window.toolbar_metadata_bar_check = QtWidgets.QCheckBox("Meta")
+    window.toolbar_metadata_bar_check.setChecked(window._metadata_bar_default)
+    window.toolbar_unit_badge_check = QtWidgets.QCheckBox("Unit")
+    window.toolbar_unit_badge_check.setChecked(window._metadata_unit_default)
+    window.toolbar_scale_bar_check = QtWidgets.QCheckBox("Scale")
+    window.toolbar_scale_bar_check.setChecked(window._global_show_scale_bar)
+    display_layout.addWidget(window.toolbar_show_title_check)
+    display_layout.addWidget(window.toolbar_metadata_bar_check)
+    display_layout.addWidget(window.toolbar_unit_badge_check)
+    display_layout.addWidget(window.toolbar_scale_bar_check)
+    row2.addWidget(display_group)
 
     row2.addWidget(create_separator())
 
@@ -222,9 +250,14 @@ def build_toolbar(window):
     window.sync_by_channel_check.toggled.connect(window._on_sync_by_channel_toggled)
     window.overlay_info_check.toggled.connect(window._on_overlay_info_toggled)
     window.overlay_file_check.toggled.connect(window._on_overlay_file_toggled)
+    window.toolbar_show_title_check.toggled.connect(window._on_global_show_title_toggled)
+    window.toolbar_metadata_bar_check.toggled.connect(window._on_metadata_bar_toggled)
+    window.toolbar_unit_badge_check.toggled.connect(window._on_metadata_unit_toggled)
+    window.toolbar_scale_bar_check.toggled.connect(window._on_scale_bar_toggled)
     window.colorbar_ticks_check.toggled.connect(window._on_global_show_colorbar_ticks_toggled)
     window.colorbar_mode_combo.currentTextChanged.connect(window._on_colorbar_position_changed)
     window.canvas_color_btn.clicked.connect(window._on_canvas_color_clicked)
+    window.apply_preset_btn.clicked.connect(window._on_apply_display_preset_clicked)
     window.align_btn.clicked.connect(window._on_align_selected)
     window.align_channels_btn.clicked.connect(window._on_align_by_channels)
     window.polish_btn.clicked.connect(window._on_polish_layout)
