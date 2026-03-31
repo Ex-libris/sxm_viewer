@@ -1628,22 +1628,33 @@ class ProfileDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         # adjust highlight on plotted lines
-        for line in self._line_handles:
+        for line_idx, line in enumerate(self._line_handles):
             try:
-                line.set_linewidth(1.2)
+                if self._active is not None and line_idx == 0:
+                    dataset = self._active or {}
+                    base_lw = float(dataset.get('lw') or 1.5)
+                else:
+                    saved_idx = line_idx - (1 if self._active else 0)
+                    dataset = self._saved[saved_idx] if 0 <= saved_idx < len(self._saved) else {}
+                    base_lw = float(dataset.get('lw') or 1.0)
+                line.set_linewidth(base_lw)
             except Exception:
                 pass
         if idx is None:
             if self._line_handles:
                 try:
-                    self._line_handles[0].set_linewidth(2.4)
+                    dataset = self._active or {}
+                    base_lw = float(dataset.get('lw') or 1.5)
+                    self._line_handles[0].set_linewidth(base_lw + 0.4)
                 except Exception:
                     pass
         else:
             line = self._line_handle_for_overlay(idx)
             if line is not None:
                 try:
-                    line.set_linewidth(2.4)
+                    dataset = self._saved[idx] if 0 <= idx < len(self._saved) else {}
+                    base_lw = float(dataset.get('lw') or 1.0)
+                    line.set_linewidth(base_lw + 0.4)
                 except Exception:
                     pass
         self.canvas.draw_idle()
