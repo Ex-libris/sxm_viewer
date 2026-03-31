@@ -398,6 +398,12 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                 parent._on_global_show_colorbar_ticks_toggled(canvas_actions["show_colorbar_ticks"].isChecked())
             elif action == canvas_actions.get("show_scale_bar"):
                 parent._on_scale_bar_toggled(canvas_actions["show_scale_bar"].isChecked())
+            elif action == canvas_actions.get("show_molecules"):
+                parent._on_canvas_show_molecules_toggled(canvas_actions["show_molecules"].isChecked())
+            elif action == canvas_actions.get("load_molecule"):
+                parent._on_canvas_load_molecule()
+            elif action == canvas_actions.get("clear_molecules"):
+                parent._on_canvas_clear_molecules()
             elif action in cbar_position_actions:
                 parent._on_colorbar_position_changed(cbar_position_actions[action])
             elif action == canvas_actions.get("layout_2x2"):
@@ -451,6 +457,13 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                     self.set_snap_to_grid(checked)
             elif action == canvas_actions.get("canvas_color"):
                 parent._on_canvas_color_clicked()
+            elif action == canvas_actions.get("show_molecules"):
+                checked = canvas_actions["show_molecules"].isChecked()
+                parent._on_canvas_show_molecules_toggled(checked)
+            elif action == canvas_actions.get("load_molecule"):
+                parent._on_canvas_load_molecule()
+            elif action == canvas_actions.get("clear_molecules"):
+                parent._on_canvas_clear_molecules()
             elif action == canvas_actions.get("layout_2x2"):
                 parent._apply_layout("2x2")
             elif action == canvas_actions.get("layout_1x3"):

@@ -90,8 +90,71 @@ def _annotate_colorbar(cb, vmin, vmax, scale, orientation, show_ticks, text_colo
     for label in axis.get_ticklabels():
         label.set_color(text_color)
         label.set_fontsize(label_size)
-    for spine in cb.ax.spines.values():
-        spine.set_visible(False)
+        for spine in cb.ax.spines.values():
+            spine.set_visible(False)
+
+
+def _normalize_extent(extent):
+    if not extent or len(extent) != 4:
+        return None
+    try:
+        x0, x1, y1, y0 = [float(v) for v in extent]
+    except Exception:
+        return None
+    ymin = min(y0, y1)
+    ymax = max(y0, y1)
+    return (x0, x1, ymin, ymax)
+
+
+def _draw_molecules(ax, molecules, palette):
+    if not molecules:
+        return
+    try:
+        from matplotlib.patches import Circle
+        from .molecular_overlay import Molecule, get_atom_color, get_atom_radius
+    except Exception:
+        return
+
+    for entry in molecules:
+        try:
+            mol = entry if isinstance(entry, Molecule) else Molecule.from_dict(entry)
+            coords = mol.get_transformed_coordinates()
+        except Exception:
+            continue
+        if coords is None or len(coords) == 0:
+            continue
+
+        xs = np.asarray(coords[:, 0], dtype=float)
+        ys = np.asarray(coords[:, 1], dtype=float)
+        zs = np.asarray(coords[:, 2], dtype=float) if coords.shape[1] >= 3 else np.zeros(len(coords))
+        order = np.argsort(zs)
+        display_mode = str(getattr(mol, "display_mode", "Atoms + Bonds") or "Atoms + Bonds").lower()
+        bond_color = getattr(mol, "bond_color_override", None) or "#e8edf4"
+        bond_style = str(getattr(mol, "bond_style", "default") or "default").lower()
+        line_width = 0.8 if bond_style == "thin" else 2.0 if bond_style == "thick" else 1.2
+
+        if display_mode != "atoms only":
+            for bond in getattr(mol, "bonds", []) or []:
+                try:
+                    i, j = int(bond[0]), int(bond[1])
+                    ax.plot([xs[i], xs[j]], [ys[i], ys[j]], color=bond_color, linewidth=line_width, alpha=0.85, zorder=5)
+                except Exception:
+                    continue
+
+        if display_mode == "bonds only":
+            continue
+
+        for idx in order:
+            try:
+                element = (mol.elements[idx] if idx < len(mol.elements) else "C") or "C"
+                color = getattr(mol, "atom_color_override", None) or get_atom_color(element, palette)
+                radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
+                radius *= float(getattr(mol, "scale", 0.1)) * float(getattr(mol, "radius_scale", 1.0))
+                radius = max(0.03, float(radius) * 0.33)
+                patch = Circle((xs[idx], ys[idx]), radius=radius, facecolor=color, edgecolor="#101316", linewidth=0.5, alpha=0.92, zorder=6 + (idx / max(1, len(order))))
+                ax.add_patch(patch)
+            except Exception:
+                continue
 
 
 def render_tile_figure_mpl(
@@ -124,6 +187,10 @@ def render_tile_figure_mpl(
     scale_bar_length=None,
     scale_bar_unit="",
     scale_bar_width=None,
+    extent=None,
+    show_molecules=False,
+    molecules=None,
+    molecule_palette="pymol",
 ):
     """Build a Matplotlib figure for a canvas tile, including annotations."""
     import matplotlib
@@ -218,6 +285,7 @@ def render_tile_figure_mpl(
         vmax=vmax,
         origin="lower",
         interpolation="nearest",
+        extent=_normalize_extent(extent),
     )
 
     actual_vmin = None
@@ -324,6 +392,9 @@ def render_tile_figure_mpl(
             except Exception:
                 pass
 
+    if show_molecules and molecules:
+        _draw_molecules(ax, molecules, molecule_palette)
+
     overlay_lines = []
     if show_overlay_main and overlay_main:
         overlay_lines.append(overlay_main)
@@ -404,6 +475,10 @@ def render_tile_mpl(
     scale_bar_length=None,
     scale_bar_unit="",
     scale_bar_width=None,
+    extent=None,
+    show_molecules=False,
+    molecules=None,
+    molecule_palette="pymol",
 ):
     """Render a canvas tile through Matplotlib, including annotations."""
     import matplotlib
@@ -440,6 +515,10 @@ def render_tile_mpl(
         scale_bar_length=scale_bar_length,
         scale_bar_unit=scale_bar_unit,
         scale_bar_width=scale_bar_width,
+        extent=extent,
+        show_molecules=show_molecules,
+        molecules=molecules,
+        molecule_palette=molecule_palette,
     )
     canvas = FigureCanvasAgg(fig)
     canvas.draw()

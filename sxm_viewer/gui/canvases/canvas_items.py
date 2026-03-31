@@ -5,6 +5,7 @@ import io
 
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame
+from .molecular_overlay import Molecule
 
 
 def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
@@ -90,6 +91,14 @@ def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
         act.setChecked(current_mode == mode)
         cbar_position_actions[act] = mode
     actions["cbar_position_actions"] = cbar_position_actions
+
+    molecules_menu = menu.addMenu("Molecules")
+    actions["show_molecules"] = molecules_menu.addAction("Show molecules")
+    actions["show_molecules"].setCheckable(True)
+    actions["show_molecules"].setChecked(bool(getattr(parent, "_global_show_molecules", False)))
+    molecules_menu.addSeparator()
+    actions["load_molecule"] = molecules_menu.addAction("Load onto selected...")
+    actions["clear_molecules"] = molecules_menu.addAction("Clear from selected")
 
     layout_menu = menu.addMenu("Layout")
     actions["layout_2x2"] = layout_menu.addAction("2x2")
@@ -198,6 +207,9 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self._metadata_left_text = ""
         self._metadata_right_text = ""
         self._quick_chip_rects: dict[str, QtCore.QRectF] = {}
+        self._molecule_state: list[dict] = []
+        self._show_molecules = False
+        self._molecule_palette = "pymol"
         self._refresh_metadata_text()
         self._render_pending = True
         self._render_now()
@@ -358,6 +370,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             scale_bar_length=scale_length,
             scale_bar_unit=self._axis_unit,
             scale_bar_width=scale_width,
+            extent=self._extent,
+            show_molecules=self._show_molecules,
+            molecules=self._molecule_state,
+            molecule_palette=self._molecule_palette,
         )
         self.prepareGeometryChange()
         self._rendered_pixmap = pixmap
@@ -694,6 +710,12 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             parent._on_global_show_colorbar_ticks_toggled(canvas_actions["show_colorbar_ticks"].isChecked())
         elif action == canvas_actions.get("show_scale_bar"):
             parent._on_scale_bar_toggled(canvas_actions["show_scale_bar"].isChecked())
+        elif action == canvas_actions.get("show_molecules"):
+            parent._on_canvas_show_molecules_toggled(canvas_actions["show_molecules"].isChecked())
+        elif action == canvas_actions.get("load_molecule"):
+            parent._on_canvas_load_molecule()
+        elif action == canvas_actions.get("clear_molecules"):
+            parent._on_canvas_clear_molecules()
         elif action in cbar_position_actions:
             parent._on_colorbar_position_changed(cbar_position_actions[action])
         elif action == canvas_actions.get("layout_2x2"):
@@ -830,6 +852,9 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             "colorbar_mode": self._colorbar_mode,
             "kind": self._kind,
             "text_scale": self._fixed_text_scale_value if self._use_fixed_text_scale else None,
+            "show_molecules": self._show_molecules,
+            "molecule_palette": self._molecule_palette,
+            "molecule_state": [dict(entry) for entry in (self._molecule_state or [])],
         }
 
     def apply_state(self, state: dict):
@@ -846,6 +871,9 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         self.set_metadata_unit_visible(state.get("show_metadata_unit", self._metadata_unit_visible))
         self.set_metadata_file_visible(state.get("show_metadata_file", self._metadata_file_visible))
         self.set_show_scale_bar(state.get("show_scale_bar", self._show_scale_bar))
+        self.set_show_molecules(state.get("show_molecules", self._show_molecules))
+        self.set_molecule_palette(state.get("molecule_palette", self._molecule_palette))
+        self.set_molecule_state(state.get("molecule_state") or [])
         self.set_colorbar_mode(state.get("colorbar_mode", self._colorbar_mode))
         self._kind = state.get("kind", self._kind)
         canvas_width = state.get("canvas_width")
@@ -923,6 +951,45 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
 
     def set_show_scale_bar(self, show: bool):
         self._show_scale_bar = bool(show)
+        self._update_rendered_pixmap()
+
+    def export_molecule_state(self) -> list[dict]:
+        return [dict(entry) for entry in (self._molecule_state or [])]
+
+    def set_molecule_state(self, state):
+        payload = []
+        for entry in state or []:
+            try:
+                if isinstance(entry, Molecule):
+                    payload.append(entry.to_dict())
+                elif isinstance(entry, dict):
+                    payload.append(dict(entry))
+            except Exception:
+                continue
+        self._molecule_state = payload
+        self._update_rendered_pixmap()
+
+    def add_molecule_from_path(self, path) -> bool:
+        try:
+            mol = Molecule(path)
+        except Exception:
+            return False
+        payload = self.export_molecule_state()
+        payload.append(mol.to_dict())
+        self._molecule_state = payload
+        self._update_rendered_pixmap()
+        return True
+
+    def clear_molecules(self):
+        self._molecule_state = []
+        self._update_rendered_pixmap()
+
+    def set_show_molecules(self, show: bool):
+        self._show_molecules = bool(show)
+        self._update_rendered_pixmap()
+
+    def set_molecule_palette(self, palette: str):
+        self._molecule_palette = str(palette or "pymol").lower()
         self._update_rendered_pixmap()
 
     def set_text_color_override(self, color: QtGui.QColor | None):
@@ -1007,6 +1074,10 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             scale_bar_length=scale_length,
             scale_bar_unit=self._axis_unit,
             scale_bar_width=scale_width,
+            extent=self._extent,
+            show_molecules=self._show_molecules,
+            molecules=self._molecule_state,
+            molecule_palette=self._molecule_palette,
         )
 
     def _copy_svg_to_clipboard(self):
