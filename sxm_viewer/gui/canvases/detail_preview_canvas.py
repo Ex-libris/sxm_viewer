@@ -1237,6 +1237,11 @@ class MultiPreviewCanvas(FigureCanvas):
         # Preserve current zoom/limits per view before clearing
         current_limits = {}
         preserve_zoom = not getattr(self, "_suspend_zoom_restore", False)
+        profile_state = None
+        try:
+            profile_state = self.export_profile_state()
+        except Exception:
+            profile_state = None
         if preserve_zoom:
             try:
                 for ax, v in list(self._ax_view_map.items()):
@@ -1414,8 +1419,20 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_tight_layout_safe(pad=0.25)
         self._apply_view_theme()
         self._apply_view_font_scale()
-        # if profile mode is enabled, (re)create artists on main ax
-        if self.profile_enabled:
+        profile_restored = False
+        if isinstance(profile_state, dict):
+            try:
+                if (
+                    profile_state.get("active_pts") is not None
+                    or profile_state.get("saved")
+                    or profile_state.get("enabled")
+                    or profile_state.get("user_enabled")
+                ):
+                    self.import_profile_state(profile_state, emit=False)
+                    profile_restored = True
+            except Exception:
+                profile_restored = False
+        if not profile_restored and self.profile_enabled:
             self._ensure_profile_artists()
             self._emit_profile()
         if self.angle_enabled:
@@ -3268,7 +3285,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
 
     def _apply_profile_visibility(self):
-        active_visible = bool(self.profile_enabled and self.profile_pts is not None)
+        active_visible = bool(self.profile_pts is not None and self._show_profile_overlays)
         overlay_visible = bool(self._show_profile_overlays)
         active_artists = [
             self._profile_line,
@@ -5655,6 +5672,9 @@ class MultiPreviewCanvas(FigureCanvas):
         show_title_act = display_menu.addAction("Show Title")
         show_title_act.setCheckable(True)
         show_title_act.setChecked(bool(self._show_title))
+        show_profiles_act = display_menu.addAction("Show Profiles")
+        show_profiles_act.setCheckable(True)
+        show_profiles_act.setChecked(bool(self._show_profile_overlays))
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
         acq_overlay_act.setCheckable(True)
         acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
@@ -5914,6 +5934,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         elif chosen == show_title_act:
             self.set_show_title(show_title_act.isChecked())
+        elif chosen == show_profiles_act:
+            self.set_show_profile_overlays(show_profiles_act.isChecked())
         elif chosen == acq_overlay_act:
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
         elif chosen == hint_act:
