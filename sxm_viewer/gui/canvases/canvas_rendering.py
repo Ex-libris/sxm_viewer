@@ -32,6 +32,17 @@ def _format_scale_bar_label(length: float, unit: str) -> str:
         return ""
     if abs(length) < 1e-6:
         return f"0 {unit}".strip()
+    unit_norm = (unit or "").strip().lower()
+    if unit_norm == "nm":
+        if abs(length) < 1.0:
+            return f"{length * 1000:.0f} pm"
+        if abs(length) >= 1000.0:
+            return f"{length / 1000.0:.2g} um"
+        return f"{length:g} nm"
+    if unit_norm in ("um", "µm"):
+        if abs(length) < 1.0:
+            return f"{length * 1000:.0f} nm"
+        return f"{length:g} um"
     if abs(length) >= 100 or abs(length) < 0.01:
         return f"{length:.2g} {unit}".strip()
     if abs(length) < 1:
@@ -79,8 +90,90 @@ def _annotate_colorbar(cb, vmin, vmax, scale, orientation, show_ticks, text_colo
     for label in axis.get_ticklabels():
         label.set_color(text_color)
         label.set_fontsize(label_size)
-    for spine in cb.ax.spines.values():
-        spine.set_visible(False)
+        for spine in cb.ax.spines.values():
+            spine.set_visible(False)
+
+
+def _normalize_extent(extent):
+    if not extent or len(extent) != 4:
+        return None
+    try:
+        x0, x1, y1, y0 = [float(v) for v in extent]
+    except Exception:
+        return None
+    ymin = min(y0, y1)
+    ymax = max(y0, y1)
+    return (x0, x1, ymin, ymax)
+
+
+def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
+    if not molecules:
+        return
+    try:
+        from matplotlib.patches import Circle
+        from .molecular_overlay import Molecule, get_atom_color, get_atom_radius
+    except Exception:
+        return
+
+    for entry in molecules:
+        try:
+            mol = entry if isinstance(entry, Molecule) else Molecule.from_dict(entry)
+            coords = mol.get_transformed_coordinates()
+        except Exception:
+            continue
+        if coords is None or len(coords) == 0:
+            continue
+
+        xs_full = np.asarray(coords[:, 0], dtype=float)
+        ys_full = np.asarray(coords[:, 1], dtype=float)
+        zs_full = np.asarray(coords[:, 2], dtype=float) if coords.shape[1] >= 3 else np.zeros(len(coords))
+        xs = xs_full
+        ys = ys_full
+        zs = zs_full
+        if not show_hydrogens:
+            keep = np.array([(str(el).strip().upper() != "H") for el in getattr(mol, "elements", [])], dtype=bool)
+            if keep.size == len(xs) and np.any(keep):
+                xs = xs[keep]
+                ys = ys[keep]
+                zs = zs[keep]
+                elements = [el for el, k in zip(getattr(mol, "elements", []), keep) if k]
+            else:
+                elements = list(getattr(mol, "elements", []))
+        else:
+            elements = list(getattr(mol, "elements", []))
+        order = np.argsort(zs)
+        display_mode = str(getattr(mol, "display_mode", "Atoms + Bonds") or "Atoms + Bonds").lower()
+        bond_color = getattr(mol, "bond_color_override", None) or "#e8edf4"
+        bond_style = str(getattr(mol, "bond_style", "default") or "default").lower()
+        line_width = 0.8 if bond_style == "thin" else 2.0 if bond_style == "thick" else 1.2
+
+        if display_mode != "atoms only":
+            for bond in getattr(mol, "bonds", []) or []:
+                try:
+                    i, j = int(bond[0]), int(bond[1])
+                    if not show_hydrogens:
+                        ei = (mol.elements[i] if i < len(mol.elements) else "") or ""
+                        ej = (mol.elements[j] if j < len(mol.elements) else "") or ""
+                        if str(ei).strip().upper() == "H" or str(ej).strip().upper() == "H":
+                            continue
+                    ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85, zorder=5)
+                except Exception:
+                    continue
+
+        if display_mode == "bonds only":
+            continue
+
+        for idx in order:
+            try:
+                element = (elements[idx] if idx < len(elements) else "C") or "C"
+                color = getattr(mol, "atom_color_override", None) or get_atom_color(element, palette)
+                radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
+                radius *= float(getattr(mol, "scale", 0.1)) * float(getattr(mol, "radius_scale", 1.0))
+                radius = max(0.03, float(radius) * 0.33)
+                patch = Circle((xs[idx], ys[idx]), radius=radius, facecolor=color, edgecolor="#101316", linewidth=0.5, alpha=0.92, zorder=6 + (idx / max(1, len(order))))
+                ax.add_patch(patch)
+            except Exception:
+                continue
 
 
 def render_tile_figure_mpl(
@@ -113,12 +206,18 @@ def render_tile_figure_mpl(
     scale_bar_length=None,
     scale_bar_unit="",
     scale_bar_width=None,
+    extent=None,
+    show_molecules=False,
+    molecules=None,
+    molecule_palette="pymol",
+    show_hydrogens=True,
 ):
     """Build a Matplotlib figure for a canvas tile, including annotations."""
     import matplotlib
 
     matplotlib.use("Agg")
     from matplotlib.figure import Figure
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
     width_px = max(2, int(round(width_px)))
     height_px = max(2, int(round(height_px)))
@@ -157,9 +256,12 @@ def render_tile_figure_mpl(
         extra_tick_margin = min(0.18, max(0.06, (tick_fs * 2.2) / max(1.0, height_px)))
     top_margin = 0.98 - (extra_tick_margin if normalized_position == "top" else 0.0)
     fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi, facecolor=frame_color or "#070707")
+    side_margin = 0.02
+    if rendered_colorbar and show_colorbar_ticks and normalized_position in ("top", "bottom"):
+        side_margin = min(0.12, max(0.055, (tick_fs * 1.7) / max(1.0, width_px)))
     fig.subplots_adjust(
-        left=0.0,
-        right=1.0,
+        left=side_margin,
+        right=1.0 - side_margin,
         top=top_margin,
         bottom=bottom_margin + (extra_tick_margin if normalized_position == "bottom" else 0.0),
     )
@@ -206,6 +308,7 @@ def render_tile_figure_mpl(
         vmax=vmax,
         origin="lower",
         interpolation="nearest",
+        extent=_normalize_extent(extent),
     )
 
     actual_vmin = None
@@ -277,49 +380,43 @@ def render_tile_figure_mpl(
 
     if show_scale_bar and scale_bar_length and scale_bar_width:
         try:
-            length_frac = float(scale_bar_length) / max(1e-6, float(scale_bar_width))
+            bar_size = float(scale_bar_length)
+            bar_width = float(scale_bar_width)
         except Exception:
-            length_frac = 0.0
-        if 0.02 < length_frac < 0.9:
-            bar_y = 0.06
-            bar_x = 0.08
-            bar_h = max(0.003, min(0.02, 0.006 * text_scale))
-            ax.plot(
-                [bar_x, bar_x + length_frac],
-                [bar_y, bar_y],
-                color=text_color,
-                linewidth=max(1.2, 1.5 * text_scale),
-                transform=ax.transAxes,
-                solid_capstyle="butt",
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x, bar_x],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.plot(
-                [bar_x + length_frac, bar_x + length_frac],
-                [bar_y - bar_h, bar_y + bar_h],
-                color=text_color,
-                linewidth=max(1.0, 1.3 * text_scale),
-                transform=ax.transAxes,
-                zorder=5,
-            )
-            ax.text(
-                bar_x + length_frac / 2.0,
-                bar_y + (bar_h * 2.5),
-                _format_scale_bar_label(float(scale_bar_length), scale_bar_unit),
-                color=text_color,
-                fontsize=max(2.0, 7.0 * text_scale),
-                ha="center",
-                va="bottom",
-                transform=ax.transAxes,
-                zorder=5,
-            )
+            bar_size = 0.0
+            bar_width = 0.0
+        if bar_size > 0.0 and bar_width > 0.0:
+            try:
+                sb = AnchoredSizeBar(
+                    ax.transData,
+                    bar_size,
+                    _format_scale_bar_label(bar_size, scale_bar_unit),
+                    loc="center",
+                    pad=0.35,
+                    borderpad=0,
+                    sep=3,
+                    frameon=False,
+                    size_vertical=max(bar_width * 0.004 * text_scale, bar_width * 0.0015),
+                    color=text_color,
+                    label_top=True,
+                    bbox_to_anchor=(0.88, 0.08),
+                    bbox_transform=ax.transAxes,
+                )
+                try:
+                    sb.size_bar.get_children()[0].set_linewidth(0)
+                except Exception:
+                    pass
+                text = sb.txt_label.get_children()[0]
+                text.set_color(text_color)
+                text.set_fontsize(max(2.0, 8.5 * text_scale))
+                text.set_fontweight("bold")
+                sb.set_zorder(6)
+                ax.add_artist(sb)
+            except Exception:
+                pass
+
+    if show_molecules and molecules:
+        _draw_molecules(ax, molecules, molecule_palette, show_hydrogens=show_hydrogens)
 
     overlay_lines = []
     if show_overlay_main and overlay_main:
@@ -401,6 +498,11 @@ def render_tile_mpl(
     scale_bar_length=None,
     scale_bar_unit="",
     scale_bar_width=None,
+    extent=None,
+    show_molecules=False,
+    molecules=None,
+    molecule_palette="pymol",
+    show_hydrogens=True,
 ):
     """Render a canvas tile through Matplotlib, including annotations."""
     import matplotlib
@@ -437,6 +539,11 @@ def render_tile_mpl(
         scale_bar_length=scale_bar_length,
         scale_bar_unit=scale_bar_unit,
         scale_bar_width=scale_bar_width,
+        extent=extent,
+        show_molecules=show_molecules,
+        molecules=molecules,
+        molecule_palette=molecule_palette,
+        show_hydrogens=show_hydrogens,
     )
     canvas = FigureCanvasAgg(fig)
     canvas.draw()

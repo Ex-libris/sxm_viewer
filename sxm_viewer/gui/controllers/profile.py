@@ -326,6 +326,11 @@ class PopupProfileController:
             pass
 
     def _clear_dialog(self):
+        try:
+            if self.canvas is not None and hasattr(self.canvas, "deactivate_profile_tool"):
+                self.canvas.deactivate_profile_tool(clear_active=True, clear_saved=True)
+        except Exception:
+            pass
         self._deregister_dialog(self._dialog)
         self._dialog = None
 

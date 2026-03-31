@@ -337,6 +337,81 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
             self.resetTransform()
         elif action == fit_view:
             self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
+        elif parent is not None:
+            cmap_actions = canvas_actions.get("cmap_actions") or {}
+            cbar_position_actions = canvas_actions.get("cbar_position_actions") or {}
+            if action == canvas_actions.get("align_selected"):
+                parent._on_align_selected()
+            elif action == canvas_actions.get("align_by_channel"):
+                parent._on_align_by_channels()
+            elif action == canvas_actions.get("reset_alignment"):
+                parent._reset_locked_alignment()
+            elif action == canvas_actions.get("auto_range"):
+                parent._on_auto_range_selected()
+            elif action == canvas_actions.get("copy_range"):
+                parent._on_copy_range()
+            elif action == canvas_actions.get("sync_ranges"):
+                if hasattr(parent, "sync_cbar_check"):
+                    parent.sync_cbar_check.setChecked(canvas_actions["sync_ranges"].isChecked())
+                else:
+                    parent._on_sync_colorbars_toggled(canvas_actions["sync_ranges"].isChecked())
+            elif action == canvas_actions.get("copy_cmap"):
+                parent._on_copy_cmap()
+            elif action == canvas_actions.get("sync_colors_by_channel"):
+                if hasattr(parent, "sync_by_channel_check"):
+                    parent.sync_by_channel_check.setChecked(canvas_actions["sync_colors_by_channel"].isChecked())
+                else:
+                    parent._on_sync_by_channel_toggled(canvas_actions["sync_colors_by_channel"].isChecked())
+            elif action in cmap_actions:
+                parent._on_apply_cmap_to_selected(cmap_actions[action])
+            elif action == canvas_actions.get("overlay_info"):
+                if hasattr(parent, "overlay_info_check"):
+                    parent.overlay_info_check.setChecked(canvas_actions["overlay_info"].isChecked())
+                else:
+                    parent._on_overlay_info_toggled(canvas_actions["overlay_info"].isChecked())
+            elif action == canvas_actions.get("overlay_file"):
+                if hasattr(parent, "overlay_file_check"):
+                    parent.overlay_file_check.setChecked(canvas_actions["overlay_file"].isChecked())
+                else:
+                    parent._on_overlay_file_toggled(canvas_actions["overlay_file"].isChecked())
+            elif action == canvas_actions.get("show_grid"):
+                if hasattr(parent, "show_grid_check"):
+                    parent.show_grid_check.setChecked(canvas_actions["show_grid"].isChecked())
+                else:
+                    self.set_show_grid(canvas_actions["show_grid"].isChecked())
+            elif action == canvas_actions.get("snap_grid"):
+                if hasattr(parent, "snap_grid_check"):
+                    parent.snap_grid_check.setChecked(canvas_actions["snap_grid"].isChecked())
+                else:
+                    self.set_snap_to_grid(canvas_actions["snap_grid"].isChecked())
+            elif action == canvas_actions.get("canvas_color"):
+                parent._on_canvas_color_clicked()
+            elif action == canvas_actions.get("show_metadata_bar"):
+                parent._on_metadata_bar_toggled(canvas_actions["show_metadata_bar"].isChecked())
+            elif action == canvas_actions.get("show_unit_badge"):
+                parent._on_metadata_unit_toggled(canvas_actions["show_unit_badge"].isChecked())
+            elif action == canvas_actions.get("show_title"):
+                parent._on_global_show_title_toggled(canvas_actions["show_title"].isChecked())
+            elif action == canvas_actions.get("show_colorbar"):
+                parent._on_global_show_colorbar_toggled(canvas_actions["show_colorbar"].isChecked())
+            elif action == canvas_actions.get("show_colorbar_ticks"):
+                parent._on_global_show_colorbar_ticks_toggled(canvas_actions["show_colorbar_ticks"].isChecked())
+            elif action == canvas_actions.get("show_scale_bar"):
+                parent._on_scale_bar_toggled(canvas_actions["show_scale_bar"].isChecked())
+            elif action == canvas_actions.get("show_molecules"):
+                parent._on_canvas_show_molecules_toggled(canvas_actions["show_molecules"].isChecked())
+            elif action == canvas_actions.get("load_molecule"):
+                parent._on_canvas_load_molecule()
+            elif action == canvas_actions.get("clear_molecules"):
+                parent._on_canvas_clear_molecules()
+            elif action in cbar_position_actions:
+                parent._on_colorbar_position_changed(cbar_position_actions[action])
+            elif action == canvas_actions.get("layout_2x2"):
+                parent._apply_layout("2x2")
+            elif action == canvas_actions.get("layout_1x3"):
+                parent._apply_layout("1x3")
+            elif action == canvas_actions.get("layout_3x1"):
+                parent._apply_layout("3x1")
         elif canvas_actions:
             if action == canvas_actions.get("align_selected"):
                 parent._on_align_selected()
@@ -382,6 +457,13 @@ class CanvasGraphicsView(QtWidgets.QGraphicsView):
                     self.set_snap_to_grid(checked)
             elif action == canvas_actions.get("canvas_color"):
                 parent._on_canvas_color_clicked()
+            elif action == canvas_actions.get("show_molecules"):
+                checked = canvas_actions["show_molecules"].isChecked()
+                parent._on_canvas_show_molecules_toggled(checked)
+            elif action == canvas_actions.get("load_molecule"):
+                parent._on_canvas_load_molecule()
+            elif action == canvas_actions.get("clear_molecules"):
+                parent._on_canvas_clear_molecules()
             elif action == canvas_actions.get("layout_2x2"):
                 parent._apply_layout("2x2")
             elif action == canvas_actions.get("layout_1x3"):

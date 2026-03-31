@@ -185,6 +185,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_state_syncing = False
         self._profile_state_deferred = False
         self._profile_user_enabled = False
+        self._profile_quick_transient = False
+        self._profile_move_only = False
         self._profile_update_timer = QtCore.QTimer(self)
         self._profile_update_timer.setSingleShot(True)
         self._profile_update_timer.setInterval(50)
@@ -347,12 +349,49 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("profile_tool")
         self._profile_user_enabled = enabled
+        if enabled:
+            self._profile_move_only = False
         self.enable_profile(enabled)
         if enabled:
             try:
                 self._emit_profile()
             except Exception:
                 pass
+
+    def deactivate_profile_tool(self, *, clear_active: bool = True, clear_saved: bool = False):
+        """Disable profile interaction while optionally preserving saved overlays."""
+        self._profile_user_enabled = False
+        self._profile_quick_transient = False
+        self._profile_move_only = False
+        if self.profile_enabled:
+            try:
+                self._disconnect_profile_events()
+            except Exception:
+                pass
+        self.profile_enabled = False
+        if clear_active:
+            try:
+                self._clear_profile_artists()
+            except Exception:
+                pass
+            self.profile_pts = None
+            self._active_profile_original_color = None
+            self._profile_marker_positions = None
+            self._profile_marker_domain = None
+            try:
+                self._clear_profile_hud()
+            except Exception:
+                pass
+        if clear_saved:
+            try:
+                self._clear_saved_profile_artists(notify=False)
+            except Exception:
+                pass
+        try:
+            self._emit_profile_state()
+        except Exception:
+            pass
+        self.draw_idle()
 
     def set_angle_tool_enabled(self, enabled: bool):
         self.enable_angle(bool(enabled))
@@ -1202,6 +1241,11 @@ class MultiPreviewCanvas(FigureCanvas):
         # Preserve current zoom/limits per view before clearing
         current_limits = {}
         preserve_zoom = not getattr(self, "_suspend_zoom_restore", False)
+        profile_state = None
+        try:
+            profile_state = self.export_profile_state()
+        except Exception:
+            profile_state = None
         if preserve_zoom:
             try:
                 for ax, v in list(self._ax_view_map.items()):
@@ -1331,9 +1375,11 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
                 self._colorbars.append(cbar)
             title = v.get('title', '')
-            if title:
+            if title and self._show_title:
                 ax.set_title(title, fontsize=9)
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
+            else:
+                ax.set_title("")
             ax.tick_params(labelsize=8)
             for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
                 apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
@@ -1377,8 +1423,20 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_tight_layout_safe(pad=0.25)
         self._apply_view_theme()
         self._apply_view_font_scale()
-        # if profile mode is enabled, (re)create artists on main ax
-        if self.profile_enabled:
+        profile_restored = False
+        if isinstance(profile_state, dict):
+            try:
+                if (
+                    profile_state.get("active_pts") is not None
+                    or profile_state.get("saved")
+                    or profile_state.get("enabled")
+                    or profile_state.get("user_enabled")
+                ):
+                    self.import_profile_state(profile_state, emit=False)
+                    profile_restored = True
+            except Exception:
+                profile_restored = False
+        if not profile_restored and self.profile_enabled:
             self._ensure_profile_artists()
             self._emit_profile()
         if self.angle_enabled:
@@ -3231,7 +3289,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
 
     def _apply_profile_visibility(self):
-        active_visible = bool(self.profile_enabled and self.profile_pts is not None)
+        active_visible = bool(self.profile_pts is not None and self._show_profile_overlays)
         overlay_visible = bool(self._show_profile_overlays)
         active_artists = [
             self._profile_line,
@@ -3268,7 +3326,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_update_timer.start()
 
     def _flush_profile_updates(self):
-        if not self.profile_enabled:
+        if not (self.profile_enabled or self._profile_move_only):
             return
         if self.profile_pts is None:
             return
@@ -4195,7 +4253,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
 
     def _on_press(self, event):
-        if not self.profile_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
+        if (not self.profile_enabled and not self._profile_move_only) or event.inaxes is None or event.inaxes is not self.main_ax:
             return
         x, y = event.xdata, event.ydata
         if x is None or y is None:
@@ -4224,6 +4282,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._dragging = None
             return
         if self.profile_pts is None:
+            if self._profile_move_only:
+                return
             self.push_undo_state("start_profile")
             self._set_profile_pts((x, y, x, y))
             self._ensure_profile_artists()
@@ -4292,6 +4352,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._snapshot_active_profile()
         else:
             self.push_undo_state("start_profile")
+        if self._profile_move_only:
+            return
         self._active_profile_original_color = None
         self._set_profile_pts((x, y, x, y))
         self._dragging = 'p1'
@@ -4532,7 +4594,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_profile_style(overlay_idx, lw=max(0.5, float(entry.get('lw', 1.5) or 1.5) + delta))
 
     def _on_motion(self, event):
-        if not self.profile_enabled or event.inaxes is None or event.inaxes is not self.main_ax:
+        if (not self.profile_enabled and not self._profile_move_only) or event.inaxes is None or event.inaxes is not self.main_ax:
             return
         x, y = event.xdata, event.ydata
         if x is None or y is None:
@@ -4590,7 +4652,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._schedule_profile_update()
 
     def _on_release(self, event):
-        if not self.profile_enabled:
+        if not (self.profile_enabled or self._profile_move_only):
             return
         self._dragging = None
         self._set_profile_animated(False)
@@ -4605,6 +4667,10 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._profile_state_deferred:
             self._profile_state_deferred = False
             self._flush_profile_state()
+        if getattr(self, "_profile_quick_transient", False):
+            self._profile_quick_transient = False
+            self._profile_user_enabled = False
+            self._profile_move_only = self.profile_pts is not None
 
     def _profile_animation_artists(self):
         artists = [
@@ -4789,7 +4855,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._update_angle_artists()
 
     def _emit_profile(self):
-        if not getattr(self, "profile_enabled", False) or self.profile_pts is None:
+        if not (getattr(self, "profile_enabled", False) or getattr(self, "_profile_move_only", False)) or self.profile_pts is None:
             self._emit_profile_state()
             return
         if not callable(self.profile_callback):
@@ -4990,8 +5056,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 if self.angle_enabled:
                     self.set_angle_tool_enabled(False)
                 was_enabled = bool(self.profile_enabled)
+                if self._profile_move_only:
+                    self._profile_move_only = False
+                    self._profile_user_enabled = True
+                    self._profile_quick_transient = True
+                    was_enabled = False
                 if not self.profile_enabled:
                     self.set_profile_tool_enabled(True)
+                    self._profile_quick_transient = True
                 if not was_enabled:
                     # Start the first profile drag immediately when the tool
                     # is activated via Ctrl+Click.
@@ -5615,6 +5687,9 @@ class MultiPreviewCanvas(FigureCanvas):
         show_title_act = display_menu.addAction("Show Title")
         show_title_act.setCheckable(True)
         show_title_act.setChecked(bool(self._show_title))
+        show_profiles_act = display_menu.addAction("Show Profiles")
+        show_profiles_act.setCheckable(True)
+        show_profiles_act.setChecked(bool(self._show_profile_overlays))
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
         acq_overlay_act.setCheckable(True)
         acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
@@ -5874,6 +5949,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         elif chosen == show_title_act:
             self.set_show_title(show_title_act.isChecked())
+        elif chosen == show_profiles_act:
+            self.set_show_profile_overlays(show_profiles_act.isChecked())
         elif chosen == acq_overlay_act:
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
         elif chosen == hint_act:

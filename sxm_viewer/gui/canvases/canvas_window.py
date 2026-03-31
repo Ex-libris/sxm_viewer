@@ -1,6 +1,5 @@
 """Enhanced canvas window with modern UI/UX and polished aesthetics."""
 from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 import math
@@ -44,7 +43,18 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         super().__init__(parent)
         self.viewer = viewer
         self.setWindowTitle("Enhanced Scientific Canvas")
-        self.resize(*CANVAS_WINDOW_SIZE)
+        try:
+            screen = QtWidgets.QApplication.screenAt(QtGui.QCursor.pos()) or QtWidgets.QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen is not None else None
+        except Exception:
+            avail = None
+        target_w, target_h = CANVAS_WINDOW_SIZE
+        if avail is not None:
+            target_w = min(target_w, max(860, int(avail.width() * 0.72)))
+            target_h = min(target_h, max(620, int(avail.height() * 0.78)))
+        self.setMinimumSize(840, 580)
+        self.resize(target_w, target_h)
+        self.setSizeGripEnabled(True)
         self._drop_offset = QtCore.QPointF(*CANVAS_DROP_OFFSET)
         self._selected_item: Optional[CanvasImageItem] = None
         self._sync_colorbars = False
@@ -65,48 +75,80 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._global_text_color: QtGui.QColor | None = None
         self._global_show_scale_bar = False
         self._global_scale_bar_length_nm: float | None = None
-        self._metadata_bar_default = True
+        self._metadata_bar_default = False
+        self._metadata_unit_default = True
         self._colorbar_mode = "bottom"
+        self._display_preset_name = "Custom"
+        self._suppress_preset_sync = False
         self._undo_stack = []
         self._undo_index = -1
         self._file_scale_bars = {}
         self._restoring = False
+        self._global_show_molecules = bool(getattr(self.viewer, "show_molecules", True))
+        self._molecule_palette = str(getattr(self.viewer, "molecule_palette", "pymol") or "pymol").lower()
+        self._recent_molecule_paths = list(getattr(self.viewer, "recent_molecules", []) or [])
 
-        # Apply modern styling
+        self.scene = QtWidgets.QGraphicsScene(self)
+        self.view = CanvasGraphicsView(self)
+        self.view.setScene(self.scene)
         self._dark = bool(getattr(self.viewer, "dark_mode", False))
         self._apply_styles(self._dark)
-        try:
-            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
-        except Exception:
-            pass
+        self.view.set_background_color(self._workspace_color(self._dark))
 
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create toolbar and view first
-        self.scene = QtWidgets.QGraphicsScene(self)
-        self.view = CanvasGraphicsView(self)
-        self.view.setScene(self.scene)
-
         # Build UI
         toolbar_widget = self._build_toolbar()
         main_layout.addWidget(toolbar_widget)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        splitter.addWidget(self.view)
-        splitter.addWidget(self._build_inspector())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes(list(CANVAS_SPLITTER_SIZES))
-        main_layout.addWidget(splitter, 1)
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.left_controls = canvas_window_ui.build_left_controls(self)
+        self.splitter.addWidget(self.left_controls)
+        self.splitter.addWidget(self.view)
+        self.splitter.addWidget(self._build_inspector())
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 4)
+        self.splitter.setStretchFactor(2, 1)
+        self.splitter.setSizes(list(CANVAS_SPLITTER_SIZES))
+        self.splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(self.splitter, 1)
 
         self.status_label = QtWidgets.QLabel("Ready")
         canvas_window_ui.apply_status_style(self)
         main_layout.addWidget(self.status_label)
 
+        # Re-apply after the full widget tree exists so late-created controls pick up the theme.
+        self._apply_styles(self._dark)
+        self.view.set_background_color(self._workspace_color(self._dark))
+
         self.scene.selectionChanged.connect(self._on_selection_changed)
+        self._set_display_preset_combo("Custom")
         self._push_undo_state()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self._set_inspector_focus(bool(self._selected_item))
+        except Exception:
+            pass
+
+    def _set_inspector_focus(self, has_selection: bool):
+        splitter = getattr(self, "splitter", None)
+        if splitter is None:
+            return
+        try:
+            total = max(600, splitter.size().width())
+        except Exception:
+            total = CANVAS_WINDOW_SIZE[0]
+        left_width = 170
+        inspector_width = 260 if has_selection else 220
+        canvas_width = max(360, total - left_width - inspector_width)
+        splitter.setSizes([left_width, canvas_width, inspector_width])
+
+    def _workspace_color(self, dark: bool) -> QtGui.QColor:
+        return QtGui.QColor("#1f2328" if dark else "#f3efe8")
 
     def _create_icon_button(self, text: str, icon_text: str = "", tooltip: str = "") -> QtWidgets.QPushButton:
         """Create a button with optional icon."""
@@ -129,11 +171,11 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         return canvas_window_ui.create_separator()
 
     def set_dark_mode(self, dark: bool):
-        """Public hook to refresh styling when the main viewer toggles theme."""
+        """Update the canvas theme to match the main viewer mode."""
         self._dark = bool(dark)
         self._apply_styles(self._dark)
         try:
-            self.view.set_background_color(QtGui.QColor(30, 30, 30) if self._dark else QtGui.QColor(240, 240, 240))
+            self.view.set_background_color(self._workspace_color(self._dark))
         except Exception:
             pass
 
@@ -142,6 +184,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         if dark is None:
             dark = bool(getattr(self.viewer, "dark_mode", False))
         canvas_window_ui.apply_styles(self, dark=bool(dark))
+        canvas_window_ui.apply_status_style(self)
         try:
             # Force a re-polish so existing widgets pick up the new stylesheet.
             self.style().unpolish(self)
@@ -172,11 +215,118 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         ):
             widget.setEnabled(enabled)
 
+    def _selected_canvas_items(self):
+        try:
+            return [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
+        except Exception:
+            return []
+
+    def _apply_to_canvas_items(self, fn, *, selected_only: bool = False):
+        items = self._selected_canvas_items() if selected_only else [i for i in self.scene.items() if isinstance(i, CanvasImageItem)]
+        for item in items:
+            try:
+                fn(item)
+            except Exception:
+                continue
+        return items
+
+    def _set_display_preset_combo(self, name: str):
+        combo = getattr(self, "display_preset_combo", None)
+        if combo is None:
+            return
+        label = str(name or "Custom")
+        idx = combo.findText(label)
+        if idx < 0:
+            idx = combo.findText("Custom")
+        if idx < 0:
+            return
+        try:
+            self._suppress_preset_sync = True
+            combo.setCurrentIndex(idx)
+        finally:
+            self._suppress_preset_sync = False
+        self._display_preset_name = combo.currentText() or label
+
+    def _mark_display_preset_custom(self):
+        if getattr(self, "_suppress_preset_sync", False):
+            return
+        self._set_display_preset_combo("Custom")
+
+    def _apply_display_preset(self, name: str, *, push_undo: bool = True):
+        preset = str(name or "").strip().lower()
+        if preset not in ("clean", "analysis", "publication"):
+            return
+        try:
+            self._suppress_preset_sync = True
+            if preset == "clean":
+                self._on_global_show_title_toggled(False)
+                self._on_overlay_info_toggled(False)
+                self._on_overlay_file_toggled(False)
+                self._on_metadata_bar_toggled(False)
+                self._on_metadata_unit_toggled(False)
+                self._on_scale_bar_toggled(True)
+                self._apply_global_show_colorbar(False)
+                self._apply_global_show_colorbar_ticks(False)
+                self._on_colorbar_position_changed("Hidden")
+            elif preset == "analysis":
+                self._on_global_show_title_toggled(True)
+                self._on_overlay_info_toggled(False)
+                self._on_overlay_file_toggled(False)
+                self._on_metadata_bar_toggled(False)
+                self._on_metadata_unit_toggled(False)
+                self._on_scale_bar_toggled(True)
+                self._apply_global_show_colorbar(True)
+                self._apply_global_show_colorbar_ticks(True)
+                self._on_colorbar_position_changed("Right")
+            elif preset == "publication":
+                self._on_global_show_title_toggled(False)
+                self._on_overlay_info_toggled(False)
+                self._on_overlay_file_toggled(False)
+                self._on_metadata_bar_toggled(False)
+                self._on_metadata_unit_toggled(False)
+                self._on_scale_bar_toggled(True)
+                self._apply_global_show_colorbar(False)
+                self._apply_global_show_colorbar_ticks(False)
+                self._on_colorbar_position_changed("Hidden")
+        finally:
+            self._suppress_preset_sync = False
+        self._set_display_preset_combo(preset.title())
+        self.status_label.setText(f"Display preset: {preset.title()}")
+        if push_undo:
+            self._push_undo_state()
+
+    def _on_apply_display_preset_clicked(self):
+        combo = getattr(self, "display_preset_combo", None)
+        if combo is None:
+            return
+        name = combo.currentText()
+        if name == "Custom":
+            return
+        self._apply_display_preset(name, push_undo=True)
+
+    def _on_item_overlay_chip_toggled(self, item: CanvasImageItem, key: str):
+        self._selected_item = item
+        self._on_selection_changed()
+        label_map = {
+            "title": "Title",
+            "scale": "Scale bar",
+            "cbar": "Colorbar",
+            "meta": "Metadata",
+            "unit": "Unit badge",
+            "file": "Filename badge",
+        }
+        self.status_label.setText(f"Toggled {label_map.get(key, key)} for selected tile")
+        self._mark_display_preset_custom()
+        self._push_undo_state()
+
     def _on_selection_changed(self):
         selected = [i for i in self.scene.selectedItems() if isinstance(i, CanvasImageItem)]
         item = selected[0] if selected else None
         self._selected_item = item
         if item is None:
+            self._set_inspector_focus(False)
+            if hasattr(self, "selection_hint"):
+                self.selection_hint.setText("Select a tile to edit its labels, scale bar, colormap and export settings.")
             self.file_label.setText("-")
             self.channel_label.setText("-")
             self.colorbar_edit.setText("")
@@ -191,12 +341,26 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 self.scale_bar_check.setChecked(self._global_show_scale_bar)
             finally:
                 self.scale_bar_check.blockSignals(False)
+            left_combo = getattr(self, "left_scale_bar_combo", None)
+            if left_combo is not None:
+                try:
+                    left_combo.blockSignals(True)
+                    left_combo.setCurrentText("Auto" if self._global_scale_bar_length_nm is None else f"{self._global_scale_bar_length_nm:g} nm")
+                finally:
+                    left_combo.blockSignals(False)
+            if hasattr(self, "canvas_molecules_check"):
+                self.canvas_molecules_check.blockSignals(True)
+                self.canvas_molecules_check.setChecked(self._global_show_molecules)
+                self.canvas_molecules_check.blockSignals(False)
             self.vmin_edit.setText("")
             self.vmax_edit.setText("")
             self.stats_label.setText("-")
             self._set_inspector_enabled(False)
             return
         self._set_inspector_enabled(True)
+        self._set_inspector_focus(True)
+        if hasattr(self, "selection_hint"):
+            self.selection_hint.setText("Use the on-tile chips for quick toggles, or refine the selected tile from the tabs below.")
         self.file_label.setText(Path(item.file_path).name)
         self.channel_label.setText(str(item.channel_index))
         self.colorbar_edit.setText(item.colorbar_label)
@@ -215,6 +379,12 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self.scale_bar_check.setChecked(self._global_show_scale_bar)
         finally:
             self.scale_bar_check.blockSignals(False)
+        if hasattr(self, "canvas_molecules_check"):
+            try:
+                self.canvas_molecules_check.blockSignals(True)
+                self.canvas_molecules_check.setChecked(self._global_show_molecules)
+            finally:
+                self.canvas_molecules_check.blockSignals(False)
         try:
             self.scale_bar_combo.blockSignals(True)
             if self._global_scale_bar_length_nm is None:
@@ -225,6 +395,18 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 self.scale_bar_combo.setCurrentIndex(idx if idx >= 0 else 0)
         finally:
             self.scale_bar_combo.blockSignals(False)
+        left_combo = getattr(self, "left_scale_bar_combo", None)
+        if left_combo is not None:
+            try:
+                left_combo.blockSignals(True)
+                if self._global_scale_bar_length_nm is None:
+                    left_combo.setCurrentText("Auto")
+                else:
+                    label = f"{self._global_scale_bar_length_nm:g} nm"
+                    idx = left_combo.findText(label)
+                    left_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                left_combo.blockSignals(False)
         self.cmap_combo.setCurrentText(item.cmap)
         self.vmin_edit.setText("" if item.vmin is None else str(item.vmin))
         self.vmax_edit.setText("" if item.vmax is None else str(item.vmax))
@@ -279,11 +461,26 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _on_scale_bar_toggled(self, checked: bool):
         self._global_show_scale_bar = bool(checked)
-        for item in self.scene.items():
-            if isinstance(item, CanvasImageItem):
-                item.set_show_scale_bar(self._global_show_scale_bar)
+        for attr_name in ("scale_bar_check", "toolbar_scale_bar_check"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                try:
+                    widget.blockSignals(True)
+                    widget.setChecked(self._global_show_scale_bar)
+                finally:
+                    widget.blockSignals(False)
+        self._apply_to_canvas_items(lambda item: item.set_show_scale_bar(self._global_show_scale_bar))
+        self._mark_display_preset_custom()
 
     def _on_scale_bar_size_changed(self, text: str):
+        for combo_name in ("scale_bar_combo", "left_scale_bar_combo"):
+            combo = getattr(self, combo_name, None)
+            if combo is not None and combo.currentText() != text:
+                try:
+                    combo.blockSignals(True)
+                    combo.setCurrentText(text)
+                finally:
+                    combo.blockSignals(False)
         if text.lower().startswith("auto"):
             self._global_scale_bar_length_nm = None
         else:
@@ -296,6 +493,129 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 continue
             length = self._convert_scale_bar_length(item._axis_unit, self._global_scale_bar_length_nm)
             item.set_scale_bar_length(length)
+
+    def _selected_target_items(self):
+        selected = self._selected_canvas_items()
+        if not selected and self._selected_item is not None:
+            selected = [self._selected_item]
+        return selected
+
+    def _persist_recent_molecule_path(self, path: str):
+        try:
+            norm = str(Path(path).resolve())
+        except Exception:
+            norm = str(path)
+        recent = [norm]
+        for old in list(self._recent_molecule_paths):
+            if old != norm and old not in recent:
+                recent.append(old)
+        self._recent_molecule_paths = recent[:8]
+        try:
+            self.viewer.recent_molecules = list(self._recent_molecule_paths)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.viewer, "_on_recent_molecules_updated"):
+                self.viewer._on_recent_molecules_updated(self._recent_molecule_paths)
+        except Exception:
+            pass
+
+    def _persist_item_molecules(self, item: CanvasImageItem):
+        try:
+            store = getattr(self.viewer, "molecule_overlays", None)
+            if isinstance(store, dict):
+                store[str(item.file_path)] = item.export_molecule_state()
+        except Exception:
+            pass
+
+    def _on_canvas_show_molecules_toggled(self, checked: bool):
+        self._global_show_molecules = bool(checked)
+        widget = getattr(self, "canvas_molecules_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._global_show_molecules)
+            finally:
+                widget.blockSignals(False)
+        self._apply_to_canvas_items(lambda item: item.set_show_molecules(self._global_show_molecules))
+        self.status_label.setText("Canvas molecules shown" if self._global_show_molecules else "Canvas molecules hidden")
+
+    def _choose_canvas_molecule_path(self):
+        recent = [p for p in self._recent_molecule_paths if p]
+        chosen_path = None
+        if recent:
+            menu = QtWidgets.QMenu(self)
+            actions = {}
+            for path in recent[:8]:
+                act = menu.addAction(str(path))
+                actions[act] = path
+            browse_act = menu.addAction("Browse...")
+            anchor = QtGui.QCursor.pos()
+            btn = getattr(self, "canvas_molecule_load_btn", None)
+            if btn is not None:
+                anchor = btn.mapToGlobal(btn.rect().bottomLeft())
+            chosen = menu.exec_(anchor)
+            if chosen in actions:
+                chosen_path = actions[chosen]
+            elif chosen != browse_act:
+                return None
+        if chosen_path:
+            return chosen_path
+        start_dir = ""
+        if recent:
+            try:
+                start_dir = str(Path(recent[0]).parent)
+            except Exception:
+                start_dir = ""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Molecule",
+            start_dir,
+            "Molecule Files (*.xyz *.pdb *.mol);;All Files (*)",
+        )
+        return path or None
+
+    def _on_canvas_load_molecule(self):
+        items = self._selected_target_items()
+        if not items:
+            self.status_label.setText("Select one or more canvas tiles to load a molecule")
+            return
+        path = self._choose_canvas_molecule_path()
+        if not path:
+            return
+        loaded = 0
+        for item in items:
+            try:
+                item.set_molecule_palette(self._molecule_palette)
+                if item.add_molecule_from_path(path):
+                    item.set_show_molecules(True)
+                    self._persist_item_molecules(item)
+                    loaded += 1
+            except Exception:
+                continue
+        if loaded:
+            self._persist_recent_molecule_path(path)
+            self._on_canvas_show_molecules_toggled(True)
+            self._push_undo_state()
+            self.status_label.setText(f"Loaded molecule onto {loaded} canvas tile(s)")
+
+    def _on_canvas_clear_molecules(self):
+        items = self._selected_target_items()
+        if not items:
+            self.status_label.setText("Select one or more canvas tiles to clear molecules")
+            return
+        cleared = 0
+        for item in items:
+            try:
+                if item.export_molecule_state():
+                    item.clear_molecules()
+                    self._persist_item_molecules(item)
+                    cleared += 1
+            except Exception:
+                continue
+        if cleared:
+            self._push_undo_state()
+            self.status_label.setText(f"Cleared molecules from {cleared} canvas tile(s)")
 
     def _convert_scale_bar_length(self, unit: str, length_nm: float | None) -> float | None:
         if length_nm is None:
@@ -322,6 +642,31 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self._sync_all_colorbars()
         self._push_undo_state()
 
+    def _on_apply_cmap_to_selected(self, name: str):
+        if not name:
+            return
+        selected = self._selected_canvas_items()
+        if not selected and self._selected_item is not None:
+            selected = [self._selected_item]
+        if not selected:
+            return
+        for item in selected:
+            item.set_cmap(name)
+            kind = item.kind or self._infer_kind_for_item(item)
+            if kind:
+                self._kind_cmap[kind] = name
+        if self._sync_colorbars:
+            self._sync_all_colorbars()
+        self._push_undo_state()
+
+    def _on_copy_cmap(self):
+        if self._selected_item is None:
+            return
+        cmap = self._selected_item.cmap
+        for item in self._selected_canvas_items():
+            item.set_cmap(cmap)
+        self._push_undo_state()
+
     def _on_range_changed(self):
         if self._selected_item is None:
             return
@@ -344,6 +689,21 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             self._sync_all_colorbars()
         self._push_undo_state()
 
+    def _on_auto_range_selected(self):
+        selected = self._selected_canvas_items()
+        if not selected and self._selected_item is not None:
+            selected = [self._selected_item]
+        if not selected:
+            return
+        for item in selected:
+            item.set_range(None, None)
+        if self._selected_item in selected:
+            self.vmin_edit.setText("")
+            self.vmax_edit.setText("")
+        if self._sync_colorbars:
+            self._sync_all_colorbars()
+        self._push_undo_state()
+
     def _on_copy_range(self):
         if self._selected_item is None:
             return
@@ -353,6 +713,44 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem) and item.isSelected():
                 item.set_range(vmin, vmax)
         self._push_undo_state()
+
+    def _on_metadata_bar_toggled(self, checked: bool):
+        self._metadata_bar_default = bool(checked)
+        widget = getattr(self, "toolbar_metadata_bar_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._metadata_bar_default)
+            finally:
+                widget.blockSignals(False)
+        for item in self.scene.items():
+            if isinstance(item, CanvasImageItem):
+                item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+        self._mark_display_preset_custom()
+
+    def _on_metadata_unit_toggled(self, checked: bool):
+        self._metadata_unit_default = bool(checked)
+        widget = getattr(self, "toolbar_unit_badge_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._metadata_unit_default)
+            finally:
+                widget.blockSignals(False)
+        self._apply_to_canvas_items(lambda item: item.set_metadata_unit_visible(self._metadata_unit_default))
+        self._mark_display_preset_custom()
+
+    def _on_global_show_title_toggled(self, checked: bool):
+        self._global_show_title = bool(checked)
+        widget = getattr(self, "toolbar_show_title_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._global_show_title)
+            finally:
+                widget.blockSignals(False)
+        self._apply_to_canvas_items(lambda item: item.set_show_title(self._global_show_title))
+        self._mark_display_preset_custom()
 
     def _on_duplicate_item(self):
         if self._selected_item is None:
@@ -380,6 +778,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
+        self._mark_display_preset_custom()
 
     def _on_overlay_file_toggled(self, checked: bool):
         self._show_overlay_file = bool(checked)
@@ -387,7 +787,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             if isinstance(item, CanvasImageItem):
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
                 item.set_metadata_file_visible(self._show_overlay_file)
+        self._mark_display_preset_custom()
 
     def _metadata_bar_visible_default(self) -> bool:
         return bool(self._metadata_bar_default)
@@ -398,7 +800,15 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             mode = "none"
         mode = mode if mode in ("bottom", "top", "left", "right", "inset", "none") else "bottom"
         self._colorbar_mode = mode
+        widget = getattr(self, "colorbar_mode_combo", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setCurrentText(mode.capitalize() if mode != "none" else "Hidden")
+            finally:
+                widget.blockSignals(False)
         self._apply_colorbar_mode_to_all(mode)
+        self._mark_display_preset_custom()
 
     def _apply_colorbar_mode_to_all(self, mode: str):
         for item in self.scene.items():
@@ -414,15 +824,31 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def _apply_global_show_colorbar(self, show: bool):
         self._global_show_colorbar = bool(show)
+        widget = getattr(self, "show_colorbar_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._global_show_colorbar)
+            finally:
+                widget.blockSignals(False)
         for item in self.scene.items():
             if isinstance(item, CanvasImageItem):
                 item.set_show_colorbar(self._global_show_colorbar)
+        self._mark_display_preset_custom()
 
     def _apply_global_show_colorbar_ticks(self, show: bool):
         self._global_show_colorbar_ticks = bool(show)
+        widget = getattr(self, "colorbar_ticks_check", None)
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self._global_show_colorbar_ticks)
+            finally:
+                widget.blockSignals(False)
         for item in self.scene.items():
             if isinstance(item, CanvasImageItem):
                 item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
+        self._mark_display_preset_custom()
 
     def _on_canvas_color_clicked(self):
         color = QtWidgets.QColorDialog.getColor(self.view.backgroundBrush().color(), self, "Canvas color")
@@ -670,21 +1096,40 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         item.set_kind(kind)
         item.set_scale_info(disp_extent, axis_unit)
         item.set_overlay_text(overlay_txt, file_overlay)
+        item.set_show_title(self._global_show_title)
         item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
         item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+        item.set_metadata_unit_visible(self._metadata_unit_default)
+        item.set_metadata_file_visible(self._show_overlay_file)
+        item.set_show_colorbar(self._global_show_colorbar)
         item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
+        item.set_colorbar_mode(self._colorbar_mode)
         item._fixed_text_scale_value = self._global_text_scale
         item._use_fixed_text_scale = True
         item.set_text_color_override(self._global_text_color)
+        item.set_molecule_palette(self._molecule_palette)
         item.set_show_scale_bar(self._global_show_scale_bar)
         item.set_scale_bar_length(self._convert_scale_bar_length(axis_unit, self._global_scale_bar_length_nm))
         item.set_parent_window(self)
+        try:
+            molecule_state = list((getattr(self.viewer, "molecule_overlays", {}) or {}).get(file_key, []) or [])
+        except Exception:
+            molecule_state = []
+        if molecule_state:
+            item.set_molecule_state(molecule_state)
+        item.set_show_molecules(self._global_show_molecules and bool(molecule_state))
         if file_key not in self._file_scale_bars:
             self._file_scale_bars[file_key] = item._scale_bar_spec()[0] if item._scale_bar_spec() else None
         item.set_scale_bar_length(self._file_scale_bars.get(file_key))
         item.set_frame_color(self.view.backgroundBrush().color())
         if place:
             self._place_item(item)
+        try:
+            self.scene.clearSelection()
+            item.setSelected(True)
+            self._selected_item = item
+        except Exception:
+            pass
         self.status_label.setText(f"Added {caption}")
         self._push_undo_state()
         return item
@@ -717,6 +1162,21 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             )
             if item is not None:
                 group[kind] = item
+        if group:
+            shared_width = None
+            for item in group.values():
+                try:
+                    width = float(item.get_canvas_width())
+                except Exception:
+                    width = None
+                if width is not None:
+                    shared_width = width if shared_width is None else max(shared_width, width)
+            if shared_width is not None:
+                for item in group.values():
+                    try:
+                        item.set_canvas_width(shared_width)
+                    except Exception:
+                        continue
         return group if group else None
 
     def _find_kind_channel_indices(self, fds: list) -> dict:
@@ -959,6 +1419,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
                 item.set_show_colorbar_ticks(self._global_show_colorbar_ticks)
                 item.set_show_overlay(self._show_overlay_info, self._show_overlay_file)
                 item.set_metadata_bar_visible(False if self._show_overlay_info else self._metadata_bar_visible_default())
+                item.set_metadata_unit_visible(self._metadata_unit_default)
+                item.set_show_title(self._global_show_title)
                 item._fixed_text_scale_value = self._global_text_scale
                 item._use_fixed_text_scale = True
                 item.set_locked_text_scale(None)

@@ -152,6 +152,29 @@ def _on_exit_profile_mode(viewer):
     viewer._disable_profile_mode()
 
 
+def _on_profile_dialog_closed(viewer):
+    canvas = getattr(viewer, 'preview_canvas', None)
+    if canvas is not None:
+        try:
+            if hasattr(canvas, 'deactivate_profile_tool'):
+                canvas.deactivate_profile_tool(clear_active=True, clear_saved=True)
+            else:
+                canvas.enable_profile(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(canvas, 'set_profile_highlight_callback'):
+                canvas.set_profile_highlight_callback(None)
+        except Exception:
+            pass
+    viewer._pending_profile_enable = False
+    try:
+        viewer.measure_profile_btn.setText('Measure profile')
+    except Exception:
+        pass
+    viewer._profile_dialog = None
+
+
 def _on_clear_profile_measurement(viewer):
     canvas = getattr(viewer, 'preview_canvas', None)
     if canvas is None:
@@ -318,6 +341,7 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                 viewer._profile_dialog.move(viewer._next_popup_pos(offset=30))
             except Exception:
                 pass
+            viewer._profile_dialog.finished.connect(lambda _=None: _on_profile_dialog_closed(viewer))
             viewer._profile_dialog.show()
         else:
             if hasattr(viewer._profile_dialog, 'set_label_scale_callback'):
