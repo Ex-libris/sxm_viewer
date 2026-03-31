@@ -240,16 +240,16 @@ class ProfileDialog(QtWidgets.QDialog):
         self.stats = QtWidgets.QLabel("")
         self.stats.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
         self.stats.setWordWrap(True)
-        info_layout.addWidget(self.stats)
+        self.stats.setVisible(False)
         self.marker_info = QtWidgets.QLabel("")
         self.marker_info.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-        info_layout.addWidget(self.marker_info)
-        controls_hint = QtWidgets.QLabel(
+        self.marker_info.setVisible(False)
+        self.controls_hint = QtWidgets.QLabel(
             "Shortcuts: V markers, G grid, L lines, P points, Del remove overlay, Ctrl+Wheel font size"
         )
-        controls_hint.setObjectName("profileControlsHint")
-        controls_hint.setWordWrap(True)
-        info_layout.addWidget(controls_hint)
+        self.controls_hint.setObjectName("profileControlsHint")
+        self.controls_hint.setWordWrap(True)
+        self.controls_hint.setVisible(False)
 
         controls_panel = QtWidgets.QWidget()
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
