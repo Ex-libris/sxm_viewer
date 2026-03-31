@@ -143,7 +143,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     )
     angle_initial = bool(getattr(source_canvas, "angle_enabled", False))
     profile_state_initial = None
-    if source_canvas is not None and hasattr(source_canvas, "export_profile_state"):
+    inherit_profile_state = not any((view or {}).get("crop_sequence") is not None for view in (views or []))
+    if inherit_profile_state and source_canvas is not None and hasattr(source_canvas, "export_profile_state"):
         try:
             profile_state_initial = copy.deepcopy(source_canvas.export_profile_state())
         except Exception:
