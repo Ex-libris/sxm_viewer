@@ -244,7 +244,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
         # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
         self.show_crop_template_overlay = False
-        self.show_crop_history_overlay = bool(self.config.get("show_crop_history_overlay", False))
+        self.show_crop_history_overlay = True
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -255,7 +255,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'show_acquisition_overlay': False,
             'profile_label_mode': "length",
             'show_crop_template_overlay': False,
-            'show_crop_history_overlay': False,
+            'show_crop_history_overlay': True,
         }
         self._popup_canvases = []
         self._active_preview_popup = None
@@ -974,8 +974,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         crop_hist_layout = QtWidgets.QVBoxLayout(self.crop_history_panel)
         crop_hist_layout.setContentsMargins(0, 0, 0, 0)
         crop_hist_layout.setSpacing(4)
+        crop_history_header = QtWidgets.QHBoxLayout()
+        crop_history_header.setContentsMargins(0, 0, 0, 0)
+        crop_history_header.setSpacing(8)
         self.crop_history_label = QtWidgets.QLabel("Crop history")
-        crop_hist_layout.addWidget(self.crop_history_label)
+        crop_history_header.addWidget(self.crop_history_label)
+        crop_history_header.addStretch(1)
+        crop_hist_layout.addLayout(crop_history_header)
         self.crop_history_scroll = QtWidgets.QScrollArea()
         self.crop_history_scroll.setWidgetResizable(True)
         self.crop_history_scroll.setFixedHeight(180)
@@ -1085,7 +1090,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
         self.preview_canvas.enable_fixed_crop_quick_mode(self.quick_crop_mode)
         self.preview_canvas.show_fixed_crop_template(self.show_crop_template_overlay)
-        self.preview_canvas.show_fixed_crop_history(self.show_crop_history_overlay)
+        self.preview_canvas.show_fixed_crop_history(True)
         try:
             self.preview_canvas._undo_suspend_depth = max(0, getattr(self.preview_canvas, "_undo_suspend_depth", 0) - 1)
         except Exception:
@@ -1111,9 +1116,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_real_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+R"), self)
         self.quick_crop_real_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_real_shortcut.activated.connect(self.quick_crop_controller.apply_template_from_controls)
-        self.quick_crop_history_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+H"), self)
-        self.quick_crop_history_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-        self.quick_crop_history_shortcut.activated.connect(lambda: self.on_show_crop_history_overlay_toggled(not self.show_crop_history_overlay))
         self.quick_crop_template_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+T"), self)
         self.quick_crop_template_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_template_shortcut.activated.connect(lambda: self.on_show_crop_template_overlay_toggled(not self.show_crop_template_overlay))
@@ -7798,20 +7800,18 @@ QLabel:hover {{
             act.blockSignals(False)
 
     def on_show_crop_history_overlay_toggled(self, checked: bool):
-        self.show_crop_history_overlay = bool(checked)
-        self.config['show_crop_history_overlay'] = self.show_crop_history_overlay; save_config(self.config)
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.show_fixed_crop_history(self.show_crop_history_overlay)
-                except Exception:
-                    continue
+        self.show_crop_history_overlay = True
+        self.config['show_crop_history_overlay'] = True; save_config(self.config)
         act = getattr(self, 'crop_history_act', None)
         if act is not None:
             act.blockSignals(True)
-            act.setChecked(self.show_crop_history_overlay)
+            act.setChecked(True)
             act.blockSignals(False)
+        cb = getattr(self, 'crop_history_overlay_cb', None)
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
         if hasattr(self, "quick_crop_controller"):
             self.quick_crop_controller.update_hint()
             self.quick_crop_controller.refresh_history_panel()

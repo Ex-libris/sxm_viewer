@@ -68,14 +68,13 @@ class QuickCropController:
         label = getattr(viewer, 'quick_crop_hint_lbl', None)
         if label is None:
             return
-        overlay_state = "visible" if getattr(viewer, 'show_crop_history_overlay', False) else "hidden"
         if viewer.quick_crop_mode:
             text = (
                 "Shift+drag to size, click to spawn crops. "
                 "Right-click -> Quick tools -> Edit crop frame (or Ctrl+E) enables drag/resize/rotate, Enter applies. "
                 "Ctrl+Z undo, Ctrl+Shift+W close latest pop-out. "
-                f"History overlay is {overlay_state}. "
-                "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+H toggles history overlay, Ctrl+Shift+T toggles template overlay."
+                "Use the checkboxes in Crop history to show or hide each crop overlay. "
+                "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+T toggles template overlay."
             )
         else:
             text = "Quick crop mode is off. Press Ctrl+Shift+C to toggle."
@@ -400,6 +399,11 @@ class QuickCropController:
                     size_text = f"{px_width} × {px_height} px"
                 else:
                     size_text = "Unknown size"
+            show_cb = QtWidgets.QCheckBox()
+            show_cb.setChecked(bool(entry.get("visible", True)))
+            show_cb.setToolTip("Show or hide this crop outline on the image")
+            show_cb.toggled.connect(lambda checked, s=seq: self.set_history_entry_visible(s, checked))
+            entry_layout.addWidget(show_cb)
             label_widget = QtWidgets.QLabel(f"#{seq} - {size_text}")
             label_widget.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             entry_layout.addWidget(label_widget)
@@ -450,7 +454,7 @@ class QuickCropController:
             entry_layout.addWidget(remove_btn)
             layout.addWidget(frame)
         layout.addStretch(1)
-        viewer.crop_history_panel.setVisible(bool(entries) or getattr(viewer, 'show_crop_history_overlay', False))
+        viewer.crop_history_panel.setVisible(bool(entries))
         viewer.quick_crop_undo_btn.setEnabled(bool(entries))
         viewer.quick_crop_clear_btn.setEnabled(bool(entries))
         viewer.quick_crop_close_btn.setEnabled(bool(self.popup_stack))
@@ -469,6 +473,23 @@ class QuickCropController:
         if selected != self.selected_sequences:
             self.selected_sequences = selected
         return selected
+
+    def set_history_entry_visible(self, seq, visible):
+        if seq is None:
+            return
+        viewer = self.viewer
+        canvases = [getattr(viewer, 'preview_canvas', None)] + list(getattr(viewer, '_popup_canvases', []))
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                canv.set_fixed_crop_history_entry_visible(seq, visible)
+            except Exception:
+                continue
+        entry = self.get_history_entry(seq)
+        if entry is not None:
+            entry["visible"] = bool(visible)
+        self.refresh_history_panel()
 
     def _has_popup_for_seq(self, seq):
         if seq is None:
