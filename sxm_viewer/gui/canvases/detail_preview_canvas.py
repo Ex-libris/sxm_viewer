@@ -8774,7 +8774,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if sampled.size == 0:
             return None
         cropped_disp = np.asarray(sampled).reshape((height_px, width_px))
-        return np.array(cropped_disp, copy=True)
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        return np.array(cropped_arr, copy=True)
 
     def _extract_axis_aligned_crop(self, view, pixel_bounds):
         if view is None or not pixel_bounds:
@@ -8803,7 +8804,8 @@ class MultiPreviewCanvas(FigureCanvas):
         cropped_disp = arr_disp[top:bottom + 1, left:right + 1]
         if cropped_disp.size == 0:
             return None
-        return np.array(cropped_disp, copy=True)
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        return np.array(cropped_arr, copy=True)
 
     def _build_cropped_view_from_selection(
         self,
