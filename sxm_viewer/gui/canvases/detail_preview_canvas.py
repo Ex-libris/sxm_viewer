@@ -7634,9 +7634,6 @@ class MultiPreviewCanvas(FigureCanvas):
         }
 
     def _update_highlight_artists(self):
-        if self._fixed_crop_history_visible:
-            self._cleanup_highlight_artists()
-            return
         seq = self._fixed_crop_history_highlight_seq
         if seq is None:
             self._cleanup_highlight_artists()
@@ -7648,7 +7645,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
             entry = next(
                 (entry for entry in self._fixed_crop_history
-                 if entry.get("key") == key and entry.get("sequence") == seq),
+                 if entry.get("key") == key and entry.get("sequence") == seq and bool(entry.get("visible", True))),
                 None,
             )
             if entry is None:
@@ -8098,6 +8095,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "data_bounds": bounds_data,
             "pixel_bounds": pixel_bounds,
             "sequence": seq,
+            "visible": True,
             "square": bool(square),
             "rotate": float(angle or 0.0),
             "real_size": real_size,
@@ -8121,6 +8119,8 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _render_history_entry(self, ax, entry, show_label=True):
         if not entry or ax is None:
+            return
+        if not bool(entry.get("visible", True)):
             return
         geom = self._history_entry_geometry(entry)
         if geom is None:
@@ -8219,12 +8219,14 @@ class MultiPreviewCanvas(FigureCanvas):
         key = self._outline_key(view)
         if key is None:
             return
-        entries = [entry for entry in self._fixed_crop_history if entry.get("key") == key]
+        entries = [
+            entry for entry in self._fixed_crop_history
+            if entry.get("key") == key and bool(entry.get("visible", True))
+        ]
         if not entries:
             return
-        if self._fixed_crop_history_visible:
-            for entry in entries:
-                self._render_history_entry(ax, entry)
+        for entry in entries:
+            self._render_history_entry(ax, entry)
 
     def _emit_fixed_crop_history_update(self):
         if callable(self._fixed_crop_history_callback):
@@ -8235,6 +8237,37 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_fixed_crop_history_callback(self, cb):
         self._fixed_crop_history_callback = cb
+
+    def set_fixed_crop_history_entry_visible(self, seq, visible: bool):
+        seq = int(seq) if seq is not None else None
+        if seq is None:
+            return False
+        target = None
+        for entry in self._fixed_crop_history:
+            if entry.get("sequence") == seq:
+                target = entry
+                break
+        if target is None:
+            return False
+        visible = bool(visible)
+        if bool(target.get("visible", True)) == visible:
+            return False
+        target["visible"] = visible
+        if self._fixed_crop_history_highlight_seq == seq and not visible:
+            self._fixed_crop_history_highlight_seq = None
+        self._cleanup_highlight_artists()
+        self._emit_fixed_crop_history_update()
+        self._redraw()
+        return True
+
+    def is_fixed_crop_history_entry_visible(self, seq):
+        seq = int(seq) if seq is not None else None
+        if seq is None:
+            return False
+        for entry in self._fixed_crop_history:
+            if entry.get("sequence") == seq:
+                return bool(entry.get("visible", True))
+        return False
 
     def _crop_color_for_seq(self, seq: int):
         palette = [
@@ -8774,7 +8807,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if sampled.size == 0:
             return None
         cropped_disp = np.asarray(sampled).reshape((height_px, width_px))
-        return np.array(cropped_disp, copy=True)
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        return np.array(cropped_arr, copy=True)
 
     def _extract_axis_aligned_crop(self, view, pixel_bounds):
         if view is None or not pixel_bounds:
@@ -8803,7 +8837,8 @@ class MultiPreviewCanvas(FigureCanvas):
         cropped_disp = arr_disp[top:bottom + 1, left:right + 1]
         if cropped_disp.size == 0:
             return None
-        return np.array(cropped_disp, copy=True)
+        cropped_arr = np.flipud(cropped_disp) if flip else cropped_disp
+        return np.array(cropped_arr, copy=True)
 
     def _build_cropped_view_from_selection(
         self,
