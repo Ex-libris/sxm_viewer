@@ -14,8 +14,6 @@ def _resolve_popup_channel_source(owner, views):
     if not views or len(views) != 1:
         return None
     view = views[0] or {}
-    if view.get("crop_sequence") is not None:
-        return None
     meta = view.get("meta") or {}
     file_path = view.get("path") or meta.get("path") or meta.get("file_path")
     channel_idx = view.get("channel_idx")
@@ -519,6 +517,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             current_view = canvas.views[0] if getattr(canvas, "views", None) else {}
             cmap_override = current_view.get("cmap")
             try:
+                zoom_states = canvas.export_zoom_states()
+            except Exception:
+                zoom_states = None
+            try:
                 bundle = owner._build_single_channel_view(
                     popup_source["file_path"],
                     idx,
@@ -529,6 +531,20 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
                 bundle = None
             if not bundle:
                 return
+            next_view = bundle["view"]
+            seq = current_view.get("crop_sequence")
+            if seq is not None and source_canvas is not None and hasattr(source_canvas, "get_fixed_crop_history_entry"):
+                try:
+                    crop_entry = source_canvas.get_fixed_crop_history_entry(seq)
+                except Exception:
+                    crop_entry = None
+                if crop_entry is not None:
+                    try:
+                        rebuilt_view = canvas.build_view_from_fixed_crop_entry(next_view, crop_entry)
+                    except Exception:
+                        rebuilt_view = None
+                    if rebuilt_view:
+                        next_view = rebuilt_view
             channel_sync["active"] = True
             try:
                 popup_source["channel_idx"] = idx
@@ -537,12 +553,17 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
                 canvas.set_views(
                     _apply_popup_display_state(
                         owner,
-                        [bundle["view"]],
+                        [next_view],
                         relative_zero=popup_display_state["relative_zero"],
                     ),
                     preserve_profiles=preserve_profiles,
                 )
-                dlg.setWindowTitle(owner._friendly_view_title(bundle["view"], default="Preview"))
+                if zoom_states:
+                    try:
+                        canvas.apply_zoom_states(zoom_states)
+                    except Exception:
+                        pass
+                dlg.setWindowTitle(owner._friendly_view_title(next_view, default="Preview"))
                 channel_combo.blockSignals(True)
                 channel_combo.setCurrentIndex(idx)
                 channel_combo.blockSignals(False)

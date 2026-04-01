@@ -1778,6 +1778,7 @@ QLabel:hover {{
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
             "relative_axes_enabled": rel_axes_enabled,
             "relative_zero_enabled": rel_zero_enabled,
+            "view_cmaps": [str((view or {}).get("cmap") or "") for view in list(getattr(canvas, "views", []) or [])],
         }
 
     def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
@@ -1864,6 +1865,19 @@ QLabel:hover {{
                 rel_zero_setter = getattr(canvas, "_popup_relative_zero_setter", None)
                 if callable(rel_zero_setter):
                     rel_zero_setter(bool(rel_zero_enabled))
+            except Exception:
+                pass
+        view_cmaps = list(style_snapshot.get("view_cmaps") or [])
+        if view_cmaps:
+            try:
+                target_views = list(getattr(canvas, "views", []) or [])
+                if len(view_cmaps) == len(target_views):
+                    for target_view, cmap_name in zip(target_views, view_cmaps):
+                        if cmap_name:
+                            target_view["cmap"] = str(cmap_name)
+                elif target_views and view_cmaps[0]:
+                    for target_view in target_views:
+                        target_view["cmap"] = str(view_cmaps[0])
             except Exception:
                 pass
         if redraw:
@@ -1973,7 +1987,7 @@ QLabel:hover {{
         title = view.get("title") or "Cropped view"
         if self.show_crop_history_overlay and seq is not None:
             title = f"{title} #{seq}"
-        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=title)
+        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=title, source_canvas=source_canvas)
 
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
