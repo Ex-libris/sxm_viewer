@@ -67,6 +67,15 @@ from ..._shared import (
     matplotlib,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
+from ..figure_layout_presets import (
+    iter_figure_layout_presets,
+    get_figure_layout_preset,
+    apply_figure_layout,
+    preset_pixel_size,
+    apply_canvas_widget_preset,
+    copy_figure_to_clipboard,
+    save_figure_with_dialog,
+)
 try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
@@ -249,6 +258,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._x_log = False
         self._y_log = False
         self._line_width = 1.5
+        self._figure_preset_key = "interactive"
         self._show_position_inset = True
         self._position_inset_ax = None
         self._inset_bbox = None
@@ -568,10 +578,24 @@ class SpectroscopyPopup(QtWidgets.QDialog):
 
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
+        preset_menu = menu.addMenu("Figure preset")
+        preset_actions = {}
+        for preset in iter_figure_layout_presets():
+            act = preset_menu.addAction(preset.label)
+            act.setCheckable(True)
+            act.setChecked(self._figure_preset_key == preset.key)
+            preset_actions[act] = preset.key
+        menu.addSeparator()
         copy_data_act = menu.addAction("Copy channel data")
         copy_all_act = menu.addAction("Copy all traces (table)")
-        copy_png_act = menu.addAction("Copy plot as PNG")
+        copy_png_act = menu.addAction("Copy plot as PNG (300 dpi)")
+        copy_png_600_act = menu.addAction("Copy plot as PNG (600 dpi)")
         copy_svg_act = menu.addAction("Copy plot as SVG")
+        save_menu = menu.addMenu("Save plot")
+        save_png_300_act = save_menu.addAction("PNG 300 dpi...")
+        save_png_600_act = save_menu.addAction("PNG 600 dpi...")
+        save_svg_act = save_menu.addAction("SVG (vector)...")
+        save_pdf_act = save_menu.addAction("PDF (vector)...")
         add_font_menu_action(
             menu,
             self,
@@ -625,14 +649,26 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         position_act.setChecked(self._show_position_inset)
         reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if action == copy_data_act:
+        if action in preset_actions:
+            self._apply_figure_preset(preset_actions[action])
+        elif action == copy_data_act:
             self._copy_channel_to_clipboard()
         elif action == copy_all_act:
             self._copy_all_traces_to_clipboard()
         elif action == copy_png_act:
-            self._copy_plot_as_png()
+            self._copy_plot_as_png(dpi=300)
+        elif action == copy_png_600_act:
+            self._copy_plot_as_png(dpi=600)
         elif action == copy_svg_act:
             self._copy_plot_as_svg()
+        elif action == save_png_300_act:
+            self._save_plot_export("png", dpi=300)
+        elif action == save_png_600_act:
+            self._save_plot_export("png", dpi=600)
+        elif action == save_svg_act:
+            self._save_plot_export("svg")
+        elif action == save_pdf_act:
+            self._save_plot_export("pdf")
         elif action == grid_act:
             self._grid_enabled = grid_act.isChecked()
             self._plot_selected_channel()
@@ -706,6 +742,28 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def set_plot_font_family(self, family: str):
         """Refresh the spectroscopy plot with a new shared font family."""
         self.set_plot_typography(family=family)
+
+    def _apply_figure_preset(self, preset_key):
+        """Apply a shared journal/slide layout preset to this spectroscopy plot."""
+        preset = get_figure_layout_preset(preset_key)
+        self._figure_preset_key = preset.key
+        apply_figure_layout(self.fig, preset)
+        plot_w_px, plot_h_px = preset_pixel_size(self, preset, max_fraction=0.62)
+        apply_canvas_widget_preset(self.canvas, preset, plot_w_px, plot_h_px)
+        self._plot_font_family = normalize_font_family(preset.font_family, "sans-serif")
+        self._plot_font_bold = False
+        self._plot_font_italic = False
+        self._plot_font_underline = False
+        self._font_scale = float(preset.font_scale)
+        self._line_width = float(preset.line_width)
+        try:
+            total_w = max(760, int(plot_w_px + 120))
+            total_h = max(560, int(plot_h_px + 240))
+            self.resize(total_w, total_h)
+        except Exception:
+            pass
+        self._plot_selected_channel()
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Applied preset: {preset.label}", self)
 
     def _copy_channel_to_clipboard(self):
         name = self.channel_combo.currentText()
@@ -811,38 +869,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         QtWidgets.QApplication.clipboard().setText("\n".join(rows))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied all traces", self)
 
-    def _copy_plot_as_png(self):
+    def _copy_plot_as_png(self, *, dpi=300):
         try:
-            pix = self.canvas.grab()
-            buffer = QtCore.QBuffer()
-            buffer.open(QtCore.QIODevice.WriteOnly)
-            pix.save(buffer, "PNG")
-            mime = QtCore.QMimeData()
-            mime.setData("image/png", buffer.data())
-            mime.setImageData(pix.toImage())
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as PNG", self)
+            copy_figure_to_clipboard(self, self.fig, "png", dpi=dpi)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy PNG: {exc}")
 
     def _copy_plot_as_svg(self):
         try:
-            buf = io.BytesIO()
-            self.fig.savefig(buf, format="svg", bbox_inches="tight")
-            svg_bytes = buf.getvalue()
-            mime = QtCore.QMimeData()
-            try:
-                mime.setData("image/svg+xml", svg_bytes)
-            except Exception:
-                pass
-            try:
-                mime.setText(svg_bytes.decode("utf-8"))
-            except Exception:
-                pass
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
+            copy_figure_to_clipboard(self, self.fig, "svg")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy SVG: {exc}")
+
+    def _save_plot_export(self, fmt, *, dpi=300):
+        save_figure_with_dialog(self, self.fig, default_stem="spectroscopy_plot", fmt=fmt, dpi=dpi)
 
     def _attach_spec_metadata(self, entry):
         spec = entry.get("spec")
@@ -2677,6 +2717,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plot_x_log = False
         self._plot_y_log = False
         self._plot_line_width = 1.6
+        self._figure_preset_key = "interactive"
         self._show_position_inset = True
         self._position_inset_ax = None
         self._inset_bbox = None
@@ -4976,9 +5017,23 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _on_compare_canvas_menu(self, pos):
         menu = QtWidgets.QMenu(self)
-        copy_png = menu.addAction("Copy plot as PNG")
+        preset_menu = menu.addMenu("Figure preset")
+        preset_actions = {}
+        for preset in iter_figure_layout_presets():
+            act = preset_menu.addAction(preset.label)
+            act.setCheckable(True)
+            act.setChecked(self._figure_preset_key == preset.key)
+            preset_actions[act] = preset.key
+        menu.addSeparator()
+        copy_png = menu.addAction("Copy plot as PNG (300 dpi)")
+        copy_png_600 = menu.addAction("Copy plot as PNG (600 dpi)")
         copy_svg = menu.addAction("Copy plot as SVG")
         copy_all = menu.addAction("Copy all traces (table)")
+        save_menu = menu.addMenu("Save plot")
+        save_png_300 = save_menu.addAction("PNG 300 dpi...")
+        save_png_600 = save_menu.addAction("PNG 600 dpi...")
+        save_svg = save_menu.addAction("SVG (vector)...")
+        save_pdf = save_menu.addAction("PDF (vector)...")
         menu.addSeparator()
         add_font_menu_action(
             menu,
@@ -5154,9 +5209,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         y_min_spin.valueChanged.connect(lambda _v: apply_ticks())
         x_len_spin.valueChanged.connect(lambda _v: apply_ticks())
         y_len_spin.valueChanged.connect(lambda _v: apply_ticks())
-        save_png = menu.addAction("Save PNG...")
-        save_svg = menu.addAction("Save SVG...")
-        menu.addSeparator()
         style_menu = menu.addMenu("Plot style")
         grid_act = style_menu.addAction("Show grid")
         grid_act.setCheckable(True)
@@ -5198,8 +5250,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         width_dec_act = width_menu.addAction("Decrease")
         reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if action == copy_png:
-            self._copy_canvas_to_clipboard("png")
+        if action in preset_actions:
+            self._apply_figure_preset(preset_actions[action])
+        elif action == copy_png:
+            self._copy_canvas_to_clipboard("png", dpi=300)
+        elif action == copy_png_600:
+            self._copy_canvas_to_clipboard("png", dpi=600)
         elif action == copy_svg:
             self._copy_canvas_to_clipboard("svg")
         elif action == copy_all:
@@ -5219,10 +5275,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._plot_grid_enabled = grid_act.isChecked()
             self._grid_major = self._plot_grid_enabled
             self._update_plot()
-        elif action == save_png:
-            self._save_canvas("png")
+        elif action == save_png_300:
+            self._save_canvas("png", dpi=300)
+        elif action == save_png_600:
+            self._save_canvas("png", dpi=600)
         elif action == save_svg:
             self._save_canvas("svg")
+        elif action == save_pdf:
+            self._save_canvas("pdf")
         elif action == legend_act:
             self._plot_legend_enabled = legend_act.isChecked()
             self._update_plot()
@@ -5252,6 +5312,29 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         """Refresh the comparison plot with a new shared font family."""
         family = normalize_font_family(family, "sans-serif")
         self.set_plot_typography(family=family)
+
+    def _apply_figure_preset(self, preset_key):
+        """Apply a shared journal/slide layout preset to the comparison plot."""
+        preset = get_figure_layout_preset(preset_key)
+        self._figure_preset_key = preset.key
+        apply_figure_layout(self.fig, preset)
+        plot_w_px, plot_h_px = preset_pixel_size(self, preset, max_fraction=0.58)
+        apply_canvas_widget_preset(self.canvas, preset, plot_w_px, plot_h_px)
+        self._plot_font_family = normalize_font_family(preset.font_family, "sans-serif")
+        self._plot_font_bold = False
+        self._plot_font_italic = False
+        self._plot_font_underline = False
+        self._font_scale = float(preset.font_scale)
+        self._legend_font = float(preset.legend_font_pt)
+        self._plot_line_width = float(preset.line_width)
+        try:
+            total_w = max(1100, int(plot_w_px + 540))
+            total_h = max(720, int(plot_h_px + 220))
+            self.resize(total_w, total_h)
+        except Exception:
+            pass
+        self._update_plot()
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Applied preset: {preset.label}", self)
 
     def _font_style_state(self):
         return {
@@ -5294,36 +5377,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             gui_event = getattr(event, "guiEvent", None)
             if gui_event:
                 gui_event.accept()
-    def _copy_canvas_to_clipboard(self, fmt):
-        buf = io.BytesIO()
-        if fmt == "svg":
-            with matplotlib.rc_context({'svg.fonttype': 'none'}):
-                self.fig.savefig(buf, format="svg", bbox_inches="tight")
-            mime = QtCore.QMimeData()
-            mime.setData("image/svg+xml", buf.getvalue())
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as SVG", self)
-        else:
-            self.fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-            image = QtGui.QImage.fromData(buf.getvalue(), "PNG")
-            QtWidgets.QApplication.clipboard().setImage(image)
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Plot copied as PNG", self)
+    def _copy_canvas_to_clipboard(self, fmt, *, dpi=300):
+        copy_figure_to_clipboard(self, self.fig, fmt, dpi=dpi)
 
-    def _save_canvas(self, fmt):
-        if fmt == "png":
-            filt = "PNG Files (*.png)"
-            default = "spectra.png"
-        else:
-            filt = "SVG Files (*.svg)"
-            default = "spectra.svg"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save plot", default, filt)
-        if not path:
-            return
-        try:
-            self.fig.savefig(path, format=fmt, dpi=300, bbox_inches="tight")
-            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved {Path(path).name}", self)
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Save plot", str(exc))
+    def _save_canvas(self, fmt, *, dpi=300):
+        save_figure_with_dialog(self, self.fig, default_stem="spectroscopy_compare", fmt=fmt, dpi=dpi)
 
     def _set_hint_text(self, text=None):
         label = getattr(self, "hint_label", None)

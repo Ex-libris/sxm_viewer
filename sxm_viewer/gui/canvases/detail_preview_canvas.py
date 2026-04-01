@@ -36,7 +36,7 @@ from .molecular_overlay import (
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
-from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
+from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 
 try:
     from scipy import ndimage
@@ -282,6 +282,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._outline_order = []  # global order for undo [(key, idx)]
         # Molecular overlay state
         self.molecules = []
+        self._active_molecule_idx = None
         self._molecule_drag_idx = None
         self._molecule_drag_start = None
         self._molecule_drag_start_px = None
@@ -2731,6 +2732,9 @@ class MultiPreviewCanvas(FigureCanvas):
             if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_Z:
                 if self.handle_undo_request():
                     return
+            if not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+                if self._handle_popup_keyboard_shortcuts(key, shift=bool(mods & QtCore.Qt.ShiftModifier)):
+                    return
         if event is not None:
             try:
                 if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_R:
@@ -2739,6 +2743,47 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         super().keyPressEvent(event)
+
+    def _handle_popup_keyboard_shortcuts(self, key, *, shift: bool = False):
+        """Handle popup shortcuts that should work without enabling tools explicitly."""
+        if key is None:
+            return False
+        if self._rotate_selected_molecule_from_key(key, reverse=shift):
+            return True
+        if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
+            setter = getattr(self, "_popup_relative_zero_setter", None)
+            if callable(setter):
+                try:
+                    setter(not bool(getattr(self, "_popup_relative_zero_enabled", False)))
+                except Exception:
+                    pass
+                return True
+        return False
+
+    def _rotate_selected_molecule_from_key(self, key, *, reverse: bool = False):
+        """Rotate the actively selected molecule around X/Y/Z using keyboard keys."""
+        axis_map = {
+            QtCore.Qt.Key_X: 0,
+            QtCore.Qt.Key_Y: 1,
+            QtCore.Qt.Key_Z: 2,
+        }
+        axis = axis_map.get(key)
+        idx = getattr(self, "_active_molecule_idx", None)
+        if axis is None or idx is None or idx < 0 or idx >= len(self.molecules):
+            return False
+        try:
+            self._push_molecule_snapshot()
+        except Exception:
+            pass
+        try:
+            mol = self.molecules[idx]
+            new_angles = np.array(mol.angles, dtype=float, copy=True)
+            new_angles[axis] += -5.0 if reverse else 5.0
+            mol.angles = new_angles
+            self._update_molecule_artists()
+        except Exception:
+            return False
+        return True
 
     def _connect_profile_events(self):
         if self._cids:
@@ -3812,6 +3857,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     x_phys = None
             meta = v0.get('meta') if isinstance(v0, dict) else None
+            source_path = str(v0.get('path') or (meta or {}).get('path') or (meta or {}).get('file_path') or "").strip()
+            source_title = str(v0.get('title') or "").strip()
+            source_acq = str(self._acquisition_overlay_text(v0) or "").strip()
+            source_folder = ""
+            source_folder_name = ""
+            source_name = ""
+            source_datetime = str(v0.get("datetime") or (meta or {}).get("datetime") or "").strip()
+            source_date = str(v0.get("date") or (meta or {}).get("date") or "").strip()
+            source_time = str(v0.get("time") or (meta or {}).get("time") or "").strip()
+            if source_path:
+                try:
+                    p = Path(source_path)
+                    source_folder = str(p.parent)
+                    source_folder_name = p.parent.name
+                    source_name = p.name
+                except Exception:
+                    source_name = source_path
             return {
                 'x_px': x_px,
                 'x_nm': x_phys,
@@ -3828,6 +3890,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 'label': self._format_profile_label(pts),
                 'relative_axes': self._use_relative_axes(v0),
                 'meta': meta,
+                'source_path': source_path,
+                'source_folder': source_folder,
+                'source_folder_name': source_folder_name,
+                'source_file_name': source_name,
+                'source_title': source_title,
+                'source_acquisition_text': source_acq,
+                'source_datetime': source_datetime,
+                'source_date': source_date,
+                'source_time': source_time,
             }
         except Exception:
             return None
@@ -5231,6 +5302,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self._push_molecule_snapshot()
         self.molecules = []
+        self._active_molecule_idx = None
         self._molecule_artists = []
         self._redraw()
 
@@ -5289,6 +5361,7 @@ class MultiPreviewCanvas(FigureCanvas):
             
             # Threshold: 0.5 nm radius click tolerance
             if min_dist < 0.25: 
+                self._active_molecule_idx = idx
                 if event.button == 1 or event.button == 2:
                     if not self._molecule_drag_snapshot:
                         self._push_molecule_snapshot()
@@ -5424,6 +5497,30 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_molecule_palette_callback(self, cb):
         self._molecule_palette_cb = cb
+
+    def apply_view_colormap(self, cmap_name: str, *, target_view=None, notify: bool = True):
+        """Apply a colormap to one or all current views and redraw in place."""
+        cmap_name = str(cmap_name or "").strip()
+        if not cmap_name:
+            return False
+        targets = []
+        for current_view in list(self.views or []):
+            if target_view is not None and current_view is not target_view:
+                continue
+            if str(current_view.get("cmap") or "") == cmap_name:
+                continue
+            targets.append(current_view)
+        if not targets:
+            return False
+        self.push_undo_state("colormap")
+        changed = False
+        for current_view in targets:
+            current_view["cmap"] = cmap_name
+            changed = True
+        self._redraw()
+        if notify:
+            self._notify_views_callback()
+        return True
 
     def _show_molecule_menu(self, event, mol):
         style = QtWidgets.QApplication.style()
@@ -5786,6 +5883,52 @@ class MultiPreviewCanvas(FigureCanvas):
                 recent_actions[act] = p
         clear_mols_act = molecules_menu.addAction("Clear Molecules")
 
+        cmap_menu = menu.addMenu("Colormap")
+        popup_cmap_apply_all_act = None
+        cmap_actions = {}
+        cmap_group = QtWidgets.QActionGroup(self)
+        cmap_group.setExclusive(True)
+        common_cmaps = [
+            "viridis",
+            "plasma",
+            "inferno",
+            "magma",
+            "cividis",
+            "turbo",
+            "gray",
+            "afmhot",
+            "Blues_r",
+            "RdBu_r",
+            "coolwarm",
+        ]
+        try:
+            available_cmaps = sorted(str(name) for name in matplotlib.colormaps.keys())
+        except Exception:
+            available_cmaps = list(common_cmaps)
+        seen_cmaps = []
+        for cmap_name in common_cmaps + available_cmaps:
+            if cmap_name not in seen_cmaps:
+                seen_cmaps.append(cmap_name)
+        current_cmap = str((view or {}).get("cmap") or "viridis")
+        more_cmaps_menu = None
+        for idx, cmap_name in enumerate(seen_cmaps):
+            parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
+            if parent_menu is None:
+                more_cmaps_menu = cmap_menu.addMenu("More...")
+                parent_menu = more_cmaps_menu
+            act = parent_menu.addAction(cmap_name)
+            act.setCheckable(True)
+            act.setChecked(cmap_name == current_cmap)
+            try:
+                act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
+            except Exception:
+                pass
+            cmap_group.addAction(act)
+            cmap_actions[act] = cmap_name
+        if callable(self._apply_popup_style_callback):
+            cmap_menu.addSeparator()
+            popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
+
         compare_set_a_act = None
         compare_set_b_act = None
         compare_with_a_act = None
@@ -5981,6 +6124,16 @@ class MultiPreviewCanvas(FigureCanvas):
             self.add_molecule(recent_actions[chosen])
         elif chosen == clear_mols_act:
             self._clear_molecules()
+        elif chosen in cmap_actions:
+            try:
+                self.apply_view_colormap(cmap_actions[chosen], target_view=view, notify=True)
+            except Exception:
+                pass
+        elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
+            try:
+                self._apply_popup_style_callback()
+            except Exception:
+                pass
         elif compare_set_a_act and chosen == compare_set_a_act:
             try:
                 self._compare_menu_callback("set_a", view, self)
@@ -6647,7 +6800,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._clear_shortcut_hint_artist()
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
-        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | Ctrl+1/2/3 saved overlays | click to hide"
+        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | click molecule then X/Y/Z rotate | Ctrl+1/2/3 saved overlays | click to hide"
         hint_artist = ax.text(
             0.012,
             0.012,
@@ -7991,6 +8144,8 @@ class MultiPreviewCanvas(FigureCanvas):
             "press": (float(event.xdata), float(event.ydata)),
             "last": (float(event.xdata), float(event.ydata)),
             "bounds_start": (geom["left"], geom["right"], geom["bottom"], geom["top"]),
+            "pixel_bounds_start": tuple(int(v) for v in (geom.get("pixel_bounds") or (0, 0, 0, 0))),
+            "arr_shape": tuple(geom.get("arr_shape") or (0, 0)),
             "angle_start": float(geom.get("angle", 0.0) or 0.0),
             "center_start": (geom["cx"], geom["cy"]),
         }
@@ -8021,6 +8176,31 @@ class MultiPreviewCanvas(FigureCanvas):
         press_x, press_y = drag.get("press", (event.xdata, event.ydata))
 
         if mode == "move":
+            h, w = tuple(drag.get("arr_shape") or (0, 0))
+            c0s, c1s, r0s, r1s = tuple(drag.get("pixel_bounds_start") or (0, 0, 0, 0))
+            if h > 0 and w > 0 and c1s >= c0s and r1s >= r0s:
+                press_c = self._axis_coord_to_pixel_float(view, press_x, w, "x", ax=ax)
+                press_r = self._axis_coord_to_pixel_float(view, press_y, h, "y", ax=ax)
+                curr_c = self._axis_coord_to_pixel_float(view, event.xdata, w, "x", ax=ax)
+                curr_r = self._axis_coord_to_pixel_float(view, event.ydata, h, "y", ax=ax)
+                if None not in (press_c, press_r, curr_c, curr_r):
+                    width_px = max(1, int(c1s - c0s + 1))
+                    height_px = max(1, int(r1s - r0s + 1))
+                    dc = float(curr_c - press_c)
+                    dr = float(curr_r - press_r)
+                    start_c = float(c0s) + dc
+                    start_r = float(r0s) + dr
+                    max_c0 = max(0.0, float(w - width_px))
+                    max_r0 = max(0.0, float(h - height_px))
+                    c0 = int(round(np.clip(start_c, 0.0, max_c0)))
+                    r0 = int(round(np.clip(start_r, 0.0, max_r0)))
+                    c1 = int(c0 + width_px - 1)
+                    r1 = int(r0 + height_px - 1)
+                    bounds = self._pixel_bounds_to_axis_bounds(view, ax, w, h, c0, c1, r0, r1)
+                    if bounds:
+                        return self._update_fixed_crop_template_from_bounds(
+                            view, ax, bounds[0], bounds[1], bounds[2], bounds[3], angle=angle
+                        )
             dx = float(event.xdata - press_x)
             dy = float(event.ydata - press_y)
             return self._update_fixed_crop_template_from_bounds(
@@ -8237,6 +8417,136 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_fixed_crop_history_callback(self, cb):
         self._fixed_crop_history_callback = cb
+
+    def get_fixed_crop_history_entry(self, seq):
+        seq = int(seq) if seq is not None else None
+        if seq is None:
+            return None
+        for entry in self._fixed_crop_history:
+            if entry.get("sequence") == seq:
+                clone = dict(entry)
+                view_snapshot = entry.get("view_snapshot")
+                if isinstance(view_snapshot, dict):
+                    clone["view_snapshot"] = dict(view_snapshot)
+                return clone
+        return None
+
+    def import_fixed_crop_history_entry(self, entry, *, update_size=True):
+        if not isinstance(entry, dict):
+            return None
+        bounds_data = entry.get("data_bounds")
+        if not bounds_data or len(bounds_data) != 4:
+            return None
+        target_view, target_ax = self._fixed_crop_target_view()
+        if target_view is None or target_ax is None:
+            return None
+        source_key = entry.get("key") or ()
+        target_key = self._outline_key(target_view)
+        source_path = source_key[0] if isinstance(source_key, tuple) and source_key else None
+        target_path = target_key[0] if isinstance(target_key, tuple) and target_key else None
+        if source_path and target_path and str(source_path) != str(target_path):
+            return None
+        arr_obj = target_view.get("arr")
+        if arr_obj is None:
+            return None
+        arr = np.asarray(arr_obj)
+        if arr.ndim < 2 or arr.size == 0:
+            return None
+        h, w = arr.shape[:2]
+        left, right = min(bounds_data[0], bounds_data[1]), max(bounds_data[0], bounds_data[1])
+        bottom, top = min(bounds_data[2], bounds_data[3]), max(bounds_data[2], bounds_data[3])
+        c_left = self._axis_coord_to_pixel_float(target_view, left, w, "x", ax=target_ax)
+        c_right = self._axis_coord_to_pixel_float(target_view, right, w, "x", ax=target_ax)
+        r_bottom = self._axis_coord_to_pixel_float(target_view, bottom, h, "y", ax=target_ax)
+        r_top = self._axis_coord_to_pixel_float(target_view, top, h, "y", ax=target_ax)
+        if any(v is None for v in (c_left, c_right, r_bottom, r_top)):
+            return None
+        c0 = int(np.clip(math.floor(min(c_left, c_right)), 0, max(0, w - 1)))
+        c1 = int(np.clip(math.ceil(max(c_left, c_right)), 0, max(0, w - 1)))
+        r0 = int(np.clip(math.floor(min(r_bottom, r_top)), 0, max(0, h - 1)))
+        r1 = int(np.clip(math.ceil(max(r_bottom, r_top)), 0, max(0, h - 1)))
+        imported = self._register_crop_entry(
+            target_view,
+            tuple(float(v) for v in bounds_data),
+            (c0, c1, r0, r1),
+            bool(entry.get("square", False)),
+            angle=float(entry.get("rotate", 0.0) or 0.0),
+            update_size=update_size,
+        )
+        if imported is None:
+            return None
+        imported["visible"] = bool(entry.get("visible", True))
+        imported["real_size"] = tuple(entry.get("real_size") or imported.get("real_size") or (0.0, 0.0))
+        imported["unit"] = entry.get("unit") or imported.get("unit")
+        view_snapshot = entry.get("view_snapshot")
+        if isinstance(view_snapshot, dict):
+            snapshot = dict(view_snapshot)
+            if imported.get("sequence") is not None:
+                snapshot["crop_sequence"] = imported["sequence"]
+            imported["view_snapshot"] = snapshot
+        self._emit_fixed_crop_history_update()
+        self.draw_idle()
+        return imported
+
+    def build_view_from_fixed_crop_entry(self, base_view, entry, *, title_suffix=" [crop]"):
+        """Rebuild a cropped channel view using the geometry stored in crop history."""
+        if not isinstance(base_view, dict) or not isinstance(entry, dict):
+            return None
+        bounds_data = entry.get("data_bounds")
+        pixel_bounds = entry.get("pixel_bounds")
+        if not bounds_data or len(bounds_data) != 4 or not pixel_bounds or len(pixel_bounds) != 4:
+            return None
+        angle = float(entry.get("rotate", 0.0) or 0.0)
+        width_px = max(2, int(abs(pixel_bounds[1] - pixel_bounds[0]) + 1))
+        height_px = max(2, int(abs(pixel_bounds[3] - pixel_bounds[2]) + 1))
+        helper_ax = self.main_ax
+        if helper_ax is None:
+            fig = Figure(figsize=(1, 1))
+            helper_ax = fig.add_subplot(111)
+            extent = self._view_extent(base_view)
+            if extent is not None and len(extent) == 4:
+                try:
+                    helper_ax.set_xlim(float(extent[0]), float(extent[1]))
+                    helper_ax.set_ylim(float(extent[2]), float(extent[3]))
+                except Exception:
+                    pass
+        if abs(angle) <= 1e-9:
+            cropped_arr = self._extract_axis_aligned_crop(base_view, pixel_bounds)
+        else:
+            cropped_arr = self._extract_rotated_crop(base_view, helper_ax, bounds_data, width_px, height_px, angle)
+        if cropped_arr is None:
+            return None
+        new_view = dict(base_view)
+        try:
+            new_view["arr"] = np.array(cropped_arr, copy=True)
+        except Exception:
+            new_view["arr"] = cropped_arr
+        try:
+            finite = np.asarray(cropped_arr)[np.isfinite(cropped_arr)]
+            if finite.size:
+                lo = float(finite.min())
+                hi = float(finite.max())
+                if hi <= lo:
+                    hi = lo + 1e-12
+                new_view["clim"] = (lo, hi)
+            else:
+                new_view.pop("clim", None)
+        except Exception:
+            new_view.pop("clim", None)
+        crop_extent = tuple(float(v) for v in bounds_data)
+        new_view["extent_raw"] = crop_extent
+        display_extent = self._display_extent_for_view(new_view, crop_extent)
+        if display_extent is not None:
+            new_view["extent"] = display_extent
+        else:
+            new_view.pop("extent", None)
+        base_title = str(base_view.get("title") or "crop")
+        suffix = str(title_suffix or "")
+        new_view["title"] = base_title if not suffix or base_title.endswith(suffix.strip()) else f"{base_title}{suffix}"
+        seq = entry.get("sequence")
+        if seq is not None:
+            new_view["crop_sequence"] = seq
+        return new_view
 
     def set_fixed_crop_history_entry_visible(self, seq, visible: bool):
         seq = int(seq) if seq is not None else None
@@ -8953,7 +9263,14 @@ class MultiPreviewCanvas(FigureCanvas):
             auto_virtual_copy=True,
         )
         if ok:
-            self.enable_fixed_crop_transform_mode(False)
+            if self._fixed_crop_quick_mode:
+                self._fixed_crop_template_visible = True
+                self._fixed_crop_template_drag = None
+                self._fixed_crop_drag_last_ts = 0.0
+                self._notify_views_callback()
+                self._redraw()
+            else:
+                self.enable_fixed_crop_transform_mode(False)
         return ok
 
     def _apply_fixed_crop_quick(self, event, view, ax):

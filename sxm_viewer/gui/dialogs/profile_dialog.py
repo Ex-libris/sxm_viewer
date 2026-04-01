@@ -46,6 +46,15 @@ from ..._shared import (
     matplotlib,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
+from ..figure_layout_presets import (
+    iter_figure_layout_presets,
+    get_figure_layout_preset,
+    apply_figure_layout,
+    preset_pixel_size,
+    apply_canvas_widget_preset,
+    copy_figure_to_clipboard,
+    save_figure_with_dialog,
+)
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -184,6 +193,14 @@ class ProfileDialog(QtWidgets.QDialog):
         self._legend_custom_anchor = None
         self._legend_artist = None
         self._legend_drag = None
+        self._figure_preset_key = "interactive"
+        self._metadata_visible = False
+        self._metadata_show_filename = True
+        self._metadata_show_acquisition = True
+        self._metadata_show_time = False
+        self._metadata_show_folder_name = False
+        self._metadata_show_folder = False
+        self._metadata_artist = None
         owner = self.parent()
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
@@ -405,8 +422,42 @@ class ProfileDialog(QtWidgets.QDialog):
 
     def _on_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
-        copy_png = menu.addAction("Copy plot (PNG)")
+        preset_menu = menu.addMenu("Figure preset")
+        preset_actions = {}
+        for preset in iter_figure_layout_presets():
+            act = preset_menu.addAction(preset.label)
+            act.setCheckable(True)
+            act.setChecked(self._figure_preset_key == preset.key)
+            preset_actions[act] = preset.key
+        menu.addSeparator()
+        metadata_menu = menu.addMenu("Metadata")
+        metadata_show_act = metadata_menu.addAction("Show metadata on plot")
+        metadata_show_act.setCheckable(True)
+        metadata_show_act.setChecked(bool(self._metadata_visible))
+        metadata_file_act = metadata_menu.addAction("File name")
+        metadata_file_act.setCheckable(True)
+        metadata_file_act.setChecked(bool(self._metadata_show_filename))
+        metadata_acq_act = metadata_menu.addAction("Acquisition title")
+        metadata_acq_act.setCheckable(True)
+        metadata_acq_act.setChecked(bool(self._metadata_show_acquisition))
+        metadata_time_act = metadata_menu.addAction("Acquisition time")
+        metadata_time_act.setCheckable(True)
+        metadata_time_act.setChecked(bool(self._metadata_show_time))
+        metadata_folder_name_act = metadata_menu.addAction("Folder name")
+        metadata_folder_name_act.setCheckable(True)
+        metadata_folder_name_act.setChecked(bool(self._metadata_show_folder_name))
+        metadata_folder_act = metadata_menu.addAction("Folder")
+        metadata_folder_act.setCheckable(True)
+        metadata_folder_act.setChecked(bool(self._metadata_show_folder))
+        menu.addSeparator()
+        copy_png = menu.addAction("Copy plot (PNG 300 dpi)")
+        copy_png_600 = menu.addAction("Copy plot (PNG 600 dpi)")
         copy_svg = menu.addAction("Copy plot (SVG)")
+        save_menu = menu.addMenu("Save plot")
+        save_png_300 = save_menu.addAction("PNG 300 dpi...")
+        save_png_600 = save_menu.addAction("PNG 600 dpi...")
+        save_svg = save_menu.addAction("SVG (vector)...")
+        save_pdf = save_menu.addAction("PDF (vector)...")
         menu.addSeparator()
         legend = self.ax.get_legend()
         legend_menu = menu.addMenu("Legend")
@@ -510,10 +561,70 @@ class ProfileDialog(QtWidgets.QDialog):
             apply_style_callback=self.set_plot_typography,
         )
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if action == copy_png:
-            self._copy_plot("png")
+        if action in preset_actions:
+            self._apply_figure_preset(preset_actions[action])
+        elif action == metadata_show_act:
+            self._metadata_visible = bool(metadata_show_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == metadata_file_act:
+            self._metadata_show_filename = bool(metadata_file_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == metadata_acq_act:
+            self._metadata_show_acquisition = bool(metadata_acq_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == metadata_time_act:
+            self._metadata_show_time = bool(metadata_time_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == metadata_folder_name_act:
+            self._metadata_show_folder_name = bool(metadata_folder_name_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == metadata_folder_act:
+            self._metadata_show_folder = bool(metadata_folder_act.isChecked())
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+        elif action == copy_png:
+            self._copy_plot("png", dpi=300)
+        elif action == copy_png_600:
+            self._copy_plot("png", dpi=600)
         elif action == copy_svg:
             self._copy_plot("svg")
+        elif action == save_png_300:
+            self._save_plot("png", dpi=300)
+        elif action == save_png_600:
+            self._save_plot("png", dpi=600)
+        elif action == save_svg:
+            self._save_plot("svg")
+        elif action == save_pdf:
+            self._save_plot("pdf")
         elif action == show_legend_act:
             self._legend_visible = bool(show_legend_act.isChecked())
             self.update_profiles(
@@ -668,19 +779,130 @@ class ProfileDialog(QtWidgets.QDialog):
         """Rebuild the profile plot with a new shared font family."""
         self.set_plot_typography(family=family)
 
-    def _copy_plot(self, fmt):
-        buf = io.BytesIO()
-        if fmt == "svg":
-            with matplotlib.rc_context({'svg.fonttype': 'none'}):
-                self.canvas.figure.savefig(buf, format="svg", bbox_inches='tight')
-            data = buf.getvalue()
-            mime = QtCore.QMimeData()
-            mime.setData("image/svg+xml", data)
-            QtWidgets.QApplication.clipboard().setMimeData(mime)
-        else:
-            self.canvas.figure.savefig(buf, format="png", dpi=300, bbox_inches='tight')
-            qimg = QtGui.QImage.fromData(buf.getvalue())
-            QtWidgets.QApplication.clipboard().setImage(qimg)
+    def _apply_figure_preset(self, preset_key):
+        """Apply a publication/slide sizing preset to the profile plot."""
+        preset = get_figure_layout_preset(preset_key)
+        self._figure_preset_key = preset.key
+        apply_figure_layout(self.canvas.figure, preset)
+        plot_w_px, plot_h_px = preset_pixel_size(self, preset, max_fraction=0.62)
+        apply_canvas_widget_preset(self.canvas, preset, plot_w_px, plot_h_px)
+        self._plot_font_family = normalize_font_family(preset.font_family, "sans-serif")
+        self._plot_font_bold = False
+        self._plot_font_italic = False
+        self._plot_font_underline = False
+        self._font_scale = float(preset.font_scale)
+        self._legend_fontsize = float(preset.legend_font_pt)
+        if callable(self._label_scale_cb):
+            try:
+                self._label_scale_cb(self._font_scale)
+            except Exception:
+                pass
+        self.update_profiles(
+            self._active,
+            self._saved,
+            activate_overlay_callback=self._activate_overlay_cb,
+            highlight_overlay_callback=self._highlight_overlay_cb,
+        )
+        try:
+            total_w = max(720, int(plot_w_px + 140))
+            total_h = max(520, int(plot_h_px + 260))
+            self.resize(total_w, total_h)
+            if hasattr(self, "_splitter") and self._splitter is not None:
+                self._splitter.setSizes([plot_h_px + 40, 220])
+        except Exception:
+            pass
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Applied preset: {preset.label}", self)
+
+    def _metadata_text(self, dataset):
+        """Build the optional source-metadata block shown above the profile plot."""
+        if not self._metadata_visible or not dataset:
+            return ""
+        lines = []
+        if self._metadata_show_filename:
+            name = str(dataset.get("source_file_name") or "").strip()
+            if not name:
+                path_text = str(dataset.get("source_path") or "").strip()
+                if path_text:
+                    try:
+                        name = Path(path_text).name
+                    except Exception:
+                        name = path_text
+            if name:
+                lines.append(f"File: {name}")
+        if self._metadata_show_acquisition:
+            acq = str(dataset.get("source_acquisition_text") or dataset.get("source_title") or "").strip()
+            if acq:
+                lines.append(f"Acq: {acq}")
+        if self._metadata_show_time:
+            when = str(dataset.get("source_datetime") or "").strip()
+            if not when:
+                source_date = str(dataset.get("source_date") or "").strip()
+                source_time = str(dataset.get("source_time") or "").strip()
+                if source_date and source_time:
+                    when = f"{source_date} {source_time}"
+                else:
+                    when = source_date or source_time
+            if when:
+                lines.append(f"Time: {when}")
+        if self._metadata_show_folder_name:
+            folder_name = str(dataset.get("source_folder_name") or "").strip()
+            if not folder_name:
+                path_text = str(dataset.get("source_path") or "").strip()
+                if path_text:
+                    try:
+                        folder_name = Path(path_text).parent.name
+                    except Exception:
+                        folder_name = ""
+            if folder_name:
+                lines.append(f"Folder name: {folder_name}")
+        if self._metadata_show_folder:
+            folder = str(dataset.get("source_folder") or "").strip()
+            if not folder:
+                path_text = str(dataset.get("source_path") or "").strip()
+                if path_text:
+                    try:
+                        folder = str(Path(path_text).parent)
+                    except Exception:
+                        folder = ""
+            if folder:
+                lines.append(f"Folder: {folder}")
+        return "\n".join(lines)
+
+    def _apply_metadata_overlay(self, dataset):
+        """Render the optional metadata block onto the profile figure."""
+        if self._metadata_artist is not None:
+            try:
+                self._metadata_artist.remove()
+            except Exception:
+                pass
+            self._metadata_artist = None
+        text = self._metadata_text(dataset)
+        if not text:
+            return
+        dark = bool(self._dark_background)
+        box_face = "#111111" if dark else "#ffffff"
+        text_color = "#f5f5f5" if dark else "#111111"
+        try:
+            self._metadata_artist = self.canvas.figure.text(
+                0.02,
+                0.985,
+                text,
+                ha="left",
+                va="top",
+                fontsize=max(5.0, 6.0 * getattr(self, "_font_scale", 1.0)),
+                color=text_color,
+                bbox={"facecolor": box_face, "alpha": 0.72, "edgecolor": "none", "pad": 2.0},
+            )
+            apply_text_style(self._metadata_artist, family=self._plot_font_family, **self._font_style_state())
+            self.canvas.figure.subplots_adjust(top=0.84 if "\n" in text else 0.88)
+        except Exception:
+            self._metadata_artist = None
+
+    def _copy_plot(self, fmt, *, dpi=300):
+        copy_figure_to_clipboard(self, self.canvas.figure, fmt, dpi=dpi)
+
+    def _save_plot(self, fmt, *, dpi=300):
+        save_figure_with_dialog(self, self.canvas.figure, default_stem="profile_measurement", fmt=fmt, dpi=dpi)
 
     def _make_toggle_button(self, text, *, checked=False, tooltip=None):
         btn = QtWidgets.QToolButton(self)
@@ -1561,6 +1783,11 @@ class ProfileDialog(QtWidgets.QDialog):
                     existing.remove()
             except Exception:
                 pass
+        try:
+            self.canvas.figure.subplots_adjust(top=0.92)
+        except Exception:
+            pass
+        self._apply_metadata_overlay(reference)
         self._apply_plot_theme()
         self.stats.setText(self._format_stats_text(active_profile, saved_profiles))
         self._populate_profile_list(active_profile, saved_profiles)
@@ -1765,6 +1992,18 @@ class ProfileDialog(QtWidgets.QDialog):
                 self.ax.grid(False)
         except Exception:
             pass
+        if self._metadata_artist is not None:
+            try:
+                self._metadata_artist.set_color(text)
+                self._metadata_artist.set_fontsize(max(5.0, 6.0 * getattr(self, '_font_scale', 1.0)))
+                apply_text_style(self._metadata_artist, family=self._plot_font_family, **self._font_style_state())
+                patch = self._metadata_artist.get_bbox_patch()
+                if patch is not None:
+                    patch.set_facecolor(ax_face)
+                    patch.set_alpha(0.78)
+                    patch.set_edgecolor('none')
+            except Exception:
+                pass
         self._apply_legend_style()
         self._apply_toggle_button_styles()
         if self._marker_positions and len(self._marker_positions) >= 2:

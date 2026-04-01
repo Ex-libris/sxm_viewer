@@ -1022,6 +1022,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self.preview_canvas.set_profile_callback(self._on_profile_updated)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.preview_canvas, "set_profile_highlight_callback"):
+                self.preview_canvas.set_profile_highlight_callback(self._on_canvas_overlay_highlight)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_profile_label_mode(self.profile_label_mode)
         except Exception:
             pass
@@ -1052,7 +1061,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
-        self.preview_canvas.set_crop_callback(self._on_preview_crop)
+        self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         self.preview_canvas.set_double_click_callback(
             lambda v=None: self._spawn_preview_popup(
@@ -1769,6 +1778,7 @@ QLabel:hover {{
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
             "relative_axes_enabled": rel_axes_enabled,
             "relative_zero_enabled": rel_zero_enabled,
+            "view_cmaps": [str((view or {}).get("cmap") or "") for view in list(getattr(canvas, "views", []) or [])],
         }
 
     def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
@@ -1857,6 +1867,19 @@ QLabel:hover {{
                     rel_zero_setter(bool(rel_zero_enabled))
             except Exception:
                 pass
+        view_cmaps = list(style_snapshot.get("view_cmaps") or [])
+        if view_cmaps:
+            try:
+                target_views = list(getattr(canvas, "views", []) or [])
+                if len(view_cmaps) == len(target_views):
+                    for target_view, cmap_name in zip(target_views, view_cmaps):
+                        if cmap_name:
+                            target_view["cmap"] = str(cmap_name)
+                elif target_views and view_cmaps[0]:
+                    for target_view in target_views:
+                        target_view["cmap"] = str(view_cmaps[0])
+            except Exception:
+                pass
         if redraw:
             try:
                 canvas._redraw()
@@ -1918,10 +1941,28 @@ QLabel:hover {{
             except Exception:
                 continue
 
-    def _on_preview_crop(self, view):
+    def _on_preview_crop(self, view, source_canvas=None):
         """Receive cropped view from preview canvas and pop it out."""
         if not view:
             return
+        preview_canvas = getattr(self, "preview_canvas", None)
+        seq = view.get("crop_sequence")
+        if (
+            bool(getattr(self, "quick_crop_mode", False))
+            and source_canvas is not None
+            and preview_canvas is not None
+            and source_canvas is not preview_canvas
+            and seq is not None
+        ):
+            try:
+                entry = source_canvas.get_fixed_crop_history_entry(seq)
+            except Exception:
+                entry = None
+            if entry:
+                try:
+                    preview_canvas.import_fixed_crop_history_entry(entry, update_size=True)
+                except Exception:
+                    pass
         auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
         skip_virtual_copy_prompt = bool(view.get("_skip_virtual_copy_prompt", False))
         # Offer to save crop as a virtual copy in thumbnails, unless explicitly
@@ -1944,10 +1985,9 @@ QLabel:hover {{
         except Exception:
             pass
         title = view.get("title") or "Cropped view"
-        seq = view.get("crop_sequence")
         if self.show_crop_history_overlay and seq is not None:
             title = f"{title} #{seq}"
-        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=title)
+        self._spawn_preview_popup([self._copy_view_for_popup(view)], title=title, source_canvas=source_canvas)
 
     # ---------- Spectro browser dock ----------
     def _ensure_spectro_dock(self):
@@ -1976,7 +2016,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Ctrl+1/2/3 saved overlays</li>"
             "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
         ) % color
