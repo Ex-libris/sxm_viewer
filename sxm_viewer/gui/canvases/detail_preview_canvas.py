@@ -3812,6 +3812,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     x_phys = None
             meta = v0.get('meta') if isinstance(v0, dict) else None
+            source_path = str(v0.get('path') or (meta or {}).get('path') or (meta or {}).get('file_path') or "").strip()
+            source_title = str(v0.get('title') or "").strip()
+            source_acq = str(self._acquisition_overlay_text(v0) or "").strip()
+            source_folder = ""
+            source_folder_name = ""
+            source_name = ""
+            source_datetime = str(v0.get("datetime") or (meta or {}).get("datetime") or "").strip()
+            source_date = str(v0.get("date") or (meta or {}).get("date") or "").strip()
+            source_time = str(v0.get("time") or (meta or {}).get("time") or "").strip()
+            if source_path:
+                try:
+                    p = Path(source_path)
+                    source_folder = str(p.parent)
+                    source_folder_name = p.parent.name
+                    source_name = p.name
+                except Exception:
+                    source_name = source_path
             return {
                 'x_px': x_px,
                 'x_nm': x_phys,
@@ -3828,6 +3845,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 'label': self._format_profile_label(pts),
                 'relative_axes': self._use_relative_axes(v0),
                 'meta': meta,
+                'source_path': source_path,
+                'source_folder': source_folder,
+                'source_folder_name': source_folder_name,
+                'source_file_name': source_name,
+                'source_title': source_title,
+                'source_acquisition_text': source_acq,
+                'source_datetime': source_datetime,
+                'source_date': source_date,
+                'source_time': source_time,
             }
         except Exception:
             return None
