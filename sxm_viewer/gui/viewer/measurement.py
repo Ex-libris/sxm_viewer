@@ -484,6 +484,57 @@ def _on_canvas_overlay_highlight(viewer, idx):
             dlg.select_overlay(idx)
         except Exception:
             pass
+
+
+def export_profile_dialog_state(viewer):
+    """Capture open state and geometry for the main Profile measurement window."""
+    dlg = getattr(viewer, "_profile_dialog", None)
+    if dlg is None:
+        return None
+    try:
+        if not dlg.isVisible():
+            return None
+    except Exception:
+        pass
+    state = {"open": True}
+    try:
+        geo = dlg.geometry()
+        state["geometry"] = [int(geo.x()), int(geo.y()), int(geo.width()), int(geo.height())]
+    except Exception:
+        pass
+    try:
+        state["window_state"] = int(dlg.windowState())
+    except Exception:
+        pass
+    return state
+
+
+def restore_profile_dialog_state(viewer, state):
+    """Restore the main Profile measurement window from session state."""
+    if not isinstance(state, dict) or not bool(state.get("open")):
+        return None
+    _on_show_profile_window(viewer)
+    dlg = getattr(viewer, "_profile_dialog", None)
+    if dlg is None:
+        return None
+    geom = state.get("geometry")
+    if geom and len(geom) == 4:
+        try:
+            x, y, w, h = [int(v) for v in geom]
+            dlg.setGeometry(x, y, w, h)
+        except Exception:
+            pass
+    window_state = state.get("window_state")
+    if window_state is not None:
+        try:
+            dlg.setWindowState(QtCore.Qt.WindowStates(int(window_state)))
+        except Exception:
+            pass
+    try:
+        dlg.show()
+    except Exception:
+        pass
+    return dlg
 __all__ = [
     "_on_start_profile",
     "_on_start_angle",
@@ -495,6 +546,8 @@ __all__ = [
     "_on_angle_updated",
     "_on_show_profile_window",
     "_on_canvas_overlay_highlight",
+    "export_profile_dialog_state",
+    "restore_profile_dialog_state",
 ]
 
 

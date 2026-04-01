@@ -448,6 +448,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     except Exception:
         pass
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
+    canvas.export_profile_dialog_state = profile_controller.export_dialog_state
+    canvas.restore_profile_dialog_state = profile_controller.restore_dialog_state
     if not restore_mode:
         profile_controller.set_initial_state(measure_initial)
         canvas.set_angle_tool_enabled(angle_initial)

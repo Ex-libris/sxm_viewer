@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
+from ..viewer import measurement as viewer_measurement
 
 
 class SessionController:
@@ -240,6 +241,10 @@ class SessionController:
                 preview_state["profile"] = preview.export_profile_state()
             except Exception:
                 preview_state["profile"] = None
+            try:
+                preview_state["profile_dialog"] = viewer_measurement.export_profile_dialog_state(viewer)
+            except Exception:
+                preview_state["profile_dialog"] = None
             try:
                 preview_state["angle"] = preview.export_angle_state()
             except Exception:
@@ -666,6 +671,10 @@ class SessionController:
                 viewer=viewer,
                 require_view_match=True,
             )
+        try:
+            viewer_measurement.restore_profile_dialog_state(viewer, preview_state.get("profile_dialog"))
+        except Exception:
+            pass
         preview_restore_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
         canvas_state = payload.get("canvas_state")
@@ -1392,6 +1401,7 @@ class SessionController:
             "plot_font_underline": bool(getattr(canvas, "_plot_font_underline", False)),
             "profile_label_mode": str(getattr(canvas, "_profile_label_mode", "length") or "length"),
             "profile_state": self._safe_canvas_call(canvas, "export_profile_state"),
+            "profile_dialog": self._safe_canvas_call(canvas, "export_profile_dialog_state"),
             "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
             "molecule_state": self._safe_canvas_call(canvas, "export_molecule_state"),
             "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
@@ -1605,6 +1615,14 @@ class SessionController:
             if prof:
                 try:
                     canvas.import_profile_state(prof, emit=False)
+                except Exception:
+                    pass
+            profile_dialog = snapshot.get("profile_dialog")
+            if profile_dialog:
+                try:
+                    restorer = getattr(canvas, "restore_profile_dialog_state", None)
+                    if callable(restorer):
+                        restorer(profile_dialog)
                 except Exception:
                     pass
             angle_state = snapshot.get("angle_state")

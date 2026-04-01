@@ -343,6 +343,55 @@ class PopupProfileController:
         self._deregister_dialog(self._dialog)
         self._dialog = None
 
+    def export_dialog_state(self):
+        """Capture open/geometry state for popup profile dialogs in sessions."""
+        dlg = self._dialog
+        if dlg is None:
+            return None
+        try:
+            if not dlg.isVisible():
+                return None
+        except Exception:
+            pass
+        state = {"open": True}
+        try:
+            geo = dlg.geometry()
+            state["geometry"] = [int(geo.x()), int(geo.y()), int(geo.width()), int(geo.height())]
+        except Exception:
+            pass
+        try:
+            state["window_state"] = int(dlg.windowState())
+        except Exception:
+            pass
+        return state
+
+    def restore_dialog_state(self, state):
+        """Reopen a popup profile dialog after canvas/profile state is restored."""
+        if not isinstance(state, dict) or not bool(state.get("open")):
+            return None
+        self.refresh_from_canvas()
+        dlg = self._dialog
+        if dlg is None:
+            return None
+        geom = state.get("geometry")
+        if geom and len(geom) == 4:
+            try:
+                x, y, w, h = [int(v) for v in geom]
+                dlg.setGeometry(x, y, w, h)
+            except Exception:
+                pass
+        window_state = state.get("window_state")
+        if window_state is not None:
+            try:
+                dlg.setWindowState(QtCore.Qt.WindowStates(int(window_state)))
+            except Exception:
+                pass
+        try:
+            dlg.show()
+        except Exception:
+            pass
+        return dlg
+
     def _register_dialog(self, dlg):
         if dlg is None:
             return
