@@ -86,6 +86,7 @@ from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
+from .controllers.collection import CollectionController
 from .controllers.thumbnail_controller import ThumbnailController
 from .controllers.spectro_compare import SpectroCompareController
 from .controllers.session import SessionController
@@ -220,6 +221,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
         self.session_controller = SessionController(self)
+        self.collection_controller = CollectionController(self)
         self.frame_map_entries = []
         self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
         self.hidden_frame_keys = set()
@@ -245,6 +247,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
         self.show_crop_template_overlay = False
         self.show_crop_history_overlay = True
+        self._collection_item_snapshots = {}
+        self._collection_source = None
+        self._workspace_kind = "folder"
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -1079,6 +1084,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
             state_cb=self.compare_menu_state,
         )
+        if hasattr(self.preview_canvas, "set_collection_menu_callback"):
+            self.preview_canvas.set_collection_menu_callback(
+                lambda action, view, c=self.preview_canvas: self.collection_controller.handle_canvas_menu_action(action, view, c),
+                help_cb=self.on_collection_help,
+            )
         self.preview_canvas.set_stp_export_callback(self._export_view_as_stp)
         self.preview_canvas.set_window_arrange_callback(self.on_arrange_popouts)
         self.preview_canvas.set_window_minimize_callback(self.on_minimize_popouts)
@@ -3198,6 +3208,9 @@ QLabel:hover {{
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
+        self._collection_item_snapshots = {}
+        self._collection_source = None
+        self._workspace_kind = "folder"
         self.matrix_datasets = {}
         self._spectro_hist_cache = {}
         self._last_base_array = None
@@ -4360,7 +4373,13 @@ QLabel:hover {{
         if new_key and new_key != prev_key:
             self._store_molecule_overlay(prev_key)
             self._load_molecule_overlay(new_key)
-        return viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
+        result = viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
+        try:
+            if new_key:
+                self.collection_controller.apply_snapshot_for_file(new_key)
+        except Exception:
+            pass
+        return result
 
     def _store_molecule_overlay(self, file_key=None):
         """Persist current molecule overlays for a specific file key."""
@@ -4473,6 +4492,26 @@ QLabel:hover {{
     def on_load_session(self):
         """Legacy hook delegating to SessionController for compatibility."""
         self.session_controller.load_session()
+
+    def on_open_collection(self):
+        """Open a curated cross-folder collection workspace."""
+        self.collection_controller.load_collection()
+
+    def on_collection_help(self):
+        """Explain linked vs portable collections and how they are intended to be used."""
+        self.collection_controller.show_help()
+
+    def on_add_current_preview_to_collection(self):
+        self.collection_controller.add_current_preview()
+
+    def on_add_active_popup_to_collection(self):
+        self.collection_controller.add_active_popup()
+
+    def on_add_all_popups_to_collection(self):
+        self.collection_controller.add_all_popups()
+
+    def on_add_selected_crops_to_collection(self):
+        self.collection_controller.add_selected_crop_history()
 
     def on_arrange_popouts(self):
         """Tile all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""

@@ -420,6 +420,11 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         lambda action, view, c=canvas: owner.on_compare_menu_action(action, view, c),
         state_cb=owner.compare_menu_state,
     )
+    if hasattr(canvas, "set_collection_menu_callback"):
+        canvas.set_collection_menu_callback(
+            lambda action, view, c=canvas: owner.collection_controller.handle_canvas_menu_action(action, view, c),
+            help_cb=owner.on_collection_help,
+        )
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_window_minimize_callback(owner.on_minimize_popouts)

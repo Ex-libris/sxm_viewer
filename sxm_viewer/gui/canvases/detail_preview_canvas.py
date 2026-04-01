@@ -147,6 +147,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_popup_style_callback = None
         self._apply_popup_style_label = "Apply this style to all pop-ups"
         self._apply_popup_style_tooltip = ""
+        self._collection_menu_callback = None
+        self._collection_help_callback = None
         self._compare_menu_callback = None
         self._compare_menu_state_callback = None
         self._stp_export_callback = None
@@ -664,6 +666,11 @@ class MultiPreviewCanvas(FigureCanvas):
         if label:
             self._apply_popup_style_label = str(label)
         self._apply_popup_style_tooltip = str(tooltip or "")
+
+    def set_collection_menu_callback(self, cb, help_cb=None):
+        """Register collection-menu handlers used to save curated views into cross-folder collections."""
+        self._collection_menu_callback = cb
+        self._collection_help_callback = help_cb
 
     def set_compare_menu_callback(self, cb, state_cb=None):
         """Register compare-menu handlers used to populate A/B view comparisons from right-clicks."""
@@ -5929,6 +5936,16 @@ class MultiPreviewCanvas(FigureCanvas):
             cmap_menu.addSeparator()
             popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
 
+        collection_add_act = None
+        collection_help_act = None
+        if callable(self._collection_menu_callback) and view is not None:
+            collection_menu = menu.addMenu("Collection")
+            collection_add_act = collection_menu.addAction("Add This View to Collection...")
+            collection_add_act.setToolTip("Save this view into a curated cross-folder collection.")
+            if callable(self._collection_help_callback):
+                collection_menu.addSeparator()
+                collection_help_act = collection_menu.addAction("How Collections Work")
+
         compare_set_a_act = None
         compare_set_b_act = None
         compare_with_a_act = None
@@ -6132,6 +6149,16 @@ class MultiPreviewCanvas(FigureCanvas):
         elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
             try:
                 self._apply_popup_style_callback()
+            except Exception:
+                pass
+        elif collection_add_act and chosen == collection_add_act:
+            try:
+                self._collection_menu_callback("collection_add", view, self)
+            except Exception:
+                pass
+        elif collection_help_act and chosen == collection_help_act:
+            try:
+                self._collection_help_callback()
             except Exception:
                 pass
         elif compare_set_a_act and chosen == compare_set_a_act:
