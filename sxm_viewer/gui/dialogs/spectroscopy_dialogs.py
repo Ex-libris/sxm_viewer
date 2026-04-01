@@ -18,22 +18,6 @@ from matplotlib.ticker import FuncFormatter, AutoMinorLocator, MultipleLocator, 
 from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-try:
-    from mpl_toolkits.axes_grid1.inset_locator import InsetPosition
-except ImportError:
-    # InsetPosition was removed in matplotlib 3.9; provide a compatible replacement.
-    from matplotlib.transforms import Bbox, BboxTransform, TransformedBbox
-
-    class InsetPosition:  # type: ignore[no-redef]
-        def __init__(self, parent, lbwh):
-            self._parent = parent
-            self._lbwh = lbwh
-
-        def __call__(self, ax, renderer):
-            bbox_parent = self._parent.get_position(original=False)
-            trans = BboxTransform(Bbox.unit(), bbox_parent)
-            bbox_inset = Bbox.from_bounds(*self._lbwh)
-            return TransformedBbox(bbox_inset, trans)
 
 from ..._shared import (
     QtCore,
@@ -76,6 +60,7 @@ from ..figure_layout_presets import (
     copy_figure_to_clipboard,
     save_figure_with_dialog,
 )
+from ..mpl_compat import InsetPosition
 try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
