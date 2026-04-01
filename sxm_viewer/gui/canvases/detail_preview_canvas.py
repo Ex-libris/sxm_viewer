@@ -8017,6 +8017,8 @@ class MultiPreviewCanvas(FigureCanvas):
             "press": (float(event.xdata), float(event.ydata)),
             "last": (float(event.xdata), float(event.ydata)),
             "bounds_start": (geom["left"], geom["right"], geom["bottom"], geom["top"]),
+            "pixel_bounds_start": tuple(int(v) for v in (geom.get("pixel_bounds") or (0, 0, 0, 0))),
+            "arr_shape": tuple(geom.get("arr_shape") or (0, 0)),
             "angle_start": float(geom.get("angle", 0.0) or 0.0),
             "center_start": (geom["cx"], geom["cy"]),
         }
@@ -8047,6 +8049,31 @@ class MultiPreviewCanvas(FigureCanvas):
         press_x, press_y = drag.get("press", (event.xdata, event.ydata))
 
         if mode == "move":
+            h, w = tuple(drag.get("arr_shape") or (0, 0))
+            c0s, c1s, r0s, r1s = tuple(drag.get("pixel_bounds_start") or (0, 0, 0, 0))
+            if h > 0 and w > 0 and c1s >= c0s and r1s >= r0s:
+                press_c = self._axis_coord_to_pixel_float(view, press_x, w, "x", ax=ax)
+                press_r = self._axis_coord_to_pixel_float(view, press_y, h, "y", ax=ax)
+                curr_c = self._axis_coord_to_pixel_float(view, event.xdata, w, "x", ax=ax)
+                curr_r = self._axis_coord_to_pixel_float(view, event.ydata, h, "y", ax=ax)
+                if None not in (press_c, press_r, curr_c, curr_r):
+                    width_px = max(1, int(c1s - c0s + 1))
+                    height_px = max(1, int(r1s - r0s + 1))
+                    dc = float(curr_c - press_c)
+                    dr = float(curr_r - press_r)
+                    start_c = float(c0s) + dc
+                    start_r = float(r0s) + dr
+                    max_c0 = max(0.0, float(w - width_px))
+                    max_r0 = max(0.0, float(h - height_px))
+                    c0 = int(round(np.clip(start_c, 0.0, max_c0)))
+                    r0 = int(round(np.clip(start_r, 0.0, max_r0)))
+                    c1 = int(c0 + width_px - 1)
+                    r1 = int(r0 + height_px - 1)
+                    bounds = self._pixel_bounds_to_axis_bounds(view, ax, w, h, c0, c1, r0, r1)
+                    if bounds:
+                        return self._update_fixed_crop_template_from_bounds(
+                            view, ax, bounds[0], bounds[1], bounds[2], bounds[3], angle=angle
+                        )
             dx = float(event.xdata - press_x)
             dy = float(event.ydata - press_y)
             return self._update_fixed_crop_template_from_bounds(
@@ -8263,6 +8290,76 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_fixed_crop_history_callback(self, cb):
         self._fixed_crop_history_callback = cb
+
+    def get_fixed_crop_history_entry(self, seq):
+        seq = int(seq) if seq is not None else None
+        if seq is None:
+            return None
+        for entry in self._fixed_crop_history:
+            if entry.get("sequence") == seq:
+                clone = dict(entry)
+                view_snapshot = entry.get("view_snapshot")
+                if isinstance(view_snapshot, dict):
+                    clone["view_snapshot"] = dict(view_snapshot)
+                return clone
+        return None
+
+    def import_fixed_crop_history_entry(self, entry, *, update_size=True):
+        if not isinstance(entry, dict):
+            return None
+        bounds_data = entry.get("data_bounds")
+        if not bounds_data or len(bounds_data) != 4:
+            return None
+        target_view, target_ax = self._fixed_crop_target_view()
+        if target_view is None or target_ax is None:
+            return None
+        source_key = entry.get("key") or ()
+        target_key = self._outline_key(target_view)
+        source_path = source_key[0] if isinstance(source_key, tuple) and source_key else None
+        target_path = target_key[0] if isinstance(target_key, tuple) and target_key else None
+        if source_path and target_path and str(source_path) != str(target_path):
+            return None
+        arr_obj = target_view.get("arr")
+        if arr_obj is None:
+            return None
+        arr = np.asarray(arr_obj)
+        if arr.ndim < 2 or arr.size == 0:
+            return None
+        h, w = arr.shape[:2]
+        left, right = min(bounds_data[0], bounds_data[1]), max(bounds_data[0], bounds_data[1])
+        bottom, top = min(bounds_data[2], bounds_data[3]), max(bounds_data[2], bounds_data[3])
+        c_left = self._axis_coord_to_pixel_float(target_view, left, w, "x", ax=target_ax)
+        c_right = self._axis_coord_to_pixel_float(target_view, right, w, "x", ax=target_ax)
+        r_bottom = self._axis_coord_to_pixel_float(target_view, bottom, h, "y", ax=target_ax)
+        r_top = self._axis_coord_to_pixel_float(target_view, top, h, "y", ax=target_ax)
+        if any(v is None for v in (c_left, c_right, r_bottom, r_top)):
+            return None
+        c0 = int(np.clip(math.floor(min(c_left, c_right)), 0, max(0, w - 1)))
+        c1 = int(np.clip(math.ceil(max(c_left, c_right)), 0, max(0, w - 1)))
+        r0 = int(np.clip(math.floor(min(r_bottom, r_top)), 0, max(0, h - 1)))
+        r1 = int(np.clip(math.ceil(max(r_bottom, r_top)), 0, max(0, h - 1)))
+        imported = self._register_crop_entry(
+            target_view,
+            tuple(float(v) for v in bounds_data),
+            (c0, c1, r0, r1),
+            bool(entry.get("square", False)),
+            angle=float(entry.get("rotate", 0.0) or 0.0),
+            update_size=update_size,
+        )
+        if imported is None:
+            return None
+        imported["visible"] = bool(entry.get("visible", True))
+        imported["real_size"] = tuple(entry.get("real_size") or imported.get("real_size") or (0.0, 0.0))
+        imported["unit"] = entry.get("unit") or imported.get("unit")
+        view_snapshot = entry.get("view_snapshot")
+        if isinstance(view_snapshot, dict):
+            snapshot = dict(view_snapshot)
+            if imported.get("sequence") is not None:
+                snapshot["crop_sequence"] = imported["sequence"]
+            imported["view_snapshot"] = snapshot
+        self._emit_fixed_crop_history_update()
+        self.draw_idle()
+        return imported
 
     def set_fixed_crop_history_entry_visible(self, seq, visible: bool):
         seq = int(seq) if seq is not None else None
@@ -8979,7 +9076,14 @@ class MultiPreviewCanvas(FigureCanvas):
             auto_virtual_copy=True,
         )
         if ok:
-            self.enable_fixed_crop_transform_mode(False)
+            if self._fixed_crop_quick_mode:
+                self._fixed_crop_template_visible = True
+                self._fixed_crop_template_drag = None
+                self._fixed_crop_drag_last_ts = 0.0
+                self._notify_views_callback()
+                self._redraw()
+            else:
+                self.enable_fixed_crop_transform_mode(False)
         return ok
 
     def _apply_fixed_crop_quick(self, event, view, ax):

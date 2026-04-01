@@ -404,7 +404,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         except Exception:
             pass
     canvas.set_views_callback(_on_popup_canvas_state_changed)
-    canvas.set_crop_callback(lambda v: owner._on_preview_crop(v))
+    canvas.set_crop_callback(lambda v, c=canvas: owner._on_preview_crop(v, c))
     canvas.set_virtual_copy_callback(lambda v: owner._create_virtual_copy_from_popup_view(v))
     canvas.set_double_click_callback(
         lambda v=None: spawn_preview_popup(
@@ -442,7 +442,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)
     canvas.enable_fixed_crop_quick_mode(owner.quick_crop_mode)
-    canvas.show_fixed_crop_template(False)
+    canvas.show_fixed_crop_template(bool(owner.show_crop_template_overlay))
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
         canvas.set_molecule_palette_callback(owner._on_molecule_palette_changed)

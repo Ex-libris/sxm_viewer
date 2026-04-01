@@ -1061,7 +1061,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
-        self.preview_canvas.set_crop_callback(self._on_preview_crop)
+        self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         self.preview_canvas.set_double_click_callback(
             lambda v=None: self._spawn_preview_popup(
@@ -1927,10 +1927,28 @@ QLabel:hover {{
             except Exception:
                 continue
 
-    def _on_preview_crop(self, view):
+    def _on_preview_crop(self, view, source_canvas=None):
         """Receive cropped view from preview canvas and pop it out."""
         if not view:
             return
+        preview_canvas = getattr(self, "preview_canvas", None)
+        seq = view.get("crop_sequence")
+        if (
+            bool(getattr(self, "quick_crop_mode", False))
+            and source_canvas is not None
+            and preview_canvas is not None
+            and source_canvas is not preview_canvas
+            and seq is not None
+        ):
+            try:
+                entry = source_canvas.get_fixed_crop_history_entry(seq)
+            except Exception:
+                entry = None
+            if entry:
+                try:
+                    preview_canvas.import_fixed_crop_history_entry(entry, update_size=True)
+                except Exception:
+                    pass
         auto_virtual_copy = bool(view.get("_auto_virtual_copy", False))
         skip_virtual_copy_prompt = bool(view.get("_skip_virtual_copy_prompt", False))
         # Offer to save crop as a virtual copy in thumbnails, unless explicitly
@@ -1953,7 +1971,6 @@ QLabel:hover {{
         except Exception:
             pass
         title = view.get("title") or "Cropped view"
-        seq = view.get("crop_sequence")
         if self.show_crop_history_overlay and seq is not None:
             title = f"{title} #{seq}"
         self._spawn_preview_popup([self._copy_view_for_popup(view)], title=title)
