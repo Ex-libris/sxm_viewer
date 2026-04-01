@@ -2016,7 +2016,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: A auto contrast, Ctrl+Click profile, Ctrl+Alt+Click angle, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Ctrl+1/2/3 saved overlays</li>"
             "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
         ) % color
