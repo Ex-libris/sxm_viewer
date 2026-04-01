@@ -1022,6 +1022,15 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self.preview_canvas.set_profile_callback(self._on_profile_updated)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.preview_canvas, "set_profile_highlight_callback"):
+                self.preview_canvas.set_profile_highlight_callback(self._on_canvas_overlay_highlight)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_profile_label_mode(self.profile_label_mode)
         except Exception:
             pass
