@@ -55,6 +55,15 @@ class PopupProfileController:
         except Exception:
             pass
 
+    def _profile_updates_enabled(self) -> bool:
+        """Keep the dialog live while a profile exists in move-only mode after Ctrl-draw."""
+        canvas = self.canvas
+        return bool(
+            getattr(canvas, "_profile_user_enabled", False)
+            or getattr(canvas, "profile_enabled", False)
+            or getattr(canvas, "_profile_move_only", False)
+        )
+
     # ------------------------------------------------------------------
     def toggle_measure(self, checked: bool):
         def _force_dialog():
@@ -79,7 +88,7 @@ class PopupProfileController:
 
     # ------------------------------------------------------------------
     def dispatch_dialog(self, active=None, saved=None):
-        if not getattr(self.canvas, "_profile_user_enabled", False):
+        if not self._profile_updates_enabled():
             return
         if active is None and saved is None:
             active, saved = self._compute_profiles_from_canvas()
@@ -89,7 +98,7 @@ class PopupProfileController:
 
     # ------------------------------------------------------------------
     def refresh_from_canvas(self):
-        if not getattr(self.canvas, "_profile_user_enabled", False):
+        if not self._profile_updates_enabled():
             return
         active, saved = self._compute_profiles_from_canvas()
         if not active and not saved:
