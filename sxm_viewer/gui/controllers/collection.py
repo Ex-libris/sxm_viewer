@@ -941,8 +941,32 @@ class CollectionController:
             prepare_cb = getattr(viewer, "_prepare_for_workspace_load", None)
             if callable(prepare_cb):
                 prepare_cb(kind="collection")
-            else:
-                viewer.clear_loaded_images()
+        except Exception:
+            pass
+        try:
+            viewer.clear_loaded_images()
+        except Exception:
+            pass
+        try:
+            viewer.image_adjustments.clear()
+        except Exception:
+            pass
+        try:
+            viewer.per_file_channel_cmap.clear()
+        except Exception:
+            pass
+        try:
+            viewer.image_meta = []
+        except Exception:
+            pass
+        try:
+            viewer._spectro_browser_entries = []
+        except Exception:
+            pass
+        try:
+            viewer._multi_spec_selection = []
+            viewer._multi_spec_selection_keys = set()
+            viewer._last_clicked_spec = None
         except Exception:
             pass
 
@@ -954,6 +978,7 @@ class CollectionController:
         except Exception:
             pass
         try:
+            viewer.spec_folder_path = collection_path.parent
             viewer.spec_folder_le.setText("")
         except Exception:
             pass

@@ -131,6 +131,20 @@ class _CollectionTrayList(QtWidgets.QListWidget):
             "Use popup Collection actions when you want popup-specific overlays preserved."
         )
 
+    def _restore_workspace_after_drop(self):
+        try:
+            self.viewer.on_recall_popouts()
+        except Exception:
+            pass
+        try:
+            host = self.window()
+            if host is not None:
+                host.show()
+                host.raise_()
+                host.activateWindow()
+        except Exception:
+            pass
+
     def _accepts_mime(self, mime):
         return bool(
             mime
@@ -163,12 +177,14 @@ class _CollectionTrayList(QtWidgets.QListWidget):
                 entries = list((payload or {}).get("entries") or [])
                 self.viewer.collection_controller.add_thumbnail_entries(entries)
                 QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                QtCore.QTimer.singleShot(0, self._restore_workspace_after_drop)
                 event.acceptProposedAction()
                 return
             if mime.hasFormat("application/x-sxm-view"):
                 payload = json.loads(bytes(mime.data("application/x-sxm-view")).decode("utf-8"))
                 self.viewer.collection_controller.add_from_view_drag_payload(payload)
                 QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                QtCore.QTimer.singleShot(0, self._restore_workspace_after_drop)
                 event.acceptProposedAction()
                 return
         except Exception:
@@ -180,8 +196,21 @@ class _CollectionTrayWindow(QtWidgets.QDialog):
     """Floating collection tray window kept separate from the main viewer layout."""
 
     def __init__(self, viewer, group_widget):
-        super().__init__(viewer, QtCore.Qt.Tool)
+        super().__init__(viewer)
         self.viewer = viewer
+        try:
+            self.setParent(None, self.windowFlags())
+            self.setWindowFlag(QtCore.Qt.Window, True)
+            self.setWindowIcon(viewer.windowIcon())
+            self.setWindowModality(QtCore.Qt.NonModal)
+            self.setWindowFlags(
+                self.windowFlags()
+                | QtCore.Qt.WindowCloseButtonHint
+                | QtCore.Qt.WindowMinimizeButtonHint
+                | QtCore.Qt.WindowSystemMenuHint
+            )
+        except Exception:
+            pass
         self.setWindowTitle("Collection Tray")
         self.resize(430, 520)
         layout = QtWidgets.QVBoxLayout(self)
@@ -190,6 +219,22 @@ class _CollectionTrayWindow(QtWidgets.QDialog):
         group_widget.setParent(self)
         group_widget.setVisible(True)
         layout.addWidget(group_widget)
+
+    def _notify_popup_actions(self):
+        try:
+            controller = getattr(self.viewer, "quick_crop_controller", None)
+            if controller:
+                controller.update_popup_actions()
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._notify_popup_actions()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._notify_popup_actions()
 
     def closeEvent(self, event):
         self.hide()
@@ -2549,6 +2594,9 @@ QLabel:hover {{
                 candidates.append(dlg)
         for attr in ("_profile_dialogs", "_spectro_popups", "_multi_spectro_popups", "_popup_refs"):
             candidates.extend(list(getattr(self, attr, []) or []))
+        tray = getattr(self, "collection_tray_window", None)
+        if tray is not None:
+            candidates.append(tray)
         if include_canvas:
             win = self._canvas_window_ref()
             if win is not None:

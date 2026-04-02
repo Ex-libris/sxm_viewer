@@ -540,10 +540,12 @@ class QuickCropController:
         cleaned = []
         seen = set()
         candidates = None
+        used_iter_windows = False
         iter_windows = getattr(viewer, "_iter_workspace_windows", None)
         if callable(iter_windows):
             try:
                 candidates = list(iter_windows(include_canvas=False))
+                used_iter_windows = True
             except Exception:
                 candidates = None
         if candidates is None:
@@ -563,7 +565,8 @@ class QuickCropController:
                 cleaned.append(dlg)
             except RuntimeError:
                 continue
-        viewer._popup_refs = cleaned
+        if not used_iter_windows:
+            viewer._popup_refs = cleaned
         return alive
 
     def _bump_popup_stack(self, popups):
