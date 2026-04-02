@@ -335,6 +335,10 @@ def _ensure_display_menu(viewer):
         viewer._refresh_collection_ui()
     except Exception:
         pass
+    bring_act = viewer.display_menu.addAction("Bring pop-outs to front")
+    bring_act.setToolTip("Raise all open preview/spectroscopy/profile windows (Ctrl+Shift+P)")
+    bring_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+P"))
+    bring_act.triggered.connect(viewer.on_recall_popouts)
     arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
     arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
     arrange_act.triggered.connect(viewer.on_arrange_popouts)
@@ -342,9 +346,6 @@ def _ensure_display_menu(viewer):
     minimize_act.setToolTip("Minimize all open preview/spectroscopy/profile windows (Ctrl+Shift+M)")
     minimize_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
     minimize_act.triggered.connect(viewer.on_minimize_popouts)
-    restore_act = viewer.display_menu.addAction("Restore pop-outs")
-    restore_act.setToolTip("Restore any minimized pop-out windows to their previous size")
-    restore_act.triggered.connect(viewer.on_restore_popouts)
     close_all_act = viewer.display_menu.addAction("Close all pop-outs")
     close_all_act.setToolTip("Close all open preview/spectroscopy/profile windows")
     close_all_act.triggered.connect(viewer.on_close_popouts)

@@ -690,7 +690,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._minimize_windows_callback = cb
 
     def set_window_restore_callback(self, cb):
-        """Register callback invoked when the user requests restoring minimized pop-out windows."""
+        """Register callback invoked when the user requests recalling pop-out windows."""
         self._restore_windows_callback = cb
 
     def set_window_close_callback(self, cb):
@@ -6032,7 +6032,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if not window_actions_added:
                 view_menu.addSeparator()
                 window_actions_added = True
-            restore_act = view_menu.addAction("Restore pop-outs")
+            restore_act = view_menu.addAction("Bring pop-outs to front")
         if callable(self._close_windows_callback):
             if not window_actions_added:
                 view_menu.addSeparator()

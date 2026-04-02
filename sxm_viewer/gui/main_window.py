@@ -525,6 +525,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_load_session_btn = None
         self.toolbar_load_session_menu = None
         self.toolbar_save_session_act = None
+        self.toolbar_popups_raise_act = None
         self.toolbar_popups_btn = None
         self.toolbar_popups_menu = None
         self.toolbar_adjust_act = None
@@ -1289,6 +1290,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_template_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+T"), self)
         self.quick_crop_template_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_template_shortcut.activated.connect(lambda: self.on_show_crop_template_overlay_toggled(not self.show_crop_template_overlay))
+        self.popups_recall_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+P"), self)
+        self.popups_recall_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+        self.popups_recall_shortcut.activated.connect(self.on_recall_popouts)
         self.quick_crop_minimize_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+M"), self)
         self.quick_crop_minimize_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
         self.quick_crop_minimize_shortcut.activated.connect(self.on_minimize_popouts)
@@ -1889,6 +1893,10 @@ QLabel:hover {{
         dlg.show()
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            dlg.finished.connect(lambda _=None, c=controller: c.update_popup_actions())
+            controller.update_popup_actions()
 
     # ---------- Preview pop-outs ----------
     def _copy_view_for_popup(self, view):
@@ -2474,6 +2482,10 @@ QLabel:hover {{
                 self._multi_spectro_popups.append(dlg)
                 dlg.finished.connect(lambda _: self._multi_spectro_popups.remove(dlg) if dlg in self._multi_spectro_popups else None)
                 dlg.finished.connect(lambda _: self._remember_closed_spectro_dialog(dlg))
+                controller = getattr(self, "quick_crop_controller", None)
+                if controller:
+                    dlg.finished.connect(lambda _=None, c=controller: c.update_popup_actions())
+                    controller.update_popup_actions()
                 return True
             except Exception:
                 return False
@@ -2491,6 +2503,10 @@ QLabel:hover {{
                 self._popup_refs.append(dlg)
                 dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
                 dlg.finished.connect(lambda _: self._remember_closed_spectro_dialog(dlg))
+                controller = getattr(self, "quick_crop_controller", None)
+                if controller:
+                    dlg.finished.connect(lambda _=None, c=controller: c.update_popup_actions())
+                    controller.update_popup_actions()
                 return True
             except Exception:
                 return False
@@ -3414,58 +3430,184 @@ QLabel:hover {{
             return str(file_name)
         return "Deferred pop-up"
 
-    def _rebuild_deferred_popup_menu(self):
+    def _active_popup_windows(self):
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller is not None and hasattr(controller, "tracked_popups"):
+            try:
+                return list(controller.tracked_popups())
+            except Exception:
+                pass
+        active = []
+        for dlg in list(self._iter_workspace_windows(include_canvas=False)):
+            try:
+                if dlg is not None and (dlg.isVisible() or dlg.isMinimized()):
+                    active.append(dlg)
+            except Exception:
+                continue
+        return active
+
+    def _popup_window_label(self, dlg):
+        if dlg is None:
+            return "Pop-up"
+        try:
+            title = str(dlg.windowTitle() or "").strip()
+        except Exception:
+            title = ""
+        if title:
+            return title
+        try:
+            fallback = str(type(dlg).__name__ or "").strip()
+        except Exception:
+            fallback = ""
+        return fallback or "Pop-up"
+
+    def _popup_window_menu_label(self, dlg):
+        text = self._popup_window_label(dlg)
+        try:
+            if dlg is not None and (dlg.windowState() & QtCore.Qt.WindowMinimized):
+                text = f"{text} [minimized]"
+        except Exception:
+            pass
+        return text
+
+    def _focus_popup_window(self, dlg):
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller is not None and hasattr(controller, "focus_popup"):
+            try:
+                return bool(controller.focus_popup(dlg))
+            except Exception:
+                pass
+        if dlg is None:
+            return False
+        try:
+            state = dlg.windowState()
+            if state & QtCore.Qt.WindowMinimized:
+                dlg.showNormal()
+            else:
+                dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            return False
+        return True
+
+    def _rebuild_popup_menu(self):
         menu = getattr(self, "toolbar_popups_menu", None)
         if menu is None:
             return
         menu.clear()
+        active = list(self._active_popup_windows())
         entries = list(getattr(self, "_deferred_popup_entries", []) or [])
-        if not entries:
-            empty_act = menu.addAction("No deferred pop-ups")
+        if not active and not entries:
+            empty_act = menu.addAction("No open or saved pop-ups")
             empty_act.setEnabled(False)
             return
-        header_act = menu.addAction(f"{len(entries)} deferred pop-up{'s' if len(entries) != 1 else ''}")
-        header_act.setEnabled(False)
-        menu.addSeparator()
-        restore_all = menu.addAction(f"Restore all ({len(entries)})")
-        restore_all.triggered.connect(lambda: self.session_controller.restore_all_deferred_popups())
-        menu.addSeparator()
         metrics = None
         try:
             metrics = self.fontMetrics()
         except Exception:
             metrics = None
-        for entry in entries:
-            text = self._describe_deferred_popup_entry(entry)
-            if metrics is not None:
-                try:
-                    text = metrics.elidedText(text, QtCore.Qt.ElideRight, 340)
-                except Exception:
-                    pass
-            act = menu.addAction(text)
-            act.triggered.connect(partial(self.session_controller.restore_deferred_popup, entry_id=entry.get("id")))
+        if active:
+            header_act = menu.addAction(f"{len(active)} open pop-out{'s' if len(active) != 1 else ''}")
+            header_act.setEnabled(False)
+            menu.addSeparator()
+            bring_act = menu.addAction("Bring all to front")
+            bring_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+P"))
+            bring_act.setToolTip("Restore minimized pop-outs and raise the open pop-out windows")
+            bring_act.triggered.connect(self.on_recall_popouts)
+            arrange_act = menu.addAction("Arrange all")
+            arrange_act.triggered.connect(self.on_arrange_popouts)
+            minimize_act = menu.addAction("Minimize all")
+            minimize_act.triggered.connect(self.on_minimize_popouts)
+            close_act = menu.addAction("Close all")
+            close_act.triggered.connect(self.on_close_popouts)
+            menu.addSeparator()
+            for dlg in active:
+                full_text = self._popup_window_menu_label(dlg)
+                text = full_text
+                if metrics is not None:
+                    try:
+                        text = metrics.elidedText(full_text, QtCore.Qt.ElideRight, 340)
+                    except Exception:
+                        pass
+                act = menu.addAction(text)
+                act.setToolTip(full_text)
+                act.triggered.connect(partial(self._focus_popup_window, dlg))
+        if entries:
+            if active:
+                menu.addSeparator()
+            header_act = menu.addAction(f"{len(entries)} saved pop-up{'s' if len(entries) != 1 else ''}")
+            header_act.setEnabled(False)
+            menu.addSeparator()
+            restore_all = menu.addAction(f"Restore all saved ({len(entries)})")
+            restore_all.triggered.connect(lambda: self.session_controller.restore_all_deferred_popups())
+            menu.addSeparator()
+            for entry in entries:
+                text = self._describe_deferred_popup_entry(entry)
+                if metrics is not None:
+                    try:
+                        text = metrics.elidedText(text, QtCore.Qt.ElideRight, 340)
+                    except Exception:
+                        pass
+                act = menu.addAction(text)
+                act.triggered.connect(partial(self.session_controller.restore_deferred_popup, entry_id=entry.get("id")))
 
-    def _refresh_deferred_popup_ui(self):
+    def _refresh_popup_ui(self, *, popups=None):
         btn = getattr(self, "toolbar_popups_btn", None)
-        if btn is None:
+        action = getattr(self, "toolbar_popups_raise_act", None)
+        if btn is None and action is None:
             return
-        count = len(getattr(self, "_deferred_popup_entries", []) or [])
-        btn.setEnabled(count > 0)
-        btn.setText(f"Pop-ups ({count})" if count else "Pop-ups")
-        btn.setToolTip(
-            "Restore deferred session pop-outs on demand."
-            if count
-            else "No deferred session pop-outs are waiting."
-        )
-        try:
-            btn.setStyleSheet(
-                "QToolButton { font-weight: 600; color: #7a4d00; }"
-                if count
-                else ""
+        active = list(popups) if popups is not None else self._active_popup_windows()
+        active_count = len(active)
+        saved_count = len(getattr(self, "_deferred_popup_entries", []) or [])
+        enabled = bool(active_count or saved_count)
+        if active_count:
+            label = f"Pop-ups ({active_count} open)"
+        elif saved_count:
+            label = f"Pop-ups ({saved_count} saved)"
+        else:
+            label = "Pop-ups"
+        if active_count and saved_count:
+            tool_tip = (
+                f"Click to bring {active_count} open pop-out(s) to the front. "
+                f"Use the arrow for window actions and {saved_count} saved pop-up(s)."
             )
+        elif active_count:
+            tool_tip = (
+                f"Click to bring {active_count} open pop-out(s) to the front "
+                "or use the arrow for arrange/minimize/focus actions."
+            )
+        elif saved_count:
+            tool_tip = (
+                f"Click to restore {saved_count} saved pop-up(s) "
+                "or use the arrow for individual restore actions."
+            )
+        else:
+            tool_tip = "No open or saved pop-ups are available."
+        if action is not None:
+            action.setText(label)
+            action.setToolTip(tool_tip)
+            action.setStatusTip(tool_tip)
+            action.setEnabled(enabled)
+        if btn is not None:
+            btn.setEnabled(enabled)
+            btn.setToolTip(tool_tip)
+        try:
+            if btn is not None:
+                btn.setStyleSheet(
+                    "QToolButton { font-weight: 600; color: #0f4c81; }"
+                    if active_count
+                    else ("QToolButton { font-weight: 600; color: #7a4d00; }" if saved_count else "")
+                )
         except Exception:
             pass
-        self._rebuild_deferred_popup_menu()
+        self._rebuild_popup_menu()
+
+    def _rebuild_deferred_popup_menu(self):
+        self._rebuild_popup_menu()
+
+    def _refresh_deferred_popup_ui(self):
+        self._refresh_popup_ui()
 
     def _step_channel(self, delta: int):
         combo = getattr(self, "channel_dropdown", None)
@@ -5332,6 +5474,22 @@ QLabel:hover {{
             item.setSizeHint(QtCore.QSize(220, 82))
             tray.addItem(item)
 
+    def on_recall_popouts(self):
+        """Bring tracked pop-out dialogs back to the foreground, or restore saved ones if none are open."""
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller and hasattr(controller, "raise_popups"):
+            try:
+                if controller.raise_popups():
+                    controller.update_popup_actions()
+                    return
+            except Exception:
+                pass
+        if getattr(self, "_deferred_popup_entries", None):
+            try:
+                self.session_controller.restore_all_deferred_popups()
+            except Exception:
+                pass
+
     def on_arrange_popouts(self):
         """Tile all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""
         controller = getattr(self, "quick_crop_controller", None)
@@ -5345,10 +5503,8 @@ QLabel:hover {{
             controller.minimize_popups()
 
     def on_restore_popouts(self):
-        """Restore minimized pop-out dialogs to their previous on-screen size."""
-        controller = getattr(self, "quick_crop_controller", None)
-        if controller:
-            controller.restore_popups()
+        """Restore minimized pop-out dialogs and bring them back to the foreground."""
+        self.on_recall_popouts()
 
     def on_close_popouts(self):
         """Close all tracked pop-out dialogs without clearing crop history."""

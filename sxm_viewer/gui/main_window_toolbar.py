@@ -116,12 +116,13 @@ def create_main_toolbar(viewer):
         viewer._refresh_collection_ui()
     except Exception:
         pass
+    viewer.toolbar_popups_raise_act = QtWidgets.QAction("Pop-ups", viewer)
+    viewer.toolbar_popups_raise_act.triggered.connect(viewer.on_recall_popouts)
     viewer.toolbar_popups_btn = QtWidgets.QToolButton(toolbar)
-    viewer.toolbar_popups_btn.setText("Pop-ups")
-    viewer.toolbar_popups_btn.setToolTip("Restore deferred session pop-outs on demand")
-    viewer.toolbar_popups_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+    viewer.toolbar_popups_btn.setDefaultAction(viewer.toolbar_popups_raise_act)
+    viewer.toolbar_popups_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
     viewer.toolbar_popups_menu = QtWidgets.QMenu(viewer.toolbar_popups_btn)
-    viewer.toolbar_popups_menu.aboutToShow.connect(viewer._rebuild_deferred_popup_menu)
+    viewer.toolbar_popups_menu.aboutToShow.connect(viewer._rebuild_popup_menu)
     viewer.toolbar_popups_btn.setMenu(viewer.toolbar_popups_menu)
     viewer.toolbar_popups_btn.setEnabled(False)
     toolbar.addWidget(viewer.toolbar_popups_btn)
