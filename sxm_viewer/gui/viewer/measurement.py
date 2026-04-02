@@ -340,6 +340,8 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                                                   style_update_callback=style_update_cb,
                                                   palette_callback=palette_cb,
                                                   dark_mode=dark_pref)
+            if hasattr(viewer._profile_dialog, "detach_as_workspace_window"):
+                viewer._profile_dialog.detach_as_workspace_window()
             if hasattr(viewer._profile_dialog, 'set_preserve_profiles_callback'):
                 viewer._profile_dialog.set_preserve_profiles_callback(
                     _set_preserve, enabled=getattr(viewer, 'preserve_profiles_on_channel_change', True)
@@ -480,6 +482,8 @@ def _on_show_profile_window(viewer):
             ref_unit = None
         try:
             viewer._profile_dialog = ProfileDialog(None, [], parent=viewer, unit=ref_unit, y_label=y_label)
+            if hasattr(viewer._profile_dialog, "detach_as_workspace_window"):
+                viewer._profile_dialog.detach_as_workspace_window()
             viewer._profile_dialog.move(viewer._next_popup_pos(offset=30))
             viewer._profile_dialog.show()
             if canvas is not None and hasattr(viewer._profile_dialog, 'set_context_source'):

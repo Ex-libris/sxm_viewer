@@ -201,7 +201,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self._metadata_show_folder_name = False
         self._metadata_show_folder = False
         self._metadata_artist = None
-        owner = self.parent()
+        self._owner = parent
+        owner = self._owner
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
         self._plot_font_italic = bool(getattr(owner, "_plot_font_italic", False))
@@ -419,6 +420,18 @@ class ProfileDialog(QtWidgets.QDialog):
         self._context_source = None
         self._context_syncing = False
         self._preserve_cb = None
+
+    def detach_as_workspace_window(self):
+        """Make the dialog an independent top-level window so it does not drag the main viewer to front."""
+        owner = getattr(self, "_owner", None)
+        try:
+            self.setParent(None, self.windowFlags())
+            self.setWindowFlag(QtCore.Qt.Window, True)
+            self.setWindowModality(QtCore.Qt.NonModal)
+            if owner is not None and hasattr(owner, "windowIcon"):
+                self.setWindowIcon(owner.windowIcon())
+        except Exception:
+            pass
 
     def _on_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
@@ -748,7 +761,7 @@ class ProfileDialog(QtWidgets.QDialog):
     def set_plot_typography(self, **changes):
         """Update shared plot typography and redraw with the new style."""
         family = changes.get("family", None)
-        owner = self.parent()
+        owner = getattr(self, "_owner", None)
         style_changes = {
             "bold": changes.get("bold", None),
             "italic": changes.get("italic", None),

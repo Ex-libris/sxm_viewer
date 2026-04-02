@@ -292,6 +292,8 @@ class PopupProfileController:
                 palette_callback=palette_cb,
             )
             dlg.setWindowTitle(f"{self.title} (popup)")
+            if hasattr(dlg, "detach_as_workspace_window"):
+                dlg.detach_as_workspace_window()
             try:
                 dlg.set_context_source(
                     self.canvas,
