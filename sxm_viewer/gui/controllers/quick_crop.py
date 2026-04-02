@@ -530,8 +530,19 @@ class QuickCropController:
         alive = []
         cleaned = []
         seen = set()
-        for dlg in list(getattr(viewer, '_popup_refs', [])):
+        candidates = None
+        iter_windows = getattr(viewer, "_iter_workspace_windows", None)
+        if callable(iter_windows):
+            try:
+                candidates = list(iter_windows(include_canvas=False))
+            except Exception:
+                candidates = None
+        if candidates is None:
+            candidates = list(getattr(viewer, '_popup_refs', []))
+        for dlg in candidates:
             if dlg is None:
+                continue
+            if dlg is viewer:
                 continue
             ident = id(dlg)
             if ident in seen:
@@ -545,6 +556,30 @@ class QuickCropController:
                 continue
         viewer._popup_refs = cleaned
         return alive
+
+    def _bump_popup_stack(self, popups):
+        if not popups:
+            return
+        for dlg in popups:
+            try:
+                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+                dlg.show()
+                dlg.raise_()
+            except Exception:
+                continue
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            try:
+                app.processEvents()
+            except Exception:
+                pass
+        for dlg in popups:
+            try:
+                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, False)
+                dlg.show()
+                dlg.raise_()
+            except Exception:
+                continue
 
     def arrange_popups(self):
         popups = self._tracked_popups()
@@ -568,6 +603,7 @@ class QuickCropController:
                 dlg.activateWindow()
             except Exception:
                 continue
+        self._bump_popup_stack(popups)
 
     def minimize_popups(self):
         popups = self._tracked_popups()
@@ -591,6 +627,7 @@ class QuickCropController:
                 dlg.activateWindow()
             except Exception:
                 continue
+        self._bump_popup_stack(popups)
 
     def close_tracked_popups(self):
         popups = list(self._tracked_popups())

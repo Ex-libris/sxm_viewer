@@ -91,6 +91,14 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         return None
 
     dlg = QtWidgets.QDialog(owner)
+    try:
+        # Detach the popup from the main window as an owned native dialog so
+        # the viewer can be brought in front by simply clicking it.
+        dlg.setParent(None, dlg.windowFlags())
+        dlg.setWindowFlag(QtCore.Qt.Window, True)
+        dlg.setWindowIcon(owner.windowIcon())
+    except Exception:
+        pass
     dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     dlg.setWindowFlags(
         dlg.windowFlags()
