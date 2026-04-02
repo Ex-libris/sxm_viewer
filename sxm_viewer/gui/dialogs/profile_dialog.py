@@ -143,7 +143,7 @@ class _ProfileCompositeDragButton(QtWidgets.QToolButton):
         self._drag_start_pos = None
         self._drag_started = False
         self.setObjectName("profileComposeButton")
-        self.setText("Compose profiles")
+        self.setText("Combine")
         self.setCursor(QtCore.Qt.OpenHandCursor)
         self.setAutoRaise(False)
         self.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
@@ -263,6 +263,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self._workspace_registered = False
         self._composite_mode = False
         self._composite_origin_id = hex(id(self))
+        self._canvas_drag_start_pos = None
+        self._canvas_drag_started = False
         owner = self._owner
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
@@ -271,6 +273,10 @@ class ProfileDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout()
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
+        self.canvas.installEventFilter(self)
+        self.canvas.setToolTip(
+            "Drag the plot margin onto another profile window to create a composite."
+        )
         self.ax = fig.add_subplot(111)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_context_menu)
@@ -438,29 +444,9 @@ class ProfileDialog(QtWidgets.QDialog):
         profiles_header.setSpacing(6)
         profiles_header.addWidget(QtWidgets.QLabel("Profiles"))
         profiles_header.addStretch(1)
-        info_layout.addLayout(profiles_header)
-        self.compose_panel = QtWidgets.QFrame()
-        self.compose_panel.setObjectName("profileComposePanel")
-        self.compose_panel.setProperty("dropActive", False)
-        compose_layout = QtWidgets.QHBoxLayout(self.compose_panel)
-        compose_layout.setContentsMargins(12, 10, 12, 10)
-        compose_layout.setSpacing(10)
-        compose_text = QtWidgets.QVBoxLayout()
-        compose_text.setContentsMargins(0, 0, 0, 0)
-        compose_text.setSpacing(2)
-        self.compose_title_label = QtWidgets.QLabel("Create composite profile windows")
-        self.compose_title_label.setObjectName("profileComposeTitle")
-        compose_text.addWidget(self.compose_title_label)
-        self.compose_hint_label = QtWidgets.QLabel(
-            "Drag this set onto another profile window, or drop another set here. The originals stay unchanged."
-        )
-        self.compose_hint_label.setWordWrap(True)
-        self.compose_hint_label.setObjectName("profileComposeHint")
-        compose_text.addWidget(self.compose_hint_label)
-        compose_layout.addLayout(compose_text, 1)
         self.compose_drag_btn = _ProfileCompositeDragButton(self)
-        compose_layout.addWidget(self.compose_drag_btn, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        info_layout.addWidget(self.compose_panel)
+        profiles_header.addWidget(self.compose_drag_btn)
+        info_layout.addLayout(profiles_header)
         info_layout.addWidget(self.profile_list, 1)
         btn_layout = QtWidgets.QHBoxLayout()
         self.copy_btn = QtWidgets.QPushButton('Copy XY')
@@ -1042,15 +1028,12 @@ class ProfileDialog(QtWidgets.QDialog):
             active_border = "#79a9f2"
             active_text = "#ffffff"
             hint_color = "#b9c6d8"
-            compose_bg = "#152032"
-            compose_border = "#4e6a93"
-            compose_title = "#eef4ff"
-            compose_hint = "#c2d1e8"
-            compose_button_bg = "#2c6dd2"
-            compose_button_border = "#7db0ff"
-            compose_button_text = "#ffffff"
-            compose_drop_bg = "#1f3558"
-            compose_drop_border = "#9dccff"
+            compose_button_bg = "#202633"
+            compose_button_border = "#5a6880"
+            compose_button_text = "#e4ebf7"
+            compose_button_hover_border = "#82aef1"
+            compose_drop_bg = "#26477a"
+            compose_drop_border = "#a8ceff"
         else:
             inactive_bg = "#f3f5f9"
             inactive_border = "#aeb7c5"
@@ -1059,14 +1042,11 @@ class ProfileDialog(QtWidgets.QDialog):
             active_border = "#5b97e8"
             active_text = "#ffffff"
             hint_color = "#4b5b73"
-            compose_bg = "#edf5ff"
-            compose_border = "#a9c5ea"
-            compose_title = "#11335d"
-            compose_hint = "#38506d"
-            compose_button_bg = "#1f6fd7"
-            compose_button_border = "#5b97e8"
-            compose_button_text = "#ffffff"
-            compose_drop_bg = "#d9ebff"
+            compose_button_bg = "#f5f7fa"
+            compose_button_border = "#b8c2cf"
+            compose_button_text = "#314056"
+            compose_button_hover_border = "#5b97e8"
+            compose_drop_bg = "#e6f0ff"
             compose_drop_border = "#4f8fe3"
         style = (
             "QToolButton#profileToggleButton {"
@@ -1094,47 +1074,22 @@ class ProfileDialog(QtWidgets.QDialog):
         hint = self.findChild(QtWidgets.QLabel, "profileControlsHint")
         if hint is not None:
             hint.setStyleSheet(f"color: {hint_color};")
-        panel = getattr(self, "compose_panel", None)
-        if panel is not None:
-            drop_active = bool(panel.property("dropActive"))
-            panel_bg = compose_drop_bg if drop_active else compose_bg
-            panel_border = compose_drop_border if drop_active else compose_border
-            panel_style = (
-                "QFrame#profileComposePanel {"
-                f"background-color: {panel_bg};"
-                f"border: 2px solid {panel_border};"
-                "border-radius: 12px;"
-                "}"
-            )
-            try:
-                panel.setStyleSheet(panel_style)
-            except Exception:
-                pass
-        title_lbl = getattr(self, "compose_title_label", None)
-        if title_lbl is not None:
-            try:
-                title_lbl.setStyleSheet(f"color: {compose_title}; font-weight: 700;")
-            except Exception:
-                pass
-        compose_hint_lbl = getattr(self, "compose_hint_label", None)
-        if compose_hint_lbl is not None:
-            try:
-                compose_hint_lbl.setStyleSheet(f"color: {compose_hint};")
-            except Exception:
-                pass
         compose_btn = getattr(self, "compose_drag_btn", None)
         if compose_btn is not None:
+            drop_active = bool(compose_btn.property("dropActive"))
+            button_bg = compose_drop_bg if drop_active else compose_button_bg
+            button_border = compose_drop_border if drop_active else compose_button_border
             button_style = (
                 "QToolButton#profileComposeButton {"
-                f"background-color: {compose_button_bg};"
+                f"background-color: {button_bg};"
                 f"color: {compose_button_text};"
-                f"border: 1px solid {compose_button_border};"
-                "border-radius: 12px;"
-                "padding: 7px 14px;"
-                "font-weight: 700;"
+                f"border: 1px solid {button_border};"
+                "border-radius: 10px;"
+                "padding: 4px 10px;"
+                "font-weight: 600;"
                 "}"
                 "QToolButton#profileComposeButton:hover {"
-                f"border: 1px solid {compose_drop_border};"
+                f"border: 1px solid {compose_button_hover_border};"
                 "}"
                 "QToolButton#profileComposeButton:disabled {"
                 f"background-color: {inactive_bg};"
@@ -2100,24 +2055,76 @@ class ProfileDialog(QtWidgets.QDialog):
             pass
 
     def _set_compose_drop_active(self, active):
-        panel = getattr(self, "compose_panel", None)
-        if panel is None:
+        btn = getattr(self, "compose_drag_btn", None)
+        if btn is None:
             return
         try:
-            panel.setProperty("dropActive", bool(active))
+            btn.setProperty("dropActive", bool(active))
         except Exception:
             return
         self._apply_toggle_button_styles()
 
     def _show_compose_help(self, global_pos=None):
         message = (
-            "Drag the Compose profiles button onto another profile window.\n"
-            "Dropping another profile set anywhere in this window creates a new composite."
+            "Drag Combine onto another profile window.\n"
+            "You can also drag from the plot margin to create a composite."
         )
         try:
             QtWidgets.QToolTip.showText(global_pos or QtGui.QCursor.pos(), message, self)
         except Exception:
             pass
+
+    def _qt_pos_in_main_axes(self, pos):
+        if pos is None:
+            return False
+        try:
+            bbox = self.ax.get_window_extent()
+        except Exception:
+            return False
+        if bbox is None:
+            return False
+        try:
+            dpr = float(self.canvas.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        try:
+            height = self.canvas.height() * dpr
+        except Exception:
+            height = self.canvas.height()
+        x = float(pos.x()) * dpr
+        y = float(height - (pos.y() * dpr))
+        try:
+            return bool(bbox.contains(x, y))
+        except Exception:
+            return False
+
+    def eventFilter(self, source, event):
+        if source == self.canvas:
+            etype = event.type()
+            if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+                if self._qt_pos_in_main_axes(event.pos()):
+                    self._canvas_drag_start_pos = None
+                    self._canvas_drag_started = False
+                else:
+                    self._canvas_drag_start_pos = event.pos()
+                    self._canvas_drag_started = False
+            elif (
+                etype == QtCore.QEvent.MouseMove
+                and self._canvas_drag_start_pos is not None
+                and event.buttons() & QtCore.Qt.LeftButton
+            ):
+                if (event.pos() - self._canvas_drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                    self._canvas_drag_start_pos = None
+                    self._canvas_drag_started = True
+                    try:
+                        self.start_profile_composite_drag()
+                    except Exception:
+                        pass
+                    return True
+            elif etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                self._canvas_drag_start_pos = None
+                self._canvas_drag_started = False
+        return super().eventFilter(source, event)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(_PROFILE_COMPOSITE_MIME):
