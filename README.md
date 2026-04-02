@@ -122,6 +122,15 @@ environment.
 - If a local `.env` file exists, the launcher will load it automatically via
   `python-dotenv` (already included in the requirements).
 
+## Optional app icon
+- You can drop a branding asset into [`samples/README.md`](samples/README.md)
+  described below and the app will pick it up automatically on next launch.
+- Supported filenames are `samples/app_icon.ico`, `samples/app_icon.icns`,
+  `samples/app_icon.png`, `samples/app_icon.svg`, plus the same extensions for
+  `sxm_viewer_icon` and `sxmviewer_icon`.
+- Windows prefers `.ico`; macOS bundle workflows prefer `.icns`; `.png` is the
+  safest general fallback during development.
+
 ## Supported data and caches
 - Anfatec/Omicron `.txt` images with multiple channels.
 - Omicron `.dat` spectroscopies (single traces and matrix grids).

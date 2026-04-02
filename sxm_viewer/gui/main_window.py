@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
+from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
     CH_EQUALITY_TOL_NM,
@@ -273,7 +274,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.setAcceptDrops(True)
         log_status("Initializing SXM Viewer...")
         self._app_start_ts = time.perf_counter()
-        self.setWindowTitle("SXM Viewer")
+        self.setWindowTitle(APP_NAME)
+        apply_window_icon(self)
         self.resize(*MAIN_WINDOW_SIZE)
 
         log_status("Loading configuration...")

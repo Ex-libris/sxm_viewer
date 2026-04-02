@@ -814,13 +814,42 @@ class CollectionController:
         first = ((snapshot.get("views") or [{}]) or [{}])[0]
         meta = dict(first.get("meta") or {})
         source_file = str(meta.get("file_path") or meta.get("path") or first.get("path") or "")
+        channel_name = self._snapshot_channel_name(first)
         return {
-            "title": str(first.get("title") or meta.get("channel") or Path(source_file).name or "Collection item"),
+            "title": str(first.get("title") or channel_name or Path(source_file).name or "Collection item"),
             "source_file": source_file,
             "source_folder": str(Path(source_file).parent) if source_file else "",
             "channel_index": meta.get("channel_index", first.get("channel_idx")),
-            "channel_name": meta.get("channel") or "",
+            "channel_name": channel_name,
         }
+
+    @staticmethod
+    def _strip_display_unit(label) -> str:
+        text = str(label or "").strip()
+        if not text or not text.endswith("]"):
+            return text
+        head, sep, tail = text.rpartition("[")
+        if not sep:
+            return text
+        base = head.rstrip()
+        unit = tail[:-1].strip()
+        if base and unit:
+            return base
+        return text
+
+    def _snapshot_channel_name(self, view: dict) -> str:
+        if not isinstance(view, dict):
+            return ""
+        meta = dict(view.get("meta") or {})
+        for candidate in (
+            meta.get("channel"),
+            view.get("channel"),
+            self._strip_display_unit(view.get("colorbar_label")),
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
 
     def tray_entries_for_current_collection(self, *, icon_size: int = 72):
         """Build lightweight visual summaries for the collection tray in the main window."""
@@ -844,7 +873,7 @@ class CollectionController:
             source_file = str(item.get("source_file") or meta.get("file_path") or meta.get("path") or first.get("path") or "")
             folder_path = str(item.get("source_folder") or (str(Path(source_file).parent) if source_file else "") or "")
             folder_name = Path(folder_path).name if folder_path else ""
-            channel_name = str(item.get("channel_name") or meta.get("channel") or first.get("title") or "").strip()
+            channel_name = str(item.get("channel_name") or self._snapshot_channel_name(first) or "").strip()
             when = ""
             for key in ("datetime", "time", "time_str", "date", "Date", "Timestamp", "acquisition_time"):
                 val = meta.get(key)
@@ -1120,7 +1149,15 @@ class CollectionController:
         if source_fds and 0 <= source_channel_idx < len(source_fds):
             fd = dict(source_fds[source_channel_idx] or {})
         meta = view.get("meta") or {}
-        fd["Caption"] = str(view.get("title") or meta.get("channel") or fd.get("Caption") or item.get("label") or "Collection item")
+        caption = (
+            self._snapshot_channel_name(view)
+            or str(item.get("channel_name") or "").strip()
+            or str(fd.get("Caption") or "").strip()
+            or str(item.get("label") or "").strip()
+            or str(view.get("title") or "").strip()
+            or "Collection item"
+        )
+        fd["Caption"] = caption
         fd["FileName"] = str(fd.get("FileName") or Path(str(path)).name or "collection_item")
         header_new = dict(source_header)
         header_new["xPixel"] = int(arr.shape[1])
