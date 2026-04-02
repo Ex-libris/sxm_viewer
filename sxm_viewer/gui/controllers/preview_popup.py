@@ -200,6 +200,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        canvas._show_image_size_overlay = True
     except Exception:
         pass
 

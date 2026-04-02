@@ -226,6 +226,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_profile_overlays = True
         self._show_angle_overlays = True
         self._show_shortcut_hint = True
+        self._show_image_size_overlay = False
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
@@ -1411,6 +1412,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._add_scale_bar(ax, v)
                 except Exception:
                     pass
+            self._draw_image_size_overlay(ax, v)
             if ax not in self._zoom_reset_limits:
                 self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
@@ -6679,6 +6681,8 @@ class MultiPreviewCanvas(FigureCanvas):
             text.set_fontweight('bold')
             ax.add_artist(sb)
 
+        self._draw_image_size_overlay(ax, view)
+
         if not self._show_ticks:
             ax.set_xticks([])
             ax.set_yticks([])
@@ -6788,6 +6792,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 ax.set_title(title, fontsize=9 * font_scale, color=text_color)
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, view)
+            self._draw_image_size_overlay(ax, view)
             for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
                 apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
         fig.tight_layout()
@@ -6847,6 +6852,83 @@ class MultiPreviewCanvas(FigureCanvas):
                 "boxstyle": "round,pad=0.22",
             },
             zorder=26,
+        )
+        try:
+            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
+        except Exception:
+            pass
+
+    def _image_size_overlay_text(self, view):
+        if not getattr(self, "_show_image_size_overlay", False) or not view:
+            return ""
+        extent = view.get("extent_raw")
+        if extent is None:
+            extent = view.get("extent")
+        width = None
+        height = None
+        unit = str(view.get("axis_unit") or "").strip()
+        if extent is not None:
+            try:
+                x0, x1, y1, y0 = extent
+                width = abs(float(x1) - float(x0))
+                height = abs(float(y0) - float(y1))
+            except Exception:
+                width = None
+                height = None
+        if width is None or height is None:
+            try:
+                arr = np.asarray(view.get("arr"))
+                if arr.ndim >= 2:
+                    height = float(arr.shape[0])
+                    width = float(arr.shape[1])
+                    unit = "px"
+            except Exception:
+                return ""
+        if width is None or height is None:
+            return ""
+        if not unit:
+            unit = "px" if view.get("extent") is None and view.get("extent_raw") is None else "nm"
+
+        def _fmt(value):
+            value = float(value)
+            if unit == "px":
+                return str(int(round(value)))
+            if abs(value - round(value)) < 1e-6:
+                return str(int(round(value)))
+            if abs(value) >= 100:
+                return f"{value:.0f}"
+            if abs(value) >= 10:
+                return f"{value:.1f}".rstrip("0").rstrip(".")
+            return f"{value:.3g}"
+
+        return f"{_fmt(width)} x {_fmt(height)} {unit}".strip()
+
+    def _draw_image_size_overlay(self, ax, view):
+        if ax is None:
+            return
+        text = self._image_size_overlay_text(view)
+        if not text:
+            return
+        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        fontsize = max(7.0, 8.2 * scale)
+        y_pos = 0.16 if self.scale_bar_enabled else 0.02
+        text_artist = ax.text(
+            0.985,
+            y_pos,
+            text,
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=fontsize,
+            fontweight="semibold",
+            color="#f5f7fb",
+            bbox={
+                "facecolor": "black",
+                "alpha": 0.35,
+                "edgecolor": "none",
+                "boxstyle": "round,pad=0.2",
+            },
+            zorder=21,
         )
         try:
             apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
