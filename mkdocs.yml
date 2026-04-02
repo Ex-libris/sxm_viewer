@@ -1,0 +1,86 @@
+docs_dir: sxm_docs/docs
+site_name: SXM Viewer
+site_description: Scientific SPM data analysis and visualization for Anfatec/Omicron instruments. And also nanonis.
+site_url: https://ex-libris.github.io/sxm_viewer/
+repo_url: https://github.com/Ex-libris/sxm_viewer
+repo_name: Ex-libris/sxm_viewer
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tooltips
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - First Steps: getting-started/first-steps.md
+    - Keyboard Shortcuts: getting-started/shortcuts.md
+  - Browsing & Navigation:
+    - Loading Data: browsing/loading.md
+    - Thumbnail Grid: browsing/thumbnail-grid.md
+    - Minimap: browsing/minimap.md
+    - Sessions & Collections: browsing/sessions-and-collections.md
+  - Image Analysis:
+    - Preview & Popups: image-analysis/preview-and-popups.md
+    - Cropping: image-analysis/cropping.md
+    - Profiles & Measurements: image-analysis/profiles.md
+    - Angle Measurements: image-analysis/angles.md
+    - Filters & Processing: image-analysis/filters.md
+    - Image Comparison (A/B): image-analysis/compare.md
+    - Molecule Overlays: image-analysis/molecules.md
+    - Outline Extraction: image-analysis/outlines.md
+    - Histogram & Contrast: image-analysis/histogram.md
+  - Spectroscopy:
+    - Overview: spectroscopy/overview.md
+    - Spectroscopy Browser: spectroscopy/browser.md
+    - Matrix Scans: spectroscopy/matrix.md
+    - Parabola Fits: spectroscopy/parabolas.md
+    - KPFM Data: spectroscopy/kpfm.md
+  - Display & Appearance:
+    - Colormaps & Contrast: workspace/colormaps.md
+    - Overlays: workspace/overlays.md
+    - Dark Mode & Typography: workspace/typography.md
+    - Publication Canvas: workspace/canvas.md
+    - Display Presets: workspace/presets.md
+  - Export & Sharing:
+    - Copy & Export Images: export-and-sharing/export-images.md
+    - Export to PowerPoint: export-and-sharing/powerpoint.md
+    - Export to SVG & PDF: export-and-sharing/vector.md
+    - CSV & Data Export: export-and-sharing/data.md
+  - Reference:
+    - Supported File Formats: reference/file-formats.md
+    - Activity Log: reference/activity-log.md
+    - Configuration: reference/configuration.md
