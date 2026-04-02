@@ -4290,9 +4290,19 @@ QLabel:hover {{
                     canv._redraw()
                 except Exception:
                     pass
-        for dlg in list(getattr(self, "_profile_dialogs", []) or []):
+        profile_dialogs = []
+        main_profile_dialog = getattr(self, "_profile_dialog", None)
+        if main_profile_dialog is not None:
+            profile_dialogs.append(main_profile_dialog)
+        profile_dialogs.extend(list(getattr(self, "_profile_dialogs", []) or []))
+        seen_profile_dialogs = set()
+        for dlg in profile_dialogs:
             if dlg is None:
                 continue
+            dlg_id = id(dlg)
+            if dlg_id in seen_profile_dialogs:
+                continue
+            seen_profile_dialogs.add(dlg_id)
             try:
                 if hasattr(dlg, "set_plot_typography"):
                     dlg.set_plot_typography(

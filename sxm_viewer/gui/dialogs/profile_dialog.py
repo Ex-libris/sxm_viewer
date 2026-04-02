@@ -129,6 +129,12 @@ from ..thumbnail_render import (
 )
 from ..canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle, list_color_cycles
+from ..profile_links import (
+    register_profile_dialog,
+    unregister_profile_dialog,
+    apply_live_profile_style,
+    profile_ref_key,
+)
 from .profile_data import axis_label, format_marker_delta, format_stats_text, fmt_length
 
 _PROFILE_COMPOSITE_MIME = "application/x-sxm-profile-composite"
@@ -495,6 +501,7 @@ class ProfileDialog(QtWidgets.QDialog):
         self._context_syncing = False
         self._preserve_cb = None
         self._refresh_action_button_states()
+        register_profile_dialog(self)
 
     def detach_as_workspace_window(self):
         """Make the dialog an independent top-level window so it does not drag the main viewer to front."""
@@ -783,17 +790,36 @@ class ProfileDialog(QtWidgets.QDialog):
             dataset = {}
         return dataset.get(field, default)
 
+    def _dataset_for_profile_key(self, profile_key):
+        if profile_key is None:
+            return self._active
+        try:
+            idx = int(profile_key)
+        except Exception:
+            return None
+        if 0 <= idx < len(self._saved):
+            return self._saved[idx]
+        return None
+
+    def _live_profile_ref(self, profile_key):
+        dataset = self._dataset_for_profile_key(profile_key)
+        ref = dataset.get("live_profile_ref") if isinstance(dataset, dict) else None
+        return ref if profile_ref_key(ref) is not None else None
+
     def _apply_profile_style_change(self, profile_key, **changes):
         updated = False
+        live_ref = self._live_profile_ref(profile_key)
         if callable(self._style_update_cb):
             try:
                 updated = bool(self._style_update_cb(profile_key, **changes))
             except Exception:
                 updated = False
-        target = self._active if profile_key is None else (self._saved[int(profile_key)] if 0 <= int(profile_key) < len(self._saved) else None)
-        if target is not None:
+        if not updated and live_ref is not None:
+            updated = bool(apply_live_profile_style(live_ref, **changes))
+        target = self._dataset_for_profile_key(profile_key)
+        if target is not None and (updated or live_ref is None):
             target.update(changes)
-            updated = True or updated
+            updated = True
         if updated:
             current = profile_key
             self.update_profiles(
@@ -808,23 +834,47 @@ class ProfileDialog(QtWidgets.QDialog):
         colors = get_color_cycle(palette_name)
         if not colors:
             return
-        if callable(self._palette_cb):
+        if callable(self._palette_cb) and not self._composite_mode:
             try:
                 self._palette_cb(palette_name)
             except Exception:
                 pass
-        self._profile_palette_name = palette_name
-        color_iter = iter(colors)
+            self._profile_palette_name = palette_name
+            color_iter = iter(colors)
+            if self._active is not None:
+                self._active["color"] = next(color_iter, colors[0])
+            for idx, entry in enumerate(self._saved):
+                entry["color"] = colors[(idx + 1) % len(colors)]
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+            return
+        updated = False
         if self._active is not None:
-            self._active["color"] = next(color_iter, colors[0])
+            live_ref = self._live_profile_ref(None)
+            color = colors[0]
+            if live_ref is not None:
+                updated = bool(apply_live_profile_style(live_ref, color=color)) or updated
+            self._active["color"] = color
+            updated = True
         for idx, entry in enumerate(self._saved):
-            entry["color"] = colors[(idx + 1) % len(colors)]
-        self.update_profiles(
-            self._active,
-            self._saved,
-            activate_overlay_callback=self._activate_overlay_cb,
-            highlight_overlay_callback=self._highlight_overlay_cb,
-        )
+            color = colors[(idx + 1) % len(colors)]
+            live_ref = self._live_profile_ref(idx)
+            if live_ref is not None:
+                updated = bool(apply_live_profile_style(live_ref, color=color)) or updated
+            entry["color"] = color
+            updated = True
+        if updated:
+            self._profile_palette_name = palette_name
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
 
     def _font_style_state(self):
         return {
@@ -2167,6 +2217,48 @@ class ProfileDialog(QtWidgets.QDialog):
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Composite profile created", dlg)
         event.acceptProposedAction()
 
+    def refresh_linked_profiles(self, datasets_by_ref, source_id=None):
+        if not self._composite_mode or not isinstance(datasets_by_ref, dict):
+            return False
+        changed = False
+
+        def _refresh_dataset(dataset):
+            if not isinstance(dataset, dict):
+                return dataset, False
+            key = profile_ref_key(dataset.get("live_profile_ref"))
+            if key is None:
+                return dataset, False
+            if source_id and str(key[0]) != str(source_id):
+                return dataset, False
+            updated = datasets_by_ref.get(key)
+            if not isinstance(updated, dict):
+                return dataset, False
+            refreshed = copy.deepcopy(updated)
+            refreshed["display_name"] = self._dataset_display_name(
+                refreshed,
+                dataset.get("display_name") or refreshed.get("display_name") or "Profile",
+            )
+            return refreshed, True
+
+        current_key = self._selected_overlay_index()
+        self._active, active_changed = _refresh_dataset(self._active)
+        changed = changed or active_changed
+        for idx, dataset in enumerate(list(self._saved)):
+            refreshed, item_changed = _refresh_dataset(dataset)
+            if item_changed:
+                self._saved[idx] = refreshed
+                changed = True
+        if not changed:
+            return False
+        self.update_profiles(
+            self._active,
+            self._saved,
+            activate_overlay_callback=self._activate_overlay_cb,
+            highlight_overlay_callback=self._highlight_overlay_cb,
+        )
+        self.select_overlay(current_key)
+        return True
+
     def update_profiles(self, active_profile, saved_profiles=None, activate_overlay_callback=None,
                          highlight_overlay_callback=None):
         saved_profiles = saved_profiles or []
@@ -2725,6 +2817,7 @@ class ProfileDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._deregister_workspace_dialog()
+        unregister_profile_dialog(self)
         super().closeEvent(event)
 
     def _copy_current_profile(self):

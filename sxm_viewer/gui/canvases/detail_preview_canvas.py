@@ -35,6 +35,7 @@ from .molecular_overlay import (
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
+from ..profile_links import register_profile_canvas, notify_profile_source_changed
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 
@@ -194,6 +195,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_update_timer.setInterval(50)
         self._profile_update_timer.timeout.connect(self._flush_profile_updates)
         self._saved_profiles = []
+        self._profile_live_source_id = f"canvas-{id(self):x}"
+        self._profile_saved_profile_seq = 1
         self._profile_palette_name = DEFAULT_COLOR_CYCLE
         self._profile_palette_colors = get_color_cycle(self._profile_palette_name)
         self._profile_color_cycle = itertools.cycle(self._profile_palette_colors)
@@ -2105,6 +2108,62 @@ class MultiPreviewCanvas(FigureCanvas):
         }
         return mapping.get(style_key, default)
 
+    def _next_saved_profile_id(self):
+        profile_id = f"profile-{int(getattr(self, '_profile_saved_profile_seq', 1))}"
+        self._profile_saved_profile_seq = int(getattr(self, '_profile_saved_profile_seq', 1)) + 1
+        return profile_id
+
+    def _ensure_saved_profile_id(self, entry):
+        if not isinstance(entry, dict):
+            return ""
+        profile_id = str(entry.get("profile_id") or "").strip()
+        if not profile_id:
+            profile_id = self._next_saved_profile_id()
+            entry["profile_id"] = profile_id
+        return profile_id
+
+    def _profile_live_ref(self, profile_key=None, entry=None):
+        source_id = register_profile_canvas(self)
+        if not source_id:
+            return None
+        if entry is not None:
+            profile_id = self._ensure_saved_profile_id(entry)
+            if not profile_id:
+                return None
+            return {"source_id": source_id, "kind": "saved", "profile_id": profile_id}
+        if profile_key is None:
+            return {"source_id": source_id, "kind": "active"}
+        try:
+            idx = int(profile_key)
+        except Exception:
+            return None
+        if idx < 0 or idx >= len(self._saved_profiles):
+            return None
+        profile_id = self._ensure_saved_profile_id(self._saved_profiles[idx])
+        if not profile_id:
+            return None
+        return {"source_id": source_id, "kind": "saved", "profile_id": profile_id}
+
+    def _saved_profile_index_from_ref(self, profile_ref):
+        if not isinstance(profile_ref, dict):
+            return None
+        source_id = str(profile_ref.get("source_id") or "").strip()
+        if source_id != str(register_profile_canvas(self) or "").strip():
+            return None
+        if str(profile_ref.get("kind") or "").strip().lower() == "active":
+            return None
+        profile_id = str(
+            profile_ref.get("profile_id")
+            or profile_ref.get("overlay_id")
+            or ""
+        ).strip()
+        if not profile_id:
+            return None
+        for idx, entry in enumerate(self._saved_profiles):
+            if str(self._ensure_saved_profile_id(entry) or "") == profile_id:
+                return idx
+        return None
+
     def _build_profile_style(self, *, color=None, lw=None, line_style=None, marker_style=None, marker_size=None, active=False):
         return {
             "color": color,
@@ -2153,6 +2212,7 @@ class MultiPreviewCanvas(FigureCanvas):
             line_style=self._active_profile_line_style,
             marker_style=self._active_profile_marker_style,
             marker_size=self._active_profile_marker_size,
+            live_profile_ref=self._profile_live_ref(None),
         )
         saved = []
         for entry in self._saved_profiles:
@@ -2165,8 +2225,11 @@ class MultiPreviewCanvas(FigureCanvas):
                     line_style=entry.get('line_style'),
                     marker_style=entry.get('marker_style'),
                     marker_size=entry.get('marker_size'),
+                    live_profile_ref=self._profile_live_ref(entry=entry),
                 )
                 entry['data'] = data
+            elif isinstance(data, dict):
+                data['live_profile_ref'] = self._profile_live_ref(entry=entry)
             if data:
                 saved.append(data)
         return active, saved
@@ -3820,7 +3883,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return min_idx
         return None
 
-    def _build_profile_data(self, pts, color=None, view=None, lw=None, line_style=None, marker_style=None, marker_size=None):
+    def _build_profile_data(self, pts, color=None, view=None, lw=None, line_style=None, marker_style=None, marker_size=None, live_profile_ref=None):
         if pts is None or not self.views:
             return None
         try:
@@ -3934,6 +3997,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 'source_datetime': source_datetime,
                 'source_date': source_date,
                 'source_time': source_time,
+                'live_profile_ref': copy.deepcopy(live_profile_ref) if isinstance(live_profile_ref, dict) else None,
             }
         except Exception:
             return None
@@ -4069,10 +4133,13 @@ class MultiPreviewCanvas(FigureCanvas):
             marker_style=marker_style,
             marker_size=marker_size,
         )
+        profile_id = self._next_saved_profile_id()
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
                  'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw,
                  'line_style': line_style, 'marker_style': marker_style, 'marker_size': marker_size,
-                 'line_artist': line, 'endpoint_artist': endpoints}
+                 'line_artist': line, 'endpoint_artist': endpoints, 'profile_id': profile_id}
+        if isinstance(data, dict):
+            data['live_profile_ref'] = self._profile_live_ref(entry=entry)
         if text is not None:
             entry['label_artist'] = text
             entry['label_base_size'] = base_size
@@ -4291,7 +4358,10 @@ class MultiPreviewCanvas(FigureCanvas):
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
                  'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw,
                  'line_style': line_style, 'marker_style': marker_style, 'marker_size': marker_size,
-                 'line_artist': line, 'endpoint_artist': endpoints}
+                 'line_artist': line, 'endpoint_artist': endpoints,
+                 'profile_id': self._next_saved_profile_id()}
+        if isinstance(data, dict):
+            data['live_profile_ref'] = self._profile_live_ref(entry=entry)
         if text is not None:
             entry['label_artist'] = text
             entry['label_base_size'] = base_size
@@ -4611,18 +4681,30 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         entry['data'] = None
 
-    def set_profile_style(self, profile_key=None, **changes):
+    def set_profile_style(self, profile_key=None, profile_ref=None, **changes):
         """Update active or saved profile styling and refresh emitted datasets."""
-        active = profile_key is None
+        idx = None
+        if profile_ref is not None:
+            if str(profile_ref.get("kind") or "").strip().lower() == "active":
+                if str(profile_ref.get("source_id") or "").strip() != str(register_profile_canvas(self) or "").strip():
+                    return False
+                active = True
+            else:
+                idx = self._saved_profile_index_from_ref(profile_ref)
+                if idx is None:
+                    return False
+                active = False
+        else:
+            active = profile_key is None
+            if not active:
+                try:
+                    idx = int(profile_key)
+                except Exception:
+                    return False
+                if idx < 0 or idx >= len(self._saved_profiles):
+                    return False
         if active and self.profile_pts is None:
             return False
-        if not active:
-            try:
-                idx = int(profile_key)
-            except Exception:
-                return False
-            if idx < 0 or idx >= len(self._saved_profiles):
-                return False
         self.push_undo_state("profile_style")
         if active:
             color = changes.get('color')
@@ -4967,21 +5049,25 @@ class MultiPreviewCanvas(FigureCanvas):
         self._update_angle_artists()
 
     def _emit_profile(self):
-        if not (getattr(self, "profile_enabled", False) or getattr(self, "_profile_move_only", False)) or self.profile_pts is None:
+        if not (
+            getattr(self, "profile_enabled", False)
+            or getattr(self, "_profile_move_only", False)
+            or bool(self._saved_profiles)
+        ):
             self._emit_profile_state()
             return
-        if not callable(self.profile_callback):
-            self._emit_profile_state()
-            return
-        active = self._build_profile_data(
-            self.profile_pts,
-            color=self._active_profile_color,
-            view=self.views[0] if self.views else None,
-            lw=self._active_profile_lw,
-            line_style=self._active_profile_line_style,
-            marker_style=self._active_profile_marker_style,
-            marker_size=self._active_profile_marker_size,
-        )
+        active = None
+        if self.profile_pts is not None:
+            active = self._build_profile_data(
+                self.profile_pts,
+                color=self._active_profile_color,
+                view=self.views[0] if self.views else None,
+                lw=self._active_profile_lw,
+                line_style=self._active_profile_line_style,
+                marker_style=self._active_profile_marker_style,
+                marker_size=self._active_profile_marker_size,
+                live_profile_ref=self._profile_live_ref(None),
+            )
         if active:
             ref = active.get('x_nm') if active.get('x_nm') is not None else active.get('x_px')
             if ref is not None:
@@ -5010,6 +5096,7 @@ class MultiPreviewCanvas(FigureCanvas):
                         line_style=self._active_profile_line_style,
                         marker_style=self._active_profile_marker_style,
                         marker_size=self._active_profile_marker_size,
+                        live_profile_ref=self._profile_live_ref(None),
                     )
                     if p:
                         name = v.get('colorbar_label') or v.get('title') or f"Ch{i+2}"
@@ -5028,14 +5115,22 @@ class MultiPreviewCanvas(FigureCanvas):
                     line_style=entry.get('line_style'),
                     marker_style=entry.get('marker_style'),
                     marker_size=entry.get('marker_size'),
+                    live_profile_ref=self._profile_live_ref(entry=entry),
                 )
                 entry['data'] = data
+            elif isinstance(data, dict):
+                data['live_profile_ref'] = self._profile_live_ref(entry=entry)
             if data:
                 saved_data.append(data)
         try:
-            self.profile_callback(active, saved_data)
+            notify_profile_source_changed(self, active, saved_data)
         except Exception:
             pass
+        if callable(self.profile_callback):
+            try:
+                self.profile_callback(active, saved_data)
+            except Exception:
+                pass
         self._emit_profile_state()
 
     def _emit_profile_state(self):
