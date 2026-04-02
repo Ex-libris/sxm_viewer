@@ -28,25 +28,9 @@ SXM Viewer provides an integrated environment for:
 - Publication-ready figure composition (canvas)
 - Session and collection management
 
----
 
-## Interface
 
 ![Main interface](screenshots/main_menu.png)
-
----
-
-## Examples
-
-### Image analysis workflow
-
-![Profiles example](screenshots/Crop + pop-out – measure.gif)
-
-### Canvas and layout
-
-![Canvas example](screenshots/Canvas export flow.gif)
-
----
 
 ## Quick start
 
