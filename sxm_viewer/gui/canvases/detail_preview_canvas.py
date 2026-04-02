@@ -4363,6 +4363,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if x is None or y is None:
             return
         shift_pressed = self._shift_pressed(event)
+        mods_qt = self._event_qt_modifiers(event)
+        ctrl_pressed = bool(mods_qt & QtCore.Qt.ControlModifier)
         
         # Right click context menu for profiles
         if event.button == 3:
@@ -4386,6 +4388,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._dragging = None
             return
         if self.profile_pts is None:
+            if not ctrl_pressed:
+                return
             if self._profile_move_only:
                 return
             self.push_undo_state("start_profile")
@@ -4452,6 +4456,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._line_drag_origin = None
                 return
         # else: start a new line from here
+        if not ctrl_pressed:
+            return
         if self.profile_pts is not None:
             self._snapshot_active_profile()
         else:

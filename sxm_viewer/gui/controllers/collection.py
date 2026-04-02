@@ -24,6 +24,29 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
+        banner = QtWidgets.QFrame(self)
+        banner.setStyleSheet(
+            "QFrame {"
+            "  background: #eef7ff;"
+            "  border: 1px solid #b7d4f7;"
+            "  border-radius: 8px;"
+            "}"
+        )
+        banner_layout = QtWidgets.QVBoxLayout(banner)
+        banner_layout.setContentsMargins(12, 10, 12, 10)
+        banner_layout.setSpacing(4)
+        banner_title = QtWidgets.QLabel("Add Selected Analysis To A Collection", banner)
+        banner_title.setStyleSheet("font-weight: 700; color: #174a8b;")
+        banner_msg = QtWidgets.QLabel(
+            "Collections are reusable analysis sets. Keep appending into the same collection while you move across folders.",
+            banner,
+        )
+        banner_msg.setWordWrap(True)
+        banner_msg.setStyleSheet("color: #2a4560;")
+        banner_layout.addWidget(banner_title)
+        banner_layout.addWidget(banner_msg)
+        layout.addWidget(banner)
+
         intro = QtWidgets.QLabel(
             "<b>Collections</b> are curated workspaces built from selected views across folders or sessions.<br>"
             "Choose whether this save should stay lightweight (<b>Linked</b>) or carry its own image data "
@@ -442,16 +465,24 @@ class CollectionController:
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
             self._remember_current_collection(collection_path, mode=mode)
-            QtWidgets.QMessageBox.information(
-                self.viewer,
-                "Collections",
-                (
-                    f"Collection updated: {collection_path.name}\n"
-                    f"Added {len(appended)} item(s).\n\n"
-                    f"{'Linked' if mode == 'linked' else 'Portable'} mode is being used for newly added entries.\n"
-                    "This collection is now the default target for Add to Collection actions in this app session."
-                ),
+            box = QtWidgets.QMessageBox(self.viewer)
+            box.setWindowTitle("Collection updated")
+            box.setIcon(QtWidgets.QMessageBox.Information)
+            box.setTextFormat(QtCore.Qt.RichText)
+            box.setText(
+                "<div style='min-width: 360px;'>"
+                "<div style='color:#1f6f43; font-weight:700; font-size:13px; margin-bottom:6px;'>"
+                "Added to collection successfully"
+                "</div>"
+                f"<div><b>{collection_path.name}</b></div>"
+                f"<div style='margin-top:4px;'>Added <b>{len(appended)}</b> item(s).</div>"
+                f"<div style='margin-top:8px; color:#555;'>"
+                f"{'Linked' if mode == 'linked' else 'Portable'} mode is being used for newly added entries."
+                "<br>This collection remains the default target for further <i>Add to Collection</i> actions."
+                "</div>"
+                "</div>"
             )
+            box.exec_()
             log_status(f"Updated collection {collection_path} with {len(appended)} item(s)")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to save collection: {exc}")
@@ -763,28 +794,28 @@ class CollectionController:
         any_spectra = False
         for item in items:
             snapshot = dict(item.get("snapshot") or {})
-            if self._should_restore_item_as_popup(item, snapshot):
+            restore_as_popup = self._should_restore_item_as_popup(item, snapshot)
+            primary_view = self._build_primary_view_for_item(item, snapshot, views_dir)
+            key = None
+            if primary_view is not None:
+                key = self._register_collection_processed_view(primary_view, item)
+            if key:
+                if not restore_as_popup:
+                    viewer._collection_item_snapshots[str(key)] = {
+                        "snapshot": snapshot,
+                        "views_dir": str(views_dir),
+                        "label": item.get("label"),
+                    }
+                    molecules = snapshot.get("molecule_state")
+                    if molecules is not None:
+                        viewer.molecule_overlays[str(key)] = molecules
+                    any_spectra = self._register_collection_spectra_for_key(str(key), snapshot) or any_spectra
+                loaded_keys.append(str(key))
+            if restore_as_popup:
                 popup_items.append((item, snapshot))
                 any_spectra = self._snapshot_has_spectra(snapshot) or any_spectra
-                continue
-            primary_view = self._build_primary_view_for_item(item, snapshot, views_dir)
-            if primary_view is None:
+            elif not key:
                 skipped.append(str(item.get("label") or item.get("id") or "item"))
-                continue
-            key = self._register_collection_processed_view(primary_view, item)
-            if not key:
-                skipped.append(str(item.get("label") or item.get("id") or "item"))
-                continue
-            viewer._collection_item_snapshots[str(key)] = {
-                "snapshot": snapshot,
-                "views_dir": str(views_dir),
-                "label": item.get("label"),
-            }
-            molecules = snapshot.get("molecule_state")
-            if molecules is not None:
-                viewer.molecule_overlays[str(key)] = molecules
-            any_spectra = self._register_collection_spectra_for_key(str(key), snapshot) or any_spectra
-            loaded_keys.append(str(key))
 
         if any_spectra:
             self._apply_collection_spectro_settings(payload, items)
