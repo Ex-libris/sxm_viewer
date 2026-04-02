@@ -147,6 +147,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_popup_style_callback = None
         self._apply_popup_style_label = "Apply this style to all pop-ups"
         self._apply_popup_style_tooltip = ""
+        self._collection_menu_callback = None
+        self._collection_help_callback = None
         self._compare_menu_callback = None
         self._compare_menu_state_callback = None
         self._stp_export_callback = None
@@ -665,6 +667,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._apply_popup_style_label = str(label)
         self._apply_popup_style_tooltip = str(tooltip or "")
 
+    def set_collection_menu_callback(self, cb, help_cb=None):
+        """Register collection-menu handlers used to save curated views into cross-folder collections."""
+        self._collection_menu_callback = cb
+        self._collection_help_callback = help_cb
+
     def set_compare_menu_callback(self, cb, state_cb=None):
         """Register compare-menu handlers used to populate A/B view comparisons from right-clicks."""
         self._compare_menu_callback = cb
@@ -683,7 +690,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._minimize_windows_callback = cb
 
     def set_window_restore_callback(self, cb):
-        """Register callback invoked when the user requests restoring minimized pop-out windows."""
+        """Register callback invoked when the user requests recalling pop-out windows."""
         self._restore_windows_callback = cb
 
     def set_window_close_callback(self, cb):
@@ -2162,6 +2169,20 @@ class MultiPreviewCanvas(FigureCanvas):
                 saved.append(data)
         return active, saved
 
+    @staticmethod
+    def _normalize_profile_marker_key_map(mapping):
+        """Restore JSON-loaded marker-key maps to native None/int keys."""
+        normalized = {}
+        for key, value in dict(mapping or {}).items():
+            if key in (None, "null", "None", ""):
+                normalized[None] = value
+                continue
+            try:
+                normalized[int(key)] = value
+            except Exception:
+                normalized[key] = value
+        return normalized
+
     def import_profile_state(self, state, emit=True):
         if state is None:
             return
@@ -2192,9 +2213,21 @@ class MultiPreviewCanvas(FigureCanvas):
                 )
             except Exception:
                 pass
-            self._profile_marker_key = state.get('marker_key')
-            self._profile_marker_positions_by_key = dict(state.get('marker_positions_by_key') or {})
-            self._profile_marker_domain_by_key = dict(state.get('marker_domain_by_key') or {})
+            marker_key = state.get('marker_key')
+            if marker_key in ("null", "None", ""):
+                marker_key = None
+            elif marker_key is not None:
+                try:
+                    marker_key = int(marker_key)
+                except Exception:
+                    pass
+            self._profile_marker_key = marker_key
+            self._profile_marker_positions_by_key = self._normalize_profile_marker_key_map(
+                state.get('marker_positions_by_key') or {}
+            )
+            self._profile_marker_domain_by_key = self._normalize_profile_marker_key_map(
+                state.get('marker_domain_by_key') or {}
+            )
             if not enabled and self.profile_enabled:
                 self.enable_profile(False)
             if active_pts is not None:
@@ -4330,6 +4363,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if x is None or y is None:
             return
         shift_pressed = self._shift_pressed(event)
+        mods_qt = self._event_qt_modifiers(event)
+        ctrl_pressed = bool(mods_qt & QtCore.Qt.ControlModifier)
         
         # Right click context menu for profiles
         if event.button == 3:
@@ -4353,6 +4388,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._dragging = None
             return
         if self.profile_pts is None:
+            if not ctrl_pressed:
+                return
             if self._profile_move_only:
                 return
             self.push_undo_state("start_profile")
@@ -4419,6 +4456,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._line_drag_origin = None
                 return
         # else: start a new line from here
+        if not ctrl_pressed:
+            return
         if self.profile_pts is not None:
             self._snapshot_active_profile()
         else:
@@ -5929,6 +5968,16 @@ class MultiPreviewCanvas(FigureCanvas):
             cmap_menu.addSeparator()
             popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
 
+        collection_add_act = None
+        collection_help_act = None
+        if callable(self._collection_menu_callback) and view is not None:
+            collection_menu = menu.addMenu("Collection")
+            collection_add_act = collection_menu.addAction("Add This View to Collection...")
+            collection_add_act.setToolTip("Save this view into a curated cross-folder collection.")
+            if callable(self._collection_help_callback):
+                collection_menu.addSeparator()
+                collection_help_act = collection_menu.addAction("How Collections Work")
+
         compare_set_a_act = None
         compare_set_b_act = None
         compare_with_a_act = None
@@ -5983,7 +6032,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if not window_actions_added:
                 view_menu.addSeparator()
                 window_actions_added = True
-            restore_act = view_menu.addAction("Restore pop-outs")
+            restore_act = view_menu.addAction("Bring pop-outs to front")
         if callable(self._close_windows_callback):
             if not window_actions_added:
                 view_menu.addSeparator()
@@ -6132,6 +6181,16 @@ class MultiPreviewCanvas(FigureCanvas):
         elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
             try:
                 self._apply_popup_style_callback()
+            except Exception:
+                pass
+        elif collection_add_act and chosen == collection_add_act:
+            try:
+                self._collection_menu_callback("collection_add", view, self)
+            except Exception:
+                pass
+        elif collection_help_act and chosen == collection_help_act:
+            try:
+                self._collection_help_callback()
             except Exception:
                 pass
         elif compare_set_a_act and chosen == compare_set_a_act:

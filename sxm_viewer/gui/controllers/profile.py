@@ -55,6 +55,15 @@ class PopupProfileController:
         except Exception:
             pass
 
+    def _profile_updates_enabled(self) -> bool:
+        """Keep the dialog live while a profile exists in move-only mode after Ctrl-draw."""
+        canvas = self.canvas
+        return bool(
+            getattr(canvas, "_profile_user_enabled", False)
+            or getattr(canvas, "profile_enabled", False)
+            or getattr(canvas, "_profile_move_only", False)
+        )
+
     # ------------------------------------------------------------------
     def toggle_measure(self, checked: bool):
         def _force_dialog():
@@ -79,7 +88,7 @@ class PopupProfileController:
 
     # ------------------------------------------------------------------
     def dispatch_dialog(self, active=None, saved=None):
-        if not getattr(self.canvas, "_profile_user_enabled", False):
+        if not self._profile_updates_enabled():
             return
         if active is None and saved is None:
             active, saved = self._compute_profiles_from_canvas()
@@ -89,7 +98,7 @@ class PopupProfileController:
 
     # ------------------------------------------------------------------
     def refresh_from_canvas(self):
-        if not getattr(self.canvas, "_profile_user_enabled", False):
+        if not self._profile_updates_enabled():
             return
         active, saved = self._compute_profiles_from_canvas()
         if not active and not saved:
@@ -326,13 +335,69 @@ class PopupProfileController:
             pass
 
     def _clear_dialog(self):
+        dlg = self._dialog
+        remember_cb = getattr(self.owner, "_remember_closed_popup_profile_dialog", None)
+        if callable(remember_cb):
+            try:
+                remember_cb(self, dlg)
+            except Exception:
+                pass
         try:
             if self.canvas is not None and hasattr(self.canvas, "deactivate_profile_tool"):
                 self.canvas.deactivate_profile_tool(clear_active=True, clear_saved=True)
         except Exception:
             pass
-        self._deregister_dialog(self._dialog)
+        self._deregister_dialog(dlg)
         self._dialog = None
+
+    def export_dialog_state(self):
+        """Capture open/geometry state for popup profile dialogs in sessions."""
+        dlg = self._dialog
+        if dlg is None:
+            return None
+        try:
+            if not dlg.isVisible():
+                return None
+        except Exception:
+            pass
+        state = {"open": True}
+        try:
+            geo = dlg.geometry()
+            state["geometry"] = [int(geo.x()), int(geo.y()), int(geo.width()), int(geo.height())]
+        except Exception:
+            pass
+        try:
+            state["window_state"] = int(dlg.windowState())
+        except Exception:
+            pass
+        return state
+
+    def restore_dialog_state(self, state):
+        """Reopen a popup profile dialog after canvas/profile state is restored."""
+        if not isinstance(state, dict) or not bool(state.get("open")):
+            return None
+        self.refresh_from_canvas()
+        dlg = self._dialog
+        if dlg is None:
+            return None
+        geom = state.get("geometry")
+        if geom and len(geom) == 4:
+            try:
+                x, y, w, h = [int(v) for v in geom]
+                dlg.setGeometry(x, y, w, h)
+            except Exception:
+                pass
+        window_state = state.get("window_state")
+        if window_state is not None:
+            try:
+                dlg.setWindowState(QtCore.Qt.WindowStates(int(window_state)))
+            except Exception:
+                pass
+        try:
+            dlg.show()
+        except Exception:
+            pass
+        return dlg
 
     def _register_dialog(self, dlg):
         if dlg is None:

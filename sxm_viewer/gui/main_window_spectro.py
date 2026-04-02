@@ -116,6 +116,17 @@ def open_spectro_summary_for_file(viewer, file_key, show_mode="single", quiet=Fa
     dlg.show()
     if hasattr(viewer, '_popup_refs'):
         viewer._popup_refs.append(dlg)
+        try:
+            dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
+        except Exception:
+            pass
+    controller = getattr(viewer, "quick_crop_controller", None)
+    if controller:
+        try:
+            dlg.finished.connect(lambda _=None, c=controller: c.update_popup_actions())
+        except Exception:
+            pass
+        controller.update_popup_actions()
 
 
 def ensure_spectro_dock(viewer):

@@ -91,6 +91,14 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         return None
 
     dlg = QtWidgets.QDialog(owner)
+    try:
+        # Detach the popup from the main window as an owned native dialog so
+        # the viewer can be brought in front by simply clicking it.
+        dlg.setParent(None, dlg.windowFlags())
+        dlg.setWindowFlag(QtCore.Qt.Window, True)
+        dlg.setWindowIcon(owner.windowIcon())
+    except Exception:
+        pass
     dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     dlg.setWindowFlags(
         dlg.windowFlags()
@@ -420,6 +428,11 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         lambda action, view, c=canvas: owner.on_compare_menu_action(action, view, c),
         state_cb=owner.compare_menu_state,
     )
+    if hasattr(canvas, "set_collection_menu_callback"):
+        canvas.set_collection_menu_callback(
+            lambda action, view, c=canvas: owner.collection_controller.handle_canvas_menu_action(action, view, c),
+            help_cb=owner.on_collection_help,
+        )
     canvas.set_stp_export_callback(owner._export_view_as_stp)
     canvas.set_window_arrange_callback(owner.on_arrange_popouts)
     canvas.set_window_minimize_callback(owner.on_minimize_popouts)
@@ -448,6 +461,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     except Exception:
         pass
     profile_controller = PopupProfileController(owner, canvas, title or "Profile")
+    canvas.export_profile_dialog_state = profile_controller.export_dialog_state
+    canvas.restore_profile_dialog_state = profile_controller.restore_dialog_state
     if not restore_mode:
         profile_controller.set_initial_state(measure_initial)
         canvas.set_angle_tool_enabled(angle_initial)
@@ -661,6 +676,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         owner.quick_crop_controller.update_popup_actions()
 
     def _on_popup_closed(_=None):
+        remember_cb = getattr(owner, "_remember_closed_preview_popup", None)
+        if callable(remember_cb):
+            try:
+                remember_cb(dlg, canvas)
+            except Exception:
+                pass
         if dlg in owner._popup_refs:
             owner._popup_refs.remove(dlg)
         if hasattr(owner, "quick_crop_controller"):

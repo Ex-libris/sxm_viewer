@@ -339,6 +339,8 @@ class QuickCropController:
             seq = entry.get("sequence")
             if seq is not None:
                 self.close_popup(seq)
+            return True
+        return False
 
     def clear_history(self):
         self.viewer.preview_canvas.clear_fixed_crop_history()
@@ -505,13 +507,22 @@ class QuickCropController:
         viewer = self.viewer
         tile_btn = getattr(viewer, 'quick_crop_tile_btn', None)
         minimize_btn = getattr(viewer, 'quick_crop_minimize_btn', None)
-        if tile_btn is None and minimize_btn is None:
+        refresh_ui = getattr(viewer, '_refresh_popup_ui', None)
+        if tile_btn is None and minimize_btn is None and not callable(refresh_ui):
             return
         alive = self._tracked_popups()
         if tile_btn is not None:
             tile_btn.setEnabled(bool(alive))
         if minimize_btn is not None:
             minimize_btn.setEnabled(bool(alive))
+        if callable(refresh_ui):
+            try:
+                refresh_ui(popups=alive)
+            except Exception:
+                pass
+
+    def tracked_popups(self):
+        return list(self._tracked_popups())
 
     def _crop_color_for_seq(self, seq: int):
         palette = [
@@ -528,8 +539,19 @@ class QuickCropController:
         alive = []
         cleaned = []
         seen = set()
-        for dlg in list(getattr(viewer, '_popup_refs', [])):
+        candidates = None
+        iter_windows = getattr(viewer, "_iter_workspace_windows", None)
+        if callable(iter_windows):
+            try:
+                candidates = list(iter_windows(include_canvas=False))
+            except Exception:
+                candidates = None
+        if candidates is None:
+            candidates = list(getattr(viewer, '_popup_refs', []))
+        for dlg in candidates:
             if dlg is None:
+                continue
+            if dlg is viewer:
                 continue
             ident = id(dlg)
             if ident in seen:
@@ -543,6 +565,46 @@ class QuickCropController:
                 continue
         viewer._popup_refs = cleaned
         return alive
+
+    def _bump_popup_stack(self, popups):
+        if not popups:
+            return
+        for dlg in popups:
+            try:
+                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+                dlg.show()
+                dlg.raise_()
+            except Exception:
+                continue
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            try:
+                app.processEvents()
+            except Exception:
+                pass
+        for dlg in popups:
+            try:
+                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, False)
+                dlg.show()
+                dlg.raise_()
+            except Exception:
+                continue
+
+    def focus_popup(self, dlg):
+        if dlg is None:
+            return False
+        try:
+            state = dlg.windowState()
+            if state & QtCore.Qt.WindowMinimized:
+                dlg.showNormal()
+            else:
+                dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            return False
+        self._bump_popup_stack([dlg])
+        return True
 
     def arrange_popups(self):
         popups = self._tracked_popups()
@@ -566,6 +628,7 @@ class QuickCropController:
                 dlg.activateWindow()
             except Exception:
                 continue
+        self._bump_popup_stack(popups)
 
     def minimize_popups(self):
         popups = self._tracked_popups()
@@ -577,18 +640,28 @@ class QuickCropController:
             except Exception:
                 continue
 
-    def restore_popups(self):
+    def raise_popups(self):
         popups = self._tracked_popups()
         if not popups:
-            return
+            return []
         for dlg in popups:
             try:
                 if dlg.isMinimized() or (dlg.windowState() & QtCore.Qt.WindowMinimized):
                     dlg.showNormal()
+                else:
+                    dlg.show()
                 dlg.raise_()
-                dlg.activateWindow()
             except Exception:
                 continue
+        self._bump_popup_stack(popups)
+        try:
+            popups[-1].activateWindow()
+        except Exception:
+            pass
+        return popups
+
+    def restore_popups(self):
+        self.raise_popups()
 
     def close_tracked_popups(self):
         popups = list(self._tracked_popups())

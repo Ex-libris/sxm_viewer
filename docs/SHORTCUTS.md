@@ -82,6 +82,8 @@ Quick crop controls:
   crop controls.
 - `Ctrl+Shift+H` - toggle crop history overlay.
 - `Ctrl+Shift+T` - toggle crop template overlay.
+- `Ctrl+Shift+P` - bring all open pop-outs to the front and restore minimized
+  ones.
 - `Ctrl+Shift+W` - close the latest quick-crop pop-out.
 
 General:
@@ -162,6 +164,9 @@ Navigation:
 Other:
 - Hover shows the filename tooltip.
 - `Show real view` displays image pixmaps instead of flat frame polygons.
+- Toolbar `Pop-ups`: click the main button to recall open pop-outs; use the
+  arrow to focus a specific window, arrange/minimize/close all, or restore
+  saved deferred pop-ups.
 
 ## Preview and popup canvases
 

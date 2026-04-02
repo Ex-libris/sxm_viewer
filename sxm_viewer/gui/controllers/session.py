@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
+from ..viewer import measurement as viewer_measurement
 
 
 class SessionController:
@@ -128,18 +129,37 @@ class SessionController:
         return None
 
     # ------------------------------------------------------------------
-    def save_session(self):
+    def save_session(
+        self,
+        session_path=None,
+        *,
+        force_prompt: bool = False,
+        prompt_if_missing: bool = True,
+        record_recent: bool = True,
+        set_current: bool = True,
+        autosave: bool = False,
+        quiet: bool = False,
+    ):
         viewer = self.viewer
-        default_path = Path(getattr(viewer, "last_dir", ".")).joinpath("sxm_session.json")
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            viewer,
-            "Save session",
-            str(default_path),
-            "SXM Session (*.json)",
-        )
-        if not path:
-            return
-        session_path = Path(path)
+        chosen_path = session_path
+        if force_prompt:
+            chosen_path = None
+        if chosen_path is None:
+            chosen_path = getattr(viewer, "_current_session_path", None)
+        if chosen_path is None and prompt_if_missing:
+            default_path = Path(getattr(viewer, "last_dir", ".")).joinpath("sxm_session.json")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                viewer,
+                "Save session",
+                str(default_path),
+                "SXM Session (*.json)",
+            )
+            if not path:
+                return None
+            chosen_path = path
+        if chosen_path is None:
+            return None
+        session_path = Path(chosen_path)
         if session_path.suffix.lower() != ".json":
             session_path = session_path.with_suffix(".json")
         try:
@@ -147,12 +167,34 @@ class SessionController:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             with open(session_path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2)
-            log_status(f"Saved session to {session_path}")
+            if set_current:
+                try:
+                    viewer._current_session_path = str(session_path)
+                except Exception:
+                    pass
+            if record_recent:
+                record_recent_cb = getattr(viewer, "_record_recent_session", None)
+                if callable(record_recent_cb):
+                    try:
+                        record_recent_cb(session_path)
+                    except Exception:
+                        pass
+            if not autosave:
+                log_status(f"Saved session to {session_path}")
+            elif not quiet:
+                log_status(f"Updated recovery session at {session_path}")
+            return session_path
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(viewer, "Save session", f"Unable to save session: {exc}")
+            if not quiet:
+                QtWidgets.QMessageBox.warning(viewer, "Save session", f"Unable to save session: {exc}")
+            return None
+
+    def save_session_as(self):
+        """Prompt for a new session target and save there."""
+        return self.save_session(force_prompt=True)
 
     # ------------------------------------------------------------------
-    def load_session(self, start_dir=None, session_path=None):
+    def load_session(self, start_dir=None, session_path=None, *, record_recent: bool = True, set_current: bool = True):
         viewer = self.viewer
         if session_path is None:
             start_path = Path(start_dir) if start_dir is not None else Path(getattr(viewer, "last_dir", "."))
@@ -168,10 +210,10 @@ class SessionController:
         else:
             session_path = Path(session_path)
         try:
-            record_recent = getattr(viewer, "_record_recent_session", None)
-            if callable(record_recent):
+            record_recent_cb = getattr(viewer, "_record_recent_session", None)
+            if record_recent and callable(record_recent_cb):
                 try:
-                    record_recent(session_path)
+                    record_recent_cb(session_path)
                 except Exception:
                     pass
             self._set_session_activity(
@@ -188,7 +230,18 @@ class SessionController:
                 value=12,
                 stage="loading",
             )
+            prepare_cb = getattr(viewer, "_prepare_for_workspace_load", None)
+            if callable(prepare_cb):
+                try:
+                    prepare_cb(kind="session")
+                except Exception:
+                    pass
             if self._apply_session_state(payload, session_path):
+                if set_current:
+                    try:
+                        viewer._current_session_path = str(session_path)
+                    except Exception:
+                        pass
                 log_status(f"Loaded session from {session_path}")
         except Exception as exc:
             self._set_session_activity(
@@ -240,6 +293,10 @@ class SessionController:
                 preview_state["profile"] = preview.export_profile_state()
             except Exception:
                 preview_state["profile"] = None
+            try:
+                preview_state["profile_dialog"] = viewer_measurement.export_profile_dialog_state(viewer)
+            except Exception:
+                preview_state["profile_dialog"] = None
             try:
                 preview_state["angle"] = preview.export_angle_state()
             except Exception:
@@ -666,6 +723,10 @@ class SessionController:
                 viewer=viewer,
                 require_view_match=True,
             )
+        try:
+            viewer_measurement.restore_profile_dialog_state(viewer, preview_state.get("profile_dialog"))
+        except Exception:
+            pass
         preview_restore_dt = time.perf_counter() - phase_t
         phase_t = time.perf_counter()
         canvas_state = payload.get("canvas_state")
@@ -1392,6 +1453,7 @@ class SessionController:
             "plot_font_underline": bool(getattr(canvas, "_plot_font_underline", False)),
             "profile_label_mode": str(getattr(canvas, "_profile_label_mode", "length") or "length"),
             "profile_state": self._safe_canvas_call(canvas, "export_profile_state"),
+            "profile_dialog": self._safe_canvas_call(canvas, "export_profile_dialog_state"),
             "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
             "molecule_state": self._safe_canvas_call(canvas, "export_molecule_state"),
             "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
@@ -1559,17 +1621,17 @@ class SessionController:
                         },
                         "view_font_scale": float(snapshot.get("view_font_scale", getattr(canvas, "_view_font_scale", 1.0)) or 1.0),
                         "display_options": {
-                            "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
-                            "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
-                            "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical"),
+                            "show_ticks": bool(snapshot.get("show_ticks", getattr(canvas, "_show_ticks", True))),
+                            "show_colorbar": bool(snapshot.get("show_colorbar", getattr(canvas, "_show_colorbar", True))),
+                            "colorbar_orientation": str(snapshot.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical"),
                             "show_title": bool(snapshot.get("show_title", getattr(canvas, "_show_title", True))),
                             "show_acquisition_overlay": bool(snapshot.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
-                            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
-                            "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
-                            "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
-                            "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+                            "show_shortcut_hint": bool(snapshot.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True))),
+                            "show_profile_overlays": bool(snapshot.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True))),
+                            "show_angle_overlays": bool(snapshot.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True))),
+                            "show_molecules": bool(snapshot.get("show_molecules", getattr(canvas, "show_molecules", True))),
                             "scale_bar_enabled": bool(snapshot.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False))),
-                            "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
+                            "frame_fill_mode": bool(snapshot.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False))),
                             "relative_axes_override": snapshot.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None)),
                             "view_layout": snapshot.get("view_layout", getattr(canvas, "_view_layout", "grid")),
                         },
@@ -1601,10 +1663,19 @@ class SessionController:
         if require_view_match:
             permit_view_state = self._canvas_views_match_snapshot(canvas, snapshot_views)
         if permit_view_state:
+            self._restore_view_specific_state(canvas, snapshot_views)
             prof = snapshot.get("profile_state")
             if prof:
                 try:
                     canvas.import_profile_state(prof, emit=False)
+                except Exception:
+                    pass
+            profile_dialog = snapshot.get("profile_dialog")
+            if profile_dialog:
+                try:
+                    restorer = getattr(canvas, "restore_profile_dialog_state", None)
+                    if callable(restorer):
+                        restorer(profile_dialog)
                 except Exception:
                     pass
             angle_state = snapshot.get("angle_state")
@@ -1625,7 +1696,6 @@ class SessionController:
                     viewer._apply_filter_to_canvas(canvas, pipeline=pipeline, label=snapshot.get("filter_label"))
                 except Exception:
                     pass
-            self._restore_view_specific_state(canvas, snapshot_views)
             zoom_state = snapshot.get("zoom")
             if zoom_state:
                 try:
@@ -1665,6 +1735,33 @@ class SessionController:
             target = view_map.get(key)
             if not target:
                 continue
+            for field in (
+                "extent",
+                "extent_raw",
+                "title",
+                "colorbar_label",
+                "axis_unit",
+                "unit",
+                "unit_normalized",
+                "display_relative_zero",
+                "zero_offset",
+                "channel_idx",
+                "crop_sequence",
+                "path",
+                "meta",
+                "spectra",
+                "highlight_spec",
+                "spec_pixels",
+            ):
+                if field not in entry:
+                    continue
+                try:
+                    incoming = copy.deepcopy(entry.get(field))
+                except Exception:
+                    incoming = entry.get(field)
+                if target.get(field) != incoming:
+                    target[field] = incoming
+                    changed = True
             clim = entry.get("clim")
             if clim:
                 try:
