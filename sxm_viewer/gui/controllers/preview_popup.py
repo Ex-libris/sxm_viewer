@@ -37,12 +37,36 @@ def _resolve_popup_channel_source(owner, views):
 
 
 def _shift_view_relative_zero(owner, view, enabled: bool):
+    def _normalized_relative_clim(arr, clim):
+        if clim is None:
+            auto_fn = getattr(owner, "_auto_preview_clim", None)
+            if callable(auto_fn):
+                try:
+                    return auto_fn(arr, relative_zero=True)
+                except Exception:
+                    return None
+            return None
+        try:
+            _lo, _hi = clim
+            hi_val = float(_hi)
+        except Exception:
+            return None
+        finite = np.asarray(arr, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            hi_val = max(hi_val, float(np.nanmax(finite)))
+        hi_val = max(hi_val, 0.0)
+        if hi_val <= 0.0:
+            return None
+        return (0.0, hi_val)
+
     new_view = owner._copy_view_for_popup(view)
     arr = new_view.get("arr")
     if arr is None:
         new_view["display_relative_zero"] = bool(enabled)
         if not enabled:
             new_view["zero_offset"] = None
+            new_view.pop("relative_zero_source_clim", None)
         return new_view
     arr_np = np.asarray(arr, dtype=float)
     is_relative = bool(new_view.get("display_relative_zero", False))
@@ -53,29 +77,69 @@ def _shift_view_relative_zero(owner, view, enabled: bool):
     if enabled and not is_relative:
         finite = arr_np[np.isfinite(arr_np)]
         zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        orig_clim = new_view.get("clim")
+        if orig_clim is not None:
+            try:
+                lo0, hi0 = orig_clim
+                new_view["relative_zero_source_clim"] = (float(lo0), float(hi0))
+            except Exception:
+                new_view.pop("relative_zero_source_clim", None)
         new_view["arr"] = arr_np - zero_offset
         clim = new_view.get("clim")
         if clim is not None:
             try:
                 lo, hi = clim
-                new_view["clim"] = (float(lo) - zero_offset, float(hi) - zero_offset)
+                rel_clim = _normalized_relative_clim(
+                    new_view["arr"],
+                    (float(lo) - zero_offset, float(hi) - zero_offset),
+                )
+                if rel_clim is not None:
+                    new_view["clim"] = rel_clim
+                else:
+                    new_view.pop("clim", None)
             except Exception:
-                pass
+                new_view.pop("clim", None)
+        else:
+            rel_clim = _normalized_relative_clim(new_view["arr"], None)
+            if rel_clim is not None:
+                new_view["clim"] = rel_clim
     elif not enabled and is_relative:
         zero_offset = float(zero_offset or 0.0)
         new_view["arr"] = arr_np + zero_offset
-        clim = new_view.get("clim")
-        if clim is not None:
+        source_clim = new_view.pop("relative_zero_source_clim", None)
+        if source_clim is not None:
             try:
-                lo, hi = clim
-                new_view["clim"] = (float(lo) + zero_offset, float(hi) + zero_offset)
+                lo, hi = source_clim
+                new_view["clim"] = (float(lo), float(hi))
             except Exception:
-                pass
+                new_view.pop("clim", None)
+        else:
+            clim = new_view.get("clim")
+            if clim is not None:
+                try:
+                    lo, hi = clim
+                    new_view["clim"] = (float(lo) + zero_offset, float(hi) + zero_offset)
+                except Exception:
+                    new_view.pop("clim", None)
         zero_offset = None
     else:
         if enabled and zero_offset is None:
             finite = arr_np[np.isfinite(arr_np)]
             zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        if enabled:
+            if new_view.get("relative_zero_source_clim") is None and new_view.get("clim") is not None:
+                try:
+                    lo, hi = new_view.get("clim")
+                    new_view["relative_zero_source_clim"] = (float(lo) + float(zero_offset or 0.0), float(hi) + float(zero_offset or 0.0))
+                except Exception:
+                    new_view.pop("relative_zero_source_clim", None)
+            rel_clim = _normalized_relative_clim(new_view.get("arr"), new_view.get("clim"))
+            if rel_clim is not None:
+                new_view["clim"] = rel_clim
+            else:
+                new_view.pop("clim", None)
+        else:
+            new_view.pop("relative_zero_source_clim", None)
     new_view["display_relative_zero"] = bool(enabled)
     new_view["zero_offset"] = zero_offset if enabled else None
     return new_view

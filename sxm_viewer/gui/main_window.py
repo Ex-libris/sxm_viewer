@@ -3984,7 +3984,7 @@ QLabel:hover {{
             prange = float(np.nanmax(arr) - np.nanmin(arr))
             return {'tag': 'constant-current', 'rng_nm': prange, 'median_nm': median}
 
-    def _auto_preview_clim(self, arr):
+    def _auto_preview_clim(self, arr, *, relative_zero: bool = False):
         """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
         try:
             data = np.asarray(arr, dtype=float)
@@ -4001,6 +4001,8 @@ QLabel:hover {{
                     finite = data[np.isfinite(data)]
             vmin = float(np.nanpercentile(finite, 1.0))
             vmax = float(np.nanpercentile(finite, 99.0))
+            if relative_zero:
+                vmin = 0.0
             if vmin == vmax:
                 return None
             return (vmin, vmax)
@@ -6478,6 +6480,9 @@ QLabel:hover {{
             lo, hi = np.percentile(finite, [pct_low, pct_high])
         except Exception:
             lo, hi = vmin, vmax
+        if view and bool(view.get("display_relative_zero", False)):
+            lo = 0.0
+            hi = max(float(hi), float(vmax or 0.0), 0.0)
         self._apply_clim_to_view(canvas, view, lo, hi)
 
     def _reset_contrast(self, canvas):
@@ -6489,6 +6494,8 @@ QLabel:hover {{
             canvas.push_undo_state("reset_contrast")
         except Exception:
             pass
+        if view and bool(view.get("display_relative_zero", False)):
+            vmin = 0.0
         self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):
