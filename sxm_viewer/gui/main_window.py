@@ -6372,7 +6372,7 @@ QLabel:hover {{
             host = self
         return host
 
-    def _show_toast(self, message, *, duration_ms=1400, target=None):
+    def _show_toast(self, message, *, duration_ms=1400, target=None, variant="default"):
         text = str(message or "").strip()
         if not text:
             return
@@ -6399,11 +6399,18 @@ QLabel:hover {{
                 toast = None
         if toast is None:
             toast = QtWidgets.QLabel(host)
-            toast.setObjectName("copyToast")
+            toast.setObjectName("appToast")
             toast.setAlignment(QtCore.Qt.AlignCenter)
+            toast.setWordWrap(True)
+            toast.setTextFormat(QtCore.Qt.PlainText)
             toast.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-            toast.setStyleSheet(
-                "QLabel#copyToast {"
+            timer = QtCore.QTimer(toast)
+            timer.setSingleShot(True)
+            timer.timeout.connect(toast.hide)
+            self._toast_registry[key] = (toast, timer)
+        styles = {
+            "default": (
+                "QLabel#appToast {"
                 "background-color: rgba(18, 24, 34, 212);"
                 "color: #f5f7fb;"
                 "border: 1px solid rgba(255,255,255,55);"
@@ -6411,15 +6418,29 @@ QLabel:hover {{
                 "padding: 6px 12px;"
                 "font-weight: 600;"
                 "}"
-            )
-            timer = QtCore.QTimer(toast)
-            timer.setSingleShot(True)
-            timer.timeout.connect(toast.hide)
-            self._toast_registry[key] = (toast, timer)
+            ),
+            "success": (
+                "QLabel#appToast {"
+                "background-color: rgba(14, 92, 54, 232);"
+                "color: #f5fff8;"
+                "border: 1px solid rgba(170, 248, 204, 200);"
+                "border-radius: 12px;"
+                "padding: 8px 14px;"
+                "font-weight: 700;"
+                "}"
+            ),
+        }
+        toast.setStyleSheet(styles.get(str(variant or "default"), styles["default"]))
         toast.setText(text)
-        toast.adjustSize()
         rect = host.rect()
         margin = 14
+        max_width = max(260, min(760, int(rect.width() - (margin * 2))))
+        metrics = QtGui.QFontMetrics(toast.font())
+        flags = int(QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap | QtCore.Qt.TextWrapAnywhere)
+        text_rect = metrics.boundingRect(QtCore.QRect(0, 0, max_width - 28, 2000), flags, text)
+        toast_width = min(max_width, max(180, int(text_rect.width() + 28)))
+        toast_height = max(36, int(text_rect.height() + 18))
+        toast.resize(toast_width, toast_height)
         x = max(margin, int((rect.width() - toast.width()) * 0.5))
         y = max(margin, int(rect.height() - toast.height() - margin))
         toast.move(x, y)
@@ -6427,6 +6448,31 @@ QLabel:hover {{
         toast.raise_()
         if timer is not None:
             timer.start(max(900, int(duration_ms)))
+
+    def _show_saved_path_toast(self, title, path, *, detail=None, duration_ms=4200, target=None):
+        if not path:
+            return
+        try:
+            path_obj = Path(path)
+            file_name = path_obj.name
+            full_path = str(path_obj)
+        except Exception:
+            file_name = ""
+            full_path = str(path)
+        lines = [str(title or "Saved").strip()]
+        if detail:
+            lines[0] = f"{lines[0]} | {str(detail).strip()}"
+        if file_name:
+            lines.append(file_name)
+        if full_path and full_path != file_name:
+            lines.append(full_path)
+        host = target
+        if host is None:
+            try:
+                host = QtWidgets.QApplication.activeWindow()
+            except Exception:
+                host = None
+        self._show_toast("\n".join(line for line in lines if line), duration_ms=duration_ms, target=host, variant="success")
 
     def _on_view_copied(self, view=None, info=None, target=None):
         if not isinstance(view, dict):

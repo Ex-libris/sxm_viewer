@@ -181,6 +181,13 @@ class SessionController:
                         pass
             if not autosave:
                 log_status(f"Saved session to {session_path}")
+                if not quiet:
+                    show_saved_cb = getattr(viewer, "_show_saved_path_toast", None)
+                    if callable(show_saved_cb):
+                        try:
+                            show_saved_cb("Session saved", session_path)
+                        except Exception:
+                            pass
             elif not quiet:
                 log_status(f"Updated recovery session at {session_path}")
             return session_path

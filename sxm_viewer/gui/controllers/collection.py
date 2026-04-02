@@ -548,24 +548,16 @@ class CollectionController:
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
             self._remember_current_collection(collection_path, mode=mode)
-            box = QtWidgets.QMessageBox(self.viewer)
-            box.setWindowTitle("Collection updated")
-            box.setIcon(QtWidgets.QMessageBox.Information)
-            box.setTextFormat(QtCore.Qt.RichText)
-            box.setText(
-                "<div style='min-width: 360px;'>"
-                "<div style='color:#1f6f43; font-weight:700; font-size:13px; margin-bottom:6px;'>"
-                "Added to collection successfully"
-                "</div>"
-                f"<div><b>{collection_path.name}</b></div>"
-                f"<div style='margin-top:4px;'>Added <b>{len(appended)}</b> item(s).</div>"
-                f"<div style='margin-top:8px; color:#555;'>"
-                f"{'Linked' if mode == 'linked' else 'Portable'} mode is being used for newly added entries."
-                "<br>This collection remains the default target for further <i>Add to Collection</i> actions."
-                "</div>"
-                "</div>"
-            )
-            box.exec_()
+            show_saved_cb = getattr(self.viewer, "_show_saved_path_toast", None)
+            if callable(show_saved_cb):
+                try:
+                    show_saved_cb(
+                        "Collection saved",
+                        collection_path,
+                        detail=f"Added {len(appended)} item(s) | {'Linked' if mode == 'linked' else 'Portable'} mode",
+                    )
+                except Exception:
+                    pass
             show_tray = getattr(self.viewer, "show_collection_tray", None)
             if callable(show_tray):
                 try:
