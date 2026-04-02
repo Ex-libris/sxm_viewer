@@ -943,14 +943,43 @@ def _make_thumb_move_handler(viewer, label_widget):
         start = label_widget.property("drag_start")
         if start is not None and event.buttons() & QtCore.Qt.LeftButton and not dragging:
             if (event.pos() - start).manhattanLength() >= 10:
-                # Thumbnail drag-to-canvas is intentionally disabled.
-                # Keep the movement threshold so a drag gesture does not
-                # fall through into a normal click on release.
                 _safe_set_property(label_widget, "dragging", True)
+                _start_thumb_collection_drag(viewer, label_widget)
                 return
         if not viewer._handle_spec_hover(label_widget, event):
             QtWidgets.QLabel.mouseMoveEvent(label_widget, event)
     return handler
+
+
+def _start_thumb_collection_drag(viewer, label_widget):
+    """Start a lightweight drag from thumbnails for the collection tray."""
+    try:
+        file_path = str(label_widget.property("file_path") or "").strip()
+        channel_idx = label_widget.property("channel_index")
+        if not file_path or channel_idx is None:
+            return
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            return
+        selected = list(getattr(viewer, "_ordered_thumbnail_selection", lambda: [])() or [])
+        if file_path in selected and selected:
+            entries = [{"file_path": str(path), "channel_index": channel_idx} for path in selected if path]
+        else:
+            entries = [{"file_path": file_path, "channel_index": channel_idx}]
+        mime = QtCore.QMimeData()
+        mime.setData(
+            "application/x-sxm-thumb-selection",
+            json.dumps({"entries": entries, "drag_origin": "thumbnail_browser"}).encode("utf-8"),
+        )
+        drag = QtGui.QDrag(label_widget)
+        drag.setMimeData(mime)
+        pix = label_widget.pixmap()
+        if pix is not None and not pix.isNull():
+            drag.setPixmap(pix.scaled(120, 120, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        drag.exec_(QtCore.Qt.CopyAction)
+    except Exception:
+        pass
 
 
 def _make_thumb_double_handler(viewer, label_widget):

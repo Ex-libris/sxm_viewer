@@ -339,6 +339,8 @@ class QuickCropController:
             seq = entry.get("sequence")
             if seq is not None:
                 self.close_popup(seq)
+            return True
+        return False
 
     def clear_history(self):
         self.viewer.preview_canvas.clear_fixed_crop_history()

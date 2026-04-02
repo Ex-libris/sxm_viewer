@@ -47,7 +47,7 @@ def create_lower_controls(viewer):
     mode_definitions = [
         (viewer.MODE_BROWSE, "Browse", "Ctrl+B"),
         (viewer.MODE_MEASURE, "Measure", "Ctrl+M"),
-        (viewer.MODE_SPECTRO, "Spectro", "Ctrl+S"),
+        (viewer.MODE_SPECTRO, "Spectro", "Ctrl+Alt+S"),
     ]
     for mode, label, shortcut in mode_definitions:
         btn = QtWidgets.QToolButton(mode_widget)
@@ -261,12 +261,43 @@ def _ensure_display_menu(viewer):
     viewer.display_menu.addSeparator()
     save_session_act = viewer.display_menu.addAction("Save session...")
     save_session_act.setToolTip("Save the full viewer state (virtual copies, overlays, profiles, etc.)")
+    save_session_act.setShortcut(QtGui.QKeySequence("Ctrl+S"))
     save_session_act.triggered.connect(viewer.on_save_session)
+    save_session_as_act = viewer.display_menu.addAction("Save session as...")
+    save_session_as_act.setToolTip("Prompt for a new session file and save there")
+    save_session_as_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+S"))
+    save_session_as_act.triggered.connect(viewer.on_save_session_as)
     load_session_act = viewer.display_menu.addAction("Load session...")
     load_session_act.setToolTip("Restore a previously saved viewer session")
     load_session_act.triggered.connect(viewer.on_load_session)
     viewer.load_session_recent_menu = viewer.display_menu.addMenu("Recent sessions")
     viewer._refresh_recent_session_dirs_menu()
+    reopen_window_act = viewer.display_menu.addAction("Reopen closed window")
+    reopen_window_act.setToolTip("Restore the most recently closed popup/tool window (up to 6 levels)")
+    reopen_window_act.setShortcut(QtGui.QKeySequence("Ctrl+Z"))
+    reopen_window_act.triggered.connect(viewer._restore_last_closed_window)
+    recovery_menu = viewer.display_menu.addMenu("Recovery")
+    viewer.session_recovery_status_act = recovery_menu.addAction("Autosave recovery: --")
+    viewer.session_recovery_status_act.setEnabled(False)
+    viewer.session_recovery_enable_act = recovery_menu.addAction("Enable autosave recovery")
+    viewer.session_recovery_enable_act.setCheckable(True)
+    viewer.session_recovery_enable_act.toggled.connect(viewer.on_toggle_session_recovery)
+    interval_menu = recovery_menu.addMenu("Autosave interval")
+    interval_group = QtWidgets.QActionGroup(interval_menu)
+    viewer.session_recovery_interval_actions = {}
+    for minutes in (2, 5, 10, 15, 30):
+        act = interval_menu.addAction(f"{minutes} min")
+        act.setCheckable(True)
+        act.triggered.connect(lambda checked=False, m=minutes: viewer.on_set_session_recovery_interval(m))
+        interval_group.addAction(act)
+        viewer.session_recovery_interval_actions[int(minutes)] = act
+        if minutes == getattr(viewer, "_session_recovery_interval_min", 5):
+            act.setChecked(True)
+    recovery_menu.addSeparator()
+    viewer.session_recovery_open_act = recovery_menu.addAction("Recover latest autosave now")
+    viewer.session_recovery_open_act.triggered.connect(viewer.on_recover_latest_autosave)
+    viewer.session_recovery_discard_act = recovery_menu.addAction("Discard autosaved recovery")
+    viewer.session_recovery_discard_act.triggered.connect(viewer.on_discard_recovery_snapshot)
     viewer.display_menu.addSeparator()
     collections_menu = viewer.display_menu.addMenu("Collections")
     viewer.collection_current_path_act = collections_menu.addAction("Current collection: none")
@@ -281,6 +312,9 @@ def _ensure_display_menu(viewer):
     open_collection_act = collections_menu.addAction("Open collection...")
     open_collection_act.setToolTip("Open a curated cross-folder collection of selected analysis views")
     open_collection_act.triggered.connect(viewer.on_open_collection)
+    show_collection_tray_act = collections_menu.addAction("Show collection tray")
+    show_collection_tray_act.setToolTip("Open the floating collection tray window for quick drag-and-drop additions")
+    show_collection_tray_act.triggered.connect(viewer.on_show_collection_tray)
     add_preview_collection_act = collections_menu.addAction("Add current preview...")
     add_preview_collection_act.setToolTip("Store the current preview into a collection file")
     add_preview_collection_act.triggered.connect(viewer.on_add_current_preview_to_collection)

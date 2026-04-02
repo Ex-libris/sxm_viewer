@@ -6,6 +6,8 @@ import time
 import re
 import json
 import os
+import copy
+import shutil
 import tempfile
 import threading
 from collections import OrderedDict, defaultdict
@@ -106,6 +108,93 @@ from .palettes import DEFAULT_COLOR_CYCLE
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
 VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
+
+class _CollectionTrayList(QtWidgets.QListWidget):
+    """Visual tray showing the current collection and accepting quick drag-add actions."""
+
+    def __init__(self, viewer):
+        super().__init__(viewer)
+        self.viewer = viewer
+        self.setAcceptDrops(True)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.setViewMode(QtWidgets.QListView.ListMode)
+        self.setIconSize(QtCore.QSize(72, 72))
+        self.setSpacing(6)
+        self.setWordWrap(True)
+        self.setResizeMode(QtWidgets.QListView.Adjust)
+        self.setUniformItemSizes(False)
+        self.setAlternatingRowColors(False)
+        self.setToolTip(
+            "Current collection tray.\n"
+            "Drag thumbnails here to append fresh copies.\n"
+            "Drag preview views here for quick copies.\n"
+            "Use popup Collection actions when you want popup-specific overlays preserved."
+        )
+
+    def _accepts_mime(self, mime):
+        return bool(
+            mime
+            and (
+                mime.hasFormat("application/x-sxm-thumb-selection")
+                or mime.hasFormat("application/x-sxm-view")
+            )
+        )
+
+    def dragEnterEvent(self, event):
+        if self._accepts_mime(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._accepts_mime(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime is None:
+            super().dropEvent(event)
+            return
+        try:
+            if mime.hasFormat("application/x-sxm-thumb-selection"):
+                payload = json.loads(bytes(mime.data("application/x-sxm-thumb-selection")).decode("utf-8"))
+                entries = list((payload or {}).get("entries") or [])
+                self.viewer.collection_controller.add_thumbnail_entries(entries)
+                QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                event.acceptProposedAction()
+                return
+            if mime.hasFormat("application/x-sxm-view"):
+                payload = json.loads(bytes(mime.data("application/x-sxm-view")).decode("utf-8"))
+                self.viewer.collection_controller.add_from_view_drag_payload(payload)
+                QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                event.acceptProposedAction()
+                return
+        except Exception:
+            pass
+        super().dropEvent(event)
+
+
+class _CollectionTrayWindow(QtWidgets.QDialog):
+    """Floating collection tray window kept separate from the main viewer layout."""
+
+    def __init__(self, viewer, group_widget):
+        super().__init__(viewer, QtCore.Qt.Tool)
+        self.viewer = viewer
+        self.setWindowTitle("Collection Tray")
+        self.resize(430, 520)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(0)
+        group_widget.setParent(self)
+        group_widget.setVisible(True)
+        layout.addWidget(group_widget)
+
+    def closeEvent(self, event):
+        self.hide()
+        event.ignore()
+
 # Patch export module with missing dependency
 viewer_export.convert_to_si = convert_to_si
 
@@ -171,6 +260,26 @@ class SXMGridViewer(QtWidgets.QWidget):
             except Exception:
                 continue
         self._normalize_recent_session_history(persist=True)
+        config_changed = False
+        if "session_recovery_enabled" not in self.config:
+            self.config["session_recovery_enabled"] = True
+            config_changed = True
+        if "session_recovery_interval_min" not in self.config:
+            self.config["session_recovery_interval_min"] = 5
+            config_changed = True
+        if config_changed:
+            save_config(self.config)
+        self._current_session_path = None
+        self._closed_window_history = []
+        self._closed_window_history_limit = 6
+        self._suspend_window_history = False
+        self._autosave_busy = False
+        self._session_recovery_enabled = bool(self.config.get("session_recovery_enabled", True))
+        try:
+            self._session_recovery_interval_min = max(1, int(self.config.get("session_recovery_interval_min", 5) or 5))
+        except Exception:
+            self._session_recovery_interval_min = 5
+        self._workspace_window_shutdown = False
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
         default_cmap = "Blues_r"
         thumb_cfg = self.config.get("thumbnail_cmap")
@@ -516,6 +625,47 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Dark mode handled via toolbar toggle; placeholder kept for compatibility
         self.dark_mode_cb = None
         left_v.addWidget(essentials_group)
+
+        self.collection_group = QtWidgets.QGroupBox("Current Collection")
+        collection_layout = QtWidgets.QVBoxLayout(self.collection_group)
+        collection_layout.setContentsMargins(8, 8, 8, 8)
+        collection_layout.setSpacing(6)
+        self.collection_target_label = QtWidgets.QLabel("No collection selected yet.")
+        self.collection_target_label.setWordWrap(True)
+        self.collection_target_label.setStyleSheet("font-weight: 600;")
+        self.collection_target_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        collection_layout.addWidget(self.collection_target_label)
+        self.collection_hint_label = QtWidgets.QLabel(
+            "Drag thumbnails here to append fresh copies, or use popup Collection actions to preserve popup overlays.",
+            self.collection_group,
+        )
+        self.collection_hint_label.setWordWrap(True)
+        self.collection_hint_label.setStyleSheet("color: #5a6b7d;")
+        collection_layout.addWidget(self.collection_hint_label)
+        collection_btn_row = QtWidgets.QHBoxLayout()
+        self.collection_choose_btn = QtWidgets.QPushButton("Choose...")
+        self.collection_choose_btn.clicked.connect(self.on_choose_current_collection)
+        self.collection_open_btn = QtWidgets.QPushButton("Open")
+        self.collection_open_btn.clicked.connect(self.on_open_collection)
+        self.collection_add_selected_btn = QtWidgets.QPushButton("Add selected")
+        self.collection_add_selected_btn.setToolTip("Add the currently selected thumbnail(s) to the active collection")
+        self.collection_add_selected_btn.clicked.connect(self.on_add_selected_thumbnails_to_collection)
+        self.collection_refresh_btn = QtWidgets.QToolButton()
+        self.collection_refresh_btn.setText("Refresh")
+        self.collection_refresh_btn.setToolTip("Reload the collection tray from disk")
+        self.collection_refresh_btn.clicked.connect(self._refresh_collection_tray)
+        collection_btn_row.addWidget(self.collection_choose_btn)
+        collection_btn_row.addWidget(self.collection_open_btn)
+        collection_btn_row.addWidget(self.collection_add_selected_btn)
+        collection_btn_row.addWidget(self.collection_refresh_btn)
+        collection_btn_row.addStretch(1)
+        collection_layout.addLayout(collection_btn_row)
+        self.collection_tray_list = _CollectionTrayList(self)
+        self.collection_tray_list.setMinimumHeight(170)
+        collection_layout.addWidget(self.collection_tray_list, 1)
+        self.collection_group.setVisible(True)
+        self.collection_tray_window = _CollectionTrayWindow(self, self.collection_group)
+        self.collection_tray_window.hide()
 
         details_group = QtWidgets.QGroupBox("Details")
         details_group.setCheckable(True)
@@ -1142,6 +1292,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_minimize_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+M"), self)
         self.quick_crop_minimize_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
         self.quick_crop_minimize_shortcut.activated.connect(self.on_minimize_popouts)
+        self.save_session_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
+        self.save_session_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        self.save_session_shortcut.activated.connect(self.on_save_session)
         self._apply_detail_view_theme()
         # apply saved metadata font size
         try:
@@ -1245,6 +1398,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.setLayout(container_layout)
         self._set_shortcuts_panel_visible(self.show_shortcuts_panel, remember=False)
         self._refresh_deferred_popup_ui()
+        self._autosave_timer = QtCore.QTimer(self)
+        self._autosave_timer.setSingleShot(False)
+        self._autosave_timer.timeout.connect(self._on_autosave_timer)
+        self._refresh_session_recovery_ui()
+        self._refresh_autosave_timer()
+        QtCore.QTimer.singleShot(900, self._maybe_offer_recovery_session)
         # Ensure optimal initial thumbnail layout
         QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
 
@@ -1300,6 +1459,23 @@ class SXMGridViewer(QtWidgets.QWidget):
             log_emitter.message_logged.connect(self._append_activity_log)
         except Exception:
             pass
+
+    def closeEvent(self, event):
+        try:
+            self._save_recovery_snapshot(reason="close")
+        except Exception:
+            pass
+        try:
+            self._close_workspace_windows(record_history=False, include_canvas=True)
+        except Exception:
+            pass
+        try:
+            window = getattr(self, "collection_tray_window", None)
+            if window is not None:
+                window.hide()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _apply_dark_mode(self, enabled: bool):
         app = QtWidgets.QApplication.instance()
@@ -1546,7 +1722,7 @@ QLabel:hover {{
         shortcuts = [
             (QtGui.QKeySequence("Ctrl+B"), self.MODE_BROWSE),
             (QtGui.QKeySequence("Ctrl+M"), self.MODE_MEASURE),
-            (QtGui.QKeySequence("Ctrl+S"), self.MODE_SPECTRO),
+            (QtGui.QKeySequence("Ctrl+Alt+S"), self.MODE_SPECTRO),
         ]
         for seq, mode in shortcuts:
             shortcut = QtWidgets.QShortcut(seq, self)
@@ -2028,6 +2204,7 @@ QLabel:hover {{
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Ctrl+S</b> = save current session | <b>Ctrl+Z</b> = reopen last closed window (when no other undo applies)</li>"
             "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
         ) % color
@@ -2048,6 +2225,506 @@ QLabel:hover {{
 
     def _on_show_shortcuts_requested(self):
         self._set_shortcuts_panel_visible(True)
+
+    def _window_history_views_dir(self):
+        path = Path(tempfile.gettempdir()) / "sxm_viewer_window_history"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _session_recovery_path(self):
+        raw = str(self.config.get("session_recovery_path", "") or "").strip()
+        if raw:
+            try:
+                return Path(raw)
+            except Exception:
+                pass
+        return CONFIG_PATH.with_name(".sxm_viewer_recovery.json")
+
+    def _workspace_has_content(self):
+        return bool(
+            getattr(self, "files", None)
+            or getattr(self, "_processed_views", None)
+            or getattr(self, "last_preview", None)
+            or getattr(self, "_popup_refs", None)
+            or getattr(self, "_spectro_popups", None)
+            or getattr(self, "_multi_spectro_popups", None)
+            or getattr(self, "_deferred_popup_entries", None)
+            or getattr(self, "virtual_copy_order", None)
+        )
+
+    def _capture_window_state_payload(self, window):
+        payload = {}
+        if window is None:
+            return payload
+        try:
+            geo = window.geometry()
+            payload["geometry"] = [int(geo.x()), int(geo.y()), int(geo.width()), int(geo.height())]
+        except Exception:
+            pass
+        try:
+            payload["window_state"] = int(window.windowState())
+        except Exception:
+            pass
+        try:
+            payload["title"] = str(window.windowTitle() or "")
+        except Exception:
+            pass
+        return payload
+
+    def _apply_window_state_payload(self, window, payload):
+        if window is None or not isinstance(payload, dict):
+            return
+        geom = payload.get("geometry")
+        if geom and len(geom) == 4:
+            try:
+                x, y, w, h = [int(v) for v in geom]
+                window.setGeometry(x, y, w, h)
+            except Exception:
+                pass
+        if payload.get("window_state") is not None:
+            try:
+                window.setWindowState(QtCore.Qt.WindowStates(int(payload.get("window_state"))))
+            except Exception:
+                pass
+
+    def _push_closed_window_history(self, payload):
+        if self._suspend_window_history or not isinstance(payload, dict):
+            return
+        kind = str(payload.get("kind") or "").strip()
+        if not kind:
+            return
+        history = list(getattr(self, "_closed_window_history", []) or [])
+        history.append(payload)
+        self._closed_window_history = history[-int(getattr(self, "_closed_window_history_limit", 6) or 6):]
+        try:
+            log_status(f"Stored closed window in reopen history: {kind}")
+        except Exception:
+            pass
+
+    def _clear_closed_window_history(self):
+        self._closed_window_history = []
+
+    def _remember_closed_preview_popup(self, dlg, canvas):
+        if self._suspend_window_history or dlg is None or canvas is None:
+            return
+        try:
+            if getattr(dlg, "_window_history_captured", False):
+                return
+            dlg._window_history_captured = True
+        except Exception:
+            pass
+        try:
+            history_dir = self._window_history_views_dir()
+            prefix = f"closed_popup_{int(time.time() * 1000)}"
+            snapshot = self.session_controller._capture_canvas_snapshot(canvas, history_dir, prefix=prefix, include_arrays=True)
+        except Exception:
+            snapshot = None
+            history_dir = None
+        if not snapshot or history_dir is None:
+            return
+        payload = {"kind": "preview_popup", "snapshot": snapshot, "views_dir": str(history_dir)}
+        payload.update(self._capture_window_state_payload(dlg))
+        self._push_closed_window_history(payload)
+
+    def _remember_closed_main_profile_dialog(self, dlg):
+        if self._suspend_window_history or dlg is None:
+            return
+        try:
+            state = viewer_measurement.export_profile_dialog_state(self)
+        except Exception:
+            state = None
+        if not state:
+            return
+        payload = {"kind": "main_profile", "state": state}
+        payload.update(self._capture_window_state_payload(dlg))
+        self._push_closed_window_history(payload)
+
+    def _remember_closed_popup_profile_dialog(self, controller, dlg):
+        if self._suspend_window_history or controller is None or dlg is None:
+            return
+        try:
+            state = controller.export_dialog_state()
+        except Exception:
+            state = None
+        if not state:
+            return
+        payload = {"kind": "popup_profile", "controller": controller, "state": state}
+        payload.update(self._capture_window_state_payload(dlg))
+        self._push_closed_window_history(payload)
+
+    def _remember_closed_spectro_dialog(self, dlg):
+        if self._suspend_window_history or dlg is None:
+            return
+        payload = None
+        try:
+            if isinstance(dlg, SpectroscopyPopup):
+                payload = {
+                    "kind": "spectro_popup",
+                    "spec": copy.deepcopy(getattr(dlg, "spec", None)),
+                    "channel": str(dlg.channel_combo.currentText() or ""),
+                    "axis_key": dlg.axis_combo.currentData(),
+                }
+            elif isinstance(dlg, SpectroscopyCompareDialog):
+                payload = {
+                    "kind": "spectro_compare",
+                    "specs": copy.deepcopy(list(getattr(dlg, "specs", []) or [])),
+                    "palette_name": str(getattr(dlg, "_palette_name", DEFAULT_COLOR_CYCLE) or DEFAULT_COLOR_CYCLE),
+                    "state": dlg._snapshot_state() if hasattr(dlg, "_snapshot_state") else None,
+                }
+            elif isinstance(dlg, MatrixSpectroViewer):
+                payload = {
+                    "kind": "matrix_viewer",
+                    "image_entry": copy.deepcopy(getattr(dlg, "image_entry", None)),
+                    "specs": copy.deepcopy(list(getattr(dlg, "specs", []) or [])),
+                    "dataset": copy.deepcopy(getattr(dlg, "dataset", None)),
+                    "palette_name": str(getattr(dlg, "palette_name", DEFAULT_COLOR_CYCLE) or DEFAULT_COLOR_CYCLE),
+                }
+        except Exception:
+            payload = None
+        if not payload:
+            return
+        payload.update(self._capture_window_state_payload(dlg))
+        self._push_closed_window_history(payload)
+
+    def _remember_closed_canvas_window(self, win):
+        if self._suspend_window_history or win is None:
+            return
+        try:
+            state = win._capture_state()
+        except Exception:
+            state = None
+        if not state:
+            return
+        payload = {"kind": "canvas_window", "state": state}
+        payload.update(self._capture_window_state_payload(win))
+        self._push_closed_window_history(payload)
+
+    def _restore_closed_window_payload(self, payload):
+        if not isinstance(payload, dict):
+            return False
+        kind = str(payload.get("kind") or "")
+        if kind == "preview_popup":
+            snapshot = payload.get("snapshot") or {}
+            views_dir = payload.get("views_dir")
+            if not snapshot or not views_dir:
+                return False
+            try:
+                dlg = self.session_controller._restore_popup_dialog_from_snapshot(
+                    snapshot,
+                    Path(str(views_dir)),
+                    geometry=payload.get("geometry"),
+                    window_state=payload.get("window_state"),
+                    title=payload.get("title") or snapshot.get("window_title") or "Preview",
+                    visible=True,
+                    active=True,
+                )
+                return dlg is not None
+            except Exception:
+                return False
+        if kind == "main_profile":
+            try:
+                dlg = viewer_measurement.restore_profile_dialog_state(self, payload.get("state") or {})
+                return dlg is not None
+            except Exception:
+                return False
+        if kind == "popup_profile":
+            controller = payload.get("controller")
+            if controller is None:
+                return False
+            try:
+                dlg = controller.restore_dialog_state(payload.get("state") or {})
+                return dlg is not None
+            except Exception:
+                return False
+        if kind == "spectro_popup":
+            spec = payload.get("spec")
+            if not spec:
+                return False
+            try:
+                dlg = spectro_popups._open_spectroscopy_popup(self, spec)
+                if dlg is None:
+                    return False
+                channel = str(payload.get("channel") or "")
+                if channel:
+                    idx = dlg.channel_combo.findText(channel)
+                    if idx >= 0:
+                        dlg.channel_combo.setCurrentIndex(idx)
+                axis_key = payload.get("axis_key")
+                if axis_key is not None:
+                    idx = dlg.axis_combo.findData(axis_key)
+                    if idx >= 0:
+                        dlg.axis_combo.setCurrentIndex(idx)
+                self._apply_window_state_payload(dlg, payload)
+                return True
+            except Exception:
+                return False
+        if kind == "spectro_compare":
+            specs = list(payload.get("specs") or [])
+            if len(specs) < 2:
+                return False
+            try:
+                dlg = SpectroscopyCompareDialog(specs, parent=self, palette_name=payload.get("palette_name") or DEFAULT_COLOR_CYCLE)
+                if payload.get("state") and hasattr(dlg, "_apply_state"):
+                    try:
+                        dlg._apply_state(payload.get("state"))
+                    except Exception:
+                        pass
+                self._apply_window_state_payload(dlg, payload)
+                dlg.show()
+                self._multi_spectro_popups.append(dlg)
+                dlg.finished.connect(lambda _: self._multi_spectro_popups.remove(dlg) if dlg in self._multi_spectro_popups else None)
+                dlg.finished.connect(lambda _: self._remember_closed_spectro_dialog(dlg))
+                return True
+            except Exception:
+                return False
+        if kind == "matrix_viewer":
+            try:
+                dlg = MatrixSpectroViewer(
+                    self,
+                    payload.get("image_entry") or {},
+                    payload.get("specs") or [],
+                    dataset=payload.get("dataset"),
+                    palette_name=payload.get("palette_name") or DEFAULT_COLOR_CYCLE,
+                )
+                self._apply_window_state_payload(dlg, payload)
+                dlg.show()
+                self._popup_refs.append(dlg)
+                dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
+                dlg.finished.connect(lambda _: self._remember_closed_spectro_dialog(dlg))
+                return True
+            except Exception:
+                return False
+        if kind == "canvas_window":
+            try:
+                self._on_open_canvas()
+                win = self._canvas_window_ref()
+                if win is None:
+                    return False
+                if payload.get("state"):
+                    try:
+                        win._restore_state(payload.get("state"))
+                    except Exception:
+                        pass
+                self._apply_window_state_payload(win, payload)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _restore_last_closed_window(self):
+        history = list(getattr(self, "_closed_window_history", []) or [])
+        while history:
+            payload = history.pop()
+            self._closed_window_history = history
+            if self._restore_closed_window_payload(payload):
+                try:
+                    log_status(f"Reopened last closed window ({payload.get('kind')})")
+                except Exception:
+                    pass
+                return True
+        return False
+
+    def _iter_workspace_windows(self, *, include_canvas: bool = True):
+        seen = set()
+        candidates = []
+        for attr in ("_profile_dialog",):
+            dlg = getattr(self, attr, None)
+            if dlg is not None:
+                candidates.append(dlg)
+        for attr in ("_profile_dialogs", "_spectro_popups", "_multi_spectro_popups", "_popup_refs"):
+            candidates.extend(list(getattr(self, attr, []) or []))
+        if include_canvas:
+            win = self._canvas_window_ref()
+            if win is not None:
+                candidates.append(win)
+        for dlg in candidates:
+            if dlg is None:
+                continue
+            key = id(dlg)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield dlg
+
+    def _close_workspace_windows(self, *, record_history: bool = False, include_canvas: bool = True):
+        previous = bool(getattr(self, "_suspend_window_history", False))
+        self._suspend_window_history = (not record_history) or previous
+        try:
+            for dlg in list(self._iter_workspace_windows(include_canvas=include_canvas)):
+                try:
+                    dlg.close()
+                except Exception:
+                    continue
+        finally:
+            self._suspend_window_history = previous
+
+    def _prepare_for_workspace_load(self, kind="workspace"):
+        self._workspace_window_shutdown = True
+        try:
+            self._clear_closed_window_history()
+            self._close_workspace_windows(record_history=False, include_canvas=True)
+        finally:
+            self._workspace_window_shutdown = False
+        self._current_session_path = None
+
+    def _refresh_autosave_timer(self):
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is None:
+            return
+        if self._session_recovery_enabled:
+            timer.start(int(max(1, self._session_recovery_interval_min) * 60 * 1000))
+        else:
+            timer.stop()
+
+    def _save_recovery_snapshot(self, *, reason="autosave"):
+        if self._autosave_busy or not self._session_recovery_enabled or not self._workspace_has_content():
+            return False
+        self._autosave_busy = True
+        try:
+            recovery_path = self._session_recovery_path()
+            recovery_path.parent.mkdir(parents=True, exist_ok=True)
+            saved = self.session_controller.save_session(
+                session_path=recovery_path,
+                prompt_if_missing=False,
+                record_recent=False,
+                set_current=False,
+                autosave=True,
+                quiet=True,
+            )
+            if saved:
+                self.config["session_recovery_path"] = str(recovery_path)
+                self.config["session_recovery_timestamp"] = int(time.time())
+                save_config(self.config)
+                try:
+                    if reason == "autosave":
+                        log_status(f"Auto-saved recovery workspace to {recovery_path}")
+                except Exception:
+                    pass
+                return True
+            return False
+        finally:
+            self._autosave_busy = False
+
+    def _discard_recovery_snapshot(self):
+        recovery_path = self._session_recovery_path()
+        data_dir = recovery_path.parent / f"{recovery_path.stem}_data"
+        try:
+            if recovery_path.exists():
+                recovery_path.unlink()
+        except Exception:
+            pass
+        try:
+            if data_dir.exists():
+                shutil.rmtree(data_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _on_autosave_timer(self):
+        self._save_recovery_snapshot(reason="autosave")
+
+    def _maybe_offer_recovery_session(self):
+        if not self._session_recovery_enabled or self._workspace_has_content():
+            return
+        recovery_path = self._session_recovery_path()
+        if not recovery_path.exists():
+            return
+        try:
+            ts = datetime.fromtimestamp(recovery_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            ts = "recently"
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Recover autosaved workspace")
+        box.setIcon(QtWidgets.QMessageBox.Question)
+        box.setTextFormat(QtCore.Qt.RichText)
+        box.setText(
+            f"An autosaved workspace was found from <b>{ts}</b>.<br><br>"
+            "Recover it now, ignore it for this launch, or discard it."
+        )
+        recover_btn = box.addButton("Recover", QtWidgets.QMessageBox.AcceptRole)
+        later_btn = box.addButton("Ignore for now", QtWidgets.QMessageBox.RejectRole)
+        discard_btn = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is recover_btn:
+            self.session_controller.load_session(
+                session_path=recovery_path,
+                record_recent=False,
+                set_current=False,
+            )
+        elif clicked is discard_btn:
+            self._discard_recovery_snapshot()
+        else:
+            return
+
+    def on_recover_latest_autosave(self):
+        recovery_path = self._session_recovery_path()
+        if not recovery_path.exists():
+            QtWidgets.QMessageBox.information(self, "Recovery", "No autosaved workspace is available.")
+            return
+        self.session_controller.load_session(
+            session_path=recovery_path,
+            record_recent=False,
+            set_current=False,
+        )
+
+    def on_discard_recovery_snapshot(self):
+        self._discard_recovery_snapshot()
+        QtWidgets.QMessageBox.information(self, "Recovery", "Autosaved recovery data was discarded.")
+
+    def on_toggle_session_recovery(self, enabled: bool):
+        self._session_recovery_enabled = bool(enabled)
+        self.config["session_recovery_enabled"] = self._session_recovery_enabled
+        save_config(self.config)
+        self._refresh_autosave_timer()
+        self._refresh_session_recovery_ui()
+
+    def on_set_session_recovery_interval(self, minutes: int):
+        try:
+            minutes = max(1, int(minutes))
+        except Exception:
+            minutes = 5
+        self._session_recovery_interval_min = minutes
+        self.config["session_recovery_interval_min"] = minutes
+        save_config(self.config)
+        self._refresh_autosave_timer()
+        self._refresh_session_recovery_ui()
+
+    def _refresh_session_recovery_ui(self):
+        text = f"Autosave recovery: {'On' if self._session_recovery_enabled else 'Off'} ({self._session_recovery_interval_min} min)"
+        for attr in ("session_recovery_status_act", "toolbar_session_recovery_status_act"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                try:
+                    act.setText(text)
+                except Exception:
+                    pass
+        for attr in ("session_recovery_enable_act", "toolbar_session_recovery_enable_act"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                try:
+                    act.blockSignals(True)
+                    act.setChecked(self._session_recovery_enabled)
+                    act.blockSignals(False)
+                except Exception:
+                    pass
+        recovery_exists = self._session_recovery_path().exists()
+        for attr in ("session_recovery_open_act", "toolbar_session_recovery_open_act", "session_recovery_discard_act", "toolbar_session_recovery_discard_act"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                try:
+                    act.setEnabled(recovery_exists)
+                except Exception:
+                    pass
+        for minutes, act in dict(getattr(self, "session_recovery_interval_actions", {}) or {}).items():
+            try:
+                act.blockSignals(True)
+                act.setChecked(int(minutes) == int(self._session_recovery_interval_min))
+                act.blockSignals(False)
+            except Exception:
+                pass
+
+    def on_save_session_as(self):
+        self.session_controller.save_session_as()
 
     def _focused_canvas_with_undo(self):
         widget = QtWidgets.QApplication.focusWidget()
@@ -2088,7 +2765,12 @@ QLabel:hover {{
                     return
             except Exception:
                 pass
-        self.quick_crop_controller.undo_last_crop()
+        try:
+            if self.quick_crop_controller.undo_last_crop():
+                return
+        except Exception:
+            pass
+        self._restore_last_closed_window()
 
     def _handle_local_file_mime_drop(self, mime):
         if mime is None or not mime.hasUrls():
@@ -3137,6 +3819,7 @@ QLabel:hover {{
 
     def load_folder(self, folder:Path):
         start = time.perf_counter()
+        self._prepare_for_workspace_load(kind="folder")
         result = viewer_loader.load_folder(self, folder)
         end = time.perf_counter()
         folder_ms = (end - start) * 1000.0
@@ -3211,6 +3894,7 @@ QLabel:hover {{
         self._processed_views = {}
         self._collection_item_snapshots = {}
         self._workspace_kind = "folder"
+        self._current_session_path = None
         self.matrix_datasets = {}
         self._spectro_hist_cache = {}
         self._last_base_array = None
@@ -4299,6 +4983,7 @@ QLabel:hover {{
         if win is None or not win.isVisible():
             win = ExperimentalCanvasWindow(self, self)
             self._canvas_window = win
+            win.finished.connect(lambda _=None, w=win: self._remember_closed_canvas_window(w))
         win.show()
         win.raise_()
         try:
@@ -4331,6 +5016,7 @@ QLabel:hover {{
         if win is None or not win.isVisible():
             win = ExperimentalCanvasWindow(self, self)
             self._canvas_window = win
+            win.finished.connect(lambda _=None, w=win: self._remember_closed_canvas_window(w))
         win.show()
         win.raise_()
         try:
@@ -4496,6 +5182,7 @@ QLabel:hover {{
     def on_open_collection(self):
         """Open a curated cross-folder collection workspace."""
         self.collection_controller.load_collection()
+        self.show_collection_tray(activate=False)
 
     def on_collection_help(self):
         """Explain linked vs portable collections and how they are intended to be used."""
@@ -4503,21 +5190,62 @@ QLabel:hover {{
 
     def on_choose_current_collection(self):
         self.collection_controller.choose_current_collection()
+        self.show_collection_tray(activate=False)
 
     def on_clear_current_collection(self):
         self.collection_controller.clear_current_collection()
+        try:
+            window = getattr(self, "collection_tray_window", None)
+            if window is not None:
+                window.hide()
+        except Exception:
+            pass
 
     def on_add_current_preview_to_collection(self):
         self.collection_controller.add_current_preview()
+        self.show_collection_tray(activate=False)
 
     def on_add_active_popup_to_collection(self):
         self.collection_controller.add_active_popup()
+        self.show_collection_tray(activate=False)
 
     def on_add_all_popups_to_collection(self):
         self.collection_controller.add_all_popups()
+        self.show_collection_tray(activate=False)
 
     def on_add_selected_crops_to_collection(self):
         self.collection_controller.add_selected_crop_history()
+        self.show_collection_tray(activate=False)
+
+    def on_show_collection_tray(self):
+        self.show_collection_tray(activate=True)
+
+    def on_add_selected_thumbnails_to_collection(self):
+        targets = list(self._ordered_thumbnail_selection() or [])
+        if not targets:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Collections",
+                "Select one or more thumbnails first, then add or drag them into the collection tray.",
+            )
+            return
+        channel_idx = int(self.channel_dropdown.currentIndex() or 0)
+        entries = [{"file_path": str(path), "channel_index": channel_idx} for path in targets if path]
+        self.collection_controller.add_thumbnail_entries(entries)
+        self._refresh_collection_tray()
+        self.show_collection_tray(activate=False)
+
+    def show_collection_tray(self, activate=True):
+        window = getattr(self, "collection_tray_window", None)
+        if window is None:
+            return
+        try:
+            window.show()
+            if activate:
+                window.raise_()
+                window.activateWindow()
+        except Exception:
+            pass
 
     def _refresh_collection_ui(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
@@ -4556,6 +5284,53 @@ QLabel:hover {{
                 btn.setToolTip(tooltip)
             except Exception:
                 pass
+        try:
+            self._refresh_collection_tray()
+        except Exception:
+            pass
+
+    def _refresh_collection_tray(self):
+        current = str(getattr(self, "_collection_source", "") or "").strip()
+        group = getattr(self, "collection_group", None)
+        tray = getattr(self, "collection_tray_list", None)
+        window = getattr(self, "collection_tray_window", None)
+        if group is None or tray is None:
+            return
+        tray.clear()
+        if window is not None:
+            try:
+                window.setWindowTitle("Collection Tray" if not current else f"Collection Tray - {Path(current).stem}")
+            except Exception:
+                pass
+        if not current:
+            group.setTitle("Current Collection")
+            target_label = getattr(self, "collection_target_label", None)
+            if target_label is not None:
+                target_label.setText("No collection selected yet.")
+            item = QListWidgetItem("Choose or open a collection, then drag thumbnails or preview views here.")
+            item.setFlags(QtCore.Qt.NoItemFlags)
+            tray.addItem(item)
+            return
+        current_path = Path(current)
+        target_label = getattr(self, "collection_target_label", None)
+        if target_label is not None:
+            if current_path.exists():
+                target_label.setText(f"{current_path.name}\n{current_path}")
+            else:
+                target_label.setText(f"{current_path.name}\n{current_path}\n(New collection target)")
+        entries = self.collection_controller.tray_entries_for_current_collection(icon_size=72)
+        group.setTitle(f"Current Collection ({len(entries)})")
+        if not entries:
+            item = QListWidgetItem("Collection is ready.\nDrag thumbnails or preview views here to start adding items.")
+            item.setFlags(QtCore.Qt.NoItemFlags)
+            tray.addItem(item)
+            return
+        for entry in entries:
+            item = QListWidgetItem(entry.get("icon") or QtGui.QIcon(), entry.get("text") or entry.get("label") or "Collection item")
+            item.setToolTip(entry.get("tool_tip") or "")
+            item.setData(QtCore.Qt.UserRole, entry)
+            item.setSizeHint(QtCore.QSize(220, 82))
+            tray.addItem(item)
 
     def on_arrange_popouts(self):
         """Tile all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""
@@ -4577,9 +5352,10 @@ QLabel:hover {{
 
     def on_close_popouts(self):
         """Close all tracked pop-out dialogs without clearing crop history."""
+        self._close_workspace_windows(record_history=False, include_canvas=False)
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
-            controller.close_tracked_popups()
+            controller.update_popup_actions()
 
     def compare_menu_state(self):
         """Expose transient A/B compare-slot state for preview context menus."""

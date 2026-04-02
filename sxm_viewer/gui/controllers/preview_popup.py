@@ -668,6 +668,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         owner.quick_crop_controller.update_popup_actions()
 
     def _on_popup_closed(_=None):
+        remember_cb = getattr(owner, "_remember_closed_preview_popup", None)
+        if callable(remember_cb):
+            try:
+                remember_cb(dlg, canvas)
+            except Exception:
+                pass
         if dlg in owner._popup_refs:
             owner._popup_refs.remove(dlg)
         if hasattr(owner, "quick_crop_controller"):

@@ -153,6 +153,13 @@ def _on_exit_profile_mode(viewer):
 
 
 def _on_profile_dialog_closed(viewer):
+    dlg = getattr(viewer, '_profile_dialog', None)
+    remember_cb = getattr(viewer, "_remember_closed_main_profile_dialog", None)
+    if callable(remember_cb):
+        try:
+            remember_cb(dlg)
+        except Exception:
+            pass
     canvas = getattr(viewer, 'preview_canvas', None)
     if canvas is not None:
         try:

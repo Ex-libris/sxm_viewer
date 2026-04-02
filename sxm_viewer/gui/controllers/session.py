@@ -129,18 +129,37 @@ class SessionController:
         return None
 
     # ------------------------------------------------------------------
-    def save_session(self):
+    def save_session(
+        self,
+        session_path=None,
+        *,
+        force_prompt: bool = False,
+        prompt_if_missing: bool = True,
+        record_recent: bool = True,
+        set_current: bool = True,
+        autosave: bool = False,
+        quiet: bool = False,
+    ):
         viewer = self.viewer
-        default_path = Path(getattr(viewer, "last_dir", ".")).joinpath("sxm_session.json")
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            viewer,
-            "Save session",
-            str(default_path),
-            "SXM Session (*.json)",
-        )
-        if not path:
-            return
-        session_path = Path(path)
+        chosen_path = session_path
+        if force_prompt:
+            chosen_path = None
+        if chosen_path is None:
+            chosen_path = getattr(viewer, "_current_session_path", None)
+        if chosen_path is None and prompt_if_missing:
+            default_path = Path(getattr(viewer, "last_dir", ".")).joinpath("sxm_session.json")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                viewer,
+                "Save session",
+                str(default_path),
+                "SXM Session (*.json)",
+            )
+            if not path:
+                return None
+            chosen_path = path
+        if chosen_path is None:
+            return None
+        session_path = Path(chosen_path)
         if session_path.suffix.lower() != ".json":
             session_path = session_path.with_suffix(".json")
         try:
@@ -148,12 +167,34 @@ class SessionController:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             with open(session_path, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2)
-            log_status(f"Saved session to {session_path}")
+            if set_current:
+                try:
+                    viewer._current_session_path = str(session_path)
+                except Exception:
+                    pass
+            if record_recent:
+                record_recent_cb = getattr(viewer, "_record_recent_session", None)
+                if callable(record_recent_cb):
+                    try:
+                        record_recent_cb(session_path)
+                    except Exception:
+                        pass
+            if not autosave:
+                log_status(f"Saved session to {session_path}")
+            elif not quiet:
+                log_status(f"Updated recovery session at {session_path}")
+            return session_path
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(viewer, "Save session", f"Unable to save session: {exc}")
+            if not quiet:
+                QtWidgets.QMessageBox.warning(viewer, "Save session", f"Unable to save session: {exc}")
+            return None
+
+    def save_session_as(self):
+        """Prompt for a new session target and save there."""
+        return self.save_session(force_prompt=True)
 
     # ------------------------------------------------------------------
-    def load_session(self, start_dir=None, session_path=None):
+    def load_session(self, start_dir=None, session_path=None, *, record_recent: bool = True, set_current: bool = True):
         viewer = self.viewer
         if session_path is None:
             start_path = Path(start_dir) if start_dir is not None else Path(getattr(viewer, "last_dir", "."))
@@ -169,10 +210,10 @@ class SessionController:
         else:
             session_path = Path(session_path)
         try:
-            record_recent = getattr(viewer, "_record_recent_session", None)
-            if callable(record_recent):
+            record_recent_cb = getattr(viewer, "_record_recent_session", None)
+            if record_recent and callable(record_recent_cb):
                 try:
-                    record_recent(session_path)
+                    record_recent_cb(session_path)
                 except Exception:
                     pass
             self._set_session_activity(
@@ -189,7 +230,18 @@ class SessionController:
                 value=12,
                 stage="loading",
             )
+            prepare_cb = getattr(viewer, "_prepare_for_workspace_load", None)
+            if callable(prepare_cb):
+                try:
+                    prepare_cb(kind="session")
+                except Exception:
+                    pass
             if self._apply_session_state(payload, session_path):
+                if set_current:
+                    try:
+                        viewer._current_session_path = str(session_path)
+                    except Exception:
+                        pass
                 log_status(f"Loaded session from {session_path}")
         except Exception as exc:
             self._set_session_activity(

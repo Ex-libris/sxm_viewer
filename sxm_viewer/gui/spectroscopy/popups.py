@@ -50,6 +50,7 @@ def _open_spectroscopy_popup(viewer, spec):
             pass
         dlg.show()
         viewer._spectro_popups.append(dlg)
+        dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
         dlg.finished.connect(lambda _: viewer._spectro_popups.remove(dlg) if dlg in viewer._spectro_popups else None)
         return dlg
     except Exception as e:
@@ -73,6 +74,7 @@ def _open_multi_spectroscopy_popup(viewer):
             pass
         dlg.show()
         viewer._multi_spectro_popups.append(dlg)
+        dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
         dlg.finished.connect(lambda _: viewer._multi_spectro_popups.remove(dlg) if dlg in viewer._multi_spectro_popups else None)
     else:
         dlg.set_specs(specs)
@@ -111,6 +113,7 @@ def on_show_matrix_spectro_viewer(viewer):
     )
     dlg.show()
     viewer._popup_refs.append(dlg)
+    dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
     dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
 
 

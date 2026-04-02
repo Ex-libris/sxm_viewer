@@ -89,7 +89,8 @@ def create_main_toolbar(viewer):
     except Exception:
         pass
     viewer.toolbar_save_session_act = toolbar.addAction(_icon("document-save"), "Save Session")
-    viewer.toolbar_save_session_act.setToolTip("Save the current SXM viewer session")
+    viewer.toolbar_save_session_act.setToolTip("Save the current SXM viewer session (Ctrl+S)")
+    viewer.toolbar_save_session_act.setShortcut(QtGui.QKeySequence("Ctrl+S"))
     viewer.toolbar_save_session_act.triggered.connect(viewer.on_save_session)
     viewer.toolbar_collection_btn = QtWidgets.QToolButton(toolbar)
     viewer.toolbar_collection_btn.setText("Collections")
@@ -102,6 +103,7 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_clear_target_act = viewer.toolbar_collection_menu.addAction("Clear Current Collection Target", viewer.on_clear_current_collection)
     viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("Open Collection...", viewer.on_open_collection)
+    viewer.toolbar_collection_menu.addAction("Show Collection Tray", viewer.on_show_collection_tray)
     viewer.toolbar_collection_menu.addAction("Add Current Preview...", viewer.on_add_current_preview_to_collection)
     viewer.toolbar_collection_menu.addAction("Add Active Pop-up...", viewer.on_add_active_popup_to_collection)
     viewer.toolbar_collection_menu.addAction("Add All Open Pop-ups...", viewer.on_add_all_popups_to_collection)

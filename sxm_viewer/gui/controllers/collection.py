@@ -6,9 +6,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from ..._shared import QtCore, QtWidgets, log_status, np
+from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...data.io import parse_header
 from ..viewer import measurement as viewer_measurement
+from ..thumbnail_render import array_to_qimage
 
 
 class _CollectionTargetDialog(QtWidgets.QDialog):
@@ -263,6 +264,88 @@ class CollectionController:
         if items:
             self._save_items(items, source_summary=f"Add {len(items)} selected crop snapshot(s) to a collection.")
 
+    def add_thumbnail_entries(self, entries):
+        """Add plain thumbnail/file entries to the current collection as fresh copies."""
+        built_items = []
+        for entry in list(entries or []):
+            if not isinstance(entry, dict):
+                continue
+            file_path = str(entry.get("file_path") or "").strip()
+            channel_idx = entry.get("channel_index")
+            if not file_path or channel_idx is None:
+                continue
+            try:
+                channel_idx = int(channel_idx)
+            except Exception:
+                continue
+            try:
+                view = self.viewer._build_single_channel_view(file_path, channel_idx)
+            except Exception:
+                view = None
+            if not isinstance(view, dict):
+                continue
+            built_items.append(
+                self._build_item_from_view_snapshot(
+                    view,
+                    getattr(self.viewer, "preview_canvas", None),
+                    source_kind="thumbnail",
+                    restore_as_popup=False,
+                    label=self._friendly_item_label(view, prefix="Thumbnail"),
+                )
+            )
+        built_items = [item for item in built_items if isinstance(item, dict)]
+        if built_items:
+            self._save_items(
+                built_items,
+                source_summary=(
+                    f"Add {len(built_items)} thumbnail selection(s) to the current collection.\n"
+                    "These are stored as fresh collection copies without popup-only overlay state."
+                ),
+            )
+
+    def add_from_view_drag_payload(self, payload: dict):
+        """Add a dragged preview view as a fresh collection item."""
+        if not isinstance(payload, dict):
+            return
+        view = None
+        drag_token = payload.get("view_drag_token")
+        if drag_token:
+            try:
+                from ..canvases.detail_preview_canvas import MultiPreviewCanvas
+                view = MultiPreviewCanvas.consume_drag_view_snapshot(drag_token)
+            except Exception:
+                view = None
+        if not isinstance(view, dict):
+            file_path = str(payload.get("file_path") or "").strip()
+            channel_idx = payload.get("channel_index")
+            if file_path and channel_idx is not None:
+                try:
+                    view = self.viewer._build_single_channel_view(file_path, int(channel_idx))
+                except Exception:
+                    view = None
+        if not isinstance(view, dict):
+            QtWidgets.QMessageBox.information(
+                self.viewer,
+                "Collections",
+                "The dragged view could not be added to the collection.",
+            )
+            return
+        item = self._build_item_from_view_snapshot(
+            view,
+            getattr(self.viewer, "preview_canvas", None),
+            source_kind="dragged_view",
+            restore_as_popup=False,
+            label=self._friendly_item_label(view, prefix="Dragged view"),
+        )
+        if item:
+            self._save_items(
+                [item],
+                source_summary=(
+                    "Add the dragged preview view to the current collection.\n"
+                    "Tip: use the popup Collection menu if you want to preserve popup-specific overlay state."
+                ),
+            )
+
     def load_collection(self, collection_path=None):
         path = collection_path
         if path is None:
@@ -483,6 +566,12 @@ class CollectionController:
                 "</div>"
             )
             box.exec_()
+            show_tray = getattr(self.viewer, "show_collection_tray", None)
+            if callable(show_tray):
+                try:
+                    show_tray(activate=False)
+                except Exception:
+                    pass
             log_status(f"Updated collection {collection_path} with {len(appended)} item(s)")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to save collection: {exc}")
@@ -741,6 +830,89 @@ class CollectionController:
             "channel_name": meta.get("channel") or "",
         }
 
+    def tray_entries_for_current_collection(self, *, icon_size: int = 72):
+        """Build lightweight visual summaries for the collection tray in the main window."""
+        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current:
+            return []
+        path = Path(current)
+        if not path.exists():
+            return []
+        try:
+            payload = self._load_or_init_payload(path, mode=str(getattr(self.viewer, "_current_collection_mode", "linked") or "linked"))
+        except Exception:
+            return []
+        data_dir = path.parent / str(payload.get("data_dir") or f"{path.stem}_collection_data")
+        views_dir = data_dir / "views"
+        entries = []
+        for item in reversed(list(payload.get("items") or [])):
+            snapshot = dict(item.get("snapshot") or {})
+            first = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+            meta = dict(first.get("meta") or {})
+            source_file = str(item.get("source_file") or meta.get("file_path") or meta.get("path") or first.get("path") or "")
+            folder_path = str(item.get("source_folder") or (str(Path(source_file).parent) if source_file else "") or "")
+            folder_name = Path(folder_path).name if folder_path else ""
+            channel_name = str(item.get("channel_name") or meta.get("channel") or first.get("title") or "").strip()
+            when = ""
+            for key in ("datetime", "time", "time_str", "date", "Date", "Timestamp", "acquisition_time"):
+                val = meta.get(key)
+                if val:
+                    when = str(val)
+                    break
+            icon = self._collection_item_icon(item, snapshot, views_dir, icon_size=icon_size)
+            label = str(item.get("label") or self._snapshot_primary_meta(snapshot).get("title") or "Collection item")
+            lines = [label]
+            secondary = " | ".join(part for part in (folder_name, channel_name) if part)
+            if secondary:
+                lines.append(secondary)
+            if when:
+                lines.append(when)
+            entries.append(
+                {
+                    "id": item.get("id"),
+                    "label": label,
+                    "text": "\n".join(lines),
+                    "tool_tip": (
+                        f"{label}\n"
+                        f"Folder: {folder_path or '-'}\n"
+                        f"Channel: {channel_name or '-'}\n"
+                        f"Time: {when or '-'}\n"
+                        f"Source: {source_file or '-'}"
+                    ),
+                    "icon": icon,
+                    "source_file": source_file,
+                    "folder_name": folder_name,
+                    "channel_name": channel_name,
+                    "when": when,
+                }
+            )
+        return entries
+
+    def _collection_item_icon(self, item: dict, snapshot: dict, views_dir: Path, *, icon_size: int = 72):
+        first = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+        cmap = str(first.get("cmap") or getattr(self.viewer, "thumb_cmap", "viridis") or "viridis")
+        try:
+            view = self.viewer.session_controller._build_view_from_snapshot_entry(first, views_dir)
+        except Exception:
+            view = None
+        if isinstance(view, dict):
+            try:
+                qimg = array_to_qimage(np.asarray(view.get("arr")), cmap_name=cmap)
+                pix = QtGui.QPixmap.fromImage(qimg)
+                return QtGui.QIcon(pix.scaled(icon_size, icon_size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            except Exception:
+                pass
+        source_file = str(item.get("source_file") or (first.get("meta") or {}).get("file_path") or first.get("path") or "")
+        channel_idx = item.get("channel_index", (first.get("meta") or {}).get("channel_index", first.get("channel_idx")))
+        if source_file and channel_idx is not None:
+            try:
+                pix = self.viewer._thumbnail_pixmap_for_file(source_file, int(channel_idx), icon_size, icon_size, getattr(self.viewer, "thumb_cmap", "viridis"))
+                if pix is not None and not pix.isNull():
+                    return QtGui.QIcon(pix)
+            except Exception:
+                pass
+        return QtGui.QIcon()
+
     def _friendly_item_label(self, view, *, prefix: str):
         meta = (view or {}).get("meta") or {}
         title = str((view or {}).get("title") or meta.get("channel") or "").strip()
@@ -766,11 +938,11 @@ class CollectionController:
             QtWidgets.QMessageBox.information(viewer, "Collections", "This collection does not contain any items.")
             return
         try:
-            viewer.on_close_popouts()
-        except Exception:
-            pass
-        try:
-            viewer.clear_loaded_images()
+            prepare_cb = getattr(viewer, "_prepare_for_workspace_load", None)
+            if callable(prepare_cb):
+                prepare_cb(kind="collection")
+            else:
+                viewer.clear_loaded_images()
         except Exception:
             pass
 
