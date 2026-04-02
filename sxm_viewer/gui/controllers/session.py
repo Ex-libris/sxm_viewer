@@ -1569,17 +1569,17 @@ class SessionController:
                         },
                         "view_font_scale": float(snapshot.get("view_font_scale", getattr(canvas, "_view_font_scale", 1.0)) or 1.0),
                         "display_options": {
-                            "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
-                            "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
-                            "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical"),
+                            "show_ticks": bool(snapshot.get("show_ticks", getattr(canvas, "_show_ticks", True))),
+                            "show_colorbar": bool(snapshot.get("show_colorbar", getattr(canvas, "_show_colorbar", True))),
+                            "colorbar_orientation": str(snapshot.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical"),
                             "show_title": bool(snapshot.get("show_title", getattr(canvas, "_show_title", True))),
                             "show_acquisition_overlay": bool(snapshot.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
-                            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
-                            "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
-                            "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
-                            "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+                            "show_shortcut_hint": bool(snapshot.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True))),
+                            "show_profile_overlays": bool(snapshot.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True))),
+                            "show_angle_overlays": bool(snapshot.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True))),
+                            "show_molecules": bool(snapshot.get("show_molecules", getattr(canvas, "show_molecules", True))),
                             "scale_bar_enabled": bool(snapshot.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False))),
-                            "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
+                            "frame_fill_mode": bool(snapshot.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False))),
                             "relative_axes_override": snapshot.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None)),
                             "view_layout": snapshot.get("view_layout", getattr(canvas, "_view_layout", "grid")),
                         },
@@ -1611,6 +1611,7 @@ class SessionController:
         if require_view_match:
             permit_view_state = self._canvas_views_match_snapshot(canvas, snapshot_views)
         if permit_view_state:
+            self._restore_view_specific_state(canvas, snapshot_views)
             prof = snapshot.get("profile_state")
             if prof:
                 try:
@@ -1643,7 +1644,6 @@ class SessionController:
                     viewer._apply_filter_to_canvas(canvas, pipeline=pipeline, label=snapshot.get("filter_label"))
                 except Exception:
                     pass
-            self._restore_view_specific_state(canvas, snapshot_views)
             zoom_state = snapshot.get("zoom")
             if zoom_state:
                 try:
@@ -1683,6 +1683,33 @@ class SessionController:
             target = view_map.get(key)
             if not target:
                 continue
+            for field in (
+                "extent",
+                "extent_raw",
+                "title",
+                "colorbar_label",
+                "axis_unit",
+                "unit",
+                "unit_normalized",
+                "display_relative_zero",
+                "zero_offset",
+                "channel_idx",
+                "crop_sequence",
+                "path",
+                "meta",
+                "spectra",
+                "highlight_spec",
+                "spec_pixels",
+            ):
+                if field not in entry:
+                    continue
+                try:
+                    incoming = copy.deepcopy(entry.get(field))
+                except Exception:
+                    incoming = entry.get(field)
+                if target.get(field) != incoming:
+                    target[field] = incoming
+                    changed = True
             clim = entry.get("clim")
             if clim:
                 try:

@@ -269,6 +269,15 @@ def _ensure_display_menu(viewer):
     viewer._refresh_recent_session_dirs_menu()
     viewer.display_menu.addSeparator()
     collections_menu = viewer.display_menu.addMenu("Collections")
+    viewer.collection_current_path_act = collections_menu.addAction("Current collection: none")
+    viewer.collection_current_path_act.setEnabled(False)
+    choose_collection_target_act = collections_menu.addAction("Choose current collection...")
+    choose_collection_target_act.setToolTip("Select the collection file that Add to Collection actions should append to")
+    choose_collection_target_act.triggered.connect(viewer.on_choose_current_collection)
+    viewer.collection_clear_target_act = collections_menu.addAction("Clear current collection target")
+    viewer.collection_clear_target_act.setToolTip("Forget the current default collection file for this app session")
+    viewer.collection_clear_target_act.triggered.connect(viewer.on_clear_current_collection)
+    collections_menu.addSeparator()
     open_collection_act = collections_menu.addAction("Open collection...")
     open_collection_act.setToolTip("Open a curated cross-folder collection of selected analysis views")
     open_collection_act.triggered.connect(viewer.on_open_collection)
@@ -288,6 +297,10 @@ def _ensure_display_menu(viewer):
     collection_help_act = collections_menu.addAction("What is a collection?")
     collection_help_act.setToolTip("Explain linked vs portable collections")
     collection_help_act.triggered.connect(viewer.on_collection_help)
+    try:
+        viewer._refresh_collection_ui()
+    except Exception:
+        pass
     arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
     arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
     arrange_act.triggered.connect(viewer.on_arrange_popouts)

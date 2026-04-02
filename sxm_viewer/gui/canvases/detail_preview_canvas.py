@@ -2169,6 +2169,20 @@ class MultiPreviewCanvas(FigureCanvas):
                 saved.append(data)
         return active, saved
 
+    @staticmethod
+    def _normalize_profile_marker_key_map(mapping):
+        """Restore JSON-loaded marker-key maps to native None/int keys."""
+        normalized = {}
+        for key, value in dict(mapping or {}).items():
+            if key in (None, "null", "None", ""):
+                normalized[None] = value
+                continue
+            try:
+                normalized[int(key)] = value
+            except Exception:
+                normalized[key] = value
+        return normalized
+
     def import_profile_state(self, state, emit=True):
         if state is None:
             return
@@ -2199,9 +2213,21 @@ class MultiPreviewCanvas(FigureCanvas):
                 )
             except Exception:
                 pass
-            self._profile_marker_key = state.get('marker_key')
-            self._profile_marker_positions_by_key = dict(state.get('marker_positions_by_key') or {})
-            self._profile_marker_domain_by_key = dict(state.get('marker_domain_by_key') or {})
+            marker_key = state.get('marker_key')
+            if marker_key in ("null", "None", ""):
+                marker_key = None
+            elif marker_key is not None:
+                try:
+                    marker_key = int(marker_key)
+                except Exception:
+                    pass
+            self._profile_marker_key = marker_key
+            self._profile_marker_positions_by_key = self._normalize_profile_marker_key_map(
+                state.get('marker_positions_by_key') or {}
+            )
+            self._profile_marker_domain_by_key = self._normalize_profile_marker_key_map(
+                state.get('marker_domain_by_key') or {}
+            )
             if not enabled and self.profile_enabled:
                 self.enable_profile(False)
             if active_pts is not None:

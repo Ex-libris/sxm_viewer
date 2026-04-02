@@ -413,6 +413,14 @@ def _on_show_profile_window(viewer):
         pass
     dlg = getattr(viewer, '_profile_dialog', None)
     if dlg is not None:
+        canvas = getattr(viewer, 'preview_canvas', None)
+        if canvas is not None and hasattr(canvas, 'export_profile_datasets'):
+            try:
+                active, saved = canvas.export_profile_datasets()
+                if active or saved:
+                    viewer._on_profile_updated(active, saved)
+            except Exception:
+                pass
         try:
             log_status("Profile dialog already exists; showing.")
         except Exception:
@@ -424,6 +432,19 @@ def _on_show_profile_window(viewer):
         except Exception:
             pass
         return
+    canvas = getattr(viewer, 'preview_canvas', None)
+    if canvas is not None and hasattr(canvas, 'export_profile_datasets'):
+        try:
+            active, saved = canvas.export_profile_datasets()
+            if active or saved:
+                try:
+                    log_status("Rebuilding profile dialog from current canvas datasets.")
+                except Exception:
+                    pass
+                viewer._on_profile_updated(active, saved)
+                return
+        except Exception:
+            pass
     payload = getattr(viewer, '_last_profile_payload', None)
     if payload and (payload[0] or payload[1]):
         try:
@@ -432,15 +453,6 @@ def _on_show_profile_window(viewer):
             pass
         viewer._on_profile_updated(payload[0], payload[1])
     else:
-        canvas = getattr(viewer, 'preview_canvas', None)
-        if canvas is not None and hasattr(canvas, 'export_profile_datasets'):
-            try:
-                active, saved = canvas.export_profile_datasets()
-                if active or saved:
-                    viewer._on_profile_updated(active, saved)
-                    return
-            except Exception:
-                pass
         try:
             log_status("No profile data available for dialog.")
         except Exception:
@@ -463,7 +475,6 @@ def _on_show_profile_window(viewer):
             viewer._profile_dialog = ProfileDialog(None, [], parent=viewer, unit=ref_unit, y_label=y_label)
             viewer._profile_dialog.move(viewer._next_popup_pos(offset=30))
             viewer._profile_dialog.show()
-            canvas = getattr(viewer, 'preview_canvas', None)
             if canvas is not None and hasattr(viewer._profile_dialog, 'set_context_source'):
                 viewer._profile_dialog.set_context_source(
                     canvas,

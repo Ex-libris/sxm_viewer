@@ -249,6 +249,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_crop_history_overlay = True
         self._collection_item_snapshots = {}
         self._collection_source = None
+        self._current_collection_mode = None
         self._workspace_kind = "folder"
         self._display_defaults = {
             'show_matrix_markers': True,
@@ -3209,7 +3210,6 @@ QLabel:hover {{
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
         self._collection_item_snapshots = {}
-        self._collection_source = None
         self._workspace_kind = "folder"
         self.matrix_datasets = {}
         self._spectro_hist_cache = {}
@@ -4501,6 +4501,12 @@ QLabel:hover {{
         """Explain linked vs portable collections and how they are intended to be used."""
         self.collection_controller.show_help()
 
+    def on_choose_current_collection(self):
+        self.collection_controller.choose_current_collection()
+
+    def on_clear_current_collection(self):
+        self.collection_controller.clear_current_collection()
+
     def on_add_current_preview_to_collection(self):
         self.collection_controller.add_current_preview()
 
@@ -4512,6 +4518,44 @@ QLabel:hover {{
 
     def on_add_selected_crops_to_collection(self):
         self.collection_controller.add_selected_crop_history()
+
+    def _refresh_collection_ui(self):
+        current = str(getattr(self, "_collection_source", "") or "").strip()
+        short = current if current else "none"
+        if len(short) > 96:
+            short = "..." + short[-93:]
+        text = f"Current collection: {short}"
+        tooltip = current or "No current collection selected. Add actions will ask for a collection file."
+        button_text = "Collections"
+        if current:
+            try:
+                button_text = f"Collection: {Path(current).stem}"
+            except Exception:
+                button_text = "Collection: active"
+        for attr in ("collection_current_path_act", "toolbar_collection_current_path_act"):
+            act = getattr(self, attr, None)
+            if act is None:
+                continue
+            try:
+                act.setText(text)
+                act.setToolTip(tooltip)
+            except Exception:
+                pass
+        for attr in ("collection_clear_target_act", "toolbar_collection_clear_target_act"):
+            act = getattr(self, attr, None)
+            if act is None:
+                continue
+            try:
+                act.setEnabled(bool(current))
+            except Exception:
+                pass
+        btn = getattr(self, "toolbar_collection_btn", None)
+        if btn is not None:
+            try:
+                btn.setText(button_text)
+                btn.setToolTip(tooltip)
+            except Exception:
+                pass
 
     def on_arrange_popouts(self):
         """Tile all visible pop-out dialogs (preview, spectroscopy, profiles, etc.)."""

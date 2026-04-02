@@ -96,6 +96,11 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_btn.setToolTip("Save selected preview/pop-up/crop results into curated cross-folder collections")
     viewer.toolbar_collection_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
     viewer.toolbar_collection_menu = QtWidgets.QMenu(viewer.toolbar_collection_btn)
+    viewer.toolbar_collection_current_path_act = viewer.toolbar_collection_menu.addAction("Current collection: none")
+    viewer.toolbar_collection_current_path_act.setEnabled(False)
+    viewer.toolbar_collection_menu.addAction("Choose Current Collection...", viewer.on_choose_current_collection)
+    viewer.toolbar_collection_clear_target_act = viewer.toolbar_collection_menu.addAction("Clear Current Collection Target", viewer.on_clear_current_collection)
+    viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("Open Collection...", viewer.on_open_collection)
     viewer.toolbar_collection_menu.addAction("Add Current Preview...", viewer.on_add_current_preview_to_collection)
     viewer.toolbar_collection_menu.addAction("Add Active Pop-up...", viewer.on_add_active_popup_to_collection)
@@ -105,6 +110,10 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_menu.addAction("What Is a Collection?", viewer.on_collection_help)
     viewer.toolbar_collection_btn.setMenu(viewer.toolbar_collection_menu)
     toolbar.addWidget(viewer.toolbar_collection_btn)
+    try:
+        viewer._refresh_collection_ui()
+    except Exception:
+        pass
     viewer.toolbar_popups_btn = QtWidgets.QToolButton(toolbar)
     viewer.toolbar_popups_btn.setText("Pop-ups")
     viewer.toolbar_popups_btn.setToolTip("Restore deferred session pop-outs on demand")

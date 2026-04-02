@@ -1,12 +1,14 @@
 """Curated cross-folder collection save/load helpers."""
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime
 from pathlib import Path
 
 from ..._shared import QtCore, QtWidgets, log_status, np
 from ...data.io import parse_header
+from ..viewer import measurement as viewer_measurement
 
 
 class _CollectionTargetDialog(QtWidgets.QDialog):
@@ -137,6 +139,9 @@ class CollectionController:
                 "snapshots.<br><br>"
                 "Use them when you want to compare results from different folders without saving the whole "
                 "folder session.<br><br>"
+                "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
+                "session. New <i>Add to collection</i> actions append to it by default until you open another "
+                "collection.<br><br>"
                 "<b>Linked</b>: lighter, expects original source data to remain available when possible.<br>"
                 "<b>Portable</b>: larger, caches image arrays so the collection can reopen more safely."
             ),
@@ -263,6 +268,51 @@ class CollectionController:
             return
         self._load_payload_into_viewer(payload, collection_path)
 
+    def choose_current_collection(self):
+        """Pick or create the collection file that future add actions should append to."""
+        start = str(
+            getattr(self.viewer, "_collection_source", "") or Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json"
+        )
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.viewer,
+            "Choose current collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        collection_path = Path(path)
+        if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
+            if collection_path.suffix.lower() == ".json":
+                collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
+            else:
+                collection_path = collection_path.with_suffix(".sxmcoll.json")
+        mode = "linked"
+        try:
+            if collection_path.exists():
+                payload = self._load_or_init_payload(collection_path, mode=mode)
+                mode = str(payload.get("default_mode") or mode)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to use this collection: {exc}")
+            return
+        self._remember_current_collection(collection_path, mode=mode)
+        QtWidgets.QMessageBox.information(
+            self.viewer,
+            "Collections",
+            f"Current collection set to:\n{collection_path}\n\nNew Add to Collection actions will append there by default.",
+        )
+
+    def clear_current_collection(self):
+        """Forget the current default collection target for this app session."""
+        self.viewer._collection_source = None
+        self.viewer._current_collection_mode = None
+        refresh = getattr(self.viewer, "_refresh_collection_ui", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
     def apply_snapshot_for_file(self, file_key):
         state = (getattr(self.viewer, "_collection_item_snapshots", {}) or {}).get(str(file_key))
         if not state:
@@ -280,6 +330,32 @@ class CollectionController:
                 viewer=self.viewer,
                 require_view_match=False,
             )
+            active_profile = None
+            saved_profiles = None
+            try:
+                active_profile, saved_profiles = canvas.export_profile_datasets()
+            except Exception:
+                active_profile, saved_profiles = None, None
+            try:
+                self.viewer._last_profile_payload = (
+                    active_profile,
+                    list(saved_profiles or []),
+                ) if (active_profile or saved_profiles) else None
+            except Exception:
+                pass
+            profile_dialog = snapshot.get("profile_dialog")
+            if profile_dialog and canvas is getattr(self.viewer, "preview_canvas", None):
+                try:
+                    viewer_measurement.restore_profile_dialog_state(self.viewer, profile_dialog)
+                except Exception:
+                    pass
+            elif canvas is getattr(self.viewer, "preview_canvas", None):
+                try:
+                    dlg = getattr(self.viewer, "_profile_dialog", None)
+                    if dlg is not None:
+                        dlg.close()
+                except Exception:
+                    pass
             return True
         except Exception:
             return False
@@ -323,6 +399,7 @@ class CollectionController:
                 collection_path = collection_path.with_suffix(".sxmcoll.json")
         try:
             payload = self._load_or_init_payload(collection_path, mode=mode)
+            mode = str(payload.get("default_mode") or mode or "linked")
             data_dir = collection_path.parent / str(payload.get("data_dir") or f"{collection_path.stem}_collection_data")
             views_dir = data_dir / "views"
             views_dir.mkdir(parents=True, exist_ok=True)
@@ -363,21 +440,32 @@ class CollectionController:
             payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
+                json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
+            self._remember_current_collection(collection_path, mode=mode)
             QtWidgets.QMessageBox.information(
                 self.viewer,
                 "Collections",
                 (
-                    f"Added {len(appended)} item(s) to {collection_path.name}.\n\n"
-                    f"{'Linked' if mode == 'linked' else 'Portable'} mode is now stored for these new entries."
+                    f"Collection updated: {collection_path.name}\n"
+                    f"Added {len(appended)} item(s).\n\n"
+                    f"{'Linked' if mode == 'linked' else 'Portable'} mode is being used for newly added entries.\n"
+                    "This collection is now the default target for Add to Collection actions in this app session."
                 ),
             )
-            log_status(f"Saved {len(appended)} collection item(s) to {collection_path}")
+            log_status(f"Updated collection {collection_path} with {len(appended)} item(s)")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to save collection: {exc}")
 
     def _prompt_target(self, source_summary: str):
-        default_path = str(Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json")
+        current_path = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if current_path:
+            current = Path(current_path)
+            if current.exists() and current.is_file():
+                payload = self._load_or_init_payload(current, mode=str(getattr(self.viewer, "_current_collection_mode", "linked") or "linked"))
+                mode = str(payload.get("default_mode") or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
+                log_status(f"Appending to current collection: {current}")
+                return str(current), mode
+        default_path = current_path or str(Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json")
         dlg = _CollectionTargetDialog(self.viewer, source_summary=source_summary, default_path=default_path)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return None, None
@@ -392,6 +480,7 @@ class CollectionController:
             payload.setdefault("items", [])
             payload.setdefault("data_dir", f"{collection_path.stem}_collection_data")
             payload.setdefault("next_item_id", len(payload.get("items") or []) + 1)
+            payload.setdefault("default_mode", str(mode or "linked"))
             return payload
         return {
             "kind": self.KIND,
@@ -407,6 +496,47 @@ class CollectionController:
                 "portable": "Caches every selected image array so the collection can be reopened more safely on another machine.",
             },
         }
+
+    def _remember_current_collection(self, collection_path: Path, *, mode: str | None = None):
+        """Keep one collection as the default append target for the current app session."""
+        try:
+            self.viewer._collection_source = str(Path(collection_path))
+        except Exception:
+            self.viewer._collection_source = str(collection_path)
+        self.viewer._current_collection_mode = str(mode or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
+        refresh = getattr(self.viewer, "_refresh_collection_ui", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _snapshot_has_spectra(snapshot: dict):
+        for entry in list((snapshot or {}).get("views") or []):
+            if (entry or {}).get("spectra"):
+                return True
+        return False
+
+    @staticmethod
+    def _snapshot_has_analysis_state(snapshot: dict):
+        if not isinstance(snapshot, dict):
+            return False
+        return bool(
+            snapshot.get("profile_state")
+            or snapshot.get("profile_dialog")
+            or snapshot.get("angle_state")
+            or snapshot.get("molecule_state")
+        )
+
+    def _should_restore_item_as_popup(self, item: dict, snapshot: dict):
+        """Popup-like analysis items should reopen as popups instead of collection thumbnails."""
+        if bool(item.get("restore_as_popup")):
+            return True
+        source_kind = str(item.get("source_kind") or "").strip().lower()
+        if source_kind == "popup":
+            return True
+        return self._snapshot_has_analysis_state(snapshot)
 
     def _recapture_item_snapshot(self, item: dict, views_dir: Path, *, item_id: int, mode: str):
         prefix = f"item{item_id}"
@@ -466,8 +596,16 @@ class CollectionController:
             "view_layout": getattr(canvas, "_view_layout", "grid"),
             "relative_axes_override": getattr(canvas, "_relative_axes_override", None),
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
+            "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
+            "show_colorbar": bool(getattr(canvas, "_show_colorbar", True)),
+            "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical"),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
+            "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
+            "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
+            "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+            "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
             "view_font_scale": float(getattr(canvas, "_view_font_scale", 1.0) or 1.0),
             "plot_font_family": str(getattr(canvas, "_font_family", "") or ""),
             "plot_font_bold": bool(getattr(canvas, "_plot_font_bold", False)),
@@ -475,24 +613,71 @@ class CollectionController:
             "plot_font_underline": bool(getattr(canvas, "_plot_font_underline", False)),
             "profile_label_mode": str(getattr(canvas, "_profile_label_mode", "length") or "length"),
             "profile_state": session._safe_canvas_call(canvas, "export_profile_state") if include_state else None,
-            "profile_dialog": session._safe_canvas_call(canvas, "export_profile_dialog_state") if include_state else None,
+            "profile_dialog": (
+                viewer_measurement.export_profile_dialog_state(self.viewer)
+                if include_state and canvas is getattr(self.viewer, "preview_canvas", None)
+                else session._safe_canvas_call(canvas, "export_profile_dialog_state") if include_state else None
+            ),
             "angle_state": session._safe_canvas_call(canvas, "export_angle_state") if include_state else None,
             "molecule_state": session._safe_canvas_call(canvas, "export_molecule_state") if include_state else None,
             "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
+            "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
+            "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
+            "spectro_settings": {
+                "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
+                "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
+                "show_matrix_markers": bool(getattr(self.viewer, "show_matrix_markers", True)),
+                "show_single_markers": bool(getattr(self.viewer, "show_single_markers", True)),
+                "compact_markers": bool(getattr(self.viewer, "compact_markers", True)),
+                "highlight_glow": bool(getattr(self.viewer, "spectro_highlight_glow", True)),
+                "single_symbol": str(getattr(self.viewer, "spectro_marker_symbol", "circle") or "circle"),
+                "single_size": float(getattr(self.viewer, "spectro_marker_size", 5.0) or 5.0),
+                "color_cycle": str(getattr(self.viewer, "spectro_color_cycle", "") or ""),
+            },
             "filter_pipeline": None,
             "filter_label": None,
             "views": [],
             "zoom": session._safe_canvas_call(canvas, "export_zoom_states") if include_state and len(target_views) == len(getattr(canvas, "views", []) or []) else [],
         }
         try:
+            host = canvas.window()
+        except Exception:
+            host = None
+        if host is not None and host is not self.viewer:
+            try:
+                geo = host.geometry()
+                snapshot["window_geometry"] = [int(geo.x()), int(geo.y()), int(geo.width()), int(geo.height())]
+            except Exception:
+                pass
+            try:
+                snapshot["window_state"] = int(host.windowState())
+            except Exception:
+                pass
+            try:
+                snapshot["window_title"] = str(host.windowTitle() or "")
+            except Exception:
+                pass
+        try:
             pipeline, label = session._view_filter_spec(canvas)
             snapshot["filter_pipeline"] = pipeline
             snapshot["filter_label"] = label
         except Exception:
             pass
+        has_analysis_state = bool(
+            snapshot.get("profile_state")
+            or snapshot.get("profile_dialog")
+            or snapshot.get("angle_state")
+            or snapshot.get("molecule_state")
+        )
         for idx, view in enumerate(target_views):
-            include_arrays = bool(mode == "portable" or self._view_requires_cached_array(view))
+            include_arrays = bool(
+                mode == "portable"
+                or self._view_requires_cached_array(view)
+                or has_analysis_state
+                or bool((view or {}).get("spectra"))
+                or bool((view or {}).get("highlight_spec"))
+            )
             serialized = session._serialize_view_for_session(view, views_dir, f"{prefix}_v{idx}", include_arrays)
             snapshot["views"].append(serialized)
         return snapshot
@@ -570,13 +755,18 @@ class CollectionController:
         except Exception:
             pass
         viewer._collection_item_snapshots = {}
-        viewer._collection_source = str(collection_path)
         viewer._workspace_kind = "collection"
+        self._remember_current_collection(collection_path, mode=str(payload.get("default_mode") or "linked"))
         loaded_keys = []
         popup_items = []
         skipped = []
+        any_spectra = False
         for item in items:
             snapshot = dict(item.get("snapshot") or {})
+            if self._should_restore_item_as_popup(item, snapshot):
+                popup_items.append((item, snapshot))
+                any_spectra = self._snapshot_has_spectra(snapshot) or any_spectra
+                continue
             primary_view = self._build_primary_view_for_item(item, snapshot, views_dir)
             if primary_view is None:
                 skipped.append(str(item.get("label") or item.get("id") or "item"))
@@ -593,9 +783,11 @@ class CollectionController:
             molecules = snapshot.get("molecule_state")
             if molecules is not None:
                 viewer.molecule_overlays[str(key)] = molecules
+            any_spectra = self._register_collection_spectra_for_key(str(key), snapshot) or any_spectra
             loaded_keys.append(str(key))
-            if bool(item.get("restore_as_popup")):
-                popup_items.append((item, snapshot))
+
+        if any_spectra:
+            self._apply_collection_spectro_settings(payload, items)
 
         self._setup_collection_channel_dropdown()
         try:
@@ -612,20 +804,24 @@ class CollectionController:
                 viewer.session_controller._restore_popup_dialog_from_snapshot(
                     snapshot,
                     views_dir,
-                    title=item.get("label"),
+                    title=snapshot.get("window_title") or item.get("label"),
                     visible=True,
                     active=False,
                 )
             except Exception:
                 continue
 
-        message = f"Opened collection with {len(loaded_keys)} item(s)."
+        message = f"Opened collection with {len(loaded_keys)} library item(s)"
+        if popup_items:
+            message += f" and {len(popup_items)} restored pop-up(s)"
+        message += "."
         if skipped:
             message += f"\n\nSkipped {len(skipped)} item(s) that could not be rebuilt."
         if payload.get("default_mode") == "linked":
             message += "\n\nLinked collection: original source files are preferred when available."
         else:
             message += "\n\nPortable collection: cached image data is being used."
+        message += "\n\nThis collection is now the default target for Add to Collection actions in this app session."
         QtWidgets.QMessageBox.information(viewer, "Collection opened", message)
         log_status(f"Opened collection {collection_path} with {len(loaded_keys)} item(s)")
 
@@ -726,3 +922,92 @@ class CollectionController:
         except Exception:
             pass
         return key
+
+    def _register_collection_spectra_for_key(self, file_key: str, snapshot: dict):
+        """Attach saved spectroscopy entries back onto a curated collection item."""
+        specs = []
+        seen = set()
+        for entry in list(snapshot.get("views") or []):
+            for spec in list((entry or {}).get("spectra") or []):
+                if not isinstance(spec, dict):
+                    continue
+                copied = copy.deepcopy(spec)
+                copied["image_key"] = str(file_key)
+                key = (
+                    str(copied.get("path") or ""),
+                    copied.get("matrix_index"),
+                    copied.get("x"),
+                    copied.get("y"),
+                    copied.get("order_idx"),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                specs.append(copied)
+        if not specs:
+            return False
+        viewer = self.viewer
+        viewer.spectros_by_image[str(file_key)] = specs
+        all_specs = list(getattr(viewer, "spectros", []) or [])
+        all_specs.extend(specs)
+        viewer.spectros = all_specs
+        matrix_specs = [spec for spec in specs if spec.get("matrix_index") is not None]
+        if matrix_specs:
+            existing = list(getattr(viewer, "matrix_spectros", []) or [])
+            existing.extend(matrix_specs)
+            viewer.matrix_spectros = existing
+            try:
+                viewer.files_with_matrix.add(str(file_key))
+            except Exception:
+                pass
+        try:
+            viewer._spectros_loaded = True
+            viewer._spectros_pending = False
+        except Exception:
+            pass
+        return True
+
+    def _apply_collection_spectro_settings(self, payload: dict, items: list[dict]):
+        """Collections carrying spectroscopy should restore the corresponding overlay visibility/settings."""
+        viewer = self.viewer
+        spectro_settings = {}
+        for item in items:
+            snapshot = item.get("snapshot") or {}
+            settings = snapshot.get("spectro_settings") or {}
+            if settings:
+                spectro_settings = settings
+                break
+        if not spectro_settings:
+            return
+        viewer.show_spectra = bool(spectro_settings.get("show_spectra", True))
+        viewer.show_preview_spectra = bool(spectro_settings.get("show_preview_spectra", viewer.show_spectra))
+        viewer.show_matrix_markers = bool(spectro_settings.get("show_matrix_markers", True))
+        viewer.show_single_markers = bool(spectro_settings.get("show_single_markers", True))
+        viewer.compact_markers = bool(spectro_settings.get("compact_markers", True))
+        viewer.spectro_highlight_glow = bool(spectro_settings.get("highlight_glow", True))
+        try:
+            viewer.spectro_marker_symbol = str(spectro_settings.get("single_symbol", viewer.spectro_marker_symbol) or viewer.spectro_marker_symbol)
+            viewer.spectro_marker_size = float(spectro_settings.get("single_size", viewer.spectro_marker_size) or viewer.spectro_marker_size)
+        except Exception:
+            pass
+        cycle = str(spectro_settings.get("color_cycle", "") or "").strip()
+        if cycle:
+            viewer.spectro_color_cycle = cycle
+        for attr in ("spectro_overlay_act", "show_spectra_cb"):
+            widget = getattr(viewer, attr, None)
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(viewer.show_preview_spectra if attr == "show_spectra_cb" else viewer.show_spectra)
+            except Exception:
+                pass
+            finally:
+                try:
+                    widget.blockSignals(False)
+                except Exception:
+                    pass
+        try:
+            viewer._update_spectro_stats_label()
+        except Exception:
+            pass
