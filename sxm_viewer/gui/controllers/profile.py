@@ -265,6 +265,7 @@ class PopupProfileController:
             except Exception:
                 pass
         dlg = self._dialog
+        created = dlg is None
         if dlg is None:
             unit = None
             y_label = None
@@ -326,13 +327,14 @@ class PopupProfileController:
                 activate_overlay_callback=activate_cb,
                 highlight_overlay_callback=highlight_cb,
             )
-        dlg.show()
-        self._dock_dialog_near_canvas(dlg)
-        try:
-            dlg.raise_()
-            dlg.activateWindow()
-        except Exception:
-            pass
+        if created:
+            dlg.show()
+            self._dock_dialog_near_canvas(dlg)
+            try:
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                pass
 
     def _clear_dialog(self):
         dlg = self._dialog
