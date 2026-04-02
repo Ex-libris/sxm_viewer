@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
+from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
     CH_EQUALITY_TOL_NM,
@@ -131,6 +132,20 @@ class _CollectionTrayList(QtWidgets.QListWidget):
             "Use popup Collection actions when you want popup-specific overlays preserved."
         )
 
+    def _restore_workspace_after_drop(self):
+        try:
+            self.viewer.on_recall_popouts()
+        except Exception:
+            pass
+        try:
+            host = self.window()
+            if host is not None:
+                host.show()
+                host.raise_()
+                host.activateWindow()
+        except Exception:
+            pass
+
     def _accepts_mime(self, mime):
         return bool(
             mime
@@ -163,12 +178,14 @@ class _CollectionTrayList(QtWidgets.QListWidget):
                 entries = list((payload or {}).get("entries") or [])
                 self.viewer.collection_controller.add_thumbnail_entries(entries)
                 QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                QtCore.QTimer.singleShot(0, self._restore_workspace_after_drop)
                 event.acceptProposedAction()
                 return
             if mime.hasFormat("application/x-sxm-view"):
                 payload = json.loads(bytes(mime.data("application/x-sxm-view")).decode("utf-8"))
                 self.viewer.collection_controller.add_from_view_drag_payload(payload)
                 QtCore.QTimer.singleShot(0, self.viewer._refresh_collection_tray)
+                QtCore.QTimer.singleShot(0, self._restore_workspace_after_drop)
                 event.acceptProposedAction()
                 return
         except Exception:
@@ -180,8 +197,21 @@ class _CollectionTrayWindow(QtWidgets.QDialog):
     """Floating collection tray window kept separate from the main viewer layout."""
 
     def __init__(self, viewer, group_widget):
-        super().__init__(viewer, QtCore.Qt.Tool)
+        super().__init__(viewer)
         self.viewer = viewer
+        try:
+            self.setParent(None, self.windowFlags())
+            self.setWindowFlag(QtCore.Qt.Window, True)
+            self.setWindowIcon(viewer.windowIcon())
+            self.setWindowModality(QtCore.Qt.NonModal)
+            self.setWindowFlags(
+                self.windowFlags()
+                | QtCore.Qt.WindowCloseButtonHint
+                | QtCore.Qt.WindowMinimizeButtonHint
+                | QtCore.Qt.WindowSystemMenuHint
+            )
+        except Exception:
+            pass
         self.setWindowTitle("Collection Tray")
         self.resize(430, 520)
         layout = QtWidgets.QVBoxLayout(self)
@@ -190,6 +220,22 @@ class _CollectionTrayWindow(QtWidgets.QDialog):
         group_widget.setParent(self)
         group_widget.setVisible(True)
         layout.addWidget(group_widget)
+
+    def _notify_popup_actions(self):
+        try:
+            controller = getattr(self.viewer, "quick_crop_controller", None)
+            if controller:
+                controller.update_popup_actions()
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._notify_popup_actions()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._notify_popup_actions()
 
     def closeEvent(self, event):
         self.hide()
@@ -228,7 +274,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.setAcceptDrops(True)
         log_status("Initializing SXM Viewer...")
         self._app_start_ts = time.perf_counter()
-        self.setWindowTitle("SXM Viewer")
+        self.setWindowTitle(APP_NAME)
+        apply_window_icon(self)
         self.resize(*MAIN_WINDOW_SIZE)
 
         log_status("Loading configuration...")
@@ -2549,6 +2596,9 @@ QLabel:hover {{
                 candidates.append(dlg)
         for attr in ("_profile_dialogs", "_spectro_popups", "_multi_spectro_popups", "_popup_refs"):
             candidates.extend(list(getattr(self, attr, []) or []))
+        tray = getattr(self, "collection_tray_window", None)
+        if tray is not None:
+            candidates.append(tray)
         if include_canvas:
             win = self._canvas_window_ref()
             if win is not None:
@@ -3936,7 +3986,7 @@ QLabel:hover {{
             prange = float(np.nanmax(arr) - np.nanmin(arr))
             return {'tag': 'constant-current', 'rng_nm': prange, 'median_nm': median}
 
-    def _auto_preview_clim(self, arr):
+    def _auto_preview_clim(self, arr, *, relative_zero: bool = False):
         """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
         try:
             data = np.asarray(arr, dtype=float)
@@ -3953,6 +4003,8 @@ QLabel:hover {{
                     finite = data[np.isfinite(data)]
             vmin = float(np.nanpercentile(finite, 1.0))
             vmax = float(np.nanpercentile(finite, 99.0))
+            if relative_zero:
+                vmin = 0.0
             if vmin == vmax:
                 return None
             return (vmin, vmax)
@@ -4238,9 +4290,19 @@ QLabel:hover {{
                     canv._redraw()
                 except Exception:
                     pass
-        for dlg in list(getattr(self, "_profile_dialogs", []) or []):
+        profile_dialogs = []
+        main_profile_dialog = getattr(self, "_profile_dialog", None)
+        if main_profile_dialog is not None:
+            profile_dialogs.append(main_profile_dialog)
+        profile_dialogs.extend(list(getattr(self, "_profile_dialogs", []) or []))
+        seen_profile_dialogs = set()
+        for dlg in profile_dialogs:
             if dlg is None:
                 continue
+            dlg_id = id(dlg)
+            if dlg_id in seen_profile_dialogs:
+                continue
+            seen_profile_dialogs.add(dlg_id)
             try:
                 if hasattr(dlg, "set_plot_typography"):
                     dlg.set_plot_typography(
@@ -6322,7 +6384,7 @@ QLabel:hover {{
             host = self
         return host
 
-    def _show_toast(self, message, *, duration_ms=1400, target=None):
+    def _show_toast(self, message, *, duration_ms=1400, target=None, variant="default"):
         text = str(message or "").strip()
         if not text:
             return
@@ -6349,11 +6411,18 @@ QLabel:hover {{
                 toast = None
         if toast is None:
             toast = QtWidgets.QLabel(host)
-            toast.setObjectName("copyToast")
+            toast.setObjectName("appToast")
             toast.setAlignment(QtCore.Qt.AlignCenter)
+            toast.setWordWrap(True)
+            toast.setTextFormat(QtCore.Qt.PlainText)
             toast.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-            toast.setStyleSheet(
-                "QLabel#copyToast {"
+            timer = QtCore.QTimer(toast)
+            timer.setSingleShot(True)
+            timer.timeout.connect(toast.hide)
+            self._toast_registry[key] = (toast, timer)
+        styles = {
+            "default": (
+                "QLabel#appToast {"
                 "background-color: rgba(18, 24, 34, 212);"
                 "color: #f5f7fb;"
                 "border: 1px solid rgba(255,255,255,55);"
@@ -6361,15 +6430,29 @@ QLabel:hover {{
                 "padding: 6px 12px;"
                 "font-weight: 600;"
                 "}"
-            )
-            timer = QtCore.QTimer(toast)
-            timer.setSingleShot(True)
-            timer.timeout.connect(toast.hide)
-            self._toast_registry[key] = (toast, timer)
+            ),
+            "success": (
+                "QLabel#appToast {"
+                "background-color: rgba(14, 92, 54, 232);"
+                "color: #f5fff8;"
+                "border: 1px solid rgba(170, 248, 204, 200);"
+                "border-radius: 12px;"
+                "padding: 8px 14px;"
+                "font-weight: 700;"
+                "}"
+            ),
+        }
+        toast.setStyleSheet(styles.get(str(variant or "default"), styles["default"]))
         toast.setText(text)
-        toast.adjustSize()
         rect = host.rect()
         margin = 14
+        max_width = max(260, min(760, int(rect.width() - (margin * 2))))
+        metrics = QtGui.QFontMetrics(toast.font())
+        flags = int(QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap | QtCore.Qt.TextWrapAnywhere)
+        text_rect = metrics.boundingRect(QtCore.QRect(0, 0, max_width - 28, 2000), flags, text)
+        toast_width = min(max_width, max(180, int(text_rect.width() + 28)))
+        toast_height = max(36, int(text_rect.height() + 18))
+        toast.resize(toast_width, toast_height)
         x = max(margin, int((rect.width() - toast.width()) * 0.5))
         y = max(margin, int(rect.height() - toast.height() - margin))
         toast.move(x, y)
@@ -6377,6 +6460,31 @@ QLabel:hover {{
         toast.raise_()
         if timer is not None:
             timer.start(max(900, int(duration_ms)))
+
+    def _show_saved_path_toast(self, title, path, *, detail=None, duration_ms=4200, target=None):
+        if not path:
+            return
+        try:
+            path_obj = Path(path)
+            file_name = path_obj.name
+            full_path = str(path_obj)
+        except Exception:
+            file_name = ""
+            full_path = str(path)
+        lines = [str(title or "Saved").strip()]
+        if detail:
+            lines[0] = f"{lines[0]} | {str(detail).strip()}"
+        if file_name:
+            lines.append(file_name)
+        if full_path and full_path != file_name:
+            lines.append(full_path)
+        host = target
+        if host is None:
+            try:
+                host = QtWidgets.QApplication.activeWindow()
+            except Exception:
+                host = None
+        self._show_toast("\n".join(line for line in lines if line), duration_ms=duration_ms, target=host, variant="success")
 
     def _on_view_copied(self, view=None, info=None, target=None):
         if not isinstance(view, dict):
@@ -6430,6 +6538,9 @@ QLabel:hover {{
             lo, hi = np.percentile(finite, [pct_low, pct_high])
         except Exception:
             lo, hi = vmin, vmax
+        if view and bool(view.get("display_relative_zero", False)):
+            lo = 0.0
+            hi = max(float(hi), float(vmax or 0.0), 0.0)
         self._apply_clim_to_view(canvas, view, lo, hi)
 
     def _reset_contrast(self, canvas):
@@ -6441,6 +6552,8 @@ QLabel:hover {{
             canvas.push_undo_state("reset_contrast")
         except Exception:
             pass
+        if view and bool(view.get("display_relative_zero", False)):
+            vmin = 0.0
         self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):

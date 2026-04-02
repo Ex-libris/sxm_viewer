@@ -119,6 +119,7 @@ class PopupProfileController:
                 marker_style=getattr(canvas, "_active_profile_marker_style", "o"),
                 marker_size=getattr(canvas, "_active_profile_marker_size", 7.0),
                 view=canvas.views[0] if canvas.views else None,
+                live_profile_ref=canvas._profile_live_ref(None) if hasattr(canvas, "_profile_live_ref") else None,
             )
         except Exception:
             active = None
@@ -135,6 +136,7 @@ class PopupProfileController:
                         marker_style=entry.get("marker_style"),
                         marker_size=entry.get("marker_size"),
                         view=canvas.views[0] if canvas.views else None,
+                        live_profile_ref=canvas._profile_live_ref(entry=entry) if hasattr(canvas, "_profile_live_ref") else None,
                     )
                 if data:
                     saved.append(data)
@@ -265,6 +267,7 @@ class PopupProfileController:
             except Exception:
                 pass
         dlg = self._dialog
+        created = dlg is None
         if dlg is None:
             unit = None
             y_label = None
@@ -291,6 +294,8 @@ class PopupProfileController:
                 palette_callback=palette_cb,
             )
             dlg.setWindowTitle(f"{self.title} (popup)")
+            if hasattr(dlg, "detach_as_workspace_window"):
+                dlg.detach_as_workspace_window()
             try:
                 dlg.set_context_source(
                     self.canvas,
@@ -326,13 +331,14 @@ class PopupProfileController:
                 activate_overlay_callback=activate_cb,
                 highlight_overlay_callback=highlight_cb,
             )
-        dlg.show()
-        self._dock_dialog_near_canvas(dlg)
-        try:
-            dlg.raise_()
-            dlg.activateWindow()
-        except Exception:
-            pass
+        if created:
+            dlg.show()
+            self._dock_dialog_near_canvas(dlg)
+            try:
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                pass
 
     def _clear_dialog(self):
         dlg = self._dialog

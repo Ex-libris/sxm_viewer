@@ -10,6 +10,80 @@ from ..canvases.detail_preview_canvas import MultiPreviewCanvas
 from .profile import PopupProfileController
 
 
+def _popup_image_size_text(view):
+    if not isinstance(view, dict) or not view:
+        return ""
+    extent = view.get("extent_raw")
+    if extent is None:
+        extent = view.get("extent")
+    width = None
+    height = None
+    unit = str(view.get("axis_unit") or "").strip()
+    if extent is not None:
+        try:
+            x0, x1, y1, y0 = extent
+            width = abs(float(x1) - float(x0))
+            height = abs(float(y0) - float(y1))
+        except Exception:
+            width = None
+            height = None
+    if width is None or height is None:
+        try:
+            arr = np.asarray(view.get("arr"))
+            if arr.ndim >= 2:
+                height = float(arr.shape[0])
+                width = float(arr.shape[1])
+                unit = "px"
+        except Exception:
+            return ""
+    if width is None or height is None:
+        return ""
+    if not unit:
+        unit = "px" if view.get("extent") is None and view.get("extent_raw") is None else "nm"
+
+    def _fmt(value):
+        value = float(value)
+        if unit == "px":
+            return str(int(round(value)))
+        if abs(value - round(value)) < 1e-6:
+            return str(int(round(value)))
+        if abs(value) >= 100:
+            return f"{value:.0f}"
+        if abs(value) >= 10:
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+        return f"{value:.3g}"
+
+    return f"{_fmt(width)} x {_fmt(height)} {unit}".strip()
+
+
+def _popup_window_title(owner, dlg, view=None, *, title=None, default="Preview"):
+    if view is None:
+        try:
+            views = getattr(getattr(dlg, "_preview_canvas", None), "views", None)
+            view = (views or [None])[0]
+        except Exception:
+            view = None
+    size_text = _popup_image_size_text(view)
+    base = title
+    if base is None:
+        base = getattr(dlg, "_popup_title_base", None)
+    if not base:
+        try:
+            base = owner._friendly_view_title(view, default=default)
+        except Exception:
+            base = default
+    base = str(base or default).strip() or default
+    if size_text:
+        prefix = f"{size_text} | "
+        if base.startswith(prefix):
+            base = base[len(prefix):].strip() or default
+    try:
+        dlg._popup_title_base = base
+    except Exception:
+        pass
+    return f"{size_text} | {base}" if size_text else base
+
+
 def _resolve_popup_channel_source(owner, views):
     if not views or len(views) != 1:
         return None
@@ -37,12 +111,36 @@ def _resolve_popup_channel_source(owner, views):
 
 
 def _shift_view_relative_zero(owner, view, enabled: bool):
+    def _normalized_relative_clim(arr, clim):
+        if clim is None:
+            auto_fn = getattr(owner, "_auto_preview_clim", None)
+            if callable(auto_fn):
+                try:
+                    return auto_fn(arr, relative_zero=True)
+                except Exception:
+                    return None
+            return None
+        try:
+            _lo, _hi = clim
+            hi_val = float(_hi)
+        except Exception:
+            return None
+        finite = np.asarray(arr, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            hi_val = max(hi_val, float(np.nanmax(finite)))
+        hi_val = max(hi_val, 0.0)
+        if hi_val <= 0.0:
+            return None
+        return (0.0, hi_val)
+
     new_view = owner._copy_view_for_popup(view)
     arr = new_view.get("arr")
     if arr is None:
         new_view["display_relative_zero"] = bool(enabled)
         if not enabled:
             new_view["zero_offset"] = None
+            new_view.pop("relative_zero_source_clim", None)
         return new_view
     arr_np = np.asarray(arr, dtype=float)
     is_relative = bool(new_view.get("display_relative_zero", False))
@@ -53,29 +151,69 @@ def _shift_view_relative_zero(owner, view, enabled: bool):
     if enabled and not is_relative:
         finite = arr_np[np.isfinite(arr_np)]
         zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        orig_clim = new_view.get("clim")
+        if orig_clim is not None:
+            try:
+                lo0, hi0 = orig_clim
+                new_view["relative_zero_source_clim"] = (float(lo0), float(hi0))
+            except Exception:
+                new_view.pop("relative_zero_source_clim", None)
         new_view["arr"] = arr_np - zero_offset
         clim = new_view.get("clim")
         if clim is not None:
             try:
                 lo, hi = clim
-                new_view["clim"] = (float(lo) - zero_offset, float(hi) - zero_offset)
+                rel_clim = _normalized_relative_clim(
+                    new_view["arr"],
+                    (float(lo) - zero_offset, float(hi) - zero_offset),
+                )
+                if rel_clim is not None:
+                    new_view["clim"] = rel_clim
+                else:
+                    new_view.pop("clim", None)
             except Exception:
-                pass
+                new_view.pop("clim", None)
+        else:
+            rel_clim = _normalized_relative_clim(new_view["arr"], None)
+            if rel_clim is not None:
+                new_view["clim"] = rel_clim
     elif not enabled and is_relative:
         zero_offset = float(zero_offset or 0.0)
         new_view["arr"] = arr_np + zero_offset
-        clim = new_view.get("clim")
-        if clim is not None:
+        source_clim = new_view.pop("relative_zero_source_clim", None)
+        if source_clim is not None:
             try:
-                lo, hi = clim
-                new_view["clim"] = (float(lo) + zero_offset, float(hi) + zero_offset)
+                lo, hi = source_clim
+                new_view["clim"] = (float(lo), float(hi))
             except Exception:
-                pass
+                new_view.pop("clim", None)
+        else:
+            clim = new_view.get("clim")
+            if clim is not None:
+                try:
+                    lo, hi = clim
+                    new_view["clim"] = (float(lo) + zero_offset, float(hi) + zero_offset)
+                except Exception:
+                    new_view.pop("clim", None)
         zero_offset = None
     else:
         if enabled and zero_offset is None:
             finite = arr_np[np.isfinite(arr_np)]
             zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        if enabled:
+            if new_view.get("relative_zero_source_clim") is None and new_view.get("clim") is not None:
+                try:
+                    lo, hi = new_view.get("clim")
+                    new_view["relative_zero_source_clim"] = (float(lo) + float(zero_offset or 0.0), float(hi) + float(zero_offset or 0.0))
+                except Exception:
+                    new_view.pop("relative_zero_source_clim", None)
+            rel_clim = _normalized_relative_clim(new_view.get("arr"), new_view.get("clim"))
+            if rel_clim is not None:
+                new_view["clim"] = rel_clim
+            else:
+                new_view.pop("clim", None)
+        else:
+            new_view.pop("relative_zero_source_clim", None)
     new_view["display_relative_zero"] = bool(enabled)
     new_view["zero_offset"] = zero_offset if enabled else None
     return new_view
@@ -107,7 +245,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         | QtCore.Qt.WindowSystemMenuHint
     )
     dlg.setMinimumSize(0, 0)
-    dlg.setWindowTitle(title or "Preview")
+    dlg.setWindowTitle(_popup_window_title(owner, dlg, (views or [None])[0], title=title, default="Preview"))
     dlg._preview_resize_paused = not bool(show_immediately)
 
     layout = QtWidgets.QVBoxLayout(dlg)
@@ -136,6 +274,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        canvas._show_image_size_overlay = False
     except Exception:
         pass
 
@@ -405,6 +544,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     def _on_popup_canvas_state_changed(_=None):
         _schedule_resize(force=False)
         try:
+            dlg.setWindowTitle(_popup_window_title(owner, dlg))
+        except Exception:
+            pass
+        try:
             if hasattr(owner, "_on_canvas_display_options_changed"):
                 owner._on_canvas_display_options_changed(canvas)
         except Exception:
@@ -578,7 +721,15 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
                         canvas.apply_zoom_states(zoom_states)
                     except Exception:
                         pass
-                dlg.setWindowTitle(owner._friendly_view_title(next_view, default="Preview"))
+                dlg.setWindowTitle(
+                    _popup_window_title(
+                        owner,
+                        dlg,
+                        next_view,
+                        title=owner._friendly_view_title(next_view, default="Preview"),
+                        default="Preview",
+                    )
+                )
                 channel_combo.blockSignals(True)
                 channel_combo.setCurrentIndex(idx)
                 channel_combo.blockSignals(False)
@@ -653,6 +804,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     dlg._preview_popup_schedule_resize = _schedule_resize
     dlg._resume_preview_resize = _resume_popup_resize
     dlg._preview_canvas = canvas
+    dlg._popup_title_base = str(title or "").strip() or owner._friendly_view_title((views or [None])[0], default="Preview")
     if show_immediately:
         dlg.show()
         if not restore_mode:

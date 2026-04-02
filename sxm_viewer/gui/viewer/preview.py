@@ -611,7 +611,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "highlight_spec": highlight_spec,
         "spec_pixels": list(spec_pixels),
     }
-    clim = _auto_preview_clim(display_arr)
+    clim = _auto_preview_clim(display_arr, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
     if clim:
         view["clim"] = clim
     return {
@@ -730,7 +730,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'acquisition_bias_text': acq_overlay.get("bias_text", ""),
         'acquisition_setpoint_text': acq_overlay.get("setpoint_text", ""),
     }
-    clim_main = _auto_preview_clim(display_arr)
+    clim_main = _auto_preview_clim(display_arr, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
     spec_pixels = []
     for spec in overlay_specs:
         coords = None
@@ -789,7 +789,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2 = dict(meta)
             meta2['channel'] = caption2
             meta2['channel_index'] = int(idx2)
-            clim2 = _auto_preview_clim(arr2_display)
+            clim2 = _auto_preview_clim(arr2_display, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
                      'cmap': cmap2, 'unit_normalized': unit2_final, 'unit': unit2_display,
                      'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
@@ -880,7 +880,7 @@ __all__ = [
     "on_preview_cmap_changed",
 ]
 
-def _auto_preview_clim(arr):
+def _auto_preview_clim(arr, *, relative_zero: bool = False):
     """
     Compute color limits with automatic aborted scan detection and optional flat suppression.
     """
@@ -908,6 +908,8 @@ def _auto_preview_clim(arr):
                     finite = trimmed
         vmin = float(np.nanpercentile(finite, 1.0))
         vmax = float(np.nanpercentile(finite, 99.0))
+        if relative_zero:
+            vmin = 0.0
         if vmin == vmax:
             return None
         return (vmin, vmax)

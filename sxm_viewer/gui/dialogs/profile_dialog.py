@@ -1,6 +1,7 @@
 """Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import copy
 import itertools
 import json
 import math
@@ -128,7 +129,69 @@ from ..thumbnail_render import (
 )
 from ..canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle, list_color_cycles
+from ..profile_links import (
+    register_profile_dialog,
+    unregister_profile_dialog,
+    apply_live_profile_style,
+    profile_ref_key,
+)
 from .profile_data import axis_label, format_marker_delta, format_stats_text, fmt_length
+
+_PROFILE_COMPOSITE_MIME = "application/x-sxm-profile-composite"
+
+
+class _ProfileCompositeDragButton(QtWidgets.QToolButton):
+    """Drag button used to compose profile dialogs without interfering with plot gestures."""
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self._owner_dialog = owner
+        self._drag_start_pos = None
+        self._drag_started = False
+        self.setObjectName("profileComposeButton")
+        self.setText("Combine")
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        self.setAutoRaise(False)
+        self.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.setToolTip(
+            "Drag this onto another profile window to create a new composite window."
+        )
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._drag_start_pos = event.pos()
+            self._drag_started = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_start_pos is not None
+            and event.buttons() & QtCore.Qt.LeftButton
+            and (event.pos() - self._drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance()
+        ):
+            self._drag_start_pos = None
+            self._drag_started = True
+            try:
+                self._owner_dialog.start_profile_composite_drag()
+            except Exception:
+                pass
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (
+            event.button() == QtCore.Qt.LeftButton
+            and not self._drag_started
+            and hasattr(self._owner_dialog, "_show_compose_help")
+        ):
+            try:
+                self._owner_dialog._show_compose_help(self.mapToGlobal(event.pos()))
+            except Exception:
+                pass
+        self._drag_start_pos = None
+        self._drag_started = False
+        super().mouseReleaseEvent(event)
+
 
 class ProfileDialog(QtWidgets.QDialog):
     """Dialog showing the sampled profile and basic stats."""
@@ -140,6 +203,7 @@ class ProfileDialog(QtWidgets.QDialog):
                  palette_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
+        self.setAcceptDrops(True)
         self.setWindowFlags(
             self.windowFlags()
             | QtCore.Qt.WindowMinimizeButtonHint
@@ -201,7 +265,13 @@ class ProfileDialog(QtWidgets.QDialog):
         self._metadata_show_folder_name = False
         self._metadata_show_folder = False
         self._metadata_artist = None
-        owner = self.parent()
+        self._owner = parent
+        self._workspace_registered = False
+        self._composite_mode = False
+        self._composite_origin_id = hex(id(self))
+        self._canvas_drag_start_pos = None
+        self._canvas_drag_started = False
+        owner = self._owner
         self._plot_font_family = normalize_font_family(getattr(owner, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(owner, "_plot_font_bold", False))
         self._plot_font_italic = bool(getattr(owner, "_plot_font_italic", False))
@@ -209,6 +279,10 @@ class ProfileDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout()
         fig = Figure(figsize=(6,3))
         self.canvas = SafeFigureCanvas(fig)
+        self.canvas.installEventFilter(self)
+        self.canvas.setToolTip(
+            "Drag the plot margin onto another profile window to create a composite."
+        )
         self.ax = fig.add_subplot(111)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_context_menu)
@@ -371,7 +445,14 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_list.itemDoubleClicked.connect(self._on_profile_item_activated)
         self.profile_list.currentItemChanged.connect(self._on_profile_item_selected)
         self.profile_list.customContextMenuRequested.connect(self._on_profile_list_context_menu)
-        info_layout.addWidget(QtWidgets.QLabel("Profiles"))
+        profiles_header = QtWidgets.QHBoxLayout()
+        profiles_header.setContentsMargins(0, 0, 0, 0)
+        profiles_header.setSpacing(6)
+        profiles_header.addWidget(QtWidgets.QLabel("Profiles"))
+        profiles_header.addStretch(1)
+        self.compose_drag_btn = _ProfileCompositeDragButton(self)
+        profiles_header.addWidget(self.compose_drag_btn)
+        info_layout.addLayout(profiles_header)
         info_layout.addWidget(self.profile_list, 1)
         btn_layout = QtWidgets.QHBoxLayout()
         self.copy_btn = QtWidgets.QPushButton('Copy XY')
@@ -419,6 +500,20 @@ class ProfileDialog(QtWidgets.QDialog):
         self._context_source = None
         self._context_syncing = False
         self._preserve_cb = None
+        self._refresh_action_button_states()
+        register_profile_dialog(self)
+
+    def detach_as_workspace_window(self):
+        """Make the dialog an independent top-level window so it does not drag the main viewer to front."""
+        owner = getattr(self, "_owner", None)
+        try:
+            self.setParent(None, self.windowFlags())
+            self.setWindowFlag(QtCore.Qt.Window, True)
+            self.setWindowModality(QtCore.Qt.NonModal)
+            if owner is not None and hasattr(owner, "windowIcon"):
+                self.setWindowIcon(owner.windowIcon())
+        except Exception:
+            pass
 
     def _on_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
@@ -695,17 +790,36 @@ class ProfileDialog(QtWidgets.QDialog):
             dataset = {}
         return dataset.get(field, default)
 
+    def _dataset_for_profile_key(self, profile_key):
+        if profile_key is None:
+            return self._active
+        try:
+            idx = int(profile_key)
+        except Exception:
+            return None
+        if 0 <= idx < len(self._saved):
+            return self._saved[idx]
+        return None
+
+    def _live_profile_ref(self, profile_key):
+        dataset = self._dataset_for_profile_key(profile_key)
+        ref = dataset.get("live_profile_ref") if isinstance(dataset, dict) else None
+        return ref if profile_ref_key(ref) is not None else None
+
     def _apply_profile_style_change(self, profile_key, **changes):
         updated = False
+        live_ref = self._live_profile_ref(profile_key)
         if callable(self._style_update_cb):
             try:
                 updated = bool(self._style_update_cb(profile_key, **changes))
             except Exception:
                 updated = False
-        target = self._active if profile_key is None else (self._saved[int(profile_key)] if 0 <= int(profile_key) < len(self._saved) else None)
-        if target is not None:
+        if not updated and live_ref is not None:
+            updated = bool(apply_live_profile_style(live_ref, **changes))
+        target = self._dataset_for_profile_key(profile_key)
+        if target is not None and (updated or live_ref is None):
             target.update(changes)
-            updated = True or updated
+            updated = True
         if updated:
             current = profile_key
             self.update_profiles(
@@ -720,23 +834,47 @@ class ProfileDialog(QtWidgets.QDialog):
         colors = get_color_cycle(palette_name)
         if not colors:
             return
-        if callable(self._palette_cb):
+        if callable(self._palette_cb) and not self._composite_mode:
             try:
                 self._palette_cb(palette_name)
             except Exception:
                 pass
-        self._profile_palette_name = palette_name
-        color_iter = iter(colors)
+            self._profile_palette_name = palette_name
+            color_iter = iter(colors)
+            if self._active is not None:
+                self._active["color"] = next(color_iter, colors[0])
+            for idx, entry in enumerate(self._saved):
+                entry["color"] = colors[(idx + 1) % len(colors)]
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
+            return
+        updated = False
         if self._active is not None:
-            self._active["color"] = next(color_iter, colors[0])
+            live_ref = self._live_profile_ref(None)
+            color = colors[0]
+            if live_ref is not None:
+                updated = bool(apply_live_profile_style(live_ref, color=color)) or updated
+            self._active["color"] = color
+            updated = True
         for idx, entry in enumerate(self._saved):
-            entry["color"] = colors[(idx + 1) % len(colors)]
-        self.update_profiles(
-            self._active,
-            self._saved,
-            activate_overlay_callback=self._activate_overlay_cb,
-            highlight_overlay_callback=self._highlight_overlay_cb,
-        )
+            color = colors[(idx + 1) % len(colors)]
+            live_ref = self._live_profile_ref(idx)
+            if live_ref is not None:
+                updated = bool(apply_live_profile_style(live_ref, color=color)) or updated
+            entry["color"] = color
+            updated = True
+        if updated:
+            self._profile_palette_name = palette_name
+            self.update_profiles(
+                self._active,
+                self._saved,
+                activate_overlay_callback=self._activate_overlay_cb,
+                highlight_overlay_callback=self._highlight_overlay_cb,
+            )
 
     def _font_style_state(self):
         return {
@@ -748,7 +886,7 @@ class ProfileDialog(QtWidgets.QDialog):
     def set_plot_typography(self, **changes):
         """Update shared plot typography and redraw with the new style."""
         family = changes.get("family", None)
-        owner = self.parent()
+        owner = getattr(self, "_owner", None)
         style_changes = {
             "bold": changes.get("bold", None),
             "italic": changes.get("italic", None),
@@ -931,8 +1069,6 @@ class ProfileDialog(QtWidgets.QDialog):
             self.advanced_toggle_btn.blockSignals(False)
 
     def _apply_toggle_button_styles(self):
-        if not self._toggle_buttons:
-            return
         dark = bool(self._dark_background)
         if dark:
             inactive_bg = "#1e2430"
@@ -942,6 +1078,12 @@ class ProfileDialog(QtWidgets.QDialog):
             active_border = "#79a9f2"
             active_text = "#ffffff"
             hint_color = "#b9c6d8"
+            compose_button_bg = "#202633"
+            compose_button_border = "#5a6880"
+            compose_button_text = "#e4ebf7"
+            compose_button_hover_border = "#82aef1"
+            compose_drop_bg = "#26477a"
+            compose_drop_border = "#a8ceff"
         else:
             inactive_bg = "#f3f5f9"
             inactive_border = "#aeb7c5"
@@ -950,6 +1092,12 @@ class ProfileDialog(QtWidgets.QDialog):
             active_border = "#5b97e8"
             active_text = "#ffffff"
             hint_color = "#4b5b73"
+            compose_button_bg = "#f5f7fa"
+            compose_button_border = "#b8c2cf"
+            compose_button_text = "#314056"
+            compose_button_hover_border = "#5b97e8"
+            compose_drop_bg = "#e6f0ff"
+            compose_drop_border = "#4f8fe3"
         style = (
             "QToolButton#profileToggleButton {"
             f"background-color: {inactive_bg};"
@@ -976,6 +1124,33 @@ class ProfileDialog(QtWidgets.QDialog):
         hint = self.findChild(QtWidgets.QLabel, "profileControlsHint")
         if hint is not None:
             hint.setStyleSheet(f"color: {hint_color};")
+        compose_btn = getattr(self, "compose_drag_btn", None)
+        if compose_btn is not None:
+            drop_active = bool(compose_btn.property("dropActive"))
+            button_bg = compose_drop_bg if drop_active else compose_button_bg
+            button_border = compose_drop_border if drop_active else compose_button_border
+            button_style = (
+                "QToolButton#profileComposeButton {"
+                f"background-color: {button_bg};"
+                f"color: {compose_button_text};"
+                f"border: 1px solid {button_border};"
+                "border-radius: 10px;"
+                "padding: 4px 10px;"
+                "font-weight: 600;"
+                "}"
+                "QToolButton#profileComposeButton:hover {"
+                f"border: 1px solid {compose_button_hover_border};"
+                "}"
+                "QToolButton#profileComposeButton:disabled {"
+                f"background-color: {inactive_bg};"
+                f"color: {hint_color};"
+                f"border: 1px solid {inactive_border};"
+                "}"
+            )
+            try:
+                compose_btn.setStyleSheet(button_style)
+            except Exception:
+                pass
 
     def wheelEvent(self, event):
         try:
@@ -1638,6 +1813,452 @@ class ProfileDialog(QtWidgets.QDialog):
         self._context_source = None
         return
 
+    @staticmethod
+    def _json_ready_profile_value(value):
+        if isinstance(value, np.ndarray):
+            return {"__profile_array__": value.tolist()}
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {str(k): ProfileDialog._json_ready_profile_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [ProfileDialog._json_ready_profile_value(v) for v in value]
+        return value
+
+    @staticmethod
+    def _profile_value_from_json(value):
+        if isinstance(value, dict):
+            if "__profile_array__" in value:
+                try:
+                    return np.asarray(value.get("__profile_array__"))
+                except Exception:
+                    return np.asarray([])
+            return {k: ProfileDialog._profile_value_from_json(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [ProfileDialog._profile_value_from_json(v) for v in value]
+        return value
+
+    @staticmethod
+    def _profile_dataset_signature(dataset):
+        if not isinstance(dataset, dict):
+            return ""
+        digest = hashlib.sha1()
+        meta = dataset.get("meta") or {}
+        for key in (
+            "source_path",
+            "source_file_name",
+            "source_title",
+            "source_acquisition_text",
+            "label",
+            "unit",
+            "axis_unit",
+            "distance_unit",
+        ):
+            digest.update(str(dataset.get(key) or "").encode("utf-8", errors="ignore"))
+            digest.update(b"\0")
+        for key in ("channel", "file_name", "datetime", "date", "time"):
+            digest.update(str(meta.get(key) or "").encode("utf-8", errors="ignore"))
+            digest.update(b"\0")
+        for key in ("x_px", "x_nm", "vals"):
+            try:
+                arr = np.asarray(dataset.get(key) if dataset.get(key) is not None else [], dtype=float)
+            except Exception:
+                arr = np.asarray([], dtype=float)
+            digest.update(str(arr.shape).encode("utf-8", errors="ignore"))
+            digest.update(arr.tobytes())
+        return digest.hexdigest()
+
+    def _dataset_display_name(self, dataset, fallback_label):
+        if not isinstance(dataset, dict):
+            return str(fallback_label or "Profile").strip()
+        existing = str(dataset.get("display_name") or "").strip()
+        if existing:
+            return existing
+        meta = dict(dataset.get("meta") or {})
+        source_name = str(
+            dataset.get("source_file_name")
+            or meta.get("file_name")
+            or dataset.get("source_title")
+            or ""
+        ).strip()
+        channel = str(meta.get("channel") or "").strip()
+        profile_label = str(dataset.get("label") or fallback_label or "").strip()
+        parts = []
+        if source_name:
+            parts.append(source_name)
+        if channel:
+            parts.append(channel)
+        if profile_label:
+            parts.append(profile_label)
+        if not parts:
+            parts.append(str(fallback_label or "Profile").strip() or "Profile")
+        return " | ".join(parts[:3])
+
+    def _clone_dataset_for_composite(self, dataset, fallback_label):
+        if not isinstance(dataset, dict):
+            return None
+        cloned = copy.deepcopy(dataset)
+        cloned["display_name"] = self._dataset_display_name(cloned, fallback_label)
+        return cloned
+
+    def _current_profile_entries(self):
+        entries = []
+        if self._active:
+            dataset = self._clone_dataset_for_composite(self._active, "Active")
+            if dataset:
+                entries.append({"dataset": dataset, "signature": self._profile_dataset_signature(dataset)})
+        for idx, data in enumerate(self._saved, 1):
+            dataset = self._clone_dataset_for_composite(data, f"Overlay {idx}")
+            if dataset:
+                entries.append({"dataset": dataset, "signature": self._profile_dataset_signature(dataset)})
+        return entries
+
+    def _composite_payload(self):
+        entries = self._current_profile_entries()
+        if not entries:
+            return None
+        return {
+            "origin_dialog_id": self._composite_origin_id,
+            "dialog_title": str(self.windowTitle() or "Profile measurement"),
+            "entries": [
+                {
+                    "signature": entry.get("signature") or "",
+                    "dataset": self._json_ready_profile_value(entry.get("dataset") or {}),
+                }
+                for entry in entries
+            ],
+        }
+
+    def start_profile_composite_drag(self):
+        payload = self._composite_payload()
+        if not payload:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "No profile data to drag", self)
+            return
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        mime.setData(_PROFILE_COMPOSITE_MIME, json.dumps(payload).encode("utf-8"))
+        drag.setMimeData(mime)
+        pixmap = QtGui.QPixmap(120, 28)
+        pixmap.fill(QtGui.QColor("#1d3557"))
+        painter = QtGui.QPainter(pixmap)
+        painter.setPen(QtGui.QColor("#f1faee"))
+        painter.drawText(pixmap.rect().adjusted(8, 0, -8, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, "Composite profile")
+        painter.end()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QtCore.QPoint(16, 14))
+        drag.exec_(QtCore.Qt.CopyAction)
+
+    def _entries_from_profile_payload(self, payload):
+        entries = []
+        for raw in list((payload or {}).get("entries") or []):
+            if not isinstance(raw, dict):
+                continue
+            dataset = self._profile_value_from_json(raw.get("dataset"))
+            if not isinstance(dataset, dict):
+                continue
+            signature = str(raw.get("signature") or self._profile_dataset_signature(dataset))
+            dataset["display_name"] = self._dataset_display_name(dataset, dataset.get("display_name") or "Profile")
+            entries.append({"dataset": dataset, "signature": signature})
+        return entries
+
+    def _merge_profile_entries(self, incoming_entries):
+        merged = []
+        seen = set()
+        for group in (self._current_profile_entries(), incoming_entries):
+            for entry in group:
+                signature = str(entry.get("signature") or "")
+                dataset = entry.get("dataset")
+                if not isinstance(dataset, dict):
+                    continue
+                if signature and signature in seen:
+                    continue
+                if signature:
+                    seen.add(signature)
+                merged.append({"dataset": copy.deepcopy(dataset), "signature": signature})
+        return merged
+
+    def _register_workspace_dialog(self):
+        if self._workspace_registered:
+            return
+        owner = getattr(self, "_owner", None)
+        dialogs = getattr(owner, "_profile_dialogs", None)
+        if dialogs is not None and self not in dialogs:
+            dialogs.append(self)
+        refs = getattr(owner, "_popup_refs", None)
+        if refs is not None and self not in refs:
+            refs.append(self)
+        controller = getattr(owner, "quick_crop_controller", None)
+        if controller:
+            try:
+                controller.update_popup_actions()
+            except Exception:
+                pass
+        self._workspace_registered = True
+
+    def _deregister_workspace_dialog(self):
+        if not self._workspace_registered:
+            return
+        owner = getattr(self, "_owner", None)
+        dialogs = getattr(owner, "_profile_dialogs", None)
+        if dialogs is not None and self in dialogs:
+            dialogs.remove(self)
+        refs = getattr(owner, "_popup_refs", None)
+        if refs is not None and self in refs:
+            refs.remove(self)
+        controller = getattr(owner, "quick_crop_controller", None)
+        if controller:
+            try:
+                controller.update_popup_actions()
+            except Exception:
+                pass
+        self._workspace_registered = False
+
+    def _spawn_composite_dialog(self, merged_entries):
+        datasets = [copy.deepcopy(entry.get("dataset") or {}) for entry in merged_entries if isinstance(entry.get("dataset"), dict)]
+        if not datasets:
+            return None
+        active = datasets[0]
+        saved = datasets[1:]
+        owner = getattr(self, "_owner", None)
+        unit = active.get("unit") or self._unit
+        meta = dict(active.get("meta") or {})
+        y_label = str(meta.get("channel") or self._y_label or "Profile value").strip()
+        dlg = ProfileDialog(
+            active,
+            saved,
+            parent=owner,
+            unit=unit,
+            y_label=y_label,
+            dark_mode=bool(self._dark_background),
+        )
+        dlg._composite_mode = True
+        dlg.setWindowTitle(f"Profile composite ({len(datasets)})")
+        if hasattr(dlg, "detach_as_workspace_window"):
+            dlg.detach_as_workspace_window()
+        try:
+            dlg.set_plot_typography(
+                family=self._plot_font_family,
+                bold=self._plot_font_bold,
+                italic=self._plot_font_italic,
+                underline=self._plot_font_underline,
+            )
+        except Exception:
+            pass
+        try:
+            dlg._font_scale = float(getattr(self, "_font_scale", 1.0) or 1.0)
+        except Exception:
+            dlg._font_scale = 1.0
+        try:
+            dlg.show_lines_cb.setChecked(bool(self.show_lines_cb.isChecked()))
+            dlg.show_points_cb.setChecked(bool(self.show_points_cb.isChecked()))
+            dlg.grid_cb.setChecked(bool(self.grid_cb.isChecked()))
+            dlg.dark_bg_cb.setChecked(bool(self.dark_bg_cb.isChecked()))
+            dlg.extra_ticks_cb.setChecked(bool(self.extra_ticks_cb.isChecked()))
+            dlg.precision_cb.setChecked(bool(self.precision_cb.isChecked()))
+            dlg.multi_channel_cb.setChecked(bool(self.multi_channel_cb.isChecked()))
+            dlg._set_advanced_options_visible(bool(self._advanced_controls_visible))
+        except Exception:
+            pass
+        dlg.update_profiles(active, saved)
+        dlg._apply_font_scale()
+        try:
+            base_geo = self.frameGeometry()
+            dlg.move(base_geo.topLeft() + QtCore.QPoint(36, 36))
+        except Exception:
+            pass
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg._register_workspace_dialog()
+        dlg.finished.connect(lambda _=None, ref=dlg: ref._deregister_workspace_dialog())
+        dlg.show()
+        try:
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            pass
+        return dlg
+
+    def _create_composite_from_drop(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("origin_dialog_id") or "") == self._composite_origin_id:
+            return None
+        incoming_entries = self._entries_from_profile_payload(payload)
+        if not incoming_entries:
+            return None
+        merged = self._merge_profile_entries(incoming_entries)
+        if len(merged) <= 1:
+            return None
+        return self._spawn_composite_dialog(merged)
+
+    def _refresh_action_button_states(self):
+        try:
+            self.add_btn.setEnabled(callable(getattr(self, "_add_overlay_cb", None)))
+        except Exception:
+            pass
+        try:
+            self.delete_btn.setEnabled(bool(self._active or self._saved))
+        except Exception:
+            pass
+        try:
+            self.compose_drag_btn.setEnabled(bool(self._active or self._saved))
+        except Exception:
+            pass
+
+    def _set_compose_drop_active(self, active):
+        btn = getattr(self, "compose_drag_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.setProperty("dropActive", bool(active))
+        except Exception:
+            return
+        self._apply_toggle_button_styles()
+
+    def _show_compose_help(self, global_pos=None):
+        message = (
+            "Drag Combine onto another profile window.\n"
+            "You can also drag from the plot margin to create a composite."
+        )
+        try:
+            QtWidgets.QToolTip.showText(global_pos or QtGui.QCursor.pos(), message, self)
+        except Exception:
+            pass
+
+    def _qt_pos_in_main_axes(self, pos):
+        if pos is None:
+            return False
+        try:
+            bbox = self.ax.get_window_extent()
+        except Exception:
+            return False
+        if bbox is None:
+            return False
+        try:
+            dpr = float(self.canvas.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        try:
+            height = self.canvas.height() * dpr
+        except Exception:
+            height = self.canvas.height()
+        x = float(pos.x()) * dpr
+        y = float(height - (pos.y() * dpr))
+        try:
+            return bool(bbox.contains(x, y))
+        except Exception:
+            return False
+
+    def eventFilter(self, source, event):
+        if source == self.canvas:
+            etype = event.type()
+            if etype == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+                if self._qt_pos_in_main_axes(event.pos()):
+                    self._canvas_drag_start_pos = None
+                    self._canvas_drag_started = False
+                else:
+                    self._canvas_drag_start_pos = event.pos()
+                    self._canvas_drag_started = False
+            elif (
+                etype == QtCore.QEvent.MouseMove
+                and self._canvas_drag_start_pos is not None
+                and event.buttons() & QtCore.Qt.LeftButton
+            ):
+                if (event.pos() - self._canvas_drag_start_pos).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                    self._canvas_drag_start_pos = None
+                    self._canvas_drag_started = True
+                    try:
+                        self.start_profile_composite_drag()
+                    except Exception:
+                        pass
+                    return True
+            elif etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                self._canvas_drag_start_pos = None
+                self._canvas_drag_started = False
+        return super().eventFilter(source, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(_PROFILE_COMPOSITE_MIME):
+            self._set_compose_drop_active(True)
+            event.acceptProposedAction()
+            return
+        self._set_compose_drop_active(False)
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(_PROFILE_COMPOSITE_MIME):
+            self._set_compose_drop_active(True)
+            event.acceptProposedAction()
+            return
+        self._set_compose_drop_active(False)
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_compose_drop_active(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(_PROFILE_COMPOSITE_MIME):
+            self._set_compose_drop_active(False)
+            event.ignore()
+            return
+        data = event.mimeData().data(_PROFILE_COMPOSITE_MIME)
+        try:
+            payload = json.loads(bytes(data).decode("utf-8"))
+        except Exception:
+            self._set_compose_drop_active(False)
+            event.ignore()
+            return
+        dlg = self._create_composite_from_drop(payload)
+        self._set_compose_drop_active(False)
+        if dlg is None:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "No new composite created", self)
+            event.ignore()
+            return
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Composite profile created", dlg)
+        event.acceptProposedAction()
+
+    def refresh_linked_profiles(self, datasets_by_ref, source_id=None):
+        if not self._composite_mode or not isinstance(datasets_by_ref, dict):
+            return False
+        changed = False
+
+        def _refresh_dataset(dataset):
+            if not isinstance(dataset, dict):
+                return dataset, False
+            key = profile_ref_key(dataset.get("live_profile_ref"))
+            if key is None:
+                return dataset, False
+            if source_id and str(key[0]) != str(source_id):
+                return dataset, False
+            updated = datasets_by_ref.get(key)
+            if not isinstance(updated, dict):
+                return dataset, False
+            refreshed = copy.deepcopy(updated)
+            refreshed["display_name"] = self._dataset_display_name(
+                refreshed,
+                dataset.get("display_name") or refreshed.get("display_name") or "Profile",
+            )
+            return refreshed, True
+
+        current_key = self._selected_overlay_index()
+        self._active, active_changed = _refresh_dataset(self._active)
+        changed = changed or active_changed
+        for idx, dataset in enumerate(list(self._saved)):
+            refreshed, item_changed = _refresh_dataset(dataset)
+            if item_changed:
+                self._saved[idx] = refreshed
+                changed = True
+        if not changed:
+            return False
+        self.update_profiles(
+            self._active,
+            self._saved,
+            activate_overlay_callback=self._activate_overlay_cb,
+            highlight_overlay_callback=self._highlight_overlay_cb,
+        )
+        self.select_overlay(current_key)
+        return True
+
     def update_profiles(self, active_profile, saved_profiles=None, activate_overlay_callback=None,
                          highlight_overlay_callback=None):
         saved_profiles = saved_profiles or []
@@ -1664,7 +2285,11 @@ class ProfileDialog(QtWidgets.QDialog):
             datasets.append((f"Overlay {idx}", data, False))
         if not datasets:
             self.stats.setText("No profile data")
+            self.profile_list.blockSignals(True)
+            self.profile_list.clear()
+            self.profile_list.blockSignals(False)
             self._clear_marker_lines()
+            self._refresh_action_button_states()
             self.canvas.draw_idle()
             return
         axis_label_unit = 'px'
@@ -1718,10 +2343,11 @@ class ProfileDialog(QtWidgets.QDialog):
             target_ax = self.ax
             data_unit = data.get('unit') or ''
             ref_unit = (reference.get('unit') if reference else '') or ''
+            plot_label = self._dataset_display_name(data, label)
             if data_unit != ref_unit:
                 target_ax = self.ax_right
                 self.ax_right.set_visible(True)
-                self.ax_right.set_ylabel(f"{label} ({data_unit})")
+                self.ax_right.set_ylabel(f"{plot_label} ({data_unit})")
                 self.ax_right.yaxis.set_label_position("right")
                 self.ax_right.yaxis.label.set_color(color)
                 self.ax_right.tick_params(axis='y', colors=color)
@@ -1729,7 +2355,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 self.ax_right.spines['right'].set_visible(True)
 
             line, = target_ax.plot(
-                x, y, color=color, lw=lw, label=label,
+                x, y, color=color, lw=lw, label=plot_label,
                 linestyle=style_line, marker=style_marker, markersize=marker_size,
                 markeredgewidth=0.9 if style_marker else 0.0,
                 markerfacecolor='none' if style_marker else color,
@@ -1804,6 +2430,7 @@ class ProfileDialog(QtWidgets.QDialog):
         if callable(self._marker_key_cb):
             self._marker_key_cb(self._current_marker_key)
         self._apply_font_scale()
+        self._refresh_action_button_states()
         try:
             if hasattr(self, "_splitter") and self._splitter is not None:
                 total = max(1, self.height())
@@ -1831,13 +2458,15 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_list.clear()
         target_item = None
         if active_profile:
-            item = QtWidgets.QListWidgetItem(self._fmt_length("Active", active_profile.get('length_nm')))
+            item = QtWidgets.QListWidgetItem(
+                self._fmt_length(self._dataset_display_name(active_profile, "Active"), active_profile.get('length_nm'))
+            )
             self._apply_item_color(item, active_profile.get('color'))
             item.setData(QtCore.Qt.UserRole, None)
             self.profile_list.addItem(item)
             target_item = item
         for idx, data in enumerate(saved_profiles, 1):
-            text = self._fmt_length(f"Overlay {idx}", data.get('length_nm'))
+            text = self._fmt_length(self._dataset_display_name(data, f"Overlay {idx}"), data.get('length_nm'))
             item = QtWidgets.QListWidgetItem(text)
             self._apply_item_color(item, data.get('color'))
             item.setData(QtCore.Qt.UserRole, idx - 1)
@@ -1873,9 +2502,11 @@ class ProfileDialog(QtWidgets.QDialog):
 
     def set_add_overlay_callback(self, cb):
         self._add_overlay_cb = cb
+        self._refresh_action_button_states()
 
     def set_delete_overlay_callback(self, cb):
         self._delete_overlay_cb = cb
+        self._refresh_action_button_states()
 
     def set_style_update_callback(self, cb):
         self._style_update_cb = cb
@@ -2137,11 +2768,12 @@ class ProfileDialog(QtWidgets.QDialog):
         return None
 
     def _delete_selected_profile(self):
-        idx = self._selected_overlay_index()
-        if idx is None:
-            QtWidgets.QMessageBox.information(self, "Delete profile", "Select an overlay to delete.")
+        current = self.profile_list.currentItem()
+        if current is None:
+            QtWidgets.QMessageBox.information(self, "Delete profile", "Select a profile to delete.")
             return
-        if callable(self._delete_overlay_cb):
+        idx = current.data(QtCore.Qt.UserRole)
+        if callable(self._delete_overlay_cb) and idx is not None:
             removed = bool(self._delete_overlay_cb(idx))
             if removed and 0 <= idx < len(self._saved):
                 saved = list(self._saved)
@@ -2152,6 +2784,26 @@ class ProfileDialog(QtWidgets.QDialog):
                     activate_overlay_callback=self._activate_overlay_cb,
                     highlight_overlay_callback=self._highlight_overlay_cb,
                 )
+            return
+        if callable(self._delete_overlay_cb) and idx is None:
+            QtWidgets.QMessageBox.information(self, "Delete profile", "The active live profile cannot be deleted here.")
+            return
+        active = copy.deepcopy(self._active) if self._active is not None else None
+        saved = copy.deepcopy(list(self._saved or []))
+        if idx is None:
+            active = saved.pop(0) if saved else None
+        else:
+            try:
+                saved.pop(int(idx))
+            except Exception:
+                QtWidgets.QMessageBox.information(self, "Delete profile", "Select a valid profile to delete.")
+                return
+        self.update_profiles(
+            active,
+            saved,
+            activate_overlay_callback=self._activate_overlay_cb,
+            highlight_overlay_callback=self._highlight_overlay_cb,
+        )
 
     def closeEvent(self, event):
         try:
@@ -2164,6 +2816,8 @@ class ProfileDialog(QtWidgets.QDialog):
                 self._highlight_overlay_cb(None)
             except Exception:
                 pass
+        self._deregister_workspace_dialog()
+        unregister_profile_dialog(self)
         super().closeEvent(event)
 
     def _copy_current_profile(self):

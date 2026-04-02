@@ -548,24 +548,16 @@ class CollectionController:
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
             self._remember_current_collection(collection_path, mode=mode)
-            box = QtWidgets.QMessageBox(self.viewer)
-            box.setWindowTitle("Collection updated")
-            box.setIcon(QtWidgets.QMessageBox.Information)
-            box.setTextFormat(QtCore.Qt.RichText)
-            box.setText(
-                "<div style='min-width: 360px;'>"
-                "<div style='color:#1f6f43; font-weight:700; font-size:13px; margin-bottom:6px;'>"
-                "Added to collection successfully"
-                "</div>"
-                f"<div><b>{collection_path.name}</b></div>"
-                f"<div style='margin-top:4px;'>Added <b>{len(appended)}</b> item(s).</div>"
-                f"<div style='margin-top:8px; color:#555;'>"
-                f"{'Linked' if mode == 'linked' else 'Portable'} mode is being used for newly added entries."
-                "<br>This collection remains the default target for further <i>Add to Collection</i> actions."
-                "</div>"
-                "</div>"
-            )
-            box.exec_()
+            show_saved_cb = getattr(self.viewer, "_show_saved_path_toast", None)
+            if callable(show_saved_cb):
+                try:
+                    show_saved_cb(
+                        "Collection saved",
+                        collection_path,
+                        detail=f"Added {len(appended)} item(s) | {'Linked' if mode == 'linked' else 'Portable'} mode",
+                    )
+                except Exception:
+                    pass
             show_tray = getattr(self.viewer, "show_collection_tray", None)
             if callable(show_tray):
                 try:
@@ -822,13 +814,42 @@ class CollectionController:
         first = ((snapshot.get("views") or [{}]) or [{}])[0]
         meta = dict(first.get("meta") or {})
         source_file = str(meta.get("file_path") or meta.get("path") or first.get("path") or "")
+        channel_name = self._snapshot_channel_name(first)
         return {
-            "title": str(first.get("title") or meta.get("channel") or Path(source_file).name or "Collection item"),
+            "title": str(first.get("title") or channel_name or Path(source_file).name or "Collection item"),
             "source_file": source_file,
             "source_folder": str(Path(source_file).parent) if source_file else "",
             "channel_index": meta.get("channel_index", first.get("channel_idx")),
-            "channel_name": meta.get("channel") or "",
+            "channel_name": channel_name,
         }
+
+    @staticmethod
+    def _strip_display_unit(label) -> str:
+        text = str(label or "").strip()
+        if not text or not text.endswith("]"):
+            return text
+        head, sep, tail = text.rpartition("[")
+        if not sep:
+            return text
+        base = head.rstrip()
+        unit = tail[:-1].strip()
+        if base and unit:
+            return base
+        return text
+
+    def _snapshot_channel_name(self, view: dict) -> str:
+        if not isinstance(view, dict):
+            return ""
+        meta = dict(view.get("meta") or {})
+        for candidate in (
+            meta.get("channel"),
+            view.get("channel"),
+            self._strip_display_unit(view.get("colorbar_label")),
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
 
     def tray_entries_for_current_collection(self, *, icon_size: int = 72):
         """Build lightweight visual summaries for the collection tray in the main window."""
@@ -852,7 +873,7 @@ class CollectionController:
             source_file = str(item.get("source_file") or meta.get("file_path") or meta.get("path") or first.get("path") or "")
             folder_path = str(item.get("source_folder") or (str(Path(source_file).parent) if source_file else "") or "")
             folder_name = Path(folder_path).name if folder_path else ""
-            channel_name = str(item.get("channel_name") or meta.get("channel") or first.get("title") or "").strip()
+            channel_name = str(item.get("channel_name") or self._snapshot_channel_name(first) or "").strip()
             when = ""
             for key in ("datetime", "time", "time_str", "date", "Date", "Timestamp", "acquisition_time"):
                 val = meta.get(key)
@@ -941,8 +962,32 @@ class CollectionController:
             prepare_cb = getattr(viewer, "_prepare_for_workspace_load", None)
             if callable(prepare_cb):
                 prepare_cb(kind="collection")
-            else:
-                viewer.clear_loaded_images()
+        except Exception:
+            pass
+        try:
+            viewer.clear_loaded_images()
+        except Exception:
+            pass
+        try:
+            viewer.image_adjustments.clear()
+        except Exception:
+            pass
+        try:
+            viewer.per_file_channel_cmap.clear()
+        except Exception:
+            pass
+        try:
+            viewer.image_meta = []
+        except Exception:
+            pass
+        try:
+            viewer._spectro_browser_entries = []
+        except Exception:
+            pass
+        try:
+            viewer._multi_spec_selection = []
+            viewer._multi_spec_selection_keys = set()
+            viewer._last_clicked_spec = None
         except Exception:
             pass
 
@@ -954,6 +999,7 @@ class CollectionController:
         except Exception:
             pass
         try:
+            viewer.spec_folder_path = collection_path.parent
             viewer.spec_folder_le.setText("")
         except Exception:
             pass
@@ -1103,7 +1149,15 @@ class CollectionController:
         if source_fds and 0 <= source_channel_idx < len(source_fds):
             fd = dict(source_fds[source_channel_idx] or {})
         meta = view.get("meta") or {}
-        fd["Caption"] = str(view.get("title") or meta.get("channel") or fd.get("Caption") or item.get("label") or "Collection item")
+        caption = (
+            self._snapshot_channel_name(view)
+            or str(item.get("channel_name") or "").strip()
+            or str(fd.get("Caption") or "").strip()
+            or str(item.get("label") or "").strip()
+            or str(view.get("title") or "").strip()
+            or "Collection item"
+        )
+        fd["Caption"] = caption
         fd["FileName"] = str(fd.get("FileName") or Path(str(path)).name or "collection_item")
         header_new = dict(source_header)
         header_new["xPixel"] = int(arr.shape[1])
