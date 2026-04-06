@@ -37,9 +37,31 @@ from PyQt5.QtWidgets import QLabel, QListWidget, QListWidgetItem
 def _update_spectro_stats_label(viewer, stats=None):
     if not hasattr(viewer, 'spectro_stats_label'):
         return
-    if not viewer.show_spectra:
-        viewer.spectro_stats_label.setText("Spectroscopy overlays hidden")
-        viewer.spectro_stats_label.setToolTip("Spectroscopy overlays are currently hidden in thumbnails and preview.")
+    thumb_markers = bool(getattr(viewer, 'show_spectra', True))
+    preview_markers = bool(getattr(viewer, 'show_preview_spectra', thumb_markers))
+    miniatures = bool(getattr(viewer, 'show_spectro_miniatures', False))
+    mode_text = (
+        f"Thumbnail markers {'On' if thumb_markers else 'Off'} | "
+        f"Preview {'On' if preview_markers else 'Off'} | "
+        f"Miniatures {'On' if miniatures else 'Off'}"
+    )
+    if getattr(viewer, '_spectros_loading', False):
+        viewer.spectro_stats_label.setText(f"Spectroscopy loading...\n{mode_text}")
+        viewer.spectro_stats_label.setToolTip(
+            "Spectroscopy files are being scanned now. "
+            "Thumbnail markers draw clickable points on image thumbnails. "
+            "Preview markers draw the same points in the preview panel. "
+            "Miniatures add separate spectroscopy cards into the thumbnail stream."
+        )
+        return
+    if getattr(viewer, '_spectros_pending', False) and not getattr(viewer, '_spectros_loaded', False):
+        viewer.spectro_stats_label.setText(f"Spectroscopy pending load\n{mode_text}")
+        viewer.spectro_stats_label.setToolTip(
+            "Spectroscopy scanning is deferred until a browser or visible spectroscopy mode needs it. "
+            "Thumbnail markers draw clickable points on image thumbnails. "
+            "Preview markers draw the same points in the preview panel. "
+            "Miniatures add separate spectroscopy cards into the thumbnail stream."
+        )
         return
     total = len(getattr(viewer, 'spectros', []) or [])
     single_count = sum(1 for s in getattr(viewer, 'spectros', []) if s.get('matrix_index') is None)
@@ -55,11 +77,14 @@ def _update_spectro_stats_label(viewer, stats=None):
     elif matrix_count == 0:
         matrix_desc = ""
     viewer.spectro_stats_label.setText(
-        f"Spectra {total} | Single {single_count} | Matrix {matrix_count}{matrix_desc}"
+        f"Spectra {total} | Single {single_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
     )
     viewer.spectro_stats_label.setToolTip(
         f"Loaded spectroscopy entries: {total}. Single traces: {single_count}. "
-        f"Matrix datasets: {matrix_count}{matrix_desc}."
+        f"Matrix datasets: {matrix_count}{matrix_desc}. "
+        "Thumbnail markers draw clickable points on image thumbnails. "
+        "Preview markers draw the same points in the preview panel. "
+        "Miniatures add separate spectroscopy cards into the thumbnail stream."
     )
 
 

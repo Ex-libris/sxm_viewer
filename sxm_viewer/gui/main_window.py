@@ -1038,7 +1038,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_spectra_toggle_btn.setText("Spectra")
         self.preview_spectra_toggle_btn.setCheckable(True)
         self.preview_spectra_toggle_btn.setChecked(self.show_spectra)
-        self.preview_spectra_toggle_btn.setToolTip("Toggle spectroscopy overlays in thumbnails and the preview")
+        self.preview_spectra_toggle_btn.setToolTip("Toggle clickable spectroscopy point markers on image thumbnails")
         self.preview_spectra_toggle_btn.toggled.connect(self.on_show_spectra_toggled)
         self.preview_molecules_toggle_btn = QtWidgets.QToolButton()
         self.preview_molecules_toggle_btn.setText("Mol")
@@ -1507,6 +1507,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
         self.show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
+        if hasattr(self, "spectro_thumbnail_markers_cb"):
+            self.spectro_thumbnail_markers_cb.toggled.connect(self.on_show_spectra_toggled)
+        if hasattr(self, "spectro_preview_markers_cb"):
+            self.spectro_preview_markers_cb.toggled.connect(self.on_show_preview_spectra_toggled)
+        if hasattr(self, "spectro_miniatures_cb"):
+            self.spectro_miniatures_cb.toggled.connect(self.on_show_spectro_miniatures_toggled)
         if hasattr(self, "grid_as_matrix_cb"):
             self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
         if hasattr(self, "force_single_cb"):
@@ -6849,8 +6855,6 @@ QLabel:hover {{
         """Load spectroscopies on-demand if they were deferred."""
         if self._spectros_loaded:
             return True
-        if not self.show_spectra:
-            return False
         if getattr(self, "_spectros_loading", False):
             return False
         self._spectros_loading = True
@@ -6880,13 +6884,6 @@ QLabel:hover {{
         except Exception:
             folder = self.last_dir
         log_status(f"Scanning spectroscopy files in: {folder}")
-        if not self.show_spectra:
-            self.spectros = []
-            self.spectros_by_image = defaultdict(list)
-            self._spectro_deferred = set()
-            self._clear_multi_spec_selection()
-            self._update_spectro_stats_label()
-            return
         self._spectro_deferred = set()
         self.spectros, spec_stats = self._scan_spectros(folder)
         t_scan_end = time.perf_counter()
@@ -7453,7 +7450,7 @@ QLabel:hover {{
         menu.addAction(adjust_act)
 
         menu.addSeparator()
-        overlay_act = QtWidgets.QAction("Show spectroscopy overlays", menu)
+        overlay_act = QtWidgets.QAction("Show thumbnail spectroscopy markers", menu)
         overlay_act.setCheckable(True)
         overlay_act.setChecked(self.show_spectra)
         overlay_act.triggered.connect(self.on_show_spectra_toggled)
@@ -8856,7 +8853,7 @@ QLabel:hover {{
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         # Keep UI toggles in sync
         try:
-            for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn"):
+            for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn", "spectro_thumbnail_markers_cb"):
                 widget = getattr(self, attr, None)
                 if widget is None:
                     continue
@@ -8883,6 +8880,19 @@ QLabel:hover {{
         self.show_spectro_miniatures = bool(checked)
         self.config["show_spectro_miniatures"] = self.show_spectro_miniatures
         save_config(self.config)
+        try:
+            for attr in ("spectro_miniatures_act", "spectro_miniatures_cb"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_spectro_miniatures)
+                widget.blockSignals(False)
+        except Exception:
+            pass
+        if self.show_spectro_miniatures and not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        self._update_spectro_stats_label()
         # Miniatures are a thumbnail presentation choice, so a full repopulate is enough.
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
@@ -8890,12 +8900,18 @@ QLabel:hover {{
         self.show_preview_spectra = bool(checked)
         self.config['show_preview_spectra'] = self.show_preview_spectra; save_config(self.config)
         try:
-            if hasattr(self, "show_spectra_cb"):
-                self.show_spectra_cb.blockSignals(True)
-                self.show_spectra_cb.setChecked(self.show_preview_spectra)
-                self.show_spectra_cb.blockSignals(False)
+            for attr in ("show_spectra_cb", "spectro_preview_markers_cb"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_preview_spectra)
+                widget.blockSignals(False)
         except Exception:
             pass
+        if self.show_preview_spectra and not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        self._update_spectro_stats_label()
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 

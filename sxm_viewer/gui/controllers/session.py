@@ -354,6 +354,7 @@ class SessionController:
             "show_preview_title": bool(getattr(viewer, "show_preview_title", True)),
             "show_spectra": bool(getattr(viewer, "show_spectra", True)),
             "show_preview_spectra": bool(getattr(viewer, "show_preview_spectra", True)),
+            "show_spectro_miniatures": bool(getattr(viewer, "show_spectro_miniatures", False)),
             "show_matrix_markers": bool(getattr(viewer, "show_matrix_markers", True)),
             "show_single_markers": bool(getattr(viewer, "show_single_markers", True)),
             "compact_markers": bool(getattr(viewer, "compact_markers", True)),
@@ -872,6 +873,7 @@ class SessionController:
         viewer.show_preview_title = bool(ui.get("show_preview_title", getattr(viewer, "show_preview_title", True)))
         viewer.show_spectra = bool(ui.get("show_spectra", getattr(viewer, "show_spectra", True)))
         viewer.show_preview_spectra = bool(ui.get("show_preview_spectra", getattr(viewer, "show_preview_spectra", True)))
+        viewer.show_spectro_miniatures = bool(ui.get("show_spectro_miniatures", getattr(viewer, "show_spectro_miniatures", False)))
         viewer.show_matrix_markers = bool(ui.get("show_matrix_markers", getattr(viewer, "show_matrix_markers", True)))
         viewer.show_single_markers = bool(ui.get("show_single_markers", getattr(viewer, "show_single_markers", True)))
         viewer.compact_markers = bool(ui.get("compact_markers", getattr(viewer, "compact_markers", True)))
@@ -892,12 +894,16 @@ class SessionController:
         self._set_checked_silent(getattr(viewer, "unit_relative_cb", None), viewer.display_units_relative)
         self._set_checked_silent(getattr(viewer, "relative_axes_cb", None), viewer.relative_axes)
         self._set_checked_silent(getattr(viewer, "show_spectra_cb", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_thumbnail_markers_cb", None), viewer.show_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_preview_markers_cb", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_miniatures_cb", None), viewer.show_spectro_miniatures)
         self._set_checked_silent(getattr(viewer, "scale_bar_cb", None), bool(ui.get("scale_bar", False)))
         self._set_checked_silent(getattr(viewer, "preview_lock_cb", None), viewer.preview_locked)
 
         for action_name, value in (
             ("spectro_overlay_act", viewer.show_spectra),
             ("preview_spectra_toggle_btn", viewer.show_spectra),
+            ("spectro_miniatures_act", viewer.show_spectro_miniatures),
             ("matrix_markers_act", viewer.show_matrix_markers),
             ("single_markers_act", viewer.show_single_markers),
             ("compact_markers_act", viewer.compact_markers),
@@ -923,7 +929,13 @@ class SessionController:
             pass
         if load_spectros:
             try:
-                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                if (
+                    viewer.show_spectra
+                    or viewer.show_preview_spectra
+                    or viewer.show_spectro_miniatures
+                    or viewer.show_matrix_markers
+                    or viewer.show_single_markers
+                ):
                     if not getattr(viewer, "_spectros_loaded", False):
                         viewer.ensure_spectros_loaded(refresh=False)
                     else:
@@ -1263,7 +1275,13 @@ class SessionController:
             except Exception:
                 pass
             try:
-                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                if (
+                    viewer.show_spectra
+                    or viewer.show_preview_spectra
+                    or viewer.show_spectro_miniatures
+                    or viewer.show_matrix_markers
+                    or viewer.show_single_markers
+                ):
                     viewer.ensure_spectros_loaded(refresh=False)
                     spectro_rebuilt_preview = True
             except Exception:

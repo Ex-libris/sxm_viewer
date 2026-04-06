@@ -736,9 +736,11 @@ class CollectionController:
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
             "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
             "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
+            "show_spectro_miniatures": bool(getattr(self.viewer, "show_spectro_miniatures", False)),
             "spectro_settings": {
                 "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
                 "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
+                "show_spectro_miniatures": bool(getattr(self.viewer, "show_spectro_miniatures", False)),
                 "show_matrix_markers": bool(getattr(self.viewer, "show_matrix_markers", True)),
                 "show_single_markers": bool(getattr(self.viewer, "show_single_markers", True)),
                 "compact_markers": bool(getattr(self.viewer, "compact_markers", True)),
@@ -1238,6 +1240,7 @@ class CollectionController:
             return
         viewer.show_spectra = bool(spectro_settings.get("show_spectra", True))
         viewer.show_preview_spectra = bool(spectro_settings.get("show_preview_spectra", viewer.show_spectra))
+        viewer.show_spectro_miniatures = bool(spectro_settings.get("show_spectro_miniatures", getattr(viewer, "show_spectro_miniatures", False)))
         viewer.show_matrix_markers = bool(spectro_settings.get("show_matrix_markers", True))
         viewer.show_single_markers = bool(spectro_settings.get("show_single_markers", True))
         viewer.compact_markers = bool(spectro_settings.get("compact_markers", True))
@@ -1250,13 +1253,26 @@ class CollectionController:
         cycle = str(spectro_settings.get("color_cycle", "") or "").strip()
         if cycle:
             viewer.spectro_color_cycle = cycle
-        for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn", "show_spectra_cb"):
+        for attr in (
+            "spectro_overlay_act",
+            "preview_spectra_toggle_btn",
+            "show_spectra_cb",
+            "spectro_thumbnail_markers_cb",
+            "spectro_preview_markers_cb",
+            "spectro_miniatures_cb",
+            "spectro_miniatures_act",
+        ):
             widget = getattr(viewer, attr, None)
             if widget is None:
                 continue
             try:
                 widget.blockSignals(True)
-                widget.setChecked(viewer.show_preview_spectra if attr == "show_spectra_cb" else viewer.show_spectra)
+                if attr in {"show_spectra_cb", "spectro_preview_markers_cb"}:
+                    widget.setChecked(viewer.show_preview_spectra)
+                elif attr in {"spectro_miniatures_cb", "spectro_miniatures_act"}:
+                    widget.setChecked(viewer.show_spectro_miniatures)
+                else:
+                    widget.setChecked(viewer.show_spectra)
             except Exception:
                 pass
             finally:

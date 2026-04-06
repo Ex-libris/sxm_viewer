@@ -134,7 +134,7 @@ def build_spectro_context_page(viewer):
     layout.setSpacing(6)
     viewer.show_spectra_cb = _configure_compact_control(QtWidgets.QCheckBox("Preview markers"))
     viewer.show_spectra_cb.setChecked(getattr(viewer, "show_preview_spectra", True))
-    viewer.show_spectra_cb.setToolTip("Toggle spectroscopy overlays in the preview panel")
+    viewer.show_spectra_cb.setToolTip("Toggle spectroscopy point markers in the preview panel only")
     viewer.clear_spec_selection_btn = _configure_compact_control(QtWidgets.QPushButton("Clear selection"))
     viewer.clear_spec_selection_btn.setToolTip("Clear the multi-selection of spectroscopy points")
     viewer.grid_as_matrix_cb = QtWidgets.QCheckBox("NxN singles as matrix")
@@ -185,11 +185,16 @@ def _ensure_display_menu(viewer):
     viewer.compact_markers_act.setChecked(viewer.compact_markers)
     viewer.compact_markers_act.setToolTip("Use compact marker rendering")
     viewer.compact_markers_act.toggled.connect(viewer.on_compact_markers_toggled)
-    viewer.spectro_overlay_act = viewer.display_menu.addAction("Show spectroscopy overlays")
+    viewer.spectro_overlay_act = viewer.display_menu.addAction("Show thumbnail spectroscopy markers")
     viewer.spectro_overlay_act.setCheckable(True)
     viewer.spectro_overlay_act.setChecked(viewer.show_spectra)
-    viewer.spectro_overlay_act.setToolTip("Toggle spectroscopy overlays in thumbnails and preview")
+    viewer.spectro_overlay_act.setToolTip("Toggle clickable spectroscopy point markers on image thumbnails")
     viewer.spectro_overlay_act.toggled.connect(viewer.on_show_spectra_toggled)
+    viewer.spectro_miniatures_act = viewer.display_menu.addAction("Show spectroscopy miniatures")
+    viewer.spectro_miniatures_act.setCheckable(True)
+    viewer.spectro_miniatures_act.setChecked(getattr(viewer, "show_spectro_miniatures", False))
+    viewer.spectro_miniatures_act.setToolTip("Show separate spectroscopy thumbnail cards mixed into the thumbnail grid")
+    viewer.spectro_miniatures_act.toggled.connect(viewer.on_show_spectro_miniatures_toggled)
     viewer.molecules_act = viewer.display_menu.addAction("Show molecules")
     viewer.molecules_act.setCheckable(True)
     viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
@@ -340,18 +345,54 @@ def _ensure_display_menu(viewer):
 
 def build_display_widget(viewer, parent):
     container = QtWidgets.QWidget(parent)
-    layout = QtWidgets.QHBoxLayout(container)
+    layout = QtWidgets.QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
+    layout.setSpacing(4)
     _ensure_display_menu(viewer)
 
-    viewer.spectro_browser_btn = _configure_compact_control(QtWidgets.QPushButton("Spectro Browser", container))
+    controls_row = QtWidgets.QHBoxLayout()
+    controls_row.setContentsMargins(0, 0, 0, 0)
+    controls_row.setSpacing(8)
+
+    viewer.spectro_section_title = QtWidgets.QLabel("Spectroscopy", container)
+    viewer.spectro_section_title.setFont(QtGui.QFont(UI_FONT_FAMILY, 10, QtGui.QFont.Bold))
+    viewer.spectro_section_title.setToolTip("Visible spectroscopy controls for markers, preview points, and thumbnail miniatures")
+    controls_row.addWidget(viewer.spectro_section_title)
+
+    viewer.spectro_thumbnail_markers_cb = _configure_compact_control(QtWidgets.QCheckBox("Thumbnail markers", container))
+    viewer.spectro_thumbnail_markers_cb.setChecked(getattr(viewer, "show_spectra", True))
+    viewer.spectro_thumbnail_markers_cb.setToolTip("Show clickable spectroscopy point markers on image thumbnails")
+    controls_row.addWidget(viewer.spectro_thumbnail_markers_cb)
+
+    viewer.spectro_preview_markers_cb = _configure_compact_control(QtWidgets.QCheckBox("Preview markers", container))
+    viewer.spectro_preview_markers_cb.setChecked(getattr(viewer, "show_preview_spectra", getattr(viewer, "show_spectra", True)))
+    viewer.spectro_preview_markers_cb.setToolTip("Show spectroscopy point markers on the main preview")
+    controls_row.addWidget(viewer.spectro_preview_markers_cb)
+
+    viewer.spectro_miniatures_cb = _configure_compact_control(QtWidgets.QCheckBox("Thumbnail miniatures", container))
+    viewer.spectro_miniatures_cb.setChecked(getattr(viewer, "show_spectro_miniatures", False))
+    viewer.spectro_miniatures_cb.setToolTip("Show spectroscopy miniatures as separate thumbnail cards mixed with the image thumbnails")
+    controls_row.addWidget(viewer.spectro_miniatures_cb)
+
+    viewer.spectro_browser_btn = _configure_compact_control(QtWidgets.QPushButton("Browser", container))
     viewer.spectro_browser_btn.setToolTip("Open the spectroscopy browser")
     viewer.spectro_browser_btn.clicked.connect(lambda: viewer.open_spectro_browser())
-    layout.addWidget(viewer.spectro_browser_btn)
+    controls_row.addWidget(viewer.spectro_browser_btn)
+    controls_row.addStretch(1)
+    layout.addLayout(controls_row)
+
+    viewer.spectro_hint_label = QtWidgets.QLabel(
+        "Markers draw clickable spectroscopy points on images. Miniatures add separate spectroscopy cards into the thumbnail stream.",
+        container,
+    )
+    hint_font = QtGui.QFont(UI_FONT_FAMILY, 9)
+    viewer.spectro_hint_label.setFont(hint_font)
+    viewer.spectro_hint_label.setWordWrap(True)
+    viewer.spectro_hint_label.setToolTip("Thumbnail markers and preview markers show point positions. Miniatures show spectroscopy traces as their own cards.")
+    layout.addWidget(viewer.spectro_hint_label)
 
     viewer.spectro_stats_label = QtWidgets.QLabel(
-        "Spectra -- | Single -- | Matrix --", container
+        "Spectroscopy pending load", container
     )
     stats_font = QtGui.QFont(UI_FONT_FAMILY, 9)
     viewer.spectro_stats_label.setFont(stats_font)
@@ -359,7 +400,7 @@ def build_display_widget(viewer, parent):
     viewer.spectro_stats_label.setWordWrap(True)
     viewer.spectro_stats_label.setMinimumWidth(0)
     viewer.spectro_stats_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    layout.addWidget(viewer.spectro_stats_label, 1)
+    layout.addWidget(viewer.spectro_stats_label)
     return container
 
 

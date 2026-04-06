@@ -323,7 +323,7 @@ def load_files(
 
         # load spectroscopy markers referencing this folder
         log_status("Loading spectroscopy references...")
-        if getattr(viewer, "lazy_spectros_enabled", False) and getattr(viewer, "show_spectra", True):
+        if getattr(viewer, "lazy_spectros_enabled", False):
             viewer.spectros = []
             viewer.matrix_spectros = []
             viewer.spectros_by_image = defaultdict(list)
