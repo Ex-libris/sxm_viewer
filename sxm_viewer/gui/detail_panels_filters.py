@@ -1,9 +1,9 @@
 """Filter dialog exports."""
 from __future__ import annotations
 
-from .dialogs.filters import CustomFilterDialog
+from .dialogs.filters import CustomFilterDialog, SingleFilterDialog
 
-__all__ = ["CustomFilterDialog"]
+__all__ = ["CustomFilterDialog", "SingleFilterDialog"]
 
 
 

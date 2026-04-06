@@ -79,6 +79,7 @@ from .detail_panels import (
     MultiPreviewCanvas,
     ProfileDialog,
     SafeFigureCanvas,
+    SingleFilterDialog,
     SpectroscopyCompareDialog,
     SpectroscopyPopup,
     _SpectroFitWorker,
@@ -5606,130 +5607,164 @@ QLabel:hover {{
             return True
         return False
 
-    def _prompt_laplacian_filter_params(self, parent=None):
-        defaults = FILTER_DEFINITIONS.get("laplacian", {})
-        saved = self.config.get("laplacian_filter_params", {})
-        dlg = QtWidgets.QDialog(parent or self)
-        dlg.setWindowTitle("Laplacian filter parameters")
-        dlg.setModal(True)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        form = QtWidgets.QFormLayout()
-
-        sigma_default = float(saved.get("sigma", defaults.get("default_sigma", 0.6)))
-        neigh_default = int(saved.get("neighbors", defaults.get("default_neighbors", 8)))
-        abs_default = bool(saved.get("absolute", defaults.get("default_absolute", True)))
-
-        sigma_spin = QtWidgets.QDoubleSpinBox(dlg)
-        sigma_spin.setDecimals(2)
-        sigma_spin.setRange(0.0, 20.0)
-        sigma_spin.setSingleStep(0.1)
-        sigma_spin.setValue(max(0.0, sigma_default))
-        sigma_spin.setToolTip("Pre-smoothing sigma. Use 0 for raw Laplacian response.")
-        form.addRow("Sigma", sigma_spin)
-
-        neigh_combo = QtWidgets.QComboBox(dlg)
-        neigh_combo.addItem("4-neighbor", 4)
-        neigh_combo.addItem("8-neighbor", 8)
-        neigh_combo.setCurrentIndex(1 if neigh_default == 8 else 0)
-        form.addRow("Stencil", neigh_combo)
-
-        abs_cb = QtWidgets.QCheckBox("Absolute response", dlg)
-        abs_cb.setChecked(abs_default)
-        abs_cb.setToolTip("Enable to show edge magnitude only (no sign).")
-        form.addRow("Output", abs_cb)
-
-        layout.addLayout(form)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
-            parent=dlg,
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
-            return None
-        params = {
-            "sigma": float(sigma_spin.value()),
-            "neighbors": int(neigh_combo.currentData() or 8),
-            "absolute": bool(abs_cb.isChecked()),
-        }
-        self.config["laplacian_filter_params"] = dict(params)
-        save_config(self.config)
-        return params
-
-    def _prompt_gaussian_filter_params(self, filter_key, parent=None):
-        filter_key = str(filter_key or "").strip().lower()
-        defaults = FILTER_DEFINITIONS.get(filter_key, {})
-        if filter_key not in {"lowpass", "highpass"}:
-            return None
-        saved = self.config.get(f"{filter_key}_filter_params", {})
-        dlg = QtWidgets.QDialog(parent or self)
-        dlg.setWindowTitle(f"{defaults.get('label', filter_key.title())} parameters")
-        dlg.setModal(True)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        form = QtWidgets.QFormLayout()
-
-        sigma_default = float(saved.get("sigma", defaults.get("default_sigma", 2.0)))
-        sigma_spin = QtWidgets.QDoubleSpinBox(dlg)
-        sigma_spin.setDecimals(2)
-        sigma_spin.setRange(0.05, 50.0)
-        sigma_spin.setSingleStep(0.1)
-        sigma_spin.setValue(max(0.05, sigma_default))
-        sigma_spin.setToolTip(
-            "Gaussian sigma in pixels. Larger values produce stronger smoothing."
-        )
-        form.addRow("Sigma (px)", sigma_spin)
-
-        hint = QtWidgets.QLabel(
-            "Use smaller sigma for local detail, larger sigma for broader background removal."
-        )
-        hint.setWordWrap(True)
-        layout.addLayout(form)
-        layout.addWidget(hint)
-
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
-            parent=dlg,
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
-            return None
-        params = {"sigma": float(sigma_spin.value())}
-        self.config[f"{filter_key}_filter_params"] = dict(params)
-        save_config(self.config)
-        return params
-
     def _filter_action_label(self, filter_key):
         base_label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", str(filter_key or "").title())
-        if str(filter_key or "").strip().lower() in {"lowpass", "highpass", "laplacian"}:
-            return f"{base_label}..."
-        return base_label
+        return f"{base_label}..."
 
-    def _single_filter_step_spec(self, filter_key, parent=None):
+    def _clone_filter_source_views(self, canvas, views):
+        clone_view = getattr(canvas, "_clone_undo_view", None)
+        cloned = []
+        for view in list(views or []):
+            try:
+                if callable(clone_view):
+                    cloned.append(clone_view(view))
+                else:
+                    cloned.append(copy.deepcopy(view))
+            except Exception:
+                cloned.append(view)
+        return cloned
+
+    def _normalize_preview_filter_steps(self, steps):
+        if steps is None:
+            return []
+        if isinstance(steps, dict):
+            return [steps]
+        return [step for step in list(steps or []) if isinstance(step, dict)]
+
+    def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
+        if canvas is None:
+            return
+        base_views = source_views if source_views is not None else getattr(canvas, "views", None)
+        if not base_views:
+            return
+        steps = self._normalize_preview_filter_steps(steps)
+        if push_undo:
+            try:
+                canvas.push_undo_state("filter")
+            except Exception:
+                pass
+        new_views = []
+        for view in self._clone_filter_source_views(canvas, base_views):
+            nv = dict(view)
+            base = nv.get("_filter_base_arr")
+            if base is None:
+                try:
+                    base = np.array(nv.get("arr"), copy=True)
+                except Exception:
+                    base = nv.get("arr")
+                nv["_filter_base_arr"] = base
+            if not steps:
+                nv["arr"] = np.array(base, copy=True) if base is not None else nv.get("arr")
+                nv.pop("filter_steps", None)
+                nv.pop("filter_label", None)
+            else:
+                nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
+                nv["filter_steps"] = copy.deepcopy(steps)
+                nv["filter_label"] = label
+            new_views.append(nv)
+        canvas.set_views(new_views, preserve_profiles=True)
+
+    def _build_canvas_filter_preview_callback(self, canvas, source_views):
+        def _preview(steps, label=None):
+            if steps is None:
+                self._restore_filter_views_on_canvas(canvas, source_views)
+                return
+            self._set_filter_pipeline_on_canvas(
+                canvas,
+                steps,
+                label=label,
+                source_views=source_views,
+                push_undo=False,
+            )
+        return _preview
+
+    def _restore_filter_views_on_canvas(self, canvas, source_views):
+        if canvas is None or not source_views:
+            return
+        canvas.set_views(self._clone_filter_source_views(canvas, source_views), preserve_profiles=True)
+
+    def _base_filter_image_from_views(self, views):
+        try:
+            if views:
+                return views[0].get("_filter_base_arr") or views[0].get("arr")
+        except Exception:
+            return None
+        return None
+
+    def _load_filter_base_array_for_path(self, focus_path):
+        base_arr = None
+        if not focus_path:
+            return None
+        try:
+            focus_key = str(focus_path)
+            header, fds = self.headers.get(focus_key, (None, None))
+            if header and fds:
+                idx = None
+                if self.last_preview and str(self.last_preview[0]) == focus_key:
+                    idx = int(self.last_preview[1])
+                if idx is None:
+                    idx = 0
+                if 0 <= idx < len(fds):
+                    fd = fds[idx]
+                    arr = self._get_channel_array(focus_key, idx, header, fd)
+                    base_arr = normalize_unit_and_data(arr, fd.get("PhysUnit", ""))[1]
+        except Exception:
+            base_arr = None
+        return base_arr
+
+    def _filter_preview_context_for_path(self, focus_path):
+        preview_target = "selected image"
+        preview_callback = None
+        original_views = None
+        base_arr = self._load_filter_base_array_for_path(focus_path)
+        try:
+            preview_target = Path(str(focus_path)).name if focus_path else preview_target
+        except Exception:
+            preview_target = str(focus_path or preview_target)
+        canvas = getattr(self, "preview_canvas", None)
+        if (
+            focus_path
+            and canvas is not None
+            and getattr(canvas, "views", None)
+            and self.last_preview
+            and str(self.last_preview[0]) == str(focus_path)
+        ):
+            original_views = self._clone_filter_source_views(canvas, canvas.views)
+            base_arr = self._base_filter_image_from_views(original_views)
+            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
+            preview_target = self._friendly_view_title(original_views[0] if original_views else None, preview_target)
+        return base_arr, preview_callback, original_views, preview_target
+
+    def _single_filter_step_spec(self, filter_key, parent=None, base_image=None, preview_callback=None, preview_target_text="current image"):
         if not filter_key:
             return None, None
-        params = {}
+        defaults = FILTER_DEFINITIONS.get(filter_key, {})
         if filter_key in ("highpass", "lowpass"):
-            params = self._prompt_gaussian_filter_params(filter_key, parent=parent)
-            if params is None:
-                return None, None
+            initial_params = self.config.get(f"{filter_key}_filter_params", {})
         elif filter_key == "laplacian":
-            params = self._prompt_laplacian_filter_params(parent=parent)
-            if params is None:
-                return None, None
-        step = {"key": filter_key, "params": params}
-        label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", filter_key)
-        if filter_key in ("highpass", "lowpass") and params.get("sigma") is not None:
-            label = f"{label} (sigma={params['sigma']:.2f} px)"
+            initial_params = self.config.get("laplacian_filter_params", {})
+        else:
+            initial_params = defaults
+        dlg = SingleFilterDialog(
+            parent=parent or self,
+            filter_key=filter_key,
+            base_image=base_image,
+            apply_step_func=self._run_filter_step,
+            preview_callback=preview_callback,
+            initial_params=initial_params,
+            preview_target_text=preview_target_text,
+        )
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None, None
+        step = dlg.current_step()
+        label = dlg.current_step_label()
+        params = dict(step.get("params") or {})
+        if filter_key in ("highpass", "lowpass"):
+            self.config[f"{filter_key}_filter_params"] = params
+            save_config(self.config)
         elif filter_key == "laplacian":
-            sigma = params.get("sigma")
-            neighbors = params.get("neighbors")
-            if sigma is not None and neighbors is not None:
-                label = f"{label} (sigma={float(sigma):.2f} px, {int(neighbors)}-nbr)"
+            self.config["laplacian_filter_params"] = params
+            save_config(self.config)
         return step, label
 
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
@@ -5754,50 +5789,42 @@ QLabel:hover {{
             return
         steps = pipeline
         if steps is None and filter_key:
-            step, step_label = self._single_filter_step_spec(filter_key, parent=canvas)
+            original_views = self._clone_filter_source_views(canvas, canvas.views)
+            base_arr = self._base_filter_image_from_views(original_views)
+            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
+            step, step_label = self._single_filter_step_spec(
+                filter_key,
+                parent=canvas,
+                base_image=base_arr,
+                preview_callback=preview_callback,
+                preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+            )
+            self._restore_filter_views_on_canvas(canvas, original_views)
             if step is None:
                 return
             steps = [step]
             label = label or step_label
-        try:
-            canvas.push_undo_state("filter")
-        except Exception:
-            pass
-        new_views = []
-        for v in canvas.views:
-            nv = dict(v)
-            base = nv.get('_filter_base_arr')
-            if base is None:
-                try:
-                    base = np.array(nv.get('arr'), copy=True)
-                except Exception:
-                    base = nv.get('arr')
-                nv['_filter_base_arr'] = base
-            if not steps:
-                nv['arr'] = np.array(base, copy=True) if base is not None else nv.get('arr')
-                nv.pop('filter_steps', None)
-                nv.pop('filter_label', None)
-            else:
-                nv['arr'] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get('arr')
-                nv['filter_steps'] = steps
-                nv['filter_label'] = label
-            new_views.append(nv)
-        canvas.set_views(new_views, preserve_profiles=True)
+        self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
 
     def _open_custom_filter_for_canvas(self, canvas):
         if not canvas or not getattr(canvas, "views", None):
             return
-        base_arr = None
-        try:
-            if canvas.views:
-                base_arr = canvas.views[0].get('_filter_base_arr') or canvas.views[0].get('arr')
-        except Exception:
-            base_arr = None
-        dlg = CustomFilterDialog(self, base_arr, self._run_filter_step)
+        original_views = self._clone_filter_source_views(canvas, canvas.views)
+        base_arr = self._base_filter_image_from_views(original_views)
+        dlg = CustomFilterDialog(
+            self,
+            base_arr,
+            self._run_filter_step,
+            preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
+            preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+        )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             steps = dlg.pipeline_steps()
             label = dlg.pipeline_label()
+            self._restore_filter_views_on_canvas(canvas, original_views)
             self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
+            return
+        self._restore_filter_views_on_canvas(canvas, original_views)
 
     def _apply_filter_pipeline(self, arr, steps):
         result = np.asarray(arr, dtype=float)
@@ -7307,7 +7334,7 @@ QLabel:hover {{
             if info.get('needs_gaussian') and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
-            act.triggered.connect(lambda _, k=key, paths=list(targets): self._apply_filter_to_paths(paths, k))
+            act.triggered.connect(lambda _, k=key, paths=list(targets), focus=fp: self._apply_filter_to_paths(paths, k, focus_path=focus))
             sub.addAction(act)
         custom_act = QtWidgets.QAction("Custom pipeline...", menu)
         custom_act.triggered.connect(lambda _, paths=list(targets), focus=fp: self._open_custom_filter_dialog(paths, focus))
@@ -7451,7 +7478,7 @@ QLabel:hover {{
         menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
-    def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None):
+    def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
         if not paths:
             return
         if len(paths) > 12:
@@ -7463,7 +7490,16 @@ QLabel:hover {{
             QtWidgets.QMessageBox.warning(self, "Filters", "Gaussian filters require scipy or OpenCV.")
             return
         if pipeline is None:
-            step, spec_label = self._single_filter_step_spec(filter_key, parent=self)
+            base_arr, preview_callback, original_views, preview_target = self._filter_preview_context_for_path(focus_path)
+            step, spec_label = self._single_filter_step_spec(
+                filter_key,
+                parent=self,
+                base_image=base_arr,
+                preview_callback=preview_callback,
+                preview_target_text=preview_target,
+            )
+            if original_views is not None:
+                self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
             if step is None:
                 return
             spec_steps = [step]
@@ -7494,27 +7530,23 @@ QLabel:hover {{
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def _open_custom_filter_dialog(self, paths, focus_path):
-        base_arr = None
-        try:
-            focus_key = str(focus_path)
-            header, fds = self.headers.get(focus_key, (None, None))
-            if header and fds:
-                idx = None
-                if self.last_preview and str(self.last_preview[0]) == focus_key:
-                    idx = int(self.last_preview[1])
-                if idx is None:
-                    idx = 0
-                if 0 <= idx < len(fds):
-                    fd = fds[idx]
-                    arr = self._get_channel_array(focus_key, idx, header, fd)
-                    base_arr = normalize_unit_and_data(arr, fd.get('PhysUnit',''))[1]
-        except Exception:
-            base_arr = None
-        dlg = CustomFilterDialog(self, base_arr, self._run_filter_step)
+        base_arr, preview_callback, original_views, preview_target = self._filter_preview_context_for_path(focus_path)
+        dlg = CustomFilterDialog(
+            self,
+            base_arr,
+            self._run_filter_step,
+            preview_callback=preview_callback,
+            preview_target_text=preview_target,
+        )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             pipeline = dlg.pipeline_steps()
             if pipeline:
+                if original_views is not None:
+                    self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
                 self._apply_filter_to_paths(paths, pipeline=pipeline, label=dlg.pipeline_label())
+                return
+        if original_views is not None:
+            self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
 
     def _toggle_thumb_multi_selection(self, file_path):
         return viewer_thumb_ui._toggle_thumb_multi_selection(self, file_path)
