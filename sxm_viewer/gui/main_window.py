@@ -1486,8 +1486,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._refresh_session_recovery_ui()
         self._refresh_autosave_timer()
         QtCore.QTimer.singleShot(900, self._maybe_offer_recovery_session)
-        # Ensure optimal initial thumbnail layout
-        QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
+        # Bootstrap the last-used image folder on startup so images and
+        # spectroscopies appear together instead of rendering spectroscopy
+        # miniatures alone before any image folder has been loaded.
+        QtCore.QTimer.singleShot(200, self._startup_load_initial_workspace)
 
         # signals
         self.open_btn.clicked.connect(self.open_folder_dialog)
@@ -1564,6 +1566,33 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def _startup_load_initial_workspace(self):
+        """Load the last-used image folder on startup when available."""
+        if getattr(self, "files", None):
+            try:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
+            return
+        if "last_dir" not in getattr(self, "config", {}):
+            return
+        try:
+            folder = Path(self.last_dir)
+        except Exception:
+            return
+        if not folder.exists() or not folder.is_dir():
+            return
+        has_images = False
+        try:
+            has_images = any(
+                child.is_file() and child.suffix.lower() in {".txt", ".sxm"}
+                for child in folder.iterdir()
+            )
+        except Exception:
+            has_images = False
+        if has_images:
+            self.load_folder(folder)
 
     def _apply_dark_mode(self, enabled: bool):
         app = QtWidgets.QApplication.instance()
