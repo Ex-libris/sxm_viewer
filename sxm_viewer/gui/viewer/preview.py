@@ -37,6 +37,7 @@ from ...processing.detection import _find_topography_channel, _sample_channel_va
 from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
 from ...utils.units import _auto_display_unit, _safe_float
+from ..spectroscopy import overlays as spectro_overlays
 from ..thumbnail_render import detect_valid_scan_region
 
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
@@ -599,6 +600,10 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
+        spec_pixels,
+        marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+    )
 
     view = {
         "arr": display_arr,
@@ -750,6 +755,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
+        spec_pixels,
+        marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+    )
     main = {
         'arr': display_arr,
         'extent': display_extent,
