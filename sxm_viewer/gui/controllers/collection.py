@@ -1261,9 +1261,14 @@ class CollectionController:
             "spectro_preview_markers_cb",
             "spectro_miniatures_cb",
             "spectro_miniatures_act",
+            "highlight_glow_act",
             "toolbar_spectro_markers_act",
             "toolbar_spectro_preview_act",
             "toolbar_spectro_miniatures_act",
+            "toolbar_spectro_matrix_markers_act",
+            "toolbar_spectro_single_markers_act",
+            "toolbar_spectro_compact_markers_act",
+            "toolbar_spectro_highlight_act",
             "toolbar_spectro_thumb_btn",
             "toolbar_spectro_preview_btn",
             "toolbar_spectro_miniatures_btn",
@@ -1287,6 +1292,14 @@ class CollectionController:
                     "toolbar_spectro_miniatures_btn",
                 }:
                     widget.setChecked(viewer.show_spectro_miniatures)
+                elif attr in {"matrix_markers_act", "toolbar_spectro_matrix_markers_act"}:
+                    widget.setChecked(viewer.show_matrix_markers)
+                elif attr in {"single_markers_act", "toolbar_spectro_single_markers_act"}:
+                    widget.setChecked(viewer.show_single_markers)
+                elif attr in {"compact_markers_act", "toolbar_spectro_compact_markers_act"}:
+                    widget.setChecked(viewer.compact_markers)
+                elif attr in {"highlight_glow_act", "toolbar_spectro_highlight_act"}:
+                    widget.setChecked(viewer.spectro_highlight_glow)
                 else:
                     widget.setChecked(viewer.show_spectra)
             except Exception:

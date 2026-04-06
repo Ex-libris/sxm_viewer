@@ -377,6 +377,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.config.get("preserve_profiles_on_channel_change", True)
         )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
+        if not self.auto_detect_tags:
+            self.tags = {
+                str(key): value
+                for key, value in dict(self.tags or {}).items()
+                if not (isinstance(value, dict) and value.get("auto") and not value.get("manual"))
+            }
+            self.config["tags"] = self.tags
+            save_config(self.config)
         self.session_controller = SessionController(self)
         self.collection_controller = CollectionController(self)
         self.frame_map_entries = []
@@ -585,6 +593,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_spectro_markers_act = None
         self.toolbar_spectro_preview_act = None
         self.toolbar_spectro_miniatures_act = None
+        self.toolbar_spectro_matrix_markers_act = None
+        self.toolbar_spectro_single_markers_act = None
+        self.toolbar_spectro_compact_markers_act = None
+        self.toolbar_spectro_highlight_act = None
+        self.toolbar_spectro_grid_as_matrix_act = None
+        self.toolbar_spectro_force_single_act = None
         self.toolbar_spectro_thumb_btn = None
         self.toolbar_spectro_preview_btn = None
         self.toolbar_spectro_miniatures_btn = None
@@ -1042,12 +1056,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_adjust_btn.setToolTip("Open image adjustment tools for the current preview")
         self.preview_adjust_btn.clicked.connect(self.on_adjust_image)
         self.preview_adjust_btn.setEnabled(False)
-        self.preview_spectra_toggle_btn = QtWidgets.QToolButton()
-        self.preview_spectra_toggle_btn.setText("Spectra")
-        self.preview_spectra_toggle_btn.setCheckable(True)
-        self.preview_spectra_toggle_btn.setChecked(self.show_spectra)
-        self.preview_spectra_toggle_btn.setToolTip("Toggle clickable spectroscopy point markers on image thumbnails")
-        self.preview_spectra_toggle_btn.toggled.connect(self.on_show_spectra_toggled)
         self.preview_molecules_toggle_btn = QtWidgets.QToolButton()
         self.preview_molecules_toggle_btn.setText("Mol")
         self.preview_molecules_toggle_btn.setCheckable(True)
@@ -1080,7 +1088,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
         preview_header.addWidget(self.preview_hist_btn)
         preview_header.addWidget(self.preview_adjust_btn)
-        preview_header.addWidget(self.preview_spectra_toggle_btn)
         preview_header.addWidget(self.preview_molecules_toggle_btn)
         preview_header.addWidget(self.toolbar_load_mol_btn)
         preview_header.addWidget(self.preview_grid_toggle_btn)
@@ -1516,16 +1523,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
-        self.show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
-        if hasattr(self, "spectro_thumbnail_markers_cb"):
+        show_spectra_cb = getattr(self, "show_spectra_cb", None)
+        if show_spectra_cb is not None:
+            show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
+        if getattr(self, "spectro_thumbnail_markers_cb", None) is not None:
             self.spectro_thumbnail_markers_cb.toggled.connect(self.on_show_spectra_toggled)
-        if hasattr(self, "spectro_preview_markers_cb"):
+        if getattr(self, "spectro_preview_markers_cb", None) is not None:
             self.spectro_preview_markers_cb.toggled.connect(self.on_show_preview_spectra_toggled)
-        if hasattr(self, "spectro_miniatures_cb"):
+        if getattr(self, "spectro_miniatures_cb", None) is not None:
             self.spectro_miniatures_cb.toggled.connect(self.on_show_spectro_miniatures_toggled)
-        if hasattr(self, "grid_as_matrix_cb"):
+        if getattr(self, "grid_as_matrix_cb", None) is not None:
             self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
-        if hasattr(self, "force_single_cb"):
+        if getattr(self, "force_single_cb", None) is not None:
             self.force_single_cb.toggled.connect(self.on_spectro_force_single_toggled)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
@@ -6823,6 +6832,22 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
+    def _clear_auto_tags(self, *, persist: bool = True) -> bool:
+        """Remove auto-detected CH/CC tags while preserving manual overrides."""
+        changed = False
+        kept = {}
+        for key, value in dict(self.tags or {}).items():
+            if isinstance(value, dict) and value.get("auto") and not value.get("manual"):
+                changed = True
+                continue
+            kept[str(key)] = value
+        if changed:
+            self.tags = kept
+            self.config["tags"] = self.tags
+            if persist:
+                save_config(self.config)
+        return changed
+
     def _on_toggle_auto_tags(self, checked: bool):
         self.auto_detect_tags = bool(checked)
         self.config['auto_detect_tags'] = self.auto_detect_tags
@@ -6832,8 +6857,16 @@ QLabel:hover {{
                 self._auto_detect_tags_for_folder()
                 # refresh thumbnails to show badges
                 self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+                if self.last_preview:
+                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
             except Exception:
                 pass
+        else:
+            changed = self._clear_auto_tags()
+            if changed:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+                if self.last_preview:
+                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     # ---------- Spectroscopy helpers ----------
     def on_load_molecule(self):
@@ -7481,25 +7514,6 @@ QLabel:hover {{
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
 
-        menu.addSeparator()
-        overlay_act = QtWidgets.QAction("Show thumbnail spectroscopy markers", menu)
-        overlay_act.setCheckable(True)
-        overlay_act.setChecked(self.show_spectra)
-        overlay_act.triggered.connect(self.on_show_spectra_toggled)
-        menu.addAction(overlay_act)
-        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
-        mini_act.setCheckable(True)
-        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
-        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
-        menu.addAction(mini_act)
-        glow_act = QtWidgets.QAction("Spectro highlight glow", menu)
-        glow_act.setCheckable(True)
-        glow_act.setChecked(getattr(self, "spectro_highlight_glow", True))
-        glow_act.triggered.connect(self.on_toggle_highlight_glow)
-        menu.addAction(glow_act)
-        marker_menu = menu.addMenu("Marker style")
-        self._populate_marker_style_menu(marker_menu)
-
         # Virtual copies submenu
         virt_menu = menu.addMenu("Virtual copy")
         virt_cur = QtWidgets.QAction("Current channel", virt_menu)
@@ -7578,11 +7592,6 @@ QLabel:hover {{
                 act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
                 channel_menu.addAction(act)
 
-        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
-        mini_act.setCheckable(True)
-        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
-        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
-        menu.addAction(mini_act)
         menu.addSeparator()
         copy_path = QtWidgets.QAction("Copy file path", menu)
         def _copy_path():
@@ -8890,7 +8899,6 @@ QLabel:hover {{
                 "preview_spectra_toggle_btn",
                 "spectro_thumbnail_markers_cb",
                 "toolbar_spectro_markers_act",
-                "toolbar_spectro_thumb_btn",
             ):
                 widget = getattr(self, attr, None)
                 if widget is None:
@@ -8923,7 +8931,6 @@ QLabel:hover {{
                 "spectro_miniatures_act",
                 "spectro_miniatures_cb",
                 "toolbar_spectro_miniatures_act",
-                "toolbar_spectro_miniatures_btn",
             ):
                 widget = getattr(self, attr, None)
                 if widget is None:
@@ -8947,7 +8954,6 @@ QLabel:hover {{
                 "show_spectra_cb",
                 "spectro_preview_markers_cb",
                 "toolbar_spectro_preview_act",
-                "toolbar_spectro_preview_btn",
             ):
                 widget = getattr(self, attr, None)
                 if widget is None:
@@ -8966,14 +8972,15 @@ QLabel:hover {{
     def on_toggle_highlight_glow(self, checked: bool):
         self.spectro_highlight_glow = bool(checked)
         self.config['spectro_highlight_glow'] = self.spectro_highlight_glow; save_config(self.config)
-        act = getattr(self, 'highlight_glow_act', None)
-        if act is not None:
-            try:
-                act.blockSignals(True)
-                act.setChecked(self.spectro_highlight_glow)
-                act.blockSignals(False)
-            except Exception:
-                pass
+        for attr in ("highlight_glow_act", "toolbar_spectro_highlight_act"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                try:
+                    act.blockSignals(True)
+                    act.setChecked(self.spectro_highlight_glow)
+                    act.blockSignals(False)
+                except Exception:
+                    pass
         if not self.spectro_highlight_glow:
             self._highlight_spectrum_entry(None)
         else:
@@ -8985,12 +8992,28 @@ QLabel:hover {{
         self.spectro_single_grid_as_matrix = bool(checked)
         self.config["spectro_single_grid_as_matrix"] = self.spectro_single_grid_as_matrix
         save_config(self.config)
+        act = getattr(self, "toolbar_spectro_grid_as_matrix_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_single_grid_as_matrix)
+                act.blockSignals(False)
+            except Exception:
+                pass
         self._reload_spectros(refresh=True)
 
     def on_spectro_force_single_toggled(self, checked: bool):
         self.spectro_force_single_mode = bool(checked)
         self.config["spectro_force_single_mode"] = self.spectro_force_single_mode
         save_config(self.config)
+        act = getattr(self, "toolbar_spectro_force_single_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_force_single_mode)
+                act.blockSignals(False)
+            except Exception:
+                pass
         self._reload_spectros(refresh=True)
 
     def on_show_matrix_markers_toggled(self, checked: bool):
@@ -9000,11 +9023,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'matrix_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_matrix_markers)
-            act.blockSignals(False)
+        for attr in ('matrix_markers_act', 'toolbar_spectro_matrix_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.show_matrix_markers)
+                act.blockSignals(False)
 
     def on_show_single_markers_toggled(self, checked: bool):
         self.show_single_markers = bool(checked)
@@ -9013,11 +9037,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'single_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_single_markers)
-            act.blockSignals(False)
+        for attr in ('single_markers_act', 'toolbar_spectro_single_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.show_single_markers)
+                act.blockSignals(False)
 
     def on_compact_markers_toggled(self, checked: bool):
         self.compact_markers = bool(checked)
@@ -9026,11 +9051,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'compact_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.compact_markers)
-            act.blockSignals(False)
+        for attr in ('compact_markers_act', 'toolbar_spectro_compact_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.compact_markers)
+                act.blockSignals(False)
 
     def on_detail_dark_toggled(self, checked: bool):
         self.detail_dark_view = bool(checked)
