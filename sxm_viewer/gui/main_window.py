@@ -580,6 +580,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
         self.toolbar_load_mol_btn = None
+        self.preview_spectra_toggle_btn = None
+        self.preview_molecules_toggle_btn = None
+        self.preview_grid_toggle_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
         self._session_activity_strip = None
@@ -1006,10 +1009,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_lock_cb.setToolTip("Lock preview inside the main window")
         self.preview_lock_cb.toggled.connect(self.on_preview_lock_toggled)
         self.preview_detach_btn = QtWidgets.QToolButton()
-        self.preview_detach_btn.setText("Pop out")
-        self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
         self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
-        self.preview_detach_btn.setEnabled(not self.preview_locked)
+        self._update_preview_detach_button()
         self.scale_bar_cb = QtWidgets.QCheckBox("Bar")
         self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
         self.scale_bar_cb.setToolTip("Show the scale bar in preview and pop-outs")
@@ -1033,6 +1034,24 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_adjust_btn.setToolTip("Open image adjustment tools for the current preview")
         self.preview_adjust_btn.clicked.connect(self.on_adjust_image)
         self.preview_adjust_btn.setEnabled(False)
+        self.preview_spectra_toggle_btn = QtWidgets.QToolButton()
+        self.preview_spectra_toggle_btn.setText("Spectra")
+        self.preview_spectra_toggle_btn.setCheckable(True)
+        self.preview_spectra_toggle_btn.setChecked(self.show_spectra)
+        self.preview_spectra_toggle_btn.setToolTip("Toggle spectroscopy overlays in thumbnails and the preview")
+        self.preview_spectra_toggle_btn.toggled.connect(self.on_show_spectra_toggled)
+        self.preview_molecules_toggle_btn = QtWidgets.QToolButton()
+        self.preview_molecules_toggle_btn.setText("Mol")
+        self.preview_molecules_toggle_btn.setCheckable(True)
+        self.preview_molecules_toggle_btn.setChecked(self.show_molecules)
+        self.preview_molecules_toggle_btn.setToolTip("Show or hide molecular overlays on the preview and pop-outs")
+        self.preview_molecules_toggle_btn.toggled.connect(self.on_show_molecules_toggled)
+        self.preview_grid_toggle_btn = QtWidgets.QToolButton()
+        self.preview_grid_toggle_btn.setText("Grid")
+        self.preview_grid_toggle_btn.setCheckable(True)
+        self.preview_grid_toggle_btn.setChecked(self.detail_grid_view)
+        self.preview_grid_toggle_btn.setToolTip("Show or hide the detail grid overlay")
+        self.preview_grid_toggle_btn.toggled.connect(self.on_detail_grid_toggled)
         self.toolbar_display_btn = QtWidgets.QToolButton()
         self.toolbar_display_btn.setText("View")
         self.toolbar_display_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
@@ -1041,7 +1060,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_load_mol_btn = QtWidgets.QLabel()
         self.toolbar_load_mol_btn.setFixedSize(44, 28)
         self.toolbar_load_mol_btn.setAlignment(QtCore.Qt.AlignCenter)
-        self.toolbar_load_mol_btn.setToolTip("Overlay a molecular structure (XYZ, PDB, MOL)")
+        self.toolbar_load_mol_btn.setToolTip("Load a molecular structure overlay (XYZ, PDB, MOL)")
         self.toolbar_load_mol_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._molecule_pixmap_size = QtCore.QSize(32, 18)
         self.toolbar_load_mol_btn.mousePressEvent = lambda event: self.on_load_molecule()
@@ -1053,8 +1072,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
         preview_header.addWidget(self.preview_hist_btn)
         preview_header.addWidget(self.preview_adjust_btn)
-        preview_header.addWidget(self.toolbar_display_btn)
+        preview_header.addWidget(self.preview_spectra_toggle_btn)
+        preview_header.addWidget(self.preview_molecules_toggle_btn)
         preview_header.addWidget(self.toolbar_load_mol_btn)
+        preview_header.addWidget(self.preview_grid_toggle_btn)
+        preview_header.addWidget(self.toolbar_display_btn)
         preview_header.addWidget(self.preview_detach_btn)
         preview_header.addWidget(self.preview_lock_cb)
         preview_header.addWidget(self.toolbar_dark_btn)
@@ -8657,13 +8679,25 @@ QLabel:hover {{
     def on_preview_lock_toggled(self, checked: bool):
         self.preview_locked = bool(checked)
         self.config["preview_locked"] = self.preview_locked; save_config(self.config)
-        if hasattr(self, "preview_detach_btn"):
-            try:
-                self.preview_detach_btn.setEnabled(not self.preview_locked)
-            except Exception:
-                pass
+        self._update_preview_detach_button()
         if self.preview_locked and getattr(self, "preview_detached", False):
             self._attach_preview()
+
+    def _update_preview_detach_button(self):
+        btn = getattr(self, "preview_detach_btn", None)
+        if btn is None:
+            return
+        detached = bool(getattr(self, "preview_detached", False))
+        try:
+            btn.setText("Dock preview" if detached else "Float preview")
+            btn.setToolTip(
+                "Dock the floating preview back into the main window"
+                if detached
+                else "Detach the preview pane into its own floating window"
+            )
+            btn.setEnabled(not bool(getattr(self, "preview_locked", False)))
+        except Exception:
+            pass
 
     def on_toggle_preview_detach(self):
         if self.preview_locked:
@@ -8704,11 +8738,7 @@ QLabel:hover {{
                 except Exception:
                     pass
             self.preview_detached = True
-            if hasattr(self, "preview_detach_btn"):
-                try:
-                    self.preview_detach_btn.setText("Attach")
-                except Exception:
-                    pass
+            self._update_preview_detach_button()
             try:
                 self._preview_dialog.resize(self._preview_panel.size())
             except Exception:
@@ -8753,11 +8783,7 @@ QLabel:hover {{
             except Exception:
                 pass
             self.preview_detached = False
-            if hasattr(self, "preview_detach_btn"):
-                try:
-                    self.preview_detach_btn.setText("Pop out")
-                except Exception:
-                    pass
+            self._update_preview_detach_button()
         except Exception:
             pass
 
@@ -8805,10 +8831,13 @@ QLabel:hover {{
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         # Keep UI toggles in sync
         try:
-            if hasattr(self, "spectro_overlay_act"):
-                self.spectro_overlay_act.blockSignals(True)
-                self.spectro_overlay_act.setChecked(self.show_spectra)
-                self.spectro_overlay_act.blockSignals(False)
+            for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_spectra)
+                widget.blockSignals(False)
         except Exception:
             pass
         if self.show_spectra:
@@ -8922,6 +8951,16 @@ QLabel:hover {{
     def on_detail_grid_toggled(self, checked: bool):
         self.detail_grid_view = bool(checked)
         self.config['detail_grid_view'] = self.detail_grid_view; save_config(self.config)
+        try:
+            for attr in ("detail_grid_act", "preview_grid_toggle_btn"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.detail_grid_view)
+                widget.blockSignals(False)
+        except Exception:
+            pass
         self._apply_detail_view_theme()
 
     def _canvas_display_state_from_canvas(self, canvas):
@@ -8999,8 +9038,12 @@ QLabel:hover {{
                     self.scale_bar_cb.blockSignals(False)
             except Exception:
                 pass
-            for act_name, key in (("molecules_act", "show_molecules"), ("acquisition_overlay_act", "show_acquisition_overlay")):
-                act = getattr(self, act_name, None)
+            for widget_name, key in (
+                ("molecules_act", "show_molecules"),
+                ("preview_molecules_toggle_btn", "show_molecules"),
+                ("acquisition_overlay_act", "show_acquisition_overlay"),
+            ):
+                act = getattr(self, widget_name, None)
                 if act is not None:
                     try:
                         act.blockSignals(True)

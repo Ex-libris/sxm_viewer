@@ -1250,7 +1250,7 @@ class CollectionController:
         cycle = str(spectro_settings.get("color_cycle", "") or "").strip()
         if cycle:
             viewer.spectro_color_cycle = cycle
-        for attr in ("spectro_overlay_act", "show_spectra_cb"):
+        for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn", "show_spectra_cb"):
             widget = getattr(viewer, attr, None)
             if widget is None:
                 continue

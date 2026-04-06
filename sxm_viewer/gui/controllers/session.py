@@ -895,12 +895,15 @@ class SessionController:
 
         for action_name, value in (
             ("spectro_overlay_act", viewer.show_spectra),
+            ("preview_spectra_toggle_btn", viewer.show_spectra),
             ("matrix_markers_act", viewer.show_matrix_markers),
             ("single_markers_act", viewer.show_single_markers),
             ("compact_markers_act", viewer.compact_markers),
             ("detail_dark_act", viewer.detail_dark_view),
             ("detail_grid_act", viewer.detail_grid_view),
+            ("preview_grid_toggle_btn", viewer.detail_grid_view),
             ("molecules_act", viewer.show_molecules),
+            ("preview_molecules_toggle_btn", viewer.show_molecules),
             ("acquisition_overlay_act", viewer.show_acquisition_overlay),
         ):
             self._set_checked_silent(getattr(viewer, action_name, None), value)

@@ -42,7 +42,7 @@ That means a typography change can noticeably alter the whole visual language of
 
 ## Popup and plot scaling
 
-In several plotting windows, ++ctrl+scroll++ adjusts font scale for the current view. This is especially useful in pop-outs and spectroscopy plots when preparing screenshots or presentation figures.
+In several plotting windows, holding ++ctrl++ while using the scroll wheel adjusts font scale for the current view. This is especially useful in pop-outs and spectroscopy plots when preparing screenshots or presentation figures.
 
 ---
 

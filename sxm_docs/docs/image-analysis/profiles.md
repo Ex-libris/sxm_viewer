@@ -2,11 +2,11 @@
 
 ## Drawing a profile
 
-Press ++ctrl+click++ on the preview or any pop-out to start a new profile line. Drag to set the endpoint and release. The **Profile measurement** dialog opens automatically with the extracted line profile.
+Hold ++ctrl++ and click on the preview or any pop-out to start a new profile line. Drag to set the endpoint and release. The **Profile measurement** dialog opens automatically with the extracted line profile.
 
 Plain click does **not** start a profile — it only selects. This prevents accidental profile creation during normal navigation.
 
-After creating a profile you enter a **move-only** state: you can drag the existing profile line and endpoints freely, but a new profile still requires ++ctrl+click++.
+After creating a profile you enter a **move-only** state: you can drag the existing profile line and endpoints freely, but a new profile still requires holding ++ctrl++ and clicking.
 
 ---
 
