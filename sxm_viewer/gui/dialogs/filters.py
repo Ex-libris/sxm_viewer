@@ -119,6 +119,49 @@ from ..thumbnail_render import (
     save_wsxm_xyz,
 )
 
+
+def _normalize_filter_preview_clim(clim):
+    try:
+        if clim is None:
+            return None
+        lo, hi = clim
+        lo = float(lo)
+        hi = float(hi)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return None
+        return (lo, hi)
+    except Exception:
+        return None
+
+
+def _filter_preview_pixmap(arr, size, *, cmap_name="viridis", clim=None):
+    if arr is None:
+        return QtGui.QPixmap()
+    try:
+        width = max(64, int(size.width()))
+        height = max(64, int(size.height()))
+    except Exception:
+        width = 160
+        height = 160
+    fallback_clim = _normalize_filter_preview_clim(clim)
+    local_clim = None
+    try:
+        vmin_local, vmax_local = robust_limits(arr, low_pct=1.0, high_pct=99.0)
+        if np.isfinite(vmin_local) and np.isfinite(vmax_local) and float(vmax_local) > float(vmin_local):
+            local_clim = (float(vmin_local), float(vmax_local))
+    except Exception:
+        local_clim = None
+    clim = local_clim or fallback_clim
+    vmin = clim[0] if clim is not None else None
+    vmax = clim[1] if clim is not None else None
+    qimg = array_to_qimage(arr, cmap_name=str(cmap_name or "viridis"), vmin=vmin, vmax=vmax)
+    return QtGui.QPixmap.fromImage(qimg).scaled(
+        width,
+        height,
+        QtCore.Qt.KeepAspectRatio,
+        QtCore.Qt.SmoothTransformation,
+    )
+
 class SingleFilterDialog(QtWidgets.QDialog):
     """Single-step filter dialog with live preview support."""
 
@@ -131,6 +174,9 @@ class SingleFilterDialog(QtWidgets.QDialog):
         preview_callback=None,
         initial_params=None,
         preview_target_text="current image",
+        preview_cmap_name="viridis",
+        preview_clim=None,
+        show_preview_thumbnail=True,
     ):
         super().__init__(parent)
         self.filter_key = str(filter_key or "").strip().lower()
@@ -139,6 +185,10 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self._preview_callback = preview_callback
         self._initial_params = dict(initial_params or {})
         self._preview_target_text = str(preview_target_text or "current image").strip()
+        self._preview_cmap_name = str(preview_cmap_name or "viridis")
+        self._preview_clim = _normalize_filter_preview_clim(preview_clim)
+        self._show_dialog_preview = bool(show_preview_thumbnail or not callable(preview_callback))
+        self.preview_label = None
         self._preview_timer = QtCore.QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(40)
@@ -146,17 +196,32 @@ class SingleFilterDialog(QtWidgets.QDialog):
 
         filter_label = FILTER_DEFINITIONS.get(self.filter_key, {}).get("label", self.filter_key or "Filter")
         self.setWindowTitle(f"{filter_label} preview")
-        self.resize(460, 420)
+        self.resize(470 if self._show_dialog_preview else 340, 250)
 
         layout = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            f"Preview updates live on the {self._preview_target_text}. "
-            "Press OK to apply or Cancel to restore the original image."
-        )
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title_label = QtWidgets.QLabel(filter_label)
+        title_font = title_label.font()
+        title_font.setBold(True)
+        title_font.setPointSizeF(title_font.pointSizeF() + 1.0)
+        title_label.setFont(title_font)
+        layout.addWidget(title_label)
+
+        intro = QtWidgets.QLabel(f"Live on {self._preview_target_text}. OK applies. Cancel restores.")
         intro.setWordWrap(True)
+        intro.setStyleSheet("color: palette(mid);")
         layout.addWidget(intro)
 
-        form = QtWidgets.QFormLayout()
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(12)
+        layout.addLayout(body, 1)
+
+        controls = QtWidgets.QWidget(self)
+        form = QtWidgets.QFormLayout(controls)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
         self.axis_combo = QtWidgets.QComboBox()
         self.axis_combo.addItems(["both", "row", "col"])
         self.axis_label = QtWidgets.QLabel("Axis")
@@ -190,14 +255,32 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_abs_cb.setChecked(bool(self._initial_params.get("absolute", FILTER_DEFINITIONS.get("laplacian", {}).get("default_absolute", True))))
         self.lap_abs_label = QtWidgets.QLabel("Laplace output")
         form.addRow(self.lap_abs_label, self.lap_abs_cb)
-        layout.addLayout(form)
+        body.addWidget(controls, 1)
 
-        self.preview_label = QtWidgets.QLabel("Preview unavailable")
-        self.preview_label.setFixedHeight(180)
-        self.preview_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
-        PPTContextMenuMixin.install(self.preview_label, label_text="Filter preview")
-        layout.addWidget(self.preview_label)
+        if self._show_dialog_preview:
+            preview_card = QtWidgets.QFrame(self)
+            preview_card.setFrameShape(QtWidgets.QFrame.StyledPanel)
+            preview_card.setMinimumWidth(188)
+            preview_layout = QtWidgets.QVBoxLayout(preview_card)
+            preview_layout.setContentsMargins(10, 10, 10, 10)
+            preview_layout.setSpacing(6)
+            preview_title = QtWidgets.QLabel("Preview thumbnail")
+            preview_title_font = preview_title.font()
+            preview_title_font.setBold(True)
+            preview_title.setFont(preview_title_font)
+            preview_layout.addWidget(preview_title)
+            preview_hint = QtWidgets.QLabel(f"Matches the current popup/preview colormap on {self._preview_target_text}.")
+            preview_hint.setWordWrap(True)
+            preview_hint.setStyleSheet("color: palette(mid);")
+            preview_layout.addWidget(preview_hint)
+            self.preview_label = QtWidgets.QLabel("Preview unavailable")
+            self.preview_label.setMinimumSize(156, 156)
+            self.preview_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            self.preview_label.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
+            PPTContextMenuMixin.install(self.preview_label, label_text="Filter preview")
+            preview_layout.addWidget(self.preview_label, 1)
+            body.addWidget(preview_card, 0)
 
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         layout.addWidget(btn_box)
@@ -229,6 +312,10 @@ class SingleFilterDialog(QtWidgets.QDialog):
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_preview_update()
+
     def current_step(self):
         params = {}
         if self.filter_key == "flatten":
@@ -258,24 +345,24 @@ class SingleFilterDialog(QtWidgets.QDialog):
 
     def _update_preview(self):
         step = self.current_step()
-        if self.base_image is None or not self.apply_step:
-            self.preview_label.setText("Preview unavailable")
-            self.preview_label.setPixmap(QtGui.QPixmap())
-        else:
-            arr = np.asarray(self.base_image, dtype=float)
-            try:
-                arr = self.apply_step(arr, step)
-            except Exception:
-                pass
-            qimg = array_to_qimage(arr)
-            pix = QtGui.QPixmap.fromImage(qimg).scaled(
-                self.preview_label.width(),
-                self.preview_label.height(),
-                QtCore.Qt.KeepAspectRatio,
-                QtCore.Qt.SmoothTransformation,
-            )
-            self.preview_label.setPixmap(pix)
-            self.preview_label.setText("")
+        if self._show_dialog_preview and self.preview_label is not None:
+            if self.base_image is None or not self.apply_step:
+                self.preview_label.setText("Preview unavailable")
+                self.preview_label.setPixmap(QtGui.QPixmap())
+            else:
+                arr = np.asarray(self.base_image, dtype=float)
+                try:
+                    arr = self.apply_step(arr, step)
+                except Exception:
+                    pass
+                pix = _filter_preview_pixmap(
+                    arr,
+                    self.preview_label.size(),
+                    cmap_name=self._preview_cmap_name,
+                    clim=self._preview_clim,
+                )
+                self.preview_label.setPixmap(pix)
+                self.preview_label.setText("")
         if callable(self._preview_callback):
             try:
                 self._preview_callback(step, self.current_step_label())
@@ -285,27 +372,55 @@ class SingleFilterDialog(QtWidgets.QDialog):
 
 class CustomFilterDialog(QtWidgets.QDialog):
     """Dialog to assemble custom filter pipelines."""
-    def __init__(self, parent=None, base_image=None, apply_step_func=None, preview_callback=None, preview_target_text="current image"):
+    def __init__(
+        self,
+        parent=None,
+        base_image=None,
+        apply_step_func=None,
+        preview_callback=None,
+        preview_target_text="current image",
+        preview_cmap_name="viridis",
+        preview_clim=None,
+        show_preview_thumbnail=True,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Custom filter pipeline")
-        self.resize(460, 480)
+        self._show_dialog_preview = bool(show_preview_thumbnail or not callable(preview_callback))
+        self.resize(590 if self._show_dialog_preview else 440, 410)
         self.base_image = base_image
         self.apply_step = apply_step_func
         self._preview_callback = preview_callback
         self._preview_target_text = str(preview_target_text or "current image").strip()
+        self._preview_cmap_name = str(preview_cmap_name or "viridis")
+        self._preview_clim = _normalize_filter_preview_clim(preview_clim)
         self._pipeline = []
+        self.preview_label = None
         self._preview_timer = QtCore.QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(40)
         self._preview_timer.timeout.connect(self._update_preview)
         layout = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            f"Preview updates live on the {self._preview_target_text}. "
-            "Press OK to apply or Cancel to restore the original image."
-        )
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        intro = QtWidgets.QLabel(f"Live on {self._preview_target_text}. Build the stack, then press OK to apply.")
         intro.setWordWrap(True)
+        intro.setStyleSheet("color: palette(mid);")
         layout.addWidget(intro)
+        preview_toggle_text = "Live canvas preview" if callable(preview_callback) else "Live preview"
+        self.preview_cb = QtWidgets.QCheckBox(preview_toggle_text)
+        self.preview_cb.setChecked(True)
+        if not self._show_dialog_preview:
+            layout.addWidget(self.preview_cb)
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(12)
+        layout.addLayout(body, 1)
+
+        left_panel = QtWidgets.QWidget(self)
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
         form = QtWidgets.QFormLayout()
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
         self.filter_combo = QtWidgets.QComboBox()
         for key, info in FILTER_DEFINITIONS.items():
             self.filter_combo.addItem(info['label'], key)
@@ -334,28 +449,47 @@ class CustomFilterDialog(QtWidgets.QDialog):
         self.lap_abs_cb.setChecked(bool(FILTER_DEFINITIONS.get("laplacian", {}).get("default_absolute", True)))
         self.lap_abs_label = QtWidgets.QLabel("Laplace output")
         form.addRow(self.lap_abs_label, self.lap_abs_cb)
-        layout.addLayout(form)
+        left_layout.addLayout(form)
         btn_row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("Add step")
         remove_btn = QtWidgets.QPushButton("Remove selected")
         btn_row.addWidget(add_btn); btn_row.addWidget(remove_btn)
-        layout.addLayout(btn_row)
+        left_layout.addLayout(btn_row)
         self.pipeline_list = QtWidgets.QListWidget()
-        layout.addWidget(self.pipeline_list, 1)
-        self.preview_cb = QtWidgets.QCheckBox("Preview on current image")
-        self.preview_cb.setChecked(True)
-        layout.addWidget(self.preview_cb)
-        self.preview_label = QtWidgets.QLabel("Preview unavailable")
-        self.preview_label.setFixedHeight(160)
-        self.preview_label.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
-        PPTContextMenuMixin.install(self.preview_label, label_text="Filter preview")
-        layout.addWidget(self.preview_label)
+        self.pipeline_list.setMinimumHeight(120)
+        left_layout.addWidget(self.pipeline_list, 1)
         name_row = QtWidgets.QHBoxLayout()
         name_row.addWidget(QtWidgets.QLabel("Name prefix:"))
         self.name_edit = QtWidgets.QLineEdit("Custom")
         name_row.addWidget(self.name_edit)
-        layout.addLayout(name_row)
+        left_layout.addLayout(name_row)
+        body.addWidget(left_panel, 1)
+
+        if self._show_dialog_preview:
+            preview_card = QtWidgets.QFrame(self)
+            preview_card.setFrameShape(QtWidgets.QFrame.StyledPanel)
+            preview_card.setMinimumWidth(210)
+            preview_layout = QtWidgets.QVBoxLayout(preview_card)
+            preview_layout.setContentsMargins(10, 10, 10, 10)
+            preview_layout.setSpacing(6)
+            preview_title = QtWidgets.QLabel("Preview thumbnail")
+            preview_title_font = preview_title.font()
+            preview_title_font.setBold(True)
+            preview_title.setFont(preview_title_font)
+            preview_layout.addWidget(preview_title)
+            preview_hint = QtWidgets.QLabel("Uses the same colormap and contrast as the active preview when available.")
+            preview_hint.setWordWrap(True)
+            preview_hint.setStyleSheet("color: palette(mid);")
+            preview_layout.addWidget(preview_hint)
+            preview_layout.addWidget(self.preview_cb)
+            self.preview_label = QtWidgets.QLabel("Preview unavailable")
+            self.preview_label.setMinimumSize(172, 172)
+            self.preview_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            self.preview_label.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
+            PPTContextMenuMixin.install(self.preview_label, label_text="Filter preview")
+            preview_layout.addWidget(self.preview_label, 1)
+            body.addWidget(preview_card, 0)
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         layout.addWidget(btn_box)
         add_btn.clicked.connect(self._on_add_step)
@@ -388,6 +522,10 @@ class CustomFilterDialog(QtWidgets.QDialog):
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_preview_update()
 
     def _current_step(self):
         key = self.filter_combo.currentData()
@@ -428,18 +566,22 @@ class CustomFilterDialog(QtWidgets.QDialog):
 
     def _update_preview(self):
         steps = self._preview_steps()
-        if not self.preview_cb.isChecked() or not steps or self.base_image is None or not self.apply_step:
-            self.preview_label.setText("Preview unavailable")
-            self.preview_label.setPixmap(QtGui.QPixmap())
-        else:
-            arr = np.asarray(self.base_image, dtype=float)
-            for step in steps:
-                arr = self.apply_step(arr, step)
-            qimg = array_to_qimage(arr)
-            pix = QtGui.QPixmap.fromImage(qimg).scaled(self.preview_label.width(), self.preview_label.height(),
-                                                       QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-            self.preview_label.setPixmap(pix)
-            self.preview_label.setText("")
+        if self._show_dialog_preview and self.preview_label is not None:
+            if not self.preview_cb.isChecked() or not steps or self.base_image is None or not self.apply_step:
+                self.preview_label.setText("Preview unavailable")
+                self.preview_label.setPixmap(QtGui.QPixmap())
+            else:
+                arr = np.asarray(self.base_image, dtype=float)
+                for step in steps:
+                    arr = self.apply_step(arr, step)
+                pix = _filter_preview_pixmap(
+                    arr,
+                    self.preview_label.size(),
+                    cmap_name=self._preview_cmap_name,
+                    clim=self._preview_clim,
+                )
+                self.preview_label.setPixmap(pix)
+                self.preview_label.setText("")
         if callable(self._preview_callback):
             try:
                 self._preview_callback(steps if self.preview_cb.isChecked() else None, self.pipeline_label())

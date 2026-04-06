@@ -5661,6 +5661,17 @@ QLabel:hover {{
                 nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
                 nv["filter_steps"] = copy.deepcopy(steps)
                 nv["filter_label"] = label
+                try:
+                    clim = self._auto_preview_clim(
+                        nv["arr"],
+                        relative_zero=bool(nv.get("display_relative_zero", False)),
+                    )
+                except Exception:
+                    clim = None
+                if clim is not None:
+                    nv["clim"] = clim
+                else:
+                    nv.pop("clim", None)
             new_views.append(nv)
         canvas.set_views(new_views, preserve_profiles=True)
 
@@ -5712,10 +5723,40 @@ QLabel:hover {{
             base_arr = None
         return base_arr
 
+    def _normalize_filter_preview_clim(self, clim):
+        try:
+            if clim is None:
+                return None
+            lo, hi = clim
+            lo = float(lo)
+            hi = float(hi)
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return None
+            return (lo, hi)
+        except Exception:
+            return None
+
+    def _filter_preview_render_state(self, view=None):
+        cmap_name = None
+        clim = None
+        if isinstance(view, dict):
+            cmap_name = str(view.get("cmap") or "").strip() or None
+            clim = self._normalize_filter_preview_clim(view.get("clim"))
+        if not cmap_name:
+            try:
+                cmap_name = str(self.preview_cmap_combo.currentText() or "").strip() or None
+            except Exception:
+                cmap_name = None
+        if not cmap_name:
+            cmap_name = str(getattr(self, "preview_cmap", "viridis") or "viridis")
+        return cmap_name, clim
+
     def _filter_preview_context_for_path(self, focus_path):
         preview_target = "selected image"
         preview_callback = None
         original_views = None
+        preview_cmap_name = None
+        preview_clim = None
         base_arr = self._load_filter_base_array_for_path(focus_path)
         try:
             preview_target = Path(str(focus_path)).name if focus_path else preview_target
@@ -5733,9 +5774,22 @@ QLabel:hover {{
             base_arr = self._base_filter_image_from_views(original_views)
             preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
             preview_target = self._friendly_view_title(original_views[0] if original_views else None, preview_target)
-        return base_arr, preview_callback, original_views, preview_target
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
+        if preview_cmap_name is None:
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(None)
+        return base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim
 
-    def _single_filter_step_spec(self, filter_key, parent=None, base_image=None, preview_callback=None, preview_target_text="current image"):
+    def _single_filter_step_spec(
+        self,
+        filter_key,
+        parent=None,
+        base_image=None,
+        preview_callback=None,
+        preview_target_text="current image",
+        preview_cmap_name="viridis",
+        preview_clim=None,
+        show_preview_thumbnail=True,
+    ):
         if not filter_key:
             return None, None
         defaults = FILTER_DEFINITIONS.get(filter_key, {})
@@ -5753,6 +5807,9 @@ QLabel:hover {{
             preview_callback=preview_callback,
             initial_params=initial_params,
             preview_target_text=preview_target_text,
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
+            show_preview_thumbnail=show_preview_thumbnail,
         )
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return None, None
@@ -5792,12 +5849,16 @@ QLabel:hover {{
             original_views = self._clone_filter_source_views(canvas, canvas.views)
             base_arr = self._base_filter_image_from_views(original_views)
             preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
             step, step_label = self._single_filter_step_spec(
                 filter_key,
                 parent=canvas,
                 base_image=base_arr,
                 preview_callback=preview_callback,
                 preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+                preview_cmap_name=preview_cmap_name,
+                preview_clim=preview_clim,
+                show_preview_thumbnail=False,
             )
             self._restore_filter_views_on_canvas(canvas, original_views)
             if step is None:
@@ -5811,12 +5872,16 @@ QLabel:hover {{
             return
         original_views = self._clone_filter_source_views(canvas, canvas.views)
         base_arr = self._base_filter_image_from_views(original_views)
+        preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
         dlg = CustomFilterDialog(
             self,
             base_arr,
             self._run_filter_step,
             preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
             preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
+            show_preview_thumbnail=False,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             steps = dlg.pipeline_steps()
@@ -7490,13 +7555,15 @@ QLabel:hover {{
             QtWidgets.QMessageBox.warning(self, "Filters", "Gaussian filters require scipy or OpenCV.")
             return
         if pipeline is None:
-            base_arr, preview_callback, original_views, preview_target = self._filter_preview_context_for_path(focus_path)
+            base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
             step, spec_label = self._single_filter_step_spec(
                 filter_key,
                 parent=self,
                 base_image=base_arr,
                 preview_callback=preview_callback,
                 preview_target_text=preview_target,
+                preview_cmap_name=preview_cmap_name,
+                preview_clim=preview_clim,
             )
             if original_views is not None:
                 self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
@@ -7530,13 +7597,15 @@ QLabel:hover {{
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def _open_custom_filter_dialog(self, paths, focus_path):
-        base_arr, preview_callback, original_views, preview_target = self._filter_preview_context_for_path(focus_path)
+        base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
         dlg = CustomFilterDialog(
             self,
             base_arr,
             self._run_filter_step,
             preview_callback=preview_callback,
             preview_target_text=preview_target,
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             pipeline = dlg.pipeline_steps()
