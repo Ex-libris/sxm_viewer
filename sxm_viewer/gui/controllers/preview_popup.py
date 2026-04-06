@@ -13,13 +13,22 @@ from .profile import PopupProfileController
 def _popup_image_size_text(view):
     if not isinstance(view, dict) or not view:
         return ""
-    extent = view.get("extent_raw")
-    if extent is None:
-        extent = view.get("extent")
+    override = view.get("_popup_image_size_override")
     width = None
     height = None
     unit = str(view.get("axis_unit") or "").strip()
-    if extent is not None:
+    if isinstance(override, dict):
+        try:
+            width = float(override.get("width"))
+            height = float(override.get("height"))
+            unit = str(override.get("unit") or unit).strip()
+        except Exception:
+            width = None
+            height = None
+    extent = view.get("extent_raw")
+    if extent is None:
+        extent = view.get("extent")
+    if (width is None or height is None) and extent is not None:
         try:
             x0, x1, y1, y0 = extent
             width = abs(float(x1) - float(x0))

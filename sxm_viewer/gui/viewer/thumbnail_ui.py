@@ -421,6 +421,11 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
 
 
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
+    if getattr(viewer, "show_spectro_miniatures", False) and not getattr(viewer, "_spectros_loaded", False):
+        try:
+            viewer.ensure_spectros_loaded(refresh=False)
+        except Exception:
+            pass
     viewer.clear_thumbs()
     thumb_w, thumb_h = viewer._thumb_dimensions()
     # Compute number of columns responsively based on available viewport width so the

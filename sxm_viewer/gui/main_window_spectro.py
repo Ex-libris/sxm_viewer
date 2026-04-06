@@ -53,15 +53,13 @@ def display_extent(viewer, extent, header=None):
     if not getattr(viewer, "relative_axes", False):
         return extent
     try:
-        if header:
-            xr = header.get("XScanRange", header.get("XRange"))
-            yr = header.get("YScanRange", header.get("YRange"))
-        else:
-            xr = yr = None
-        if xr is None or yr is None:
-            x0, x1, y1, y0 = extent
-            xr = float(x1) - float(x0)
-            yr = float(y0) - float(y1)
+        x0, x1, y1, y0 = extent
+        xr = abs(float(x1) - float(x0))
+        yr = abs(float(y0) - float(y1))
+        if abs(xr) <= 1e-12 or abs(yr) <= 1e-12:
+            if header:
+                xr = header.get("XScanRange", header.get("XRange"))
+                yr = header.get("YScanRange", header.get("YRange"))
         xr = float(xr)
         yr = float(yr)
         if xr <= 0 or yr <= 0:

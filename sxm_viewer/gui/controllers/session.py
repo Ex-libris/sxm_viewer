@@ -288,6 +288,7 @@ class SessionController:
                 "op": data.get("op"),
                 "label": data.get("label"),
                 "channel_idx": data.get("channel_idx"),
+                "extent_raw": data.get("extent_raw"),
                 "header": data.get("header"),
                 "fds": data.get("fds"),
                 "arr_files": arr_files,
@@ -353,6 +354,8 @@ class SessionController:
             "show_preview_title": bool(getattr(viewer, "show_preview_title", True)),
             "show_spectra": bool(getattr(viewer, "show_spectra", True)),
             "show_preview_spectra": bool(getattr(viewer, "show_preview_spectra", True)),
+            "show_spectro_miniatures": bool(getattr(viewer, "show_spectro_miniatures", False)),
+            "spectro_share_overlapping_repeats": bool(getattr(viewer, "spectro_share_overlapping_repeats", False)),
             "show_matrix_markers": bool(getattr(viewer, "show_matrix_markers", True)),
             "show_single_markers": bool(getattr(viewer, "show_single_markers", True)),
             "compact_markers": bool(getattr(viewer, "compact_markers", True)),
@@ -630,6 +633,7 @@ class SessionController:
                     "fds": fds,
                     "channel_idx": entry.get("channel_idx"),
                     "source": entry.get("source"),
+                    "extent_raw": entry.get("extent_raw"),
                     "label": entry.get("label"),
                     "op": entry.get("op"),
                 }
@@ -870,6 +874,10 @@ class SessionController:
         viewer.show_preview_title = bool(ui.get("show_preview_title", getattr(viewer, "show_preview_title", True)))
         viewer.show_spectra = bool(ui.get("show_spectra", getattr(viewer, "show_spectra", True)))
         viewer.show_preview_spectra = bool(ui.get("show_preview_spectra", getattr(viewer, "show_preview_spectra", True)))
+        viewer.show_spectro_miniatures = bool(ui.get("show_spectro_miniatures", getattr(viewer, "show_spectro_miniatures", False)))
+        viewer.spectro_share_overlapping_repeats = bool(
+            ui.get("spectro_share_overlapping_repeats", getattr(viewer, "spectro_share_overlapping_repeats", False))
+        )
         viewer.show_matrix_markers = bool(ui.get("show_matrix_markers", getattr(viewer, "show_matrix_markers", True)))
         viewer.show_single_markers = bool(ui.get("show_single_markers", getattr(viewer, "show_single_markers", True)))
         viewer.compact_markers = bool(ui.get("compact_markers", getattr(viewer, "compact_markers", True)))
@@ -890,17 +898,36 @@ class SessionController:
         self._set_checked_silent(getattr(viewer, "unit_relative_cb", None), viewer.display_units_relative)
         self._set_checked_silent(getattr(viewer, "relative_axes_cb", None), viewer.relative_axes)
         self._set_checked_silent(getattr(viewer, "show_spectra_cb", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_thumbnail_markers_cb", None), viewer.show_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_preview_markers_cb", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "spectro_miniatures_cb", None), viewer.show_spectro_miniatures)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_thumb_btn", None), viewer.show_spectra)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_preview_btn", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_miniatures_btn", None), viewer.show_spectro_miniatures)
         self._set_checked_silent(getattr(viewer, "scale_bar_cb", None), bool(ui.get("scale_bar", False)))
         self._set_checked_silent(getattr(viewer, "preview_lock_cb", None), viewer.preview_locked)
 
         for action_name, value in (
             ("spectro_overlay_act", viewer.show_spectra),
+            ("preview_spectra_toggle_btn", viewer.show_spectra),
+            ("spectro_miniatures_act", viewer.show_spectro_miniatures),
+            ("toolbar_spectro_markers_act", viewer.show_spectra),
+            ("toolbar_spectro_preview_act", viewer.show_preview_spectra),
+            ("toolbar_spectro_miniatures_act", viewer.show_spectro_miniatures),
+            ("toolbar_spectro_repeat_share_act", viewer.spectro_share_overlapping_repeats),
+            ("highlight_glow_act", viewer.spectro_highlight_glow),
+            ("toolbar_spectro_highlight_act", viewer.spectro_highlight_glow),
             ("matrix_markers_act", viewer.show_matrix_markers),
             ("single_markers_act", viewer.show_single_markers),
             ("compact_markers_act", viewer.compact_markers),
+            ("toolbar_spectro_matrix_markers_act", viewer.show_matrix_markers),
+            ("toolbar_spectro_single_markers_act", viewer.show_single_markers),
+            ("toolbar_spectro_compact_markers_act", viewer.compact_markers),
             ("detail_dark_act", viewer.detail_dark_view),
             ("detail_grid_act", viewer.detail_grid_view),
+            ("preview_grid_toggle_btn", viewer.detail_grid_view),
             ("molecules_act", viewer.show_molecules),
+            ("preview_molecules_toggle_btn", viewer.show_molecules),
             ("acquisition_overlay_act", viewer.show_acquisition_overlay),
         ):
             self._set_checked_silent(getattr(viewer, action_name, None), value)
@@ -916,9 +943,20 @@ class SessionController:
             viewer._apply_detail_view_theme()
         except Exception:
             pass
+        try:
+            if getattr(viewer, "spectros", None):
+                viewer._assign_spectros_to_images()
+        except Exception:
+            pass
         if load_spectros:
             try:
-                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                if (
+                    viewer.show_spectra
+                    or viewer.show_preview_spectra
+                    or viewer.show_spectro_miniatures
+                    or viewer.show_matrix_markers
+                    or viewer.show_single_markers
+                ):
                     if not getattr(viewer, "_spectros_loaded", False):
                         viewer.ensure_spectros_loaded(refresh=False)
                     else:
@@ -1258,7 +1296,13 @@ class SessionController:
             except Exception:
                 pass
             try:
-                if viewer.show_spectra or viewer.show_preview_spectra or viewer.show_matrix_markers or viewer.show_single_markers:
+                if (
+                    viewer.show_spectra
+                    or viewer.show_preview_spectra
+                    or viewer.show_spectro_miniatures
+                    or viewer.show_matrix_markers
+                    or viewer.show_single_markers
+                ):
                     viewer.ensure_spectros_loaded(refresh=False)
                     spectro_rebuilt_preview = True
             except Exception:

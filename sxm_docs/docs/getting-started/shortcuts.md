@@ -36,8 +36,8 @@ A complete reference of all keyboard shortcuts in SXM Viewer.
 
 | Shortcut | Action |
 |---|---|
-| ++ctrl+click++ | Start a new profile line |
-| ++ctrl+alt+click++ | Add a new angle measurement frame |
+| ++ctrl++ + click | Start a new profile line |
+| ++ctrl++ + ++alt++ + click | Add a new angle measurement frame |
 | ++ctrl+h++ | Toggle on-canvas shortcut hint |
 | ++ctrl+1++ | Toggle saved profile overlays |
 | ++ctrl+2++ | Toggle saved angle overlays |
@@ -47,7 +47,7 @@ A complete reference of all keyboard shortcuts in SXM Viewer.
 | ++ctrl+e++ | Toggle crop-frame editor mode |
 | ++0++ | Toggle relative-zero display |
 | Scroll wheel | Zoom in/out |
-| Ctrl+Scroll wheel | Scale font size |
+| ++ctrl++ + scroll wheel | Scale font size |
 
 ---
 

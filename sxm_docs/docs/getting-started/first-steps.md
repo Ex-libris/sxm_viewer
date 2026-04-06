@@ -34,7 +34,7 @@ A good first pass is:
 
 - press ++0++ to test **relative-zero** display
 - use **Shift+Click** for a quick crop
-- use ++ctrl+click++ to draw a profile
+- hold ++ctrl++ and click to draw a profile
 - right-click and try **Apply filter**
 - double-click the image to open a pop-out and compare workflows there
 

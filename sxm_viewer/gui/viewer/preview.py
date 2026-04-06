@@ -37,6 +37,7 @@ from ...processing.detection import _find_topography_channel, _sample_channel_va
 from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
 from ...utils.units import _auto_display_unit, _safe_float
+from ..spectroscopy import overlays as spectro_overlays
 from ..thumbnail_render import detect_valid_scan_region
 
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
@@ -519,7 +520,17 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     axis_unit = "px"
     xpix = int(header.get("xPixel", 128))
     ypix = int(header.get("yPixel", xpix))
-    base_extent = viewer._header_extent(header)
+    base_extent = None
+    if getattr(viewer, "_is_processed_key", lambda _k: False)(file_key):
+        try:
+            processed_view = getattr(viewer, "_processed_views", {}).get(file_key) or {}
+            stored_extent = processed_view.get("extent_raw")
+            if stored_extent is not None and len(stored_extent) == 4:
+                base_extent = tuple(float(v) for v in stored_extent)
+        except Exception:
+            base_extent = None
+    if base_extent is None:
+        base_extent = viewer._header_extent(header)
     unit_normalized, arr_base = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
     arr_base = np.asarray(arr_base)
     arr_adj, adjusted_extent = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_base, base_extent)
@@ -542,9 +553,11 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
         try:
             highlight_path = str(highlight_candidate.get("image_key") or highlight_candidate.get("path") or "")
+            shared_keys = [str(key) for key in (highlight_candidate.get("shared_image_keys") or []) if key]
         except Exception:
             highlight_path = ""
-        if highlight_path and highlight_path == str(header_path):
+            shared_keys = []
+        if (highlight_path and highlight_path == str(header_path)) or str(header_path) in shared_keys:
             highlight_spec = highlight_candidate
     if spec_entries and show_preview_specs:
         if viewer.show_single_markers:
@@ -589,6 +602,10 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
+        spec_pixels,
+        marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+    )
 
     view = {
         "arr": display_arr,
@@ -684,9 +701,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
         try:
             highlight_path = str(highlight_candidate.get('image_key') or highlight_candidate.get('path') or '')
+            shared_keys = [str(key) for key in (highlight_candidate.get("shared_image_keys") or []) if key]
         except Exception:
             highlight_path = ''
-        if highlight_path and highlight_path == str(header_path):
+            shared_keys = []
+        if (highlight_path and highlight_path == str(header_path)) or str(header_path) in shared_keys:
             highlight_spec = highlight_candidate
     if spec_entries and show_preview_specs:
         if viewer.show_single_markers:
@@ -740,6 +759,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
+        spec_pixels,
+        marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+    )
     main = {
         'arr': display_arr,
         'extent': display_extent,

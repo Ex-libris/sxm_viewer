@@ -79,6 +79,7 @@ from .detail_panels import (
     MultiPreviewCanvas,
     ProfileDialog,
     SafeFigureCanvas,
+    SingleFilterDialog,
     SpectroscopyCompareDialog,
     SpectroscopyPopup,
     _SpectroFitWorker,
@@ -352,6 +353,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
         self.show_spectro_miniatures = bool(self.config.get("show_spectro_miniatures", False))
+        self.spectro_share_overlapping_repeats = bool(self.config.get("spectro_share_overlapping_repeats", False))
         self.spectro_miniature_default_channel = str(self.config.get("spectro_miniature_default_channel", "") or "")
         self.spectro_thumb_channel_by_path = dict(self.config.get("spectro_thumb_channel_by_path", {}) or {})
         self.spectro_highlight_glow = bool(self.config.get("spectro_highlight_glow", True))
@@ -376,6 +378,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.config.get("preserve_profiles_on_channel_change", True)
         )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
+        if not self.auto_detect_tags:
+            self.tags = {
+                str(key): value
+                for key, value in dict(self.tags or {}).items()
+                if not (isinstance(value, dict) and value.get("auto") and not value.get("manual"))
+            }
+            self.config["tags"] = self.tags
+            save_config(self.config)
         self.session_controller = SessionController(self)
         self.collection_controller = CollectionController(self)
         self.frame_map_entries = []
@@ -579,6 +589,23 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
         self.toolbar_load_mol_btn = None
+        self.toolbar_spectro_btn = None
+        self.toolbar_spectro_menu = None
+        self.toolbar_spectro_markers_act = None
+        self.toolbar_spectro_preview_act = None
+        self.toolbar_spectro_miniatures_act = None
+        self.toolbar_spectro_matrix_markers_act = None
+        self.toolbar_spectro_single_markers_act = None
+        self.toolbar_spectro_compact_markers_act = None
+        self.toolbar_spectro_highlight_act = None
+        self.toolbar_spectro_grid_as_matrix_act = None
+        self.toolbar_spectro_force_single_act = None
+        self.toolbar_spectro_thumb_btn = None
+        self.toolbar_spectro_preview_btn = None
+        self.toolbar_spectro_miniatures_btn = None
+        self.preview_spectra_toggle_btn = None
+        self.preview_molecules_toggle_btn = None
+        self.preview_grid_toggle_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
         self._session_activity_strip = None
@@ -1005,10 +1032,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_lock_cb.setToolTip("Lock preview inside the main window")
         self.preview_lock_cb.toggled.connect(self.on_preview_lock_toggled)
         self.preview_detach_btn = QtWidgets.QToolButton()
-        self.preview_detach_btn.setText("Pop out")
-        self.preview_detach_btn.setToolTip("Pop out the preview pane into its own window")
         self.preview_detach_btn.clicked.connect(self.on_toggle_preview_detach)
-        self.preview_detach_btn.setEnabled(not self.preview_locked)
+        self._update_preview_detach_button()
         self.scale_bar_cb = QtWidgets.QCheckBox("Bar")
         self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
         self.scale_bar_cb.setToolTip("Show the scale bar in preview and pop-outs")
@@ -1032,6 +1057,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_adjust_btn.setToolTip("Open image adjustment tools for the current preview")
         self.preview_adjust_btn.clicked.connect(self.on_adjust_image)
         self.preview_adjust_btn.setEnabled(False)
+        self.preview_molecules_toggle_btn = QtWidgets.QToolButton()
+        self.preview_molecules_toggle_btn.setText("Mol")
+        self.preview_molecules_toggle_btn.setCheckable(True)
+        self.preview_molecules_toggle_btn.setChecked(self.show_molecules)
+        self.preview_molecules_toggle_btn.setToolTip("Show or hide molecular overlays on the preview and pop-outs")
+        self.preview_molecules_toggle_btn.toggled.connect(self.on_show_molecules_toggled)
+        self.preview_grid_toggle_btn = QtWidgets.QToolButton()
+        self.preview_grid_toggle_btn.setText("Grid")
+        self.preview_grid_toggle_btn.setCheckable(True)
+        self.preview_grid_toggle_btn.setChecked(self.detail_grid_view)
+        self.preview_grid_toggle_btn.setToolTip("Show or hide the detail grid overlay")
+        self.preview_grid_toggle_btn.toggled.connect(self.on_detail_grid_toggled)
         self.toolbar_display_btn = QtWidgets.QToolButton()
         self.toolbar_display_btn.setText("View")
         self.toolbar_display_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
@@ -1040,7 +1077,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_load_mol_btn = QtWidgets.QLabel()
         self.toolbar_load_mol_btn.setFixedSize(44, 28)
         self.toolbar_load_mol_btn.setAlignment(QtCore.Qt.AlignCenter)
-        self.toolbar_load_mol_btn.setToolTip("Overlay a molecular structure (XYZ, PDB, MOL)")
+        self.toolbar_load_mol_btn.setToolTip("Load a molecular structure overlay (XYZ, PDB, MOL)")
         self.toolbar_load_mol_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._molecule_pixmap_size = QtCore.QSize(32, 18)
         self.toolbar_load_mol_btn.mousePressEvent = lambda event: self.on_load_molecule()
@@ -1052,8 +1089,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
         preview_header.addWidget(self.preview_hist_btn)
         preview_header.addWidget(self.preview_adjust_btn)
-        preview_header.addWidget(self.toolbar_display_btn)
+        preview_header.addWidget(self.preview_molecules_toggle_btn)
         preview_header.addWidget(self.toolbar_load_mol_btn)
+        preview_header.addWidget(self.preview_grid_toggle_btn)
+        preview_header.addWidget(self.toolbar_display_btn)
         preview_header.addWidget(self.preview_detach_btn)
         preview_header.addWidget(self.preview_lock_cb)
         preview_header.addWidget(self.toolbar_dark_btn)
@@ -1455,8 +1494,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._refresh_session_recovery_ui()
         self._refresh_autosave_timer()
         QtCore.QTimer.singleShot(900, self._maybe_offer_recovery_session)
-        # Ensure optimal initial thumbnail layout
-        QtCore.QTimer.singleShot(200, lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
+        # Bootstrap the last-used image folder on startup so images and
+        # spectroscopies appear together instead of rendering spectroscopy
+        # miniatures alone before any image folder has been loaded.
+        QtCore.QTimer.singleShot(200, self._startup_load_initial_workspace)
 
         # signals
         self.open_btn.clicked.connect(self.open_folder_dialog)
@@ -1483,10 +1524,18 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.exit_profile_btn.clicked.connect(self._on_exit_profile_mode)
         self.clear_profile_btn.clicked.connect(self._on_clear_profile_measurement)
         self.show_profile_window_btn.clicked.connect(self._on_show_profile_window)
-        self.show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
-        if hasattr(self, "grid_as_matrix_cb"):
+        show_spectra_cb = getattr(self, "show_spectra_cb", None)
+        if show_spectra_cb is not None:
+            show_spectra_cb.toggled.connect(self.on_show_preview_spectra_toggled)
+        if getattr(self, "spectro_thumbnail_markers_cb", None) is not None:
+            self.spectro_thumbnail_markers_cb.toggled.connect(self.on_show_spectra_toggled)
+        if getattr(self, "spectro_preview_markers_cb", None) is not None:
+            self.spectro_preview_markers_cb.toggled.connect(self.on_show_preview_spectra_toggled)
+        if getattr(self, "spectro_miniatures_cb", None) is not None:
+            self.spectro_miniatures_cb.toggled.connect(self.on_show_spectro_miniatures_toggled)
+        if getattr(self, "grid_as_matrix_cb", None) is not None:
             self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
-        if hasattr(self, "force_single_cb"):
+        if getattr(self, "force_single_cb", None) is not None:
             self.force_single_cb.toggled.connect(self.on_spectro_force_single_toggled)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
@@ -1527,6 +1576,33 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def _startup_load_initial_workspace(self):
+        """Load the last-used image folder on startup when available."""
+        if getattr(self, "files", None):
+            try:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
+            return
+        if "last_dir" not in getattr(self, "config", {}):
+            return
+        try:
+            folder = Path(self.last_dir)
+        except Exception:
+            return
+        if not folder.exists() or not folder.is_dir():
+            return
+        has_images = False
+        try:
+            has_images = any(
+                child.is_file() and child.suffix.lower() in {".txt", ".sxm"}
+                for child in folder.iterdir()
+            )
+        except Exception:
+            has_images = False
+        if has_images:
+            self.load_folder(folder)
 
     def _apply_dark_mode(self, enabled: bool):
         app = QtWidgets.QApplication.instance()
@@ -4444,7 +4520,8 @@ QLabel:hover {{
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
-            if highlight_key == str(file_key):
+            shared_keys = [str(key) for key in (self._highlighted_spec.get("shared_image_keys") or []) if key]
+            if highlight_key == str(file_key) or str(file_key) in shared_keys:
                 highlight_spec = self._highlighted_spec
         if not getattr(self, "spectro_highlight_glow", True):
             highlight_spec = None
@@ -5606,70 +5683,221 @@ QLabel:hover {{
             return True
         return False
 
-    def _prompt_laplacian_filter_params(self, parent=None):
-        defaults = FILTER_DEFINITIONS.get("laplacian", {})
-        saved = self.config.get("laplacian_filter_params", {})
-        dlg = QtWidgets.QDialog(parent or self)
-        dlg.setWindowTitle("Laplacian filter parameters")
-        dlg.setModal(True)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        form = QtWidgets.QFormLayout()
+    def _filter_action_label(self, filter_key):
+        base_label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", str(filter_key or "").title())
+        return f"{base_label}..."
 
-        sigma_default = float(saved.get("sigma", defaults.get("default_sigma", 0.6)))
-        neigh_default = int(saved.get("neighbors", defaults.get("default_neighbors", 8)))
-        abs_default = bool(saved.get("absolute", defaults.get("default_absolute", True)))
+    def _clone_filter_source_views(self, canvas, views):
+        clone_view = getattr(canvas, "_clone_undo_view", None)
+        cloned = []
+        for view in list(views or []):
+            try:
+                if callable(clone_view):
+                    cloned.append(clone_view(view))
+                else:
+                    cloned.append(copy.deepcopy(view))
+            except Exception:
+                cloned.append(view)
+        return cloned
 
-        sigma_spin = QtWidgets.QDoubleSpinBox(dlg)
-        sigma_spin.setDecimals(2)
-        sigma_spin.setRange(0.0, 20.0)
-        sigma_spin.setSingleStep(0.1)
-        sigma_spin.setValue(max(0.0, sigma_default))
-        sigma_spin.setToolTip("Pre-smoothing sigma. Use 0 for raw Laplacian response.")
-        form.addRow("Sigma", sigma_spin)
+    def _normalize_preview_filter_steps(self, steps):
+        if steps is None:
+            return []
+        if isinstance(steps, dict):
+            return [steps]
+        return [step for step in list(steps or []) if isinstance(step, dict)]
 
-        neigh_combo = QtWidgets.QComboBox(dlg)
-        neigh_combo.addItem("4-neighbor", 4)
-        neigh_combo.addItem("8-neighbor", 8)
-        neigh_combo.setCurrentIndex(1 if neigh_default == 8 else 0)
-        form.addRow("Stencil", neigh_combo)
+    def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
+        if canvas is None:
+            return
+        base_views = source_views if source_views is not None else getattr(canvas, "views", None)
+        if not base_views:
+            return
+        steps = self._normalize_preview_filter_steps(steps)
+        if push_undo:
+            try:
+                canvas.push_undo_state("filter")
+            except Exception:
+                pass
+        new_views = []
+        for view in self._clone_filter_source_views(canvas, base_views):
+            nv = dict(view)
+            base = nv.get("_filter_base_arr")
+            if base is None:
+                try:
+                    base = np.array(nv.get("arr"), copy=True)
+                except Exception:
+                    base = nv.get("arr")
+                nv["_filter_base_arr"] = base
+            if not steps:
+                nv["arr"] = np.array(base, copy=True) if base is not None else nv.get("arr")
+                nv.pop("filter_steps", None)
+                nv.pop("filter_label", None)
+            else:
+                nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
+                nv["filter_steps"] = copy.deepcopy(steps)
+                nv["filter_label"] = label
+                try:
+                    clim = self._auto_preview_clim(
+                        nv["arr"],
+                        relative_zero=bool(nv.get("display_relative_zero", False)),
+                    )
+                except Exception:
+                    clim = None
+                if clim is not None:
+                    nv["clim"] = clim
+                else:
+                    nv.pop("clim", None)
+            new_views.append(nv)
+        canvas.set_views(new_views, preserve_profiles=True)
 
-        abs_cb = QtWidgets.QCheckBox("Absolute response", dlg)
-        abs_cb.setChecked(abs_default)
-        abs_cb.setToolTip("Enable to show edge magnitude only (no sign).")
-        form.addRow("Output", abs_cb)
+    def _build_canvas_filter_preview_callback(self, canvas, source_views):
+        def _preview(steps, label=None):
+            if steps is None:
+                self._restore_filter_views_on_canvas(canvas, source_views)
+                return
+            self._set_filter_pipeline_on_canvas(
+                canvas,
+                steps,
+                label=label,
+                source_views=source_views,
+                push_undo=False,
+            )
+        return _preview
 
-        layout.addLayout(form)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
-            parent=dlg,
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
+    def _restore_filter_views_on_canvas(self, canvas, source_views):
+        if canvas is None or not source_views:
+            return
+        canvas.set_views(self._clone_filter_source_views(canvas, source_views), preserve_profiles=True)
 
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+    def _base_filter_image_from_views(self, views):
+        try:
+            if views:
+                return views[0].get("_filter_base_arr") or views[0].get("arr")
+        except Exception:
             return None
-        params = {
-            "sigma": float(sigma_spin.value()),
-            "neighbors": int(neigh_combo.currentData() or 8),
-            "absolute": bool(abs_cb.isChecked()),
-        }
-        self.config["laplacian_filter_params"] = dict(params)
-        save_config(self.config)
-        return params
+        return None
 
-    def _single_filter_step_spec(self, filter_key, parent=None):
+    def _load_filter_base_array_for_path(self, focus_path):
+        base_arr = None
+        if not focus_path:
+            return None
+        try:
+            focus_key = str(focus_path)
+            header, fds = self.headers.get(focus_key, (None, None))
+            if header and fds:
+                idx = None
+                if self.last_preview and str(self.last_preview[0]) == focus_key:
+                    idx = int(self.last_preview[1])
+                if idx is None:
+                    idx = 0
+                if 0 <= idx < len(fds):
+                    fd = fds[idx]
+                    arr = self._get_channel_array(focus_key, idx, header, fd)
+                    base_arr = normalize_unit_and_data(arr, fd.get("PhysUnit", ""))[1]
+        except Exception:
+            base_arr = None
+        return base_arr
+
+    def _normalize_filter_preview_clim(self, clim):
+        try:
+            if clim is None:
+                return None
+            lo, hi = clim
+            lo = float(lo)
+            hi = float(hi)
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return None
+            return (lo, hi)
+        except Exception:
+            return None
+
+    def _filter_preview_render_state(self, view=None):
+        cmap_name = None
+        clim = None
+        if isinstance(view, dict):
+            cmap_name = str(view.get("cmap") or "").strip() or None
+            clim = self._normalize_filter_preview_clim(view.get("clim"))
+        if not cmap_name:
+            try:
+                cmap_name = str(self.preview_cmap_combo.currentText() or "").strip() or None
+            except Exception:
+                cmap_name = None
+        if not cmap_name:
+            cmap_name = str(getattr(self, "preview_cmap", "viridis") or "viridis")
+        return cmap_name, clim
+
+    def _filter_preview_context_for_path(self, focus_path):
+        preview_target = "selected image"
+        preview_callback = None
+        original_views = None
+        preview_cmap_name = None
+        preview_clim = None
+        base_arr = self._load_filter_base_array_for_path(focus_path)
+        try:
+            preview_target = Path(str(focus_path)).name if focus_path else preview_target
+        except Exception:
+            preview_target = str(focus_path or preview_target)
+        canvas = getattr(self, "preview_canvas", None)
+        if (
+            focus_path
+            and canvas is not None
+            and getattr(canvas, "views", None)
+            and self.last_preview
+            and str(self.last_preview[0]) == str(focus_path)
+        ):
+            original_views = self._clone_filter_source_views(canvas, canvas.views)
+            base_arr = self._base_filter_image_from_views(original_views)
+            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
+            preview_target = self._friendly_view_title(original_views[0] if original_views else None, preview_target)
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
+        if preview_cmap_name is None:
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(None)
+        return base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim
+
+    def _single_filter_step_spec(
+        self,
+        filter_key,
+        parent=None,
+        base_image=None,
+        preview_callback=None,
+        preview_target_text="current image",
+        preview_cmap_name="viridis",
+        preview_clim=None,
+        show_preview_thumbnail=True,
+    ):
         if not filter_key:
             return None, None
-        params = {}
+        defaults = FILTER_DEFINITIONS.get(filter_key, {})
         if filter_key in ("highpass", "lowpass"):
-            params["sigma"] = FILTER_DEFINITIONS.get(filter_key, {}).get("default_sigma", 2.0)
+            initial_params = self.config.get(f"{filter_key}_filter_params", {})
         elif filter_key == "laplacian":
-            params = self._prompt_laplacian_filter_params(parent=parent)
-            if params is None:
-                return None, None
-        step = {"key": filter_key, "params": params}
-        label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", filter_key)
+            initial_params = self.config.get("laplacian_filter_params", {})
+        else:
+            initial_params = defaults
+        dlg = SingleFilterDialog(
+            parent=parent or self,
+            filter_key=filter_key,
+            base_image=base_image,
+            apply_step_func=self._run_filter_step,
+            preview_callback=preview_callback,
+            initial_params=initial_params,
+            preview_target_text=preview_target_text,
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
+            show_preview_thumbnail=show_preview_thumbnail,
+        )
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None, None
+        step = dlg.current_step()
+        label = dlg.current_step_label()
+        params = dict(step.get("params") or {})
+        if filter_key in ("highpass", "lowpass"):
+            self.config[f"{filter_key}_filter_params"] = params
+            save_config(self.config)
+        elif filter_key == "laplacian":
+            self.config["laplacian_filter_params"] = params
+            save_config(self.config)
         return step, label
 
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
@@ -5678,7 +5906,7 @@ QLabel:hover {{
             return
         filt_menu = menu.addMenu("Filters")
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(info.get("label", key.title()), filt_menu)
+            act = QtWidgets.QAction(self._filter_action_label(key), filt_menu)
             if info.get("needs_gaussian") and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
@@ -5694,50 +5922,50 @@ QLabel:hover {{
             return
         steps = pipeline
         if steps is None and filter_key:
-            step, step_label = self._single_filter_step_spec(filter_key, parent=canvas)
+            original_views = self._clone_filter_source_views(canvas, canvas.views)
+            base_arr = self._base_filter_image_from_views(original_views)
+            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
+            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
+            step, step_label = self._single_filter_step_spec(
+                filter_key,
+                parent=canvas,
+                base_image=base_arr,
+                preview_callback=preview_callback,
+                preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+                preview_cmap_name=preview_cmap_name,
+                preview_clim=preview_clim,
+                show_preview_thumbnail=False,
+            )
+            self._restore_filter_views_on_canvas(canvas, original_views)
             if step is None:
                 return
             steps = [step]
             label = label or step_label
-        try:
-            canvas.push_undo_state("filter")
-        except Exception:
-            pass
-        new_views = []
-        for v in canvas.views:
-            nv = dict(v)
-            base = nv.get('_filter_base_arr')
-            if base is None:
-                try:
-                    base = np.array(nv.get('arr'), copy=True)
-                except Exception:
-                    base = nv.get('arr')
-                nv['_filter_base_arr'] = base
-            if not steps:
-                nv['arr'] = np.array(base, copy=True) if base is not None else nv.get('arr')
-                nv.pop('filter_steps', None)
-                nv.pop('filter_label', None)
-            else:
-                nv['arr'] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get('arr')
-                nv['filter_steps'] = steps
-                nv['filter_label'] = label
-            new_views.append(nv)
-        canvas.set_views(new_views, preserve_profiles=True)
+        self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
 
     def _open_custom_filter_for_canvas(self, canvas):
         if not canvas or not getattr(canvas, "views", None):
             return
-        base_arr = None
-        try:
-            if canvas.views:
-                base_arr = canvas.views[0].get('_filter_base_arr') or canvas.views[0].get('arr')
-        except Exception:
-            base_arr = None
-        dlg = CustomFilterDialog(self, base_arr, self._run_filter_step)
+        original_views = self._clone_filter_source_views(canvas, canvas.views)
+        base_arr = self._base_filter_image_from_views(original_views)
+        preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
+        dlg = CustomFilterDialog(
+            self,
+            base_arr,
+            self._run_filter_step,
+            preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
+            preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
+            show_preview_thumbnail=False,
+        )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             steps = dlg.pipeline_steps()
             label = dlg.pipeline_label()
+            self._restore_filter_views_on_canvas(canvas, original_views)
             self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
+            return
+        self._restore_filter_views_on_canvas(canvas, original_views)
 
     def _apply_filter_pipeline(self, arr, steps):
         result = np.asarray(arr, dtype=float)
@@ -6606,6 +6834,22 @@ QLabel:hover {{
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
+    def _clear_auto_tags(self, *, persist: bool = True) -> bool:
+        """Remove auto-detected CH/CC tags while preserving manual overrides."""
+        changed = False
+        kept = {}
+        for key, value in dict(self.tags or {}).items():
+            if isinstance(value, dict) and value.get("auto") and not value.get("manual"):
+                changed = True
+                continue
+            kept[str(key)] = value
+        if changed:
+            self.tags = kept
+            self.config["tags"] = self.tags
+            if persist:
+                save_config(self.config)
+        return changed
+
     def _on_toggle_auto_tags(self, checked: bool):
         self.auto_detect_tags = bool(checked)
         self.config['auto_detect_tags'] = self.auto_detect_tags
@@ -6615,8 +6859,16 @@ QLabel:hover {{
                 self._auto_detect_tags_for_folder()
                 # refresh thumbnails to show badges
                 self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+                if self.last_preview:
+                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
             except Exception:
                 pass
+        else:
+            changed = self._clear_auto_tags()
+            if changed:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+                if self.last_preview:
+                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     # ---------- Spectroscopy helpers ----------
     def on_load_molecule(self):
@@ -6663,20 +6915,13 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
-        # if lazy loading is enabled, mark spectros pending; otherwise reload immediately
-        if getattr(self, "lazy_spectros_enabled", False):
-            self._spectros_pending = True
-            self._spectros_loaded = False
-            self._update_spectro_stats_label()
-        else:
-            self._reload_spectros(refresh=True)
+        # Changing the spectroscopy path should refresh spectroscopy immediately.
+        self._reload_spectros(refresh=True)
 
     def ensure_spectros_loaded(self, refresh: bool = True):
         """Load spectroscopies on-demand if they were deferred."""
         if self._spectros_loaded:
             return True
-        if not self.show_spectra:
-            return False
         if getattr(self, "_spectros_loading", False):
             return False
         self._spectros_loading = True
@@ -6706,13 +6951,6 @@ QLabel:hover {{
         except Exception:
             folder = self.last_dir
         log_status(f"Scanning spectroscopy files in: {folder}")
-        if not self.show_spectra:
-            self.spectros = []
-            self.spectros_by_image = defaultdict(list)
-            self._spectro_deferred = set()
-            self._clear_multi_spec_selection()
-            self._update_spectro_stats_label()
-            return
         self._spectro_deferred = set()
         self.spectros, spec_stats = self._scan_spectros(folder)
         t_scan_end = time.perf_counter()
@@ -7195,7 +7433,12 @@ QLabel:hover {{
             if not self._highlight_timer.isActive():
                 self._highlight_timer.start()
             try:
-                target_key = str(spec.get('image_key') or spec.get('path') or '')
+                shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
+                current_preview_key = str(self.last_preview[0]) if self.last_preview else ""
+                if current_preview_key and current_preview_key in shared_keys:
+                    target_key = current_preview_key
+                else:
+                    target_key = str(spec.get('image_key') or spec.get('path') or '')
             except Exception:
                 target_key = ''
             if self.last_preview and target_key and str(self.last_preview[0]) == target_key:
@@ -7243,11 +7486,11 @@ QLabel:hover {{
         menu = QtWidgets.QMenu(self)
         sub = menu.addMenu("Apply filter")
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(info['label'], menu)
+            act = QtWidgets.QAction(self._filter_action_label(key), menu)
             if info.get('needs_gaussian') and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
-            act.triggered.connect(lambda _, k=key, paths=list(targets): self._apply_filter_to_paths(paths, k))
+            act.triggered.connect(lambda _, k=key, paths=list(targets), focus=fp: self._apply_filter_to_paths(paths, k, focus_path=focus))
             sub.addAction(act)
         custom_act = QtWidgets.QAction("Custom pipeline...", menu)
         custom_act.triggered.connect(lambda _, paths=list(targets), focus=fp: self._open_custom_filter_dialog(paths, focus))
@@ -7277,25 +7520,6 @@ QLabel:hover {{
         adjust_act = QtWidgets.QAction("Adjust image...", menu)
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
-
-        menu.addSeparator()
-        overlay_act = QtWidgets.QAction("Show spectroscopy overlays", menu)
-        overlay_act.setCheckable(True)
-        overlay_act.setChecked(self.show_spectra)
-        overlay_act.triggered.connect(self.on_show_spectra_toggled)
-        menu.addAction(overlay_act)
-        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
-        mini_act.setCheckable(True)
-        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
-        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
-        menu.addAction(mini_act)
-        glow_act = QtWidgets.QAction("Spectro highlight glow", menu)
-        glow_act.setCheckable(True)
-        glow_act.setChecked(getattr(self, "spectro_highlight_glow", True))
-        glow_act.triggered.connect(self.on_toggle_highlight_glow)
-        menu.addAction(glow_act)
-        marker_menu = menu.addMenu("Marker style")
-        self._populate_marker_style_menu(marker_menu)
 
         # Virtual copies submenu
         virt_menu = menu.addMenu("Virtual copy")
@@ -7375,11 +7599,6 @@ QLabel:hover {{
                 act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
                 channel_menu.addAction(act)
 
-        mini_act = QtWidgets.QAction("Show spectroscopy miniatures", menu)
-        mini_act.setCheckable(True)
-        mini_act.setChecked(getattr(self, "show_spectro_miniatures", False))
-        mini_act.triggered.connect(self.on_show_spectro_miniatures_toggled)
-        menu.addAction(mini_act)
         menu.addSeparator()
         copy_path = QtWidgets.QAction("Copy file path", menu)
         def _copy_path():
@@ -7391,7 +7610,7 @@ QLabel:hover {{
         menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
-    def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None):
+    def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
         if not paths:
             return
         if len(paths) > 12:
@@ -7403,7 +7622,18 @@ QLabel:hover {{
             QtWidgets.QMessageBox.warning(self, "Filters", "Gaussian filters require scipy or OpenCV.")
             return
         if pipeline is None:
-            step, spec_label = self._single_filter_step_spec(filter_key, parent=self)
+            base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
+            step, spec_label = self._single_filter_step_spec(
+                filter_key,
+                parent=self,
+                base_image=base_arr,
+                preview_callback=preview_callback,
+                preview_target_text=preview_target,
+                preview_cmap_name=preview_cmap_name,
+                preview_clim=preview_clim,
+            )
+            if original_views is not None:
+                self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
             if step is None:
                 return
             spec_steps = [step]
@@ -7434,27 +7664,25 @@ QLabel:hover {{
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def _open_custom_filter_dialog(self, paths, focus_path):
-        base_arr = None
-        try:
-            focus_key = str(focus_path)
-            header, fds = self.headers.get(focus_key, (None, None))
-            if header and fds:
-                idx = None
-                if self.last_preview and str(self.last_preview[0]) == focus_key:
-                    idx = int(self.last_preview[1])
-                if idx is None:
-                    idx = 0
-                if 0 <= idx < len(fds):
-                    fd = fds[idx]
-                    arr = self._get_channel_array(focus_key, idx, header, fd)
-                    base_arr = normalize_unit_and_data(arr, fd.get('PhysUnit',''))[1]
-        except Exception:
-            base_arr = None
-        dlg = CustomFilterDialog(self, base_arr, self._run_filter_step)
+        base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
+        dlg = CustomFilterDialog(
+            self,
+            base_arr,
+            self._run_filter_step,
+            preview_callback=preview_callback,
+            preview_target_text=preview_target,
+            preview_cmap_name=preview_cmap_name,
+            preview_clim=preview_clim,
+        )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             pipeline = dlg.pipeline_steps()
             if pipeline:
+                if original_views is not None:
+                    self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
                 self._apply_filter_to_paths(paths, pipeline=pipeline, label=dlg.pipeline_label())
+                return
+        if original_views is not None:
+            self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
 
     def _toggle_thumb_multi_selection(self, file_path):
         return viewer_thumb_ui._toggle_thumb_multi_selection(self, file_path)
@@ -8329,6 +8557,30 @@ QLabel:hover {{
             header_new = dict(header)
             header_new["xPixel"] = int(arr.shape[1])
             header_new["yPixel"] = int(arr.shape[0])
+            stored_extent = None
+            view_extent = view.get("extent_raw")
+            if view_extent is None:
+                view_extent = view.get("extent")
+            if view_extent is not None and len(view_extent) == 4:
+                try:
+                    x0, x1, y_a, y_b = [float(v) for v in view_extent]
+                    stored_extent = (x0, x1, y_a, y_b)
+                    xmin, xmax = sorted((x0, x1))
+                    ymin, ymax = sorted((y_a, y_b))
+                    x_range = max(xmax - xmin, 1e-12)
+                    y_range = max(ymax - ymin, 1e-12)
+                    x_center = 0.5 * (xmin + xmax)
+                    y_center = 0.5 * (ymin + ymax)
+                    header_new["XScanRange"] = x_range
+                    header_new["YScanRange"] = y_range
+                    header_new["XRange"] = x_range
+                    header_new["YRange"] = y_range
+                    header_new["xCenter"] = x_center
+                    header_new["yCenter"] = y_center
+                    header_new["XCenter"] = x_center
+                    header_new["YCenter"] = y_center
+                except Exception:
+                    pass
             key = self._make_processed_key(path, op=op_name, channel_idx=ch_idx)
             self._processed_views[key] = {
                 "arr_by_channel": arr_by_channel,
@@ -8336,6 +8588,7 @@ QLabel:hover {{
                 "fds": fds_new,
                 "channel_idx": ch_idx,
                 "source": path,
+                "extent_raw": stored_extent,
                 "label": tag,
                 "op": op_name,
             }
@@ -8496,13 +8749,25 @@ QLabel:hover {{
     def on_preview_lock_toggled(self, checked: bool):
         self.preview_locked = bool(checked)
         self.config["preview_locked"] = self.preview_locked; save_config(self.config)
-        if hasattr(self, "preview_detach_btn"):
-            try:
-                self.preview_detach_btn.setEnabled(not self.preview_locked)
-            except Exception:
-                pass
+        self._update_preview_detach_button()
         if self.preview_locked and getattr(self, "preview_detached", False):
             self._attach_preview()
+
+    def _update_preview_detach_button(self):
+        btn = getattr(self, "preview_detach_btn", None)
+        if btn is None:
+            return
+        detached = bool(getattr(self, "preview_detached", False))
+        try:
+            btn.setText("Dock preview" if detached else "Float preview")
+            btn.setToolTip(
+                "Dock the floating preview back into the main window"
+                if detached
+                else "Detach the preview pane into its own floating window"
+            )
+            btn.setEnabled(not bool(getattr(self, "preview_locked", False)))
+        except Exception:
+            pass
 
     def on_toggle_preview_detach(self):
         if self.preview_locked:
@@ -8543,11 +8808,7 @@ QLabel:hover {{
                 except Exception:
                     pass
             self.preview_detached = True
-            if hasattr(self, "preview_detach_btn"):
-                try:
-                    self.preview_detach_btn.setText("Attach")
-                except Exception:
-                    pass
+            self._update_preview_detach_button()
             try:
                 self._preview_dialog.resize(self._preview_panel.size())
             except Exception:
@@ -8592,11 +8853,7 @@ QLabel:hover {{
             except Exception:
                 pass
             self.preview_detached = False
-            if hasattr(self, "preview_detach_btn"):
-                try:
-                    self.preview_detach_btn.setText("Pop out")
-                except Exception:
-                    pass
+            self._update_preview_detach_button()
         except Exception:
             pass
 
@@ -8644,10 +8901,18 @@ QLabel:hover {{
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         # Keep UI toggles in sync
         try:
-            if hasattr(self, "spectro_overlay_act"):
-                self.spectro_overlay_act.blockSignals(True)
-                self.spectro_overlay_act.setChecked(self.show_spectra)
-                self.spectro_overlay_act.blockSignals(False)
+            for attr in (
+                "spectro_overlay_act",
+                "preview_spectra_toggle_btn",
+                "spectro_thumbnail_markers_cb",
+                "toolbar_spectro_markers_act",
+            ):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_spectra)
+                widget.blockSignals(False)
         except Exception:
             pass
         if self.show_spectra:
@@ -8668,6 +8933,23 @@ QLabel:hover {{
         self.show_spectro_miniatures = bool(checked)
         self.config["show_spectro_miniatures"] = self.show_spectro_miniatures
         save_config(self.config)
+        try:
+            for attr in (
+                "spectro_miniatures_act",
+                "spectro_miniatures_cb",
+                "toolbar_spectro_miniatures_act",
+            ):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_spectro_miniatures)
+                widget.blockSignals(False)
+        except Exception:
+            pass
+        if self.show_spectro_miniatures and not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        self._update_spectro_stats_label()
         # Miniatures are a thumbnail presentation choice, so a full repopulate is enough.
         self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
@@ -8675,26 +8957,57 @@ QLabel:hover {{
         self.show_preview_spectra = bool(checked)
         self.config['show_preview_spectra'] = self.show_preview_spectra; save_config(self.config)
         try:
-            if hasattr(self, "show_spectra_cb"):
-                self.show_spectra_cb.blockSignals(True)
-                self.show_spectra_cb.setChecked(self.show_preview_spectra)
-                self.show_spectra_cb.blockSignals(False)
+            for attr in (
+                "show_spectra_cb",
+                "spectro_preview_markers_cb",
+                "toolbar_spectro_preview_act",
+            ):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.show_preview_spectra)
+                widget.blockSignals(False)
         except Exception:
             pass
+        if self.show_preview_spectra and not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        self._update_spectro_stats_label()
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_spectro_share_overlapping_repeats_toggled(self, checked: bool):
+        self.spectro_share_overlapping_repeats = bool(checked)
+        self.config["spectro_share_overlapping_repeats"] = self.spectro_share_overlapping_repeats
+        save_config(self.config)
+        act = getattr(self, "toolbar_spectro_repeat_share_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_share_overlapping_repeats)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if self.spectros:
+            self._assign_spectros_to_images()
+        self._update_spectro_stats_label()
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._schedule_marker_refresh()
 
     def on_toggle_highlight_glow(self, checked: bool):
         self.spectro_highlight_glow = bool(checked)
         self.config['spectro_highlight_glow'] = self.spectro_highlight_glow; save_config(self.config)
-        act = getattr(self, 'highlight_glow_act', None)
-        if act is not None:
-            try:
-                act.blockSignals(True)
-                act.setChecked(self.spectro_highlight_glow)
-                act.blockSignals(False)
-            except Exception:
-                pass
+        for attr in ("highlight_glow_act", "toolbar_spectro_highlight_act"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                try:
+                    act.blockSignals(True)
+                    act.setChecked(self.spectro_highlight_glow)
+                    act.blockSignals(False)
+                except Exception:
+                    pass
         if not self.spectro_highlight_glow:
             self._highlight_spectrum_entry(None)
         else:
@@ -8706,12 +9019,28 @@ QLabel:hover {{
         self.spectro_single_grid_as_matrix = bool(checked)
         self.config["spectro_single_grid_as_matrix"] = self.spectro_single_grid_as_matrix
         save_config(self.config)
+        act = getattr(self, "toolbar_spectro_grid_as_matrix_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_single_grid_as_matrix)
+                act.blockSignals(False)
+            except Exception:
+                pass
         self._reload_spectros(refresh=True)
 
     def on_spectro_force_single_toggled(self, checked: bool):
         self.spectro_force_single_mode = bool(checked)
         self.config["spectro_force_single_mode"] = self.spectro_force_single_mode
         save_config(self.config)
+        act = getattr(self, "toolbar_spectro_force_single_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_force_single_mode)
+                act.blockSignals(False)
+            except Exception:
+                pass
         self._reload_spectros(refresh=True)
 
     def on_show_matrix_markers_toggled(self, checked: bool):
@@ -8721,11 +9050,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'matrix_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_matrix_markers)
-            act.blockSignals(False)
+        for attr in ('matrix_markers_act', 'toolbar_spectro_matrix_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.show_matrix_markers)
+                act.blockSignals(False)
 
     def on_show_single_markers_toggled(self, checked: bool):
         self.show_single_markers = bool(checked)
@@ -8734,11 +9064,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'single_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.show_single_markers)
-            act.blockSignals(False)
+        for attr in ('single_markers_act', 'toolbar_spectro_single_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.show_single_markers)
+                act.blockSignals(False)
 
     def on_compact_markers_toggled(self, checked: bool):
         self.compact_markers = bool(checked)
@@ -8747,11 +9078,12 @@ QLabel:hover {{
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
         self._schedule_marker_refresh()
-        act = getattr(self, 'compact_markers_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(self.compact_markers)
-            act.blockSignals(False)
+        for attr in ('compact_markers_act', 'toolbar_spectro_compact_markers_act'):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.blockSignals(True)
+                act.setChecked(self.compact_markers)
+                act.blockSignals(False)
 
     def on_detail_dark_toggled(self, checked: bool):
         self.detail_dark_view = bool(checked)
@@ -8761,6 +9093,16 @@ QLabel:hover {{
     def on_detail_grid_toggled(self, checked: bool):
         self.detail_grid_view = bool(checked)
         self.config['detail_grid_view'] = self.detail_grid_view; save_config(self.config)
+        try:
+            for attr in ("detail_grid_act", "preview_grid_toggle_btn"):
+                widget = getattr(self, attr, None)
+                if widget is None:
+                    continue
+                widget.blockSignals(True)
+                widget.setChecked(self.detail_grid_view)
+                widget.blockSignals(False)
+        except Exception:
+            pass
         self._apply_detail_view_theme()
 
     def _canvas_display_state_from_canvas(self, canvas):
@@ -8838,8 +9180,12 @@ QLabel:hover {{
                     self.scale_bar_cb.blockSignals(False)
             except Exception:
                 pass
-            for act_name, key in (("molecules_act", "show_molecules"), ("acquisition_overlay_act", "show_acquisition_overlay")):
-                act = getattr(self, act_name, None)
+            for widget_name, key in (
+                ("molecules_act", "show_molecules"),
+                ("preview_molecules_toggle_btn", "show_molecules"),
+                ("acquisition_overlay_act", "show_acquisition_overlay"),
+            ):
+                act = getattr(self, widget_name, None)
                 if act is not None:
                     try:
                         act.blockSignals(True)

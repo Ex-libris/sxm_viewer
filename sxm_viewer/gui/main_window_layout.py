@@ -132,35 +132,22 @@ def build_spectro_context_page(viewer):
     layout = QtWidgets.QHBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
-    viewer.show_spectra_cb = _configure_compact_control(QtWidgets.QCheckBox("Preview markers"))
-    viewer.show_spectra_cb.setChecked(getattr(viewer, "show_preview_spectra", True))
-    viewer.show_spectra_cb.setToolTip("Toggle spectroscopy overlays in the preview panel")
+    viewer.show_spectra_cb = None
     viewer.clear_spec_selection_btn = _configure_compact_control(QtWidgets.QPushButton("Clear selection"))
     viewer.clear_spec_selection_btn.setToolTip("Clear the multi-selection of spectroscopy points")
-    viewer.grid_as_matrix_cb = QtWidgets.QCheckBox("NxN singles as matrix")
-    viewer.grid_as_matrix_cb.setChecked(getattr(viewer, "spectro_single_grid_as_matrix", False))
-    viewer.grid_as_matrix_cb.setToolTip("Interpret square grids of single .dat spectra as matrix datasets")
-    viewer.force_single_cb = QtWidgets.QCheckBox("Force single mode")
-    viewer.force_single_cb.setChecked(getattr(viewer, "spectro_force_single_mode", False))
-    viewer.force_single_cb.setToolTip("Ignore matrix hints and treat all .dat as single spectra")
-    viewer.spectro_more_btn = QtWidgets.QToolButton(page)
-    viewer.spectro_more_btn.setText("More")
-    viewer.spectro_more_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-    viewer.spectro_more_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-    viewer.spectro_more_btn.setToolTip("Show less-frequent spectroscopy options")
-    _configure_compact_control(viewer.spectro_more_btn)
-    viewer.spectro_more_menu = QtWidgets.QMenu(viewer.spectro_more_btn)
-    _add_menu_widget(viewer.spectro_more_menu, viewer.grid_as_matrix_cb)
-    _add_menu_widget(viewer.spectro_more_menu, viewer.force_single_cb)
-    viewer.spectro_more_btn.setMenu(viewer.spectro_more_menu)
+    viewer.grid_as_matrix_cb = None
+    viewer.force_single_cb = None
+    viewer.spectro_more_btn = None
+    viewer.spectro_more_menu = None
     viewer.spec_selection_label = QtWidgets.QLabel("Selected: 0")
     font_small = QtGui.QFont(UI_FONT_FAMILY, 9)
     viewer.spec_selection_label.setFont(font_small)
     viewer.spec_selection_label.setMinimumWidth(0)
     viewer.spec_selection_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    layout.addWidget(viewer.show_spectra_cb)
+    viewer.spectro_mode_hint_label = QtWidgets.QLabel("Display options live in the top toolbar `Spectroscopy` button.")
+    viewer.spectro_mode_hint_label.setFont(font_small)
+    layout.addWidget(viewer.spectro_mode_hint_label)
     layout.addWidget(viewer.clear_spec_selection_btn)
-    layout.addWidget(viewer.spectro_more_btn)
     layout.addWidget(viewer.spec_selection_label)
     layout.addStretch(1)
     return page
@@ -170,26 +157,6 @@ def _ensure_display_menu(viewer):
     if getattr(viewer, "display_menu", None):
         return viewer.display_menu
     viewer.display_menu = QtWidgets.QMenu(viewer)
-    viewer.matrix_markers_act = viewer.display_menu.addAction("Matrix markers")
-    viewer.matrix_markers_act.setCheckable(True)
-    viewer.matrix_markers_act.setChecked(viewer.show_matrix_markers)
-    viewer.matrix_markers_act.setToolTip("Toggle matrix spectroscopy markers")
-    viewer.matrix_markers_act.toggled.connect(viewer.on_show_matrix_markers_toggled)
-    viewer.single_markers_act = viewer.display_menu.addAction("Single markers")
-    viewer.single_markers_act.setCheckable(True)
-    viewer.single_markers_act.setChecked(viewer.show_single_markers)
-    viewer.single_markers_act.setToolTip("Toggle single spectroscopy markers")
-    viewer.single_markers_act.toggled.connect(viewer.on_show_single_markers_toggled)
-    viewer.compact_markers_act = viewer.display_menu.addAction("Compact markers")
-    viewer.compact_markers_act.setCheckable(True)
-    viewer.compact_markers_act.setChecked(viewer.compact_markers)
-    viewer.compact_markers_act.setToolTip("Use compact marker rendering")
-    viewer.compact_markers_act.toggled.connect(viewer.on_compact_markers_toggled)
-    viewer.spectro_overlay_act = viewer.display_menu.addAction("Show spectroscopy overlays")
-    viewer.spectro_overlay_act.setCheckable(True)
-    viewer.spectro_overlay_act.setChecked(viewer.show_spectra)
-    viewer.spectro_overlay_act.setToolTip("Toggle spectroscopy overlays in thumbnails and preview")
-    viewer.spectro_overlay_act.toggled.connect(viewer.on_show_spectra_toggled)
     viewer.molecules_act = viewer.display_menu.addAction("Show molecules")
     viewer.molecules_act.setCheckable(True)
     viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
@@ -233,16 +200,6 @@ def _ensure_display_menu(viewer):
         viewer.profile_label_group.addAction(act)
         viewer.profile_label_actions[mode_key] = act
     viewer.display_menu.addSeparator()
-    
-    markers_menu = viewer.display_menu.addMenu("Marker Style")
-    if hasattr(viewer, "_populate_marker_style_menu"):
-        viewer._populate_marker_style_menu(markers_menu)
-    viewer.highlight_glow_act = viewer.display_menu.addAction("Spectro highlight glow")
-    viewer.highlight_glow_act.setCheckable(True)
-    viewer.highlight_glow_act.setChecked(getattr(viewer, "spectro_highlight_glow", True))
-    viewer.highlight_glow_act.setToolTip("Pulse the selected spectroscopy marker in thumbnails and preview")
-    viewer.highlight_glow_act.toggled.connect(viewer.on_toggle_highlight_glow)
-
     viewer.display_menu.addSeparator()
     viewer.detail_dark_act = viewer.display_menu.addAction("Detail dark background")
     viewer.detail_dark_act.setCheckable(True)
@@ -335,37 +292,37 @@ def _ensure_display_menu(viewer):
         viewer._refresh_collection_ui()
     except Exception:
         pass
-    bring_act = viewer.display_menu.addAction("Bring pop-outs to front")
-    bring_act.setToolTip("Raise all open preview/spectroscopy/profile windows (Ctrl+Shift+P)")
-    bring_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+P"))
-    bring_act.triggered.connect(viewer.on_recall_popouts)
-    arrange_act = viewer.display_menu.addAction("Arrange pop-outs")
-    arrange_act.setToolTip("Tile and align all open preview/spectroscopy/profile windows")
-    arrange_act.triggered.connect(viewer.on_arrange_popouts)
-    minimize_act = viewer.display_menu.addAction("Minimize pop-outs")
-    minimize_act.setToolTip("Minimize all open preview/spectroscopy/profile windows (Ctrl+Shift+M)")
-    minimize_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
-    minimize_act.triggered.connect(viewer.on_minimize_popouts)
-    close_all_act = viewer.display_menu.addAction("Close all pop-outs")
-    close_all_act.setToolTip("Close all open preview/spectroscopy/profile windows")
-    close_all_act.triggered.connect(viewer.on_close_popouts)
     return viewer.display_menu
 
 
 def build_display_widget(viewer, parent):
     container = QtWidgets.QWidget(parent)
-    layout = QtWidgets.QHBoxLayout(container)
+    layout = QtWidgets.QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
+    layout.setSpacing(4)
     _ensure_display_menu(viewer)
 
-    viewer.spectro_browser_btn = _configure_compact_control(QtWidgets.QPushButton("Spectro Browser", container))
-    viewer.spectro_browser_btn.setToolTip("Open the spectroscopy browser")
-    viewer.spectro_browser_btn.clicked.connect(lambda: viewer.open_spectro_browser())
-    layout.addWidget(viewer.spectro_browser_btn)
+    viewer.spectro_section_title = QtWidgets.QLabel("Spectroscopy", container)
+    viewer.spectro_section_title.setFont(QtGui.QFont(UI_FONT_FAMILY, 10, QtGui.QFont.Bold))
+    viewer.spectro_section_title.setToolTip("Use the top toolbar `Spectroscopy` button for spectroscopy display controls and browser access")
+    layout.addWidget(viewer.spectro_section_title)
+    viewer.spectro_thumbnail_markers_cb = None
+    viewer.spectro_preview_markers_cb = None
+    viewer.spectro_miniatures_cb = None
+    viewer.spectro_browser_btn = None
+
+    viewer.spectro_hint_label = QtWidgets.QLabel(
+        "Use the top toolbar `Spectroscopy` button to open the browser and control markers and miniatures.",
+        container,
+    )
+    hint_font = QtGui.QFont(UI_FONT_FAMILY, 9)
+    viewer.spectro_hint_label.setFont(hint_font)
+    viewer.spectro_hint_label.setWordWrap(True)
+    viewer.spectro_hint_label.setToolTip("Thumbnail markers and preview markers show point positions. Miniatures show spectroscopy traces as their own cards.")
+    layout.addWidget(viewer.spectro_hint_label)
 
     viewer.spectro_stats_label = QtWidgets.QLabel(
-        "Spectra -- | Single -- | Matrix --", container
+        "Spectroscopy pending load", container
     )
     stats_font = QtGui.QFont(UI_FONT_FAMILY, 9)
     viewer.spectro_stats_label.setFont(stats_font)
@@ -373,7 +330,7 @@ def build_display_widget(viewer, parent):
     viewer.spectro_stats_label.setWordWrap(True)
     viewer.spectro_stats_label.setMinimumWidth(0)
     viewer.spectro_stats_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    layout.addWidget(viewer.spectro_stats_label, 1)
+    layout.addWidget(viewer.spectro_stats_label)
     return container
 
 

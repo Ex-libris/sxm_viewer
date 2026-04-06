@@ -6,7 +6,7 @@ SXM Viewer supports angle overlays directly on the image canvas, alongside the p
 
 ## Creating an angle measurement
 
-Press ++ctrl+alt+click++ on the preview or a pop-out to create a new angle measurement frame.
+Hold ++ctrl++ and ++alt++, then click on the preview or a pop-out to create a new angle measurement frame.
 
 Angle overlays behave like other canvas measurements: they stay visible while active and can be managed separately from saved overlays.
 

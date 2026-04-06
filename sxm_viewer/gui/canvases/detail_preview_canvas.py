@@ -1655,6 +1655,27 @@ class MultiPreviewCanvas(FigureCanvas):
             ey0, ey1 = 0.0, float(max(arr_h - 1, 1))
         cols = max(arr_w - 1, 1)
         rows = max(arr_h - 1, 1)
+        def _spec_identity(spec):
+            if not spec:
+                return None
+            base = spec.get("path")
+            try:
+                base = str(Path(base))
+            except Exception:
+                base = str(base)
+            idx = spec.get("matrix_index")
+            if idx is not None:
+                return f"{base}#idx{idx}"
+            x = spec.get("x")
+            y = spec.get("y")
+            if x is not None or y is not None:
+                try:
+                    x_val = float(x) if x is not None else ""
+                    y_val = float(y) if y is not None else ""
+                    return f"{base}#pos{round(x_val, 6)}_{round(y_val, 6)}"
+                except Exception:
+                    return f"{base}#pos{x}_{y}"
+            return base
         def _axis_from_pixel(col, row):
             row_use = float(row)
             # Stored spectro marker rows are in thumbnail/image pixel space
@@ -1688,6 +1709,7 @@ class MultiPreviewCanvas(FigureCanvas):
         points = []
         missing_specs = []
         highlight_spec = view.get('highlight_spec')
+        highlight_key = _spec_identity(highlight_spec)
         pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
         pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
         for idx, s in enumerate(specs):
@@ -1697,7 +1719,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
             x, y = _axis_from_pixel(coords[0], coords[1])
             points.append((x, y, s))
-            if highlight_spec is not None and s is highlight_spec:
+            if highlight_key is not None and _spec_identity(s) == highlight_key:
                 highlight_xs.append(x); highlight_ys.append(y)
             else:
                 normal_xs.append(x); normal_ys.append(y)
@@ -1714,7 +1736,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
                 points.append((fx, fy, spec))
-                if highlight_spec is not None and spec is highlight_spec:
+                if highlight_key is not None and _spec_identity(spec) == highlight_key:
                     highlight_xs.append(fx); highlight_ys.append(fy)
                 else:
                     normal_xs.append(fx); normal_ys.append(fy)
@@ -5923,6 +5945,14 @@ class MultiPreviewCanvas(FigureCanvas):
         show_profiles_act = display_menu.addAction("Show Profiles")
         show_profiles_act.setCheckable(True)
         show_profiles_act.setChecked(bool(self._show_profile_overlays))
+        show_crop_history_act = None
+        if callable(self._apply_popup_style_callback) and (self._fixed_crop_quick_mode or self._fixed_crop_history):
+            show_crop_history_act = display_menu.addAction("Show Crop Overlays")
+            show_crop_history_act.setCheckable(True)
+            show_crop_history_act.setChecked(bool(self._fixed_crop_history_visible))
+            crop_tip = "Show or hide quick-crop frames in this pop-up only."
+            show_crop_history_act.setToolTip(crop_tip)
+            show_crop_history_act.setStatusTip(crop_tip)
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
         acq_overlay_act.setCheckable(True)
         acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
@@ -6240,6 +6270,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_title(show_title_act.isChecked())
         elif chosen == show_profiles_act:
             self.set_show_profile_overlays(show_profiles_act.isChecked())
+        elif show_crop_history_act and chosen == show_crop_history_act:
+            self.show_fixed_crop_history(show_crop_history_act.isChecked())
         elif chosen == acq_overlay_act:
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
         elif chosen == hint_act:
@@ -8779,6 +8811,16 @@ class MultiPreviewCanvas(FigureCanvas):
         base_title = str(base_view.get("title") or "crop")
         suffix = str(title_suffix or "")
         new_view["title"] = base_title if not suffix or base_title.endswith(suffix.strip()) else f"{base_title}{suffix}"
+        try:
+            real_size = tuple(entry.get("real_size") or ())
+            if len(real_size) == 2:
+                new_view["_popup_image_size_override"] = {
+                    "width": float(real_size[0]),
+                    "height": float(real_size[1]),
+                    "unit": str(entry.get("unit") or self._guess_view_unit(base_view) or "nm"),
+                }
+        except Exception:
+            pass
         seq = entry.get("sequence")
         if seq is not None:
             new_view["crop_sequence"] = seq
@@ -9453,6 +9495,16 @@ class MultiPreviewCanvas(FigureCanvas):
         elif not prompt_virtual_copy:
             new_view["_skip_virtual_copy_prompt"] = True
         if entry and entry.get("sequence") is not None:
+            try:
+                real_size = tuple(entry.get("real_size") or ())
+                if len(real_size) == 2:
+                    new_view["_popup_image_size_override"] = {
+                        "width": float(real_size[0]),
+                        "height": float(real_size[1]),
+                        "unit": str(entry.get("unit") or self._guess_view_unit(view) or "nm"),
+                    }
+            except Exception:
+                pass
             new_view["crop_sequence"] = entry["sequence"]
             entry["view_snapshot"] = dict(new_view)
         if callable(self._crop_callback):
