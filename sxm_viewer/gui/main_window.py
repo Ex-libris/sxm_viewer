@@ -5658,18 +5658,78 @@ QLabel:hover {{
         save_config(self.config)
         return params
 
+    def _prompt_gaussian_filter_params(self, filter_key, parent=None):
+        filter_key = str(filter_key or "").strip().lower()
+        defaults = FILTER_DEFINITIONS.get(filter_key, {})
+        if filter_key not in {"lowpass", "highpass"}:
+            return None
+        saved = self.config.get(f"{filter_key}_filter_params", {})
+        dlg = QtWidgets.QDialog(parent or self)
+        dlg.setWindowTitle(f"{defaults.get('label', filter_key.title())} parameters")
+        dlg.setModal(True)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        form = QtWidgets.QFormLayout()
+
+        sigma_default = float(saved.get("sigma", defaults.get("default_sigma", 2.0)))
+        sigma_spin = QtWidgets.QDoubleSpinBox(dlg)
+        sigma_spin.setDecimals(2)
+        sigma_spin.setRange(0.05, 50.0)
+        sigma_spin.setSingleStep(0.1)
+        sigma_spin.setValue(max(0.05, sigma_default))
+        sigma_spin.setToolTip(
+            "Gaussian sigma in pixels. Larger values produce stronger smoothing."
+        )
+        form.addRow("Sigma (px)", sigma_spin)
+
+        hint = QtWidgets.QLabel(
+            "Use smaller sigma for local detail, larger sigma for broader background removal."
+        )
+        hint.setWordWrap(True)
+        layout.addLayout(form)
+        layout.addWidget(hint)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dlg,
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        params = {"sigma": float(sigma_spin.value())}
+        self.config[f"{filter_key}_filter_params"] = dict(params)
+        save_config(self.config)
+        return params
+
+    def _filter_action_label(self, filter_key):
+        base_label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", str(filter_key or "").title())
+        if str(filter_key or "").strip().lower() in {"lowpass", "highpass", "laplacian"}:
+            return f"{base_label}..."
+        return base_label
+
     def _single_filter_step_spec(self, filter_key, parent=None):
         if not filter_key:
             return None, None
         params = {}
         if filter_key in ("highpass", "lowpass"):
-            params["sigma"] = FILTER_DEFINITIONS.get(filter_key, {}).get("default_sigma", 2.0)
+            params = self._prompt_gaussian_filter_params(filter_key, parent=parent)
+            if params is None:
+                return None, None
         elif filter_key == "laplacian":
             params = self._prompt_laplacian_filter_params(parent=parent)
             if params is None:
                 return None, None
         step = {"key": filter_key, "params": params}
         label = FILTER_DEFINITIONS.get(filter_key, {}).get("label", filter_key)
+        if filter_key in ("highpass", "lowpass") and params.get("sigma") is not None:
+            label = f"{label} (sigma={params['sigma']:.2f} px)"
+        elif filter_key == "laplacian":
+            sigma = params.get("sigma")
+            neighbors = params.get("neighbors")
+            if sigma is not None and neighbors is not None:
+                label = f"{label} (sigma={float(sigma):.2f} px, {int(neighbors)}-nbr)"
         return step, label
 
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
@@ -5678,7 +5738,7 @@ QLabel:hover {{
             return
         filt_menu = menu.addMenu("Filters")
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(info.get("label", key.title()), filt_menu)
+            act = QtWidgets.QAction(self._filter_action_label(key), filt_menu)
             if info.get("needs_gaussian") and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
@@ -7243,7 +7303,7 @@ QLabel:hover {{
         menu = QtWidgets.QMenu(self)
         sub = menu.addMenu("Apply filter")
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(info['label'], menu)
+            act = QtWidgets.QAction(self._filter_action_label(key), menu)
             if info.get('needs_gaussian') and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
