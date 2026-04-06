@@ -8512,6 +8512,30 @@ QLabel:hover {{
             header_new = dict(header)
             header_new["xPixel"] = int(arr.shape[1])
             header_new["yPixel"] = int(arr.shape[0])
+            stored_extent = None
+            view_extent = view.get("extent_raw")
+            if view_extent is None:
+                view_extent = view.get("extent")
+            if view_extent is not None and len(view_extent) == 4:
+                try:
+                    x0, x1, y_a, y_b = [float(v) for v in view_extent]
+                    stored_extent = (x0, x1, y_a, y_b)
+                    xmin, xmax = sorted((x0, x1))
+                    ymin, ymax = sorted((y_a, y_b))
+                    x_range = max(xmax - xmin, 1e-12)
+                    y_range = max(ymax - ymin, 1e-12)
+                    x_center = 0.5 * (xmin + xmax)
+                    y_center = 0.5 * (ymin + ymax)
+                    header_new["XScanRange"] = x_range
+                    header_new["YScanRange"] = y_range
+                    header_new["XRange"] = x_range
+                    header_new["YRange"] = y_range
+                    header_new["xCenter"] = x_center
+                    header_new["yCenter"] = y_center
+                    header_new["XCenter"] = x_center
+                    header_new["YCenter"] = y_center
+                except Exception:
+                    pass
             key = self._make_processed_key(path, op=op_name, channel_idx=ch_idx)
             self._processed_views[key] = {
                 "arr_by_channel": arr_by_channel,
@@ -8519,6 +8543,7 @@ QLabel:hover {{
                 "fds": fds_new,
                 "channel_idx": ch_idx,
                 "source": path,
+                "extent_raw": stored_extent,
                 "label": tag,
                 "op": op_name,
             }

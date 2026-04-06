@@ -288,6 +288,7 @@ class SessionController:
                 "op": data.get("op"),
                 "label": data.get("label"),
                 "channel_idx": data.get("channel_idx"),
+                "extent_raw": data.get("extent_raw"),
                 "header": data.get("header"),
                 "fds": data.get("fds"),
                 "arr_files": arr_files,
@@ -630,6 +631,7 @@ class SessionController:
                     "fds": fds,
                     "channel_idx": entry.get("channel_idx"),
                     "source": entry.get("source"),
+                    "extent_raw": entry.get("extent_raw"),
                     "label": entry.get("label"),
                     "op": entry.get("op"),
                 }

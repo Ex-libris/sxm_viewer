@@ -519,7 +519,17 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     axis_unit = "px"
     xpix = int(header.get("xPixel", 128))
     ypix = int(header.get("yPixel", xpix))
-    base_extent = viewer._header_extent(header)
+    base_extent = None
+    if getattr(viewer, "_is_processed_key", lambda _k: False)(file_key):
+        try:
+            processed_view = getattr(viewer, "_processed_views", {}).get(file_key) or {}
+            stored_extent = processed_view.get("extent_raw")
+            if stored_extent is not None and len(stored_extent) == 4:
+                base_extent = tuple(float(v) for v in stored_extent)
+        except Exception:
+            base_extent = None
+    if base_extent is None:
+        base_extent = viewer._header_extent(header)
     unit_normalized, arr_base = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
     arr_base = np.asarray(arr_base)
     arr_adj, adjusted_extent = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_base, base_extent)
