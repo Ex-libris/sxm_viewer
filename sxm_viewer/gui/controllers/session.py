@@ -897,6 +897,9 @@ class SessionController:
         self._set_checked_silent(getattr(viewer, "spectro_thumbnail_markers_cb", None), viewer.show_spectra)
         self._set_checked_silent(getattr(viewer, "spectro_preview_markers_cb", None), viewer.show_preview_spectra)
         self._set_checked_silent(getattr(viewer, "spectro_miniatures_cb", None), viewer.show_spectro_miniatures)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_thumb_btn", None), viewer.show_spectra)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_preview_btn", None), viewer.show_preview_spectra)
+        self._set_checked_silent(getattr(viewer, "toolbar_spectro_miniatures_btn", None), viewer.show_spectro_miniatures)
         self._set_checked_silent(getattr(viewer, "scale_bar_cb", None), bool(ui.get("scale_bar", False)))
         self._set_checked_silent(getattr(viewer, "preview_lock_cb", None), viewer.preview_locked)
 
@@ -904,6 +907,9 @@ class SessionController:
             ("spectro_overlay_act", viewer.show_spectra),
             ("preview_spectra_toggle_btn", viewer.show_spectra),
             ("spectro_miniatures_act", viewer.show_spectro_miniatures),
+            ("toolbar_spectro_markers_act", viewer.show_spectra),
+            ("toolbar_spectro_preview_act", viewer.show_preview_spectra),
+            ("toolbar_spectro_miniatures_act", viewer.show_spectro_miniatures),
             ("matrix_markers_act", viewer.show_matrix_markers),
             ("single_markers_act", viewer.show_single_markers),
             ("compact_markers_act", viewer.compact_markers),

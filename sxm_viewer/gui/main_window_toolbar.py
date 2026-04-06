@@ -60,6 +60,24 @@ def _load_molecule_pixmap(size: QtCore.QSize, color: QtGui.QColor | None = None)
         return QtGui.QPixmap()
 
 
+def _make_toolbar_toggle_button(
+    parent,
+    text: str,
+    checked: bool,
+    tooltip: str,
+    handler,
+):
+    btn = QtWidgets.QToolButton(parent)
+    btn.setText(text)
+    btn.setCheckable(True)
+    btn.setChecked(bool(checked))
+    btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+    btn.setAutoRaise(False)
+    btn.setToolTip(tooltip)
+    btn.toggled.connect(handler)
+    return btn
+
+
 def create_main_toolbar(viewer):
     try:
         toolbar = QToolBar("Main toolbar", viewer)
@@ -144,8 +162,57 @@ def create_main_toolbar(viewer):
     viewer.toolbar_export_xyz_act.triggered.connect(viewer.on_export_xyz_files)
 
     toolbar.addSeparator()
-    viewer.toolbar_spectro_browser_act = toolbar.addAction(_icon("view-list"), "Spectro browser")
+    viewer.toolbar_spectro_browser_act = QtWidgets.QAction(_icon("view-list"), "Spectroscopy", viewer)
+    viewer.toolbar_spectro_browser_act.setToolTip("Open the spectroscopy browser. Use the dropdown for spectroscopy display controls.")
     viewer.toolbar_spectro_browser_act.triggered.connect(lambda: viewer.open_spectro_browser())
+    viewer.toolbar_spectro_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_spectro_btn.setDefaultAction(viewer.toolbar_spectro_browser_act)
+    viewer.toolbar_spectro_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+    viewer.toolbar_spectro_menu = QtWidgets.QMenu(viewer.toolbar_spectro_btn)
+    viewer.toolbar_spectro_markers_act = viewer.toolbar_spectro_menu.addAction("Thumbnail markers")
+    viewer.toolbar_spectro_markers_act.setCheckable(True)
+    viewer.toolbar_spectro_markers_act.setChecked(getattr(viewer, "show_spectra", True))
+    viewer.toolbar_spectro_markers_act.setToolTip("Show clickable spectroscopy point markers on image thumbnails")
+    viewer.toolbar_spectro_markers_act.toggled.connect(viewer.on_show_spectra_toggled)
+    viewer.toolbar_spectro_preview_act = viewer.toolbar_spectro_menu.addAction("Preview markers")
+    viewer.toolbar_spectro_preview_act.setCheckable(True)
+    viewer.toolbar_spectro_preview_act.setChecked(getattr(viewer, "show_preview_spectra", getattr(viewer, "show_spectra", True)))
+    viewer.toolbar_spectro_preview_act.setToolTip("Show spectroscopy point markers on the main preview")
+    viewer.toolbar_spectro_preview_act.toggled.connect(viewer.on_show_preview_spectra_toggled)
+    viewer.toolbar_spectro_miniatures_act = viewer.toolbar_spectro_menu.addAction("Thumbnail miniatures")
+    viewer.toolbar_spectro_miniatures_act.setCheckable(True)
+    viewer.toolbar_spectro_miniatures_act.setChecked(getattr(viewer, "show_spectro_miniatures", False))
+    viewer.toolbar_spectro_miniatures_act.setToolTip("Show spectroscopy miniatures as separate thumbnail cards in the main grid")
+    viewer.toolbar_spectro_miniatures_act.toggled.connect(viewer.on_show_spectro_miniatures_toggled)
+    viewer.toolbar_spectro_menu.addSeparator()
+    viewer.toolbar_spectro_menu.addAction("Open browser", lambda: viewer.open_spectro_browser())
+    viewer.toolbar_spectro_btn.setMenu(viewer.toolbar_spectro_menu)
+    toolbar.addWidget(viewer.toolbar_spectro_btn)
+    viewer.toolbar_spectro_thumb_btn = _make_toolbar_toggle_button(
+        toolbar,
+        "Thumb markers",
+        getattr(viewer, "show_spectra", True),
+        "Show clickable spectroscopy point markers on image thumbnails",
+        viewer.on_show_spectra_toggled,
+    )
+    toolbar.addWidget(viewer.toolbar_spectro_thumb_btn)
+    viewer.toolbar_spectro_preview_btn = _make_toolbar_toggle_button(
+        toolbar,
+        "Preview markers",
+        getattr(viewer, "show_preview_spectra", getattr(viewer, "show_spectra", True)),
+        "Show spectroscopy point markers on the main preview",
+        viewer.on_show_preview_spectra_toggled,
+    )
+    toolbar.addWidget(viewer.toolbar_spectro_preview_btn)
+    viewer.toolbar_spectro_miniatures_btn = _make_toolbar_toggle_button(
+        toolbar,
+        "Miniatures",
+        getattr(viewer, "show_spectro_miniatures", False),
+        "Show spectroscopy miniatures as separate thumbnail cards in the main grid",
+        viewer.on_show_spectro_miniatures_toggled,
+    )
+    toolbar.addWidget(viewer.toolbar_spectro_miniatures_btn)
+    toolbar.addSeparator()
     viewer.toolbar_shortcuts_act = toolbar.addAction(_icon("help-about"), "Shortcuts")
     viewer.toolbar_shortcuts_act.triggered.connect(viewer._on_show_shortcuts_requested)
 

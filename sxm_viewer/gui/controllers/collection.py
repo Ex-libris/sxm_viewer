@@ -1261,15 +1261,31 @@ class CollectionController:
             "spectro_preview_markers_cb",
             "spectro_miniatures_cb",
             "spectro_miniatures_act",
+            "toolbar_spectro_markers_act",
+            "toolbar_spectro_preview_act",
+            "toolbar_spectro_miniatures_act",
+            "toolbar_spectro_thumb_btn",
+            "toolbar_spectro_preview_btn",
+            "toolbar_spectro_miniatures_btn",
         ):
             widget = getattr(viewer, attr, None)
             if widget is None:
                 continue
             try:
                 widget.blockSignals(True)
-                if attr in {"show_spectra_cb", "spectro_preview_markers_cb"}:
+                if attr in {
+                    "show_spectra_cb",
+                    "spectro_preview_markers_cb",
+                    "toolbar_spectro_preview_act",
+                    "toolbar_spectro_preview_btn",
+                }:
                     widget.setChecked(viewer.show_preview_spectra)
-                elif attr in {"spectro_miniatures_cb", "spectro_miniatures_act"}:
+                elif attr in {
+                    "spectro_miniatures_cb",
+                    "spectro_miniatures_act",
+                    "toolbar_spectro_miniatures_act",
+                    "toolbar_spectro_miniatures_btn",
+                }:
                     widget.setChecked(viewer.show_spectro_miniatures)
                 else:
                     widget.setChecked(viewer.show_spectra)

@@ -580,6 +580,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
         self.toolbar_load_mol_btn = None
+        self.toolbar_spectro_btn = None
+        self.toolbar_spectro_menu = None
+        self.toolbar_spectro_markers_act = None
+        self.toolbar_spectro_preview_act = None
+        self.toolbar_spectro_miniatures_act = None
+        self.toolbar_spectro_thumb_btn = None
+        self.toolbar_spectro_preview_btn = None
+        self.toolbar_spectro_miniatures_btn = None
         self.preview_spectra_toggle_btn = None
         self.preview_molecules_toggle_btn = None
         self.preview_grid_toggle_btn = None
@@ -8853,7 +8861,13 @@ QLabel:hover {{
         self.config['show_spectra'] = self.show_spectra; save_config(self.config)
         # Keep UI toggles in sync
         try:
-            for attr in ("spectro_overlay_act", "preview_spectra_toggle_btn", "spectro_thumbnail_markers_cb"):
+            for attr in (
+                "spectro_overlay_act",
+                "preview_spectra_toggle_btn",
+                "spectro_thumbnail_markers_cb",
+                "toolbar_spectro_markers_act",
+                "toolbar_spectro_thumb_btn",
+            ):
                 widget = getattr(self, attr, None)
                 if widget is None:
                     continue
@@ -8881,7 +8895,12 @@ QLabel:hover {{
         self.config["show_spectro_miniatures"] = self.show_spectro_miniatures
         save_config(self.config)
         try:
-            for attr in ("spectro_miniatures_act", "spectro_miniatures_cb"):
+            for attr in (
+                "spectro_miniatures_act",
+                "spectro_miniatures_cb",
+                "toolbar_spectro_miniatures_act",
+                "toolbar_spectro_miniatures_btn",
+            ):
                 widget = getattr(self, attr, None)
                 if widget is None:
                     continue
@@ -8900,7 +8919,12 @@ QLabel:hover {{
         self.show_preview_spectra = bool(checked)
         self.config['show_preview_spectra'] = self.show_preview_spectra; save_config(self.config)
         try:
-            for attr in ("show_spectra_cb", "spectro_preview_markers_cb"):
+            for attr in (
+                "show_spectra_cb",
+                "spectro_preview_markers_cb",
+                "toolbar_spectro_preview_act",
+                "toolbar_spectro_preview_btn",
+            ):
                 widget = getattr(self, attr, None)
                 if widget is None:
                     continue
