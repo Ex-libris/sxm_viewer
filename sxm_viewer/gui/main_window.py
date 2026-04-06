@@ -6851,13 +6851,8 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
-        # if lazy loading is enabled, mark spectros pending; otherwise reload immediately
-        if getattr(self, "lazy_spectros_enabled", False):
-            self._spectros_pending = True
-            self._spectros_loaded = False
-            self._update_spectro_stats_label()
-        else:
-            self._reload_spectros(refresh=True)
+        # Changing the spectroscopy path should refresh spectroscopy immediately.
+        self._reload_spectros(refresh=True)
 
     def ensure_spectros_loaded(self, refresh: bool = True):
         """Load spectroscopies on-demand if they were deferred."""

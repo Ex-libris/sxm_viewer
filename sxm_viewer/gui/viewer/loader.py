@@ -321,25 +321,13 @@ def load_files(
                 except Exception:
                     pass
 
-        # load spectroscopy markers referencing this folder
+        # Always load spectroscopy together with an image-folder load.
+        # Visibility toggles decide whether markers/miniatures are shown, not
+        # whether spectroscopy metadata is available in memory.
         log_status("Loading spectroscopy references...")
-        if getattr(viewer, "lazy_spectros_enabled", False):
-            viewer.spectros = []
-            viewer.matrix_spectros = []
-            viewer.spectros_by_image = defaultdict(list)
-            viewer.files_with_matrix = set()
-            viewer._spectros_loaded = False
-            viewer._spectros_pending = True
-            try:
-                viewer._update_spectro_stats_label()
-            except Exception:
-                pass
-            t_specs = time.perf_counter()
-            log_status("[Perf] Spectroscopy load deferred (lazy mode on)")
-        else:
-            viewer._spectros_pending = False
-            viewer._reload_spectros(refresh=False)
-            t_specs = time.perf_counter()
+        viewer._spectros_pending = False
+        viewer._reload_spectros(refresh=False)
+        t_specs = time.perf_counter()
     else:
         log_status("Skipping spectroscopy reload for explicit file drop")
         t_specs = time.perf_counter()
