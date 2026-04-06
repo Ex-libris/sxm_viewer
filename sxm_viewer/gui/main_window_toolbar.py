@@ -151,8 +151,20 @@ def create_main_toolbar(viewer):
     viewer.toolbar_spectro_btn.setDefaultAction(viewer.toolbar_spectro_browser_act)
     viewer.toolbar_spectro_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
     viewer.toolbar_spectro_menu = QtWidgets.QMenu(viewer.toolbar_spectro_btn)
+    viewer.toolbar_spectro_menu.setToolTipsVisible(True)
     viewer.toolbar_spectro_menu.addAction("Open browser", lambda: viewer.open_spectro_browser())
     viewer.toolbar_spectro_menu.addSeparator()
+    viewer.toolbar_spectro_repeat_share_act = viewer.toolbar_spectro_menu.addAction("Share across repeat scans")
+    viewer.toolbar_spectro_repeat_share_act.setCheckable(True)
+    viewer.toolbar_spectro_repeat_share_act.setChecked(getattr(viewer, "spectro_share_overlapping_repeats", False))
+    repeat_tip = (
+        "When enabled, spectros whose coordinates fall inside several near-identical overlapping image scans "
+        "are shown on all of those repeat scans instead of being split to only the nearest image in time."
+    )
+    viewer.toolbar_spectro_repeat_share_act.setToolTip(repeat_tip)
+    viewer.toolbar_spectro_repeat_share_act.setStatusTip(repeat_tip)
+    viewer.toolbar_spectro_repeat_share_act.setWhatsThis(repeat_tip)
+    viewer.toolbar_spectro_repeat_share_act.toggled.connect(viewer.on_spectro_share_overlapping_repeats_toggled)
     viewer.toolbar_spectro_markers_act = viewer.toolbar_spectro_menu.addAction("Thumbnail markers")
     viewer.toolbar_spectro_markers_act.setCheckable(True)
     viewer.toolbar_spectro_markers_act.setChecked(getattr(viewer, "show_spectra", True))

@@ -1655,6 +1655,27 @@ class MultiPreviewCanvas(FigureCanvas):
             ey0, ey1 = 0.0, float(max(arr_h - 1, 1))
         cols = max(arr_w - 1, 1)
         rows = max(arr_h - 1, 1)
+        def _spec_identity(spec):
+            if not spec:
+                return None
+            base = spec.get("path")
+            try:
+                base = str(Path(base))
+            except Exception:
+                base = str(base)
+            idx = spec.get("matrix_index")
+            if idx is not None:
+                return f"{base}#idx{idx}"
+            x = spec.get("x")
+            y = spec.get("y")
+            if x is not None or y is not None:
+                try:
+                    x_val = float(x) if x is not None else ""
+                    y_val = float(y) if y is not None else ""
+                    return f"{base}#pos{round(x_val, 6)}_{round(y_val, 6)}"
+                except Exception:
+                    return f"{base}#pos{x}_{y}"
+            return base
         def _axis_from_pixel(col, row):
             row_use = float(row)
             # Stored spectro marker rows are in thumbnail/image pixel space
@@ -1688,6 +1709,7 @@ class MultiPreviewCanvas(FigureCanvas):
         points = []
         missing_specs = []
         highlight_spec = view.get('highlight_spec')
+        highlight_key = _spec_identity(highlight_spec)
         pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
         pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
         for idx, s in enumerate(specs):
@@ -1697,7 +1719,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
             x, y = _axis_from_pixel(coords[0], coords[1])
             points.append((x, y, s))
-            if highlight_spec is not None and s is highlight_spec:
+            if highlight_key is not None and _spec_identity(s) == highlight_key:
                 highlight_xs.append(x); highlight_ys.append(y)
             else:
                 normal_xs.append(x); normal_ys.append(y)
@@ -1714,7 +1736,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
                 points.append((fx, fy, spec))
-                if highlight_spec is not None and spec is highlight_spec:
+                if highlight_key is not None and _spec_identity(spec) == highlight_key:
                     highlight_xs.append(fx); highlight_ys.append(fy)
                 else:
                     normal_xs.append(fx); normal_ys.append(fy)

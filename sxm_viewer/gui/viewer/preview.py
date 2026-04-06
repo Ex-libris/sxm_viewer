@@ -553,9 +553,11 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
         try:
             highlight_path = str(highlight_candidate.get("image_key") or highlight_candidate.get("path") or "")
+            shared_keys = [str(key) for key in (highlight_candidate.get("shared_image_keys") or []) if key]
         except Exception:
             highlight_path = ""
-        if highlight_path and highlight_path == str(header_path):
+            shared_keys = []
+        if (highlight_path and highlight_path == str(header_path)) or str(header_path) in shared_keys:
             highlight_spec = highlight_candidate
     if spec_entries and show_preview_specs:
         if viewer.show_single_markers:
@@ -699,9 +701,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     if highlight_candidate and getattr(viewer, "spectro_highlight_glow", True):
         try:
             highlight_path = str(highlight_candidate.get('image_key') or highlight_candidate.get('path') or '')
+            shared_keys = [str(key) for key in (highlight_candidate.get("shared_image_keys") or []) if key]
         except Exception:
             highlight_path = ''
-        if highlight_path and highlight_path == str(header_path):
+            shared_keys = []
+        if (highlight_path and highlight_path == str(header_path)) or str(header_path) in shared_keys:
             highlight_spec = highlight_candidate
     if spec_entries and show_preview_specs:
         if viewer.show_single_markers:

@@ -40,10 +40,17 @@ def _update_spectro_stats_label(viewer, stats=None):
     thumb_markers = bool(getattr(viewer, 'show_spectra', True))
     preview_markers = bool(getattr(viewer, 'show_preview_spectra', thumb_markers))
     miniatures = bool(getattr(viewer, 'show_spectro_miniatures', False))
+    shared_repeats = bool(getattr(viewer, "spectro_share_overlapping_repeats", False))
     mode_text = (
         f"Thumbnail markers {'On' if thumb_markers else 'Off'} | "
         f"Preview {'On' if preview_markers else 'Off'} | "
-        f"Miniatures {'On' if miniatures else 'Off'}"
+        f"Miniatures {'On' if miniatures else 'Off'} | "
+        f"Assignment {'Shared repeats' if shared_repeats else 'Nearest image'}"
+    )
+    assignment_tip = (
+        "Assignment mode: shared repeats. Spectra inside several near-identical overlapping scans appear on all of those repeat images."
+        if shared_repeats
+        else "Assignment mode: nearest image. Each spectrum is attached to one best-matching image only."
     )
     if getattr(viewer, '_spectros_loading', False):
         viewer.spectro_stats_label.setText(f"Spectroscopy loading...\n{mode_text}")
@@ -51,7 +58,8 @@ def _update_spectro_stats_label(viewer, stats=None):
             "Spectroscopy files are being scanned now. "
             "Thumbnail markers draw clickable points on image thumbnails. "
             "Preview markers draw the same points in the preview panel. "
-            "Miniatures add separate spectroscopy cards into the thumbnail stream."
+            "Miniatures add separate spectroscopy cards into the thumbnail stream. "
+            + assignment_tip
         )
         return
     if getattr(viewer, '_spectros_pending', False) and not getattr(viewer, '_spectros_loaded', False):
@@ -60,7 +68,8 @@ def _update_spectro_stats_label(viewer, stats=None):
             "Spectroscopy scanning is deferred until a browser or visible spectroscopy mode needs it. "
             "Thumbnail markers draw clickable points on image thumbnails. "
             "Preview markers draw the same points in the preview panel. "
-            "Miniatures add separate spectroscopy cards into the thumbnail stream."
+            "Miniatures add separate spectroscopy cards into the thumbnail stream. "
+            + assignment_tip
         )
         return
     total = len(getattr(viewer, 'spectros', []) or [])
@@ -84,7 +93,8 @@ def _update_spectro_stats_label(viewer, stats=None):
         f"Matrix datasets: {matrix_count}{matrix_desc}. "
         "Thumbnail markers draw clickable points on image thumbnails. "
         "Preview markers draw the same points in the preview panel. "
-        "Miniatures add separate spectroscopy cards into the thumbnail stream."
+        "Miniatures add separate spectroscopy cards into the thumbnail stream. "
+        + assignment_tip
     )
 
 
@@ -160,6 +170,12 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         viewer.spectro_preview_lbl.setText(Path(spec.get('path','')).name)
     try:
         image_key = spec.get('image_key')
+        shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
+        current_preview = str(viewer.last_preview[0]) if getattr(viewer, "last_preview", None) else ""
+        if current_preview and current_preview in shared_keys:
+            image_key = current_preview
+        elif not image_key and shared_keys:
+            image_key = shared_keys[0]
         if image_key and image_key in viewer._thumb_labels:
             viewer.selected_file_for_thumbs = image_key
             viewer._refresh_thumb_selection_styles()

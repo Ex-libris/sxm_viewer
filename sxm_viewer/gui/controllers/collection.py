@@ -737,10 +737,12 @@ class CollectionController:
             "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
             "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
             "show_spectro_miniatures": bool(getattr(self.viewer, "show_spectro_miniatures", False)),
+            "share_overlapping_repeats": bool(getattr(self.viewer, "spectro_share_overlapping_repeats", False)),
             "spectro_settings": {
                 "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
                 "show_spectra": bool(getattr(self.viewer, "show_spectra", True)),
                 "show_spectro_miniatures": bool(getattr(self.viewer, "show_spectro_miniatures", False)),
+                "share_overlapping_repeats": bool(getattr(self.viewer, "spectro_share_overlapping_repeats", False)),
                 "show_matrix_markers": bool(getattr(self.viewer, "show_matrix_markers", True)),
                 "show_single_markers": bool(getattr(self.viewer, "show_single_markers", True)),
                 "compact_markers": bool(getattr(self.viewer, "compact_markers", True)),
@@ -1241,6 +1243,9 @@ class CollectionController:
         viewer.show_spectra = bool(spectro_settings.get("show_spectra", True))
         viewer.show_preview_spectra = bool(spectro_settings.get("show_preview_spectra", viewer.show_spectra))
         viewer.show_spectro_miniatures = bool(spectro_settings.get("show_spectro_miniatures", getattr(viewer, "show_spectro_miniatures", False)))
+        viewer.spectro_share_overlapping_repeats = bool(
+            spectro_settings.get("share_overlapping_repeats", getattr(viewer, "spectro_share_overlapping_repeats", False))
+        )
         viewer.show_matrix_markers = bool(spectro_settings.get("show_matrix_markers", True))
         viewer.show_single_markers = bool(spectro_settings.get("show_single_markers", True))
         viewer.compact_markers = bool(spectro_settings.get("compact_markers", True))
@@ -1265,6 +1270,7 @@ class CollectionController:
             "toolbar_spectro_markers_act",
             "toolbar_spectro_preview_act",
             "toolbar_spectro_miniatures_act",
+            "toolbar_spectro_repeat_share_act",
             "toolbar_spectro_matrix_markers_act",
             "toolbar_spectro_single_markers_act",
             "toolbar_spectro_compact_markers_act",
@@ -1292,6 +1298,8 @@ class CollectionController:
                     "toolbar_spectro_miniatures_btn",
                 }:
                     widget.setChecked(viewer.show_spectro_miniatures)
+                elif attr in {"toolbar_spectro_repeat_share_act"}:
+                    widget.setChecked(viewer.spectro_share_overlapping_repeats)
                 elif attr in {"matrix_markers_act", "toolbar_spectro_matrix_markers_act"}:
                     widget.setChecked(viewer.show_matrix_markers)
                 elif attr in {"single_markers_act", "toolbar_spectro_single_markers_act"}:
@@ -1309,6 +1317,11 @@ class CollectionController:
                     widget.blockSignals(False)
                 except Exception:
                     pass
+        try:
+            if getattr(viewer, "spectros", None):
+                viewer._assign_spectros_to_images()
+        except Exception:
+            pass
         try:
             viewer._update_spectro_stats_label()
         except Exception:

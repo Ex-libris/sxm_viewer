@@ -355,6 +355,7 @@ class SessionController:
             "show_spectra": bool(getattr(viewer, "show_spectra", True)),
             "show_preview_spectra": bool(getattr(viewer, "show_preview_spectra", True)),
             "show_spectro_miniatures": bool(getattr(viewer, "show_spectro_miniatures", False)),
+            "spectro_share_overlapping_repeats": bool(getattr(viewer, "spectro_share_overlapping_repeats", False)),
             "show_matrix_markers": bool(getattr(viewer, "show_matrix_markers", True)),
             "show_single_markers": bool(getattr(viewer, "show_single_markers", True)),
             "compact_markers": bool(getattr(viewer, "compact_markers", True)),
@@ -874,6 +875,9 @@ class SessionController:
         viewer.show_spectra = bool(ui.get("show_spectra", getattr(viewer, "show_spectra", True)))
         viewer.show_preview_spectra = bool(ui.get("show_preview_spectra", getattr(viewer, "show_preview_spectra", True)))
         viewer.show_spectro_miniatures = bool(ui.get("show_spectro_miniatures", getattr(viewer, "show_spectro_miniatures", False)))
+        viewer.spectro_share_overlapping_repeats = bool(
+            ui.get("spectro_share_overlapping_repeats", getattr(viewer, "spectro_share_overlapping_repeats", False))
+        )
         viewer.show_matrix_markers = bool(ui.get("show_matrix_markers", getattr(viewer, "show_matrix_markers", True)))
         viewer.show_single_markers = bool(ui.get("show_single_markers", getattr(viewer, "show_single_markers", True)))
         viewer.compact_markers = bool(ui.get("compact_markers", getattr(viewer, "compact_markers", True)))
@@ -910,6 +914,7 @@ class SessionController:
             ("toolbar_spectro_markers_act", viewer.show_spectra),
             ("toolbar_spectro_preview_act", viewer.show_preview_spectra),
             ("toolbar_spectro_miniatures_act", viewer.show_spectro_miniatures),
+            ("toolbar_spectro_repeat_share_act", viewer.spectro_share_overlapping_repeats),
             ("highlight_glow_act", viewer.spectro_highlight_glow),
             ("toolbar_spectro_highlight_act", viewer.spectro_highlight_glow),
             ("matrix_markers_act", viewer.show_matrix_markers),
@@ -936,6 +941,11 @@ class SessionController:
 
         try:
             viewer._apply_detail_view_theme()
+        except Exception:
+            pass
+        try:
+            if getattr(viewer, "spectros", None):
+                viewer._assign_spectros_to_images()
         except Exception:
             pass
         if load_spectros:

@@ -353,6 +353,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
         self.show_spectro_miniatures = bool(self.config.get("show_spectro_miniatures", False))
+        self.spectro_share_overlapping_repeats = bool(self.config.get("spectro_share_overlapping_repeats", False))
         self.spectro_miniature_default_channel = str(self.config.get("spectro_miniature_default_channel", "") or "")
         self.spectro_thumb_channel_by_path = dict(self.config.get("spectro_thumb_channel_by_path", {}) or {})
         self.spectro_highlight_glow = bool(self.config.get("spectro_highlight_glow", True))
@@ -4519,7 +4520,8 @@ QLabel:hover {{
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
-            if highlight_key == str(file_key):
+            shared_keys = [str(key) for key in (self._highlighted_spec.get("shared_image_keys") or []) if key]
+            if highlight_key == str(file_key) or str(file_key) in shared_keys:
                 highlight_spec = self._highlighted_spec
         if not getattr(self, "spectro_highlight_glow", True):
             highlight_spec = None
@@ -7431,7 +7433,12 @@ QLabel:hover {{
             if not self._highlight_timer.isActive():
                 self._highlight_timer.start()
             try:
-                target_key = str(spec.get('image_key') or spec.get('path') or '')
+                shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
+                current_preview_key = str(self.last_preview[0]) if self.last_preview else ""
+                if current_preview_key and current_preview_key in shared_keys:
+                    target_key = current_preview_key
+                else:
+                    target_key = str(spec.get('image_key') or spec.get('path') or '')
             except Exception:
                 target_key = ''
             if self.last_preview and target_key and str(self.last_preview[0]) == target_key:
@@ -8968,6 +8975,26 @@ QLabel:hover {{
         self._update_spectro_stats_label()
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def on_spectro_share_overlapping_repeats_toggled(self, checked: bool):
+        self.spectro_share_overlapping_repeats = bool(checked)
+        self.config["spectro_share_overlapping_repeats"] = self.spectro_share_overlapping_repeats
+        save_config(self.config)
+        act = getattr(self, "toolbar_spectro_repeat_share_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.spectro_share_overlapping_repeats)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if self.spectros:
+            self._assign_spectros_to_images()
+        self._update_spectro_stats_label()
+        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        if self.last_preview:
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        self._schedule_marker_refresh()
 
     def on_toggle_highlight_glow(self, checked: bool):
         self.spectro_highlight_glow = bool(checked)
