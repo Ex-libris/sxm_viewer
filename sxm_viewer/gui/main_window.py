@@ -400,6 +400,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectro_force_single_mode = bool(self.config.get("spectro_force_single_mode", False))
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
+        self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
         self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
@@ -1660,10 +1661,33 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _set_detail_dark_view_state(self, enabled: bool, *, follow_dark_mode=None, persist: bool = True):
+        self.detail_dark_view = bool(enabled)
+        if follow_dark_mode is not None:
+            self._detail_theme_follows_dark_mode = bool(follow_dark_mode)
+        act = getattr(self, "detail_dark_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.detail_dark_view)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if persist:
+            self.config["detail_dark_view"] = self.detail_dark_view
+            self.config["detail_theme_follows_dark_mode"] = bool(
+                getattr(self, "_detail_theme_follows_dark_mode", True)
+            )
+            save_config(self.config)
+
     def _apply_detail_view_theme(self):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is not None and hasattr(canvas, 'set_detail_theme'):
-            canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []) or [])
+        for canvas in canvases:
+            if canvas is not None and hasattr(canvas, "set_detail_theme"):
+                try:
+                    canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
+                except Exception:
+                    continue
 
     def _apply_preview_workspace_theme(self):
         dark = bool(getattr(self, "dark_mode", False))
@@ -3828,7 +3852,14 @@ QLabel:hover {{
                 self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
-        self.config['dark_mode'] = self.dark_mode; save_config(self.config)
+        if getattr(self, "_detail_theme_follows_dark_mode", True):
+            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        self.config['dark_mode'] = self.dark_mode
+        self.config['detail_dark_view'] = self.detail_dark_view
+        self.config['detail_theme_follows_dark_mode'] = bool(
+            getattr(self, "_detail_theme_follows_dark_mode", True)
+        )
+        save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
@@ -8869,7 +8900,14 @@ QLabel:hover {{
                 self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
-        self.config['dark_mode'] = self.dark_mode; save_config(self.config)
+        if getattr(self, "_detail_theme_follows_dark_mode", True):
+            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        self.config['dark_mode'] = self.dark_mode
+        self.config['detail_dark_view'] = self.detail_dark_view
+        self.config['detail_theme_follows_dark_mode'] = bool(
+            getattr(self, "_detail_theme_follows_dark_mode", True)
+        )
+        save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
@@ -9089,8 +9127,11 @@ QLabel:hover {{
                 act.blockSignals(False)
 
     def on_detail_dark_toggled(self, checked: bool):
-        self.detail_dark_view = bool(checked)
-        self.config['detail_dark_view'] = self.detail_dark_view; save_config(self.config)
+        self._set_detail_dark_view_state(
+            checked,
+            follow_dark_mode=(bool(checked) == bool(getattr(self, "dark_mode", False))),
+            persist=True,
+        )
         self._apply_detail_view_theme()
 
     def on_detail_grid_toggled(self, checked: bool):
