@@ -329,6 +329,58 @@ def _constant_axis_value_nm(values, unit_hint="nm", tol_nm=1e-3):
     return None
 
 
+def _metadata_z_from_spec(spec):
+    if not spec:
+        return None, None, None
+    best = None
+    for key, value in list((spec or {}).items()):
+        label = str(key or "").strip()
+        if not label:
+            continue
+        label_low = label.lower()
+        if not any(token in label_low for token in ("z-controller", "absolute z", "z absolute", "z_abs", "abs z", "topo", "topography", "piezo")) and label_low not in {"z", "z (m)", "z_nm"}:
+            continue
+        unit_hint = ""
+        if "(m)" in label_low:
+            unit_hint = "m"
+        elif "(nm)" in label_low:
+            unit_hint = "nm"
+        elif "(pm)" in label_low:
+            unit_hint = "pm"
+        elif "(um)" in label_low:
+            unit_hint = "um"
+        level = _value_to_nm(value, unit_hint=unit_hint)
+        if level is None:
+            continue
+        score = 0
+        preferred_label = None
+        if "z-controller" in label_low and ">z" in label_low.replace("_", ">"):
+            score = 120
+            preferred_label = "Z piezo absolute"
+        elif "z-controller" in label_low:
+            score = 110
+            preferred_label = "Z piezo absolute"
+        elif "absolute z" in label_low or "z absolute" in label_low or "z_abs" in label_low or "abs z" in label_low:
+            score = 100
+            preferred_label = "Z piezo absolute"
+        elif label_low.endswith("z_(m)") or label_low.endswith("z (m)") or label_low in {"z", "z_nm"}:
+            score = 80
+            preferred_label = "Z"
+        elif "piezo" in label_low:
+            score = 70
+            preferred_label = "Z piezo"
+        elif "topo" in label_low or "topography" in label_low:
+            score = 20
+            preferred_label = "Topo"
+        clean_label = preferred_label or re.sub(r"\s*\(.*?\)", "", label).replace("_", " ").strip() or "Z"
+        candidate = (score, float(level), clean_label, "nm")
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None, None, None
+    return best[1], best[2], best[3]
+
+
 def _extract_spec_z_level(spec):
     direct = spec.get("z_level_nm")
     if direct is not None:
@@ -339,7 +391,6 @@ def _extract_spec_z_level(spec):
     for key, label in (
         ("z_abs_nm", "Z abs"),
         ("z_nm", "Z"),
-        ("topo_nm", "Topo"),
     ):
         value = spec.get(key)
         if value is not None:
@@ -347,6 +398,12 @@ def _extract_spec_z_level(spec):
                 return float(value), label, "nm"
             except Exception:
                 continue
+    level, label, unit = _metadata_z_from_spec(spec)
+    if level is not None:
+        spec["z_level_nm"] = float(level)
+        spec["z_level_label"] = str(label or "Z")
+        spec["z_level_unit"] = str(unit or "nm")
+        return float(level), str(label or "Z"), str(unit or "nm")
     for axis in list(spec.get("AxisChoices") or []):
         try:
             key = str(axis.get("key") or "").strip().lower()
@@ -377,6 +434,12 @@ def _extract_spec_z_level(spec):
         level = _constant_axis_value_nm(alt_vals, unit_hint=spec.get("AltAxisUnit") or "nm")
         if level is not None:
             return level, alt_label, "nm"
+    topo_value = spec.get("topo_nm")
+    if topo_value is not None:
+        try:
+            return float(topo_value), "Topo", "nm"
+        except Exception:
+            pass
     return None, None, None
 
 

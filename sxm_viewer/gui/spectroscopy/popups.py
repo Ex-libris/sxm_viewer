@@ -37,6 +37,56 @@ from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog, Matrix
 from ..palettes import DEFAULT_COLOR_CYCLE
 
 
+def _prepare_popup_window(dlg, viewer):
+    if dlg is None:
+        return
+    base_flags = (
+        QtCore.Qt.Window
+        | QtCore.Qt.CustomizeWindowHint
+        | QtCore.Qt.WindowTitleHint
+        | QtCore.Qt.WindowSystemMenuHint
+        | QtCore.Qt.WindowMinimizeButtonHint
+        | QtCore.Qt.WindowMaximizeButtonHint
+        | QtCore.Qt.WindowCloseButtonHint
+    )
+    try:
+        dlg.setParent(None, base_flags)
+    except Exception:
+        pass
+    try:
+        dlg.setWindowFlags(base_flags)
+    except Exception:
+        pass
+    try:
+        dlg.setWindowFlag(QtCore.Qt.MSWindowsFixedSizeDialogHint, False)
+    except Exception:
+        pass
+    try:
+        dlg.setWindowIcon(viewer.windowIcon())
+    except Exception:
+        pass
+    try:
+        dlg.setWindowModality(QtCore.Qt.NonModal)
+    except Exception:
+        pass
+    try:
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+    except Exception:
+        pass
+    try:
+        dlg.setSizeGripEnabled(True)
+    except Exception:
+        pass
+    try:
+        dlg.setMinimumSize(0, 0)
+    except Exception:
+        pass
+    try:
+        dlg.move(viewer._next_popup_pos())
+    except Exception:
+        pass
+
+
 def _refresh_popup_actions(viewer):
     controller = getattr(viewer, "quick_crop_controller", None)
     if controller:
@@ -51,16 +101,7 @@ def _open_spectroscopy_popup(viewer, spec):
         return None
     try:
         dlg = SpectroscopyPopup(spec, parent=viewer)
-        try:
-            dlg.setParent(None, dlg.windowFlags())
-            dlg.setWindowFlag(QtCore.Qt.Window, True)
-            dlg.setWindowIcon(viewer.windowIcon())
-            dlg.setWindowModality(QtCore.Qt.NonModal)
-            dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-            dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowCloseButtonHint | QtCore.Qt.WindowMinimizeButtonHint)
-            dlg.move(viewer._next_popup_pos())
-        except Exception:
-            pass
+        _prepare_popup_window(dlg, viewer)
         dlg.show()
         viewer._spectro_popups.append(dlg)
         dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
@@ -84,16 +125,7 @@ def _open_spectroscopy_compare_popup(viewer, specs, *, title=None, palette_name=
         dlg = SpectroscopyCompareDialog(specs, parent=viewer, palette_name=palette_name)
         if title:
             dlg.setWindowTitle(str(title))
-        try:
-            dlg.setParent(None, dlg.windowFlags())
-            dlg.setWindowFlag(QtCore.Qt.Window, True)
-            dlg.setWindowIcon(viewer.windowIcon())
-            dlg.setWindowModality(QtCore.Qt.NonModal)
-            dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-            dlg.setWindowFlags(dlg.windowFlags() | QtCore.Qt.WindowCloseButtonHint | QtCore.Qt.WindowMinimizeButtonHint)
-            dlg.move(viewer._next_popup_pos())
-        except Exception:
-            pass
+        _prepare_popup_window(dlg, viewer)
         dlg.show()
         viewer._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
@@ -116,13 +148,7 @@ def _open_multi_spectroscopy_popup(viewer):
         if dlg is not None:
             viewer._multi_spectro_popups = [dlg for dlg in viewer._multi_spectro_popups if dlg is not dlg]
         dlg = SpectroscopyCompareDialog(specs, parent=viewer, palette_name=palette_name)
-        try:
-            dlg.setParent(None, dlg.windowFlags())
-            dlg.setWindowFlag(QtCore.Qt.Window, True)
-            dlg.setWindowIcon(viewer.windowIcon())
-            dlg.move(viewer._next_popup_pos())
-        except Exception:
-            pass
+        _prepare_popup_window(dlg, viewer)
         dlg.show()
         viewer._multi_spectro_popups.append(dlg)
         dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)
@@ -165,12 +191,7 @@ def on_show_matrix_spectro_viewer(viewer):
         dataset=ds,
         palette_name=getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
     )
-    try:
-        dlg.setParent(None, dlg.windowFlags())
-        dlg.setWindowFlag(QtCore.Qt.Window, True)
-        dlg.setWindowIcon(viewer.windowIcon())
-    except Exception:
-        pass
+    _prepare_popup_window(dlg, viewer)
     dlg.show()
     viewer._popup_refs.append(dlg)
     dlg.finished.connect(lambda _: viewer._remember_closed_spectro_dialog(dlg) if hasattr(viewer, "_remember_closed_spectro_dialog") else None)

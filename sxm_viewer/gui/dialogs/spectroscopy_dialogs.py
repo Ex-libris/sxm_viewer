@@ -220,6 +220,8 @@ def _z_like_name(text: str | None) -> bool:
             "z_abs",
             "z-abs",
             "abs z",
+            "z-controller",
+            "controller>z",
             "topo",
             "topography",
             "piezo",
@@ -285,6 +287,56 @@ def _constant_axis_value_nm(values, unit_hint: str | None = None, tol_nm: float 
     if span <= limit:
         return center
     return None
+
+
+def _metadata_z_from_spec(spec: dict | None) -> tuple[float | None, str]:
+    if not spec:
+        return None, ""
+    best: tuple[int, float, str] | None = None
+    for key, value in list((spec or {}).items()):
+        label = str(key or "").strip()
+        if not label or not _z_like_name(label):
+            continue
+        label_low = label.lower()
+        unit_hint = ""
+        if "(m)" in label_low:
+            unit_hint = "m"
+        elif "(nm)" in label_low:
+            unit_hint = "nm"
+        elif "(pm)" in label_low:
+            unit_hint = "pm"
+        elif "(um)" in label_low:
+            unit_hint = "um"
+        level = _scalar_to_nm(value, unit_hint=unit_hint)
+        if level is None:
+            continue
+        score = 0
+        preferred_label = None
+        if "z-controller" in label_low and ">z" in label_low.replace("_", ">"):
+            score = 120
+            preferred_label = "Z piezo absolute"
+        elif "z-controller" in label_low:
+            score = 110
+            preferred_label = "Z piezo absolute"
+        elif "absolute z" in label_low or "z absolute" in label_low or "z_abs" in label_low or "abs z" in label_low:
+            score = 100
+            preferred_label = "Z piezo absolute"
+        elif label_low.endswith("z_(m)") or label_low.endswith("z (m)") or label_low in {"z", "z_nm"}:
+            score = 80
+            preferred_label = "Z"
+        elif "piezo" in label_low:
+            score = 70
+            preferred_label = "Z piezo"
+        elif "topo" in label_low or "topography" in label_low:
+            score = 20
+            preferred_label = "Topo"
+        clean_label = preferred_label or re.sub(r"\s*\(.*?\)", "", label).replace("_", " ").strip() or "Z"
+        candidate = (score, float(level), clean_label)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return None, ""
+    return best[1], best[2]
 
 
 def _style_kwargs(style_state: dict | None = None) -> dict:
@@ -2779,6 +2831,18 @@ class KPFMFitTrendDialog(QtWidgets.QDialog):
         self._rows = list(rows or [])
         self.setWindowTitle("KPFM fits vs Z")
         self.resize(760, 500)
+        try:
+            self.setWindowFlag(QtCore.Qt.MSWindowsFixedSizeDialogHint, False)
+        except Exception:
+            pass
+        try:
+            self.setSizeGripEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.setMinimumSize(520, 360)
+        except Exception:
+            pass
         layout = QtWidgets.QVBoxLayout(self)
 
         controls = QtWidgets.QHBoxLayout()
@@ -2817,6 +2881,12 @@ class KPFMFitTrendDialog(QtWidgets.QDialog):
 
     def set_rows(self, rows):
         self._rows = list(rows or [])
+        self._update_plot()
+
+    def set_relative_z(self, checked: bool):
+        self.relative_z_cb.blockSignals(True)
+        self.relative_z_cb.setChecked(bool(checked))
+        self.relative_z_cb.blockSignals(False)
         self._update_plot()
 
     def _metric_meta(self, key):
@@ -2936,6 +3006,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._delta_annotation_artists = []
         self.setWindowTitle("Spectroscopy comparison")
         self.resize(1400, 700)  # Increased size for better layout
+        try:
+            self.setWindowFlag(QtCore.Qt.MSWindowsFixedSizeDialogHint, False)
+        except Exception:
+            pass
+        try:
+            self.setSizeGripEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.setMinimumSize(760, 420)
+        except Exception:
+            pass
         self._plot_grid_enabled = True
         self._plot_legend_enabled = True
         self._plot_x_log = False
@@ -3058,7 +3140,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             "File",
             "X (nm)",
             "Y (nm)",
-            "Z (nm)",
+            "Z rel (nm)" if self._fit_z_display_relative_enabled() else "Z (nm)",
             "a",
             "da",
             "LCPD",
@@ -3068,6 +3150,33 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             "RMSE",
         ]
 
+    def _fit_z_display_relative_enabled(self):
+        checkbox = getattr(self, "fit_relative_z_cb", None)
+        return bool(checkbox and checkbox.isChecked())
+
+    def _sequence_z_offset_nm(self):
+        values = []
+        for spec in list(getattr(self, "specs", []) or []):
+            z_val, _label = self._resolve_spec_z_value(spec)
+            if z_val is not None:
+                values.append(float(z_val))
+        if not values:
+            return 0.0
+        return float(min(values))
+
+    def _refresh_fit_result_headers(self):
+        headers = self._fit_result_headers()
+        table = getattr(self, "results_table", None)
+        if table is None or table.columnCount() != len(headers):
+            return
+        for idx, text in enumerate(headers):
+            item = table.horizontalHeaderItem(idx)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem(text)
+                table.setHorizontalHeaderItem(idx, item)
+            else:
+                item.setText(text)
+
     def _resolve_spec_z_value(self, spec):
         if not spec:
             return None, ""
@@ -3075,7 +3184,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             ("z_level_nm", spec.get("z_level_label") or "Z"),
             ("xy_stack_z_level_nm", spec.get("xy_stack_z_label") or spec.get("z_level_label") or "Z"),
             ("z_abs_nm", "Z abs"),
-            ("topo_nm", "Topo"),
             ("z_nm", "Z"),
         ):
             value = spec.get(key)
@@ -3089,6 +3197,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     return z_val, str(label or "Z")
             except Exception:
                 continue
+
+        level, label = _metadata_z_from_spec(spec)
+        if level is not None:
+            spec["z_level_nm"] = float(level)
+            spec["z_level_label"] = str(label or "Z")
+            spec["z_level_unit"] = "nm"
+            return float(level), str(label or "Z")
 
         for axis in list(spec.get("AxisChoices") or []):
             label = str(axis.get("label") or axis.get("key") or "Z")
@@ -3111,27 +3226,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 spec["z_level_unit"] = "nm"
                 return float(level), label
 
-        for key, value in list((spec or {}).items()):
-            label = str(key or "")
-            if not _z_like_name(label):
-                continue
-            unit_hint = ""
-            label_low = label.lower()
-            if "(m)" in label_low:
-                unit_hint = "m"
-            elif "(nm)" in label_low:
-                unit_hint = "nm"
-            elif "(pm)" in label_low:
-                unit_hint = "pm"
-            elif "(um)" in label_low:
-                unit_hint = "um"
-            level = _scalar_to_nm(value, unit_hint=unit_hint)
-            if level is not None:
-                clean_label = re.sub(r"\s*\(.*?\)", "", label).strip() or "Z"
-                spec["z_level_nm"] = float(level)
-                spec["z_level_label"] = clean_label
-                spec["z_level_unit"] = "nm"
-                return float(level), clean_label
+        value = spec.get("topo_nm")
+        try:
+            if value is not None and np.isfinite(float(value)):
+                return float(value), "Topo"
+        except Exception:
+            pass
+
         return None, ""
 
     def _format_fit_result_z(self, spec):
@@ -3140,7 +3241,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         z_num, label = self._resolve_spec_z_value(spec)
         if z_num is None:
             return "n/a", ""
-        return f"{z_num:.6g}", f"{str(label or 'Z').strip() or 'Z'}: {z_num:.6g} nm"
+        label_text = str(label or "Z").strip() or "Z"
+        if self._fit_z_display_relative_enabled():
+            offset = self._sequence_z_offset_nm()
+            z_rel = z_num - offset
+            return f"{z_rel:.6g}", f"{label_text}: absolute {z_num:.6g} nm | relative {z_rel:.6g} nm"
+        return f"{z_num:.6g}", f"{label_text}: absolute {z_num:.6g} nm"
 
     def _fit_trend_rows(self):
         rows = []
@@ -3205,11 +3311,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
             except Exception:
                 pass
+            try:
+                dlg.set_relative_z(self._fit_z_display_relative_enabled())
+            except Exception:
+                pass
             dlg.finished.connect(lambda _=None: setattr(self, "_fit_trend_dialog", None))
             self._fit_trend_dialog = dlg
             dlg.show()
         else:
             dlg.set_rows(rows)
+            try:
+                dlg.set_relative_z(self._fit_z_display_relative_enabled())
+            except Exception:
+                pass
             try:
                 dlg.raise_()
                 dlg.activateWindow()
@@ -3223,6 +3337,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _build_ui(self):
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
         main_layout = QtWidgets.QVBoxLayout()
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
@@ -3252,6 +3367,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.spec_list.setAccessibleDescription("List of available spectra. Check boxes to include in plot, select for additional operations")
         left_layout.addWidget(self.filter_edit)
         left_layout.addWidget(self.spec_list, 1)
+        left.setMinimumWidth(180)
         splitter.addWidget(left)
         splitter.setStretchFactor(0, 0)
 
@@ -3357,13 +3473,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         undo_row.addStretch(1)
         vis_layout.addLayout(undo_row)
         center_layout.addWidget(vis_group)
+        center.setMinimumWidth(420)
         splitter.addWidget(center)
         splitter.setStretchFactor(1, 2)
         self.canvas.mpl_connect('pick_event', self._on_legend_pick)
 
         # Right panel: controls + results
-        right = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right)
+        right = QtWidgets.QScrollArea()
+        right.setWidgetResizable(True)
+        right.setFrameShape(QtWidgets.QFrame.NoFrame)
+        right.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        right_content = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_content)
         right_layout.setContentsMargins(6,6,6,6)
 
         # Data Selection Group
@@ -3464,6 +3585,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         trend_row.addStretch(1)
         kpfm_layout.addLayout(trend_row)
 
+        z_mode_row = QtWidgets.QHBoxLayout()
+        self.fit_relative_z_cb = QtWidgets.QCheckBox("Relative Z values")
+        self.fit_relative_z_cb.setToolTip("Display fitted spectroscopy Z values relative to the minimum Z of the sequence instead of absolute piezo extension")
+        self.fit_relative_z_cb.toggled.connect(self._on_fit_z_display_toggled)
+        z_mode_row.addWidget(self.fit_relative_z_cb)
+        z_mode_row.addStretch(1)
+        kpfm_layout.addLayout(z_mode_row)
+
         analysis_layout.addWidget(kpfm_group)
 
         # Forces/Background subsection
@@ -3546,6 +3675,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.export_btn.setAccessibleDescription("Save fit results to CSV file")
         self.fit_vs_z_btn.setAccessibleName("Plot fits versus Z")
         self.fit_vs_z_btn.setAccessibleDescription("Open a plot of fitted KPFM values against Z with error bars")
+        self.fit_relative_z_cb.setAccessibleName("Relative Z values")
+        self.fit_relative_z_cb.setAccessibleDescription("Toggle fitted spectroscopy Z display between absolute piezo extension and values relative to the minimum Z in the sequence")
         self.bg_set_btn.setAccessibleName("Set background")
         self.bg_set_btn.setAccessibleDescription("Use selected spectrum as background for subtraction")
         self.bg_clear_btn.setAccessibleName("Clear background")
@@ -3645,8 +3776,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.log.setAccessibleDescription("Shows messages from fitting and other operations")
         right_layout.addWidget(self.log)
 
+        right_layout.addStretch(0)
+        right_content.setMinimumWidth(320)
+        right.setWidget(right_content)
+        right.setMinimumWidth(340)
         splitter.addWidget(right)
         splitter.setStretchFactor(2, 1)
+        try:
+            splitter.setSizes([220, 820, 380])
+        except Exception:
+            pass
 
     def _populate_list(self):
         self.spec_list.blockSignals(True)
@@ -3718,6 +3857,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._apply_filter(filter_text)
         self._populate_results_table()
         self._update_plot()
+
+    def _on_fit_z_display_toggled(self, checked):
+        self._record_user_action(f"KPFM Z display → {'relative' if checked else 'absolute'}")
+        self._refresh_fit_result_headers()
+        self._populate_results_table()
+        dlg = getattr(self, "_fit_trend_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.set_relative_z(bool(checked))
+            except Exception:
+                pass
 
     def set_palette_name(self, name):
         cycle = name or DEFAULT_COLOR_CYCLE

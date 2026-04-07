@@ -503,7 +503,32 @@ def _extract_zctrl_setpoint(zctrl) -> Tuple[Optional[float], str]:
     return None, ""
 
 
+def _extract_zctrl_absolute_z_nm(zctrl) -> Tuple[Optional[float], str]:
+    if not isinstance(zctrl, dict):
+        return None, ""
+    for key in ("Z (m)", "Z", "z", "Z abs (m)", "Z abs"):
+        value_nm = _meters_to_nm_value(zctrl.get(key))
+        if value_nm is not None:
+            return value_nm, "Z piezo absolute"
+    return None, ""
+
+
 def _extract_nanonis_z_level_nm(header: Dict[str, str]) -> Tuple[Optional[float], str]:
+    for key in ("Z-Controller", "z-controller", "Z Controller", "z_controller", "Z_Controller"):
+        value_nm, label = _extract_zctrl_absolute_z_nm(header.get(key))
+        if value_nm is not None:
+            return value_nm, label
+    for key in (
+        "Z-Controller>Z (m)",
+        "Z-Controller>Z",
+        "z-controller>Z (m)",
+        "z-controller>Z",
+        "Z Controller>Z (m)",
+        "Z Controller>Z",
+    ):
+        value_nm = _meters_to_nm_value(header.get(key))
+        if value_nm is not None:
+            return value_nm, "Z piezo absolute"
     candidates = [
         ("Z piezo absolute (m)", "Z piezo absolute"),
         ("Z piezo absolute", "Z piezo absolute"),
@@ -548,6 +573,32 @@ def _extract_nanonis_z_level_nm(header: Dict[str, str]) -> Tuple[Optional[float]
                 nested_nm, nested_label = _extract_nanonis_z_level_nm(item)
                 if nested_nm is not None:
                     return nested_nm, nested_label or (re.sub(r"\s*\(.*?\)", "", key_txt).strip() or "Z")
+    return None, ""
+
+
+def _extract_nanonis_z_level_from_raw_header(path: Path) -> Tuple[Optional[float], str]:
+    patterns = (
+        (re.compile(r"^\s*Z-Controller>\s*Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Z piezo absolute"),
+        (re.compile(r"^\s*Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Z"),
+        (re.compile(r"^\s*Absolute\s+Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Absolute Z"),
+    )
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+            for raw_line in handle:
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                if line.upper().startswith("[DATA]"):
+                    break
+                for pattern, label in patterns:
+                    match = pattern.match(line)
+                    if not match:
+                        continue
+                    value_nm = _meters_to_nm_value(match.group(1))
+                    if value_nm is not None:
+                        return value_nm, label
+    except Exception:
+        return None, ""
     return None, ""
 
 
@@ -656,6 +707,8 @@ def _nanonis_spec_metadata(header: Dict[str, str], path: Path) -> Dict[str, obje
     if y_nm is not None:
         meta["y"] = y_nm
     z_nm, z_label = _extract_nanonis_z_level_nm(header)
+    if z_nm is None:
+        z_nm, z_label = _extract_nanonis_z_level_from_raw_header(path)
     if z_nm is not None:
         meta["z_level_nm"] = z_nm
         meta["z_level_label"] = z_label or "Z"
