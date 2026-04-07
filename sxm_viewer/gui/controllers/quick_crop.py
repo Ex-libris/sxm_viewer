@@ -10,7 +10,7 @@ from ...config import save_config
 
 
 class QuickCropController:
-    """Encapsulates quick-crop UI/state coordination for the main window."""
+    """Encapsulates crop-template UI/state coordination for the main window."""
 
     def __init__(self, viewer):
         self.viewer = viewer
@@ -40,8 +40,14 @@ class QuickCropController:
             try:
                 btn.blockSignals(True)
                 btn.setChecked(enabled)
-                btn.setText("Quick crop: On" if enabled else "Quick crop: Off")
+                btn.setText("Crop template: On" if enabled else "Crop template: Off")
                 btn.blockSignals(False)
+            except Exception:
+                pass
+        edit_btn = getattr(viewer, "quick_crop_edit_btn", None)
+        if edit_btn is not None:
+            try:
+                edit_btn.setEnabled(enabled)
             except Exception:
                 pass
         detail_widget = getattr(viewer, 'quick_crop_detail_widget', None)
@@ -58,22 +64,117 @@ class QuickCropController:
                 canv.enable_fixed_crop_quick_mode(enabled)
             except Exception:
                 continue
+        if not enabled:
+            self.set_edit_mode(False)
         if enabled:
             self.apply_template_from_controls()
         self.update_hint()
 
     # ------------------------------------------------------------------
+    def set_edit_mode(self, enabled: bool):
+        viewer = self.viewer
+        enabled = bool(enabled)
+        if enabled and not bool(getattr(viewer, "quick_crop_mode", False)):
+            self.set_mode(True)
+        btn = getattr(viewer, "quick_crop_edit_btn", None)
+        if btn is not None:
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(enabled)
+                btn.setEnabled(bool(getattr(viewer, "quick_crop_mode", False)))
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        canvas = getattr(viewer, "preview_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.enable_fixed_crop_transform_mode(enabled)
+            except Exception:
+                pass
+            if enabled:
+                try:
+                    canvas.show_fixed_crop_template(True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    canvas.show_fixed_crop_template(bool(getattr(viewer, "show_crop_template_overlay", False)))
+                except Exception:
+                    pass
+        self.update_hint()
+
+    # ------------------------------------------------------------------
+    def _aspect_mode(self):
+        viewer = self.viewer
+        combo = getattr(viewer, "quick_crop_aspect_combo", None)
+        if combo is None:
+            mode = getattr(viewer, "quick_crop_aspect_mode", "free")
+        else:
+            mode = combo.currentData() or combo.currentText() or getattr(viewer, "quick_crop_aspect_mode", "free")
+        mode = str(mode or "free").strip().lower()
+        if mode not in {"free", "keep", "square"}:
+            mode = "free"
+        viewer.quick_crop_aspect_mode = mode
+        return mode
+
+    # ------------------------------------------------------------------
+    def on_aspect_mode_changed(self):
+        mode = self._aspect_mode()
+        viewer = self.viewer
+        if mode == "square":
+            height_spin = getattr(viewer, "quick_crop_real_height_spin", None)
+            width_spin = getattr(viewer, "quick_crop_real_width_spin", None)
+            if width_spin is not None and height_spin is not None:
+                height_spin.blockSignals(True)
+                height_spin.setValue(width_spin.value())
+                height_spin.blockSignals(False)
+        self.on_real_spin_changed()
+
+    # ------------------------------------------------------------------
     def update_hint(self):
         viewer = self.viewer
         label = getattr(viewer, 'quick_crop_hint_lbl', None)
+        edit_btn = getattr(viewer, "quick_crop_edit_btn", None)
+        edit_active = bool(getattr(getattr(viewer, "preview_canvas", None), "_fixed_crop_transform_mode", False))
+        aspect_mode = self._aspect_mode()
+        aspect_label = {
+            "free": "Free",
+            "keep": "Keep ratio",
+            "square": "Square",
+        }.get(aspect_mode, "Free")
+        if edit_active and not bool(getattr(viewer, "quick_crop_mode", False)):
+            self.set_mode(True)
+            return
+        if edit_btn is not None:
+            try:
+                edit_btn.blockSignals(True)
+                edit_btn.setChecked(edit_active)
+                edit_btn.setEnabled(bool(getattr(viewer, "quick_crop_mode", False)))
+                edit_btn.blockSignals(False)
+            except Exception:
+                pass
         if label is None:
             return
         if viewer.quick_crop_mode:
             selected = len(self.cleanup_selected_sequences())
             popups = len(self._tracked_popups())
-            text = f"Click preview to crop. Selected: {selected}  Pop-outs: {popups}"
+            if edit_active:
+                text = (
+                    f"Edit frame active. Drag handles to move or resize; Ctrl+drag a move handle to rotate. "
+                    f"Aspect: {aspect_label}. Selected: {selected}  Pop-outs: {popups}"
+                )
+            else:
+                drag_hint = "Shift+drag manual crop; Ctrl+Shift+drag forces square."
+                if aspect_mode == "square":
+                    drag_hint = "Shift+drag manual crops stay square; Ctrl+Shift+drag also forces square."
+                elif aspect_mode == "keep":
+                    drag_hint = "Shift+drag manual crop is freeform; template size edits keep the current ratio."
+                text = (
+                    f"Crop template on. Click preview to apply. Aspect: {aspect_label}. "
+                    f"{drag_hint} Selected: {selected}  Pop-outs: {popups}"
+                )
         else:
-            text = "Press Ctrl+Shift+C to enable"
+            text = "Press Ctrl+Shift+C to enable crop-template mode."
         label.setText(text)
 
     # ------------------------------------------------------------------
@@ -100,6 +201,16 @@ class QuickCropController:
             height_spin.blockSignals(False)
         if real_width > 0 and real_height > 0:
             viewer._quick_crop_aspect = real_width / max(0.001, real_height)
+        aspect_combo = getattr(viewer, "quick_crop_aspect_combo", None)
+        canvas = getattr(viewer, "preview_canvas", None)
+        template = getattr(canvas, "_fixed_crop_template", {}) or {}
+        if aspect_combo is not None and bool(template.get("square", False)):
+            idx = aspect_combo.findData("square")
+            if idx >= 0 and aspect_combo.currentIndex() != idx:
+                aspect_combo.blockSignals(True)
+                aspect_combo.setCurrentIndex(idx)
+                aspect_combo.blockSignals(False)
+                viewer.quick_crop_aspect_mode = "square"
         unit_lbl = getattr(viewer, 'quick_crop_real_unit_lbl', None)
         if unit_lbl is not None:
             unit_lbl.setText(real_unit or "nm")
@@ -121,8 +232,8 @@ class QuickCropController:
         height_spin = getattr(viewer, 'quick_crop_real_height_spin', None)
         if width_spin is None or height_spin is None:
             return
-        lock_cb = getattr(viewer, 'quick_crop_lock_aspect_cb', None)
-        if lock_cb is not None and lock_cb.isChecked():
+        mode = self._aspect_mode()
+        if mode == "keep":
             aspect = viewer._quick_crop_aspect or 1.0
             if sender is width_spin:
                 new_w = width_spin.value()
@@ -136,8 +247,7 @@ class QuickCropController:
                 width_spin.blockSignals(True)
                 width_spin.setValue(new_w)
                 width_spin.blockSignals(False)
-        square_cb = getattr(viewer, 'quick_crop_square_cb', None)
-        if square_cb is not None and square_cb.isChecked():
+        if mode == "square":
             val = width_spin.value()
             height_spin.blockSignals(True)
             height_spin.setValue(val)
@@ -151,10 +261,8 @@ class QuickCropController:
         height_spin = getattr(viewer, 'quick_crop_real_height_spin', None)
         if width_spin is None or height_spin is None:
             return
-        square = False
-        square_cb = getattr(viewer, 'quick_crop_square_cb', None)
-        if square_cb is not None:
-            square = bool(square_cb.isChecked())
+        mode = self._aspect_mode()
+        square = mode == "square"
         real_w = width_spin.value()
         real_h = height_spin.value()
         success = False

@@ -411,6 +411,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
+        self.quick_crop_aspect_mode = str(self.config.get("quick_crop_aspect_mode", "free") or "free").strip().lower()
+        if self.quick_crop_aspect_mode not in {"free", "keep", "square"}:
+            self.quick_crop_aspect_mode = "free"
         # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
         self.show_crop_template_overlay = False
         self.show_crop_history_overlay = True
@@ -1118,10 +1121,21 @@ class SXMGridViewer(QtWidgets.QWidget):
         quick_toggle_row = QtWidgets.QHBoxLayout()
         quick_toggle_row.setContentsMargins(0, 0, 0, 0)
         quick_toggle_row.setSpacing(6)
-        self.quick_crop_btn = QtWidgets.QPushButton("Quick crop: Off")
+        self.quick_crop_btn = QtWidgets.QPushButton("Crop template: Off")
         self.quick_crop_btn.setCheckable(True)
-        self.quick_crop_btn.setToolTip("Toggle quick crop mode (Ctrl+Shift+C). Shift+drag to size, click to spawn crops.")
+        self.quick_crop_btn.setToolTip(
+            "Enable repeated cropping from the current template (Ctrl+Shift+C). "
+            "Click the preview to apply the template. Shift+drag draws a manual crop; "
+            "Ctrl+Shift+drag forces a square manual crop."
+        )
         quick_toggle_row.addWidget(self.quick_crop_btn)
+        self.quick_crop_edit_btn = QtWidgets.QToolButton()
+        self.quick_crop_edit_btn.setText("Edit frame")
+        self.quick_crop_edit_btn.setCheckable(True)
+        self.quick_crop_edit_btn.setToolTip(
+            "Move, resize, and rotate the current crop template on the preview (Ctrl+E)."
+        )
+        quick_toggle_row.addWidget(self.quick_crop_edit_btn)
         quick_toggle_row.addStretch(1)
         quick_layout.addLayout(quick_toggle_row)
         self.quick_crop_detail_widget = QtWidgets.QWidget()
@@ -1137,7 +1151,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_real_width_spin.setDecimals(3)
         self.quick_crop_real_width_spin.setSingleStep(0.1)
         self.quick_crop_real_width_spin.setFixedWidth(72)
-        self.quick_crop_real_width_spin.setToolTip("Real-space width (current preview unit)")
+        self.quick_crop_real_width_spin.setToolTip("Template width in real-space units.")
         self.quick_crop_real_width_spin.setValue(5.0)
         self._quick_crop_aspect = 1.0
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(), 5.0]
@@ -1148,7 +1162,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_real_height_spin.setDecimals(3)
         self.quick_crop_real_height_spin.setSingleStep(0.1)
         self.quick_crop_real_height_spin.setFixedWidth(72)
-        self.quick_crop_real_height_spin.setToolTip("Real-space height (current preview unit)")
+        self.quick_crop_real_height_spin.setToolTip("Template height in real-space units.")
         self.quick_crop_real_height_spin.setValue(5.0)
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(),
                                            self.quick_crop_real_height_spin.value()]
@@ -1156,12 +1170,20 @@ class SXMGridViewer(QtWidgets.QWidget):
         quick_template_row.addWidget(self.quick_crop_real_height_spin)
         self.quick_crop_real_unit_lbl = QtWidgets.QLabel("nm")
         quick_template_row.addWidget(self.quick_crop_real_unit_lbl)
-        self.quick_crop_lock_aspect_cb = QtWidgets.QCheckBox("Lock")
-        self.quick_crop_lock_aspect_cb.setToolTip("Keep width/height ratio when editing one dimension")
-        quick_template_row.addWidget(self.quick_crop_lock_aspect_cb)
-        self.quick_crop_square_cb = QtWidgets.QCheckBox("Square")
-        self.quick_crop_square_cb.setToolTip("Force quick crops to remain square")
-        quick_template_row.addWidget(self.quick_crop_square_cb)
+        quick_template_row.addWidget(QtWidgets.QLabel("Aspect"))
+        self.quick_crop_aspect_combo = QtWidgets.QComboBox()
+        self.quick_crop_aspect_combo.addItem("Free", "free")
+        self.quick_crop_aspect_combo.addItem("Keep ratio", "keep")
+        self.quick_crop_aspect_combo.addItem("Square", "square")
+        self.quick_crop_aspect_combo.setToolTip(
+            "Free: width and height change independently. "
+            "Keep ratio: template size edits preserve the current ratio. "
+            "Square: the template stays square, and Shift+drag manual crops stay square "
+            "while crop-template mode is on."
+        )
+        aspect_index = max(0, self.quick_crop_aspect_combo.findData(self.quick_crop_aspect_mode))
+        self.quick_crop_aspect_combo.setCurrentIndex(aspect_index)
+        quick_template_row.addWidget(self.quick_crop_aspect_combo)
         self.quick_crop_real_px_info_lbl = QtWidgets.QLabel("")
         self.quick_crop_real_px_info_lbl.setMinimumWidth(0)
         self.quick_crop_real_px_info_lbl.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
@@ -1171,7 +1193,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_actions_btn = QtWidgets.QToolButton()
         self.quick_crop_actions_btn.setText("Actions")
         self.quick_crop_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.quick_crop_actions_btn.setToolTip("Quick-crop history, export, and pop-out management")
+        self.quick_crop_actions_btn.setToolTip(
+            "Crop-template history, export, and pop-out management."
+        )
         self.quick_crop_actions_menu = QtWidgets.QMenu(self.quick_crop_actions_btn)
         self.quick_crop_undo_act = self.quick_crop_actions_menu.addAction("Undo latest crop")
         self.quick_crop_undo_act.setToolTip("Undo latest crop (Ctrl+Z)")
@@ -1204,10 +1228,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         quick_layout.addWidget(self.quick_crop_detail_widget)
         preview_panel_layout.addWidget(self.quick_crop_controls)
         self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
-        self.quick_crop_square_cb.toggled.connect(lambda _: self.quick_crop_controller.apply_template_from_controls())
+        self.quick_crop_edit_btn.toggled.connect(self._on_quick_crop_edit_toggled)
+        self.quick_crop_aspect_combo.currentIndexChanged.connect(lambda _=None: self._on_quick_crop_aspect_mode_changed())
         self.quick_crop_real_width_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_width_spin))
         self.quick_crop_real_height_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_height_spin))
-        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self.quick_crop_controller.on_real_spin_changed())
         self.quick_crop_detail_widget.setVisible(bool(self.quick_crop_mode))
 
         self.crop_history_panel = QtWidgets.QWidget()
@@ -1350,7 +1374,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self.preview_canvas.set_views_callback(
-            lambda _=None, c=self.preview_canvas: self._on_canvas_display_options_changed(c)
+            lambda _=None, c=self.preview_canvas: self._on_preview_canvas_state_changed(c)
         )
         if self.canvas_display_options:
             self._apply_canvas_display_options(
@@ -9455,10 +9479,33 @@ QLabel:hover {{
         if controller:
             controller.update_hint()
 
+    def _on_preview_canvas_state_changed(self, canvas):
+        self._on_canvas_display_options_changed(canvas)
+        self._update_quick_crop_hint()
+
     def _sync_quick_crop_template_controls(self):
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.sync_template_controls()
+
+    def _on_quick_crop_edit_toggled(self, checked: bool):
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.set_edit_mode(bool(checked))
+
+    def _on_quick_crop_aspect_mode_changed(self):
+        combo = getattr(self, "quick_crop_aspect_combo", None)
+        if combo is None:
+            return
+        mode = str(combo.currentData() or combo.currentText() or "free").strip().lower()
+        if mode not in {"free", "keep", "square"}:
+            mode = "free"
+        self.quick_crop_aspect_mode = mode
+        self.config["quick_crop_aspect_mode"] = mode
+        save_config(self.config)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_aspect_mode_changed()
 
     def _on_quick_crop_real_spin_changed(self, _=None):
         try:
