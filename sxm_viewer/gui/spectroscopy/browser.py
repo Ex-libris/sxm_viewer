@@ -74,6 +74,11 @@ def _update_spectro_stats_label(viewer, stats=None):
         return
     total = len(getattr(viewer, 'spectros', []) or [])
     single_count = sum(1 for s in getattr(viewer, 'spectros', []) if s.get('matrix_index') is None)
+    xy_stack_count = len({
+        str(s.get("xy_stack_key"))
+        for s in (getattr(viewer, "spectros", []) or [])
+        if s.get("xy_stack_key") and int(s.get("xy_stack_count") or 0) > 1
+    })
     if stats:
         total = stats.get('total_specs', total)
         single_count = stats.get('single_entries', single_count)
@@ -86,10 +91,11 @@ def _update_spectro_stats_label(viewer, stats=None):
     elif matrix_count == 0:
         matrix_desc = ""
     viewer.spectro_stats_label.setText(
-        f"Spectra {total} | Single {single_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
+        f"Spectra {total} | Single {single_count} | XY stacks {xy_stack_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
     )
     viewer.spectro_stats_label.setToolTip(
         f"Loaded spectroscopy entries: {total}. Single traces: {single_count}. "
+        f"Same-XY stacks: {xy_stack_count}. "
         f"Matrix datasets: {matrix_count}{matrix_desc}. "
         "Thumbnail markers draw clickable points on image thumbnails. "
         "Preview markers draw the same points in the preview panel. "
@@ -145,7 +151,9 @@ def _filter_spectro_browser(viewer):
                 pos = f"{float(s.get('x')):.1f}/{float(s.get('y')):.1f}"
         except Exception:
             pos = ""
-        label = f"{idx+1}. {name} {pos}"
+        stack = str(s.get("xy_stack_display") or "").strip()
+        stack_suffix = f" [{stack}]" if stack else ""
+        label = f"{idx+1}. {name} {pos}{stack_suffix}"
         if txt and txt not in label.lower():
             continue
         item = QListWidgetItem(label)
@@ -165,7 +173,11 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         return
     try:
         x = spec.get('x'); y = spec.get('y')
-        viewer.spectro_preview_lbl.setText(f"{Path(spec.get('path','')).name}\n({x},{y})")
+        lines = [Path(spec.get('path','')).name, f"({x},{y})"]
+        summary = str(spec.get("xy_stack_summary") or "").strip()
+        if summary:
+            lines.append(summary)
+        viewer.spectro_preview_lbl.setText("\n".join(lines))
     except Exception:
         viewer.spectro_preview_lbl.setText(Path(spec.get('path','')).name)
     try:

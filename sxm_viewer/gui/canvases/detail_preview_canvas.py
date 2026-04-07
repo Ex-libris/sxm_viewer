@@ -1712,6 +1712,7 @@ class MultiPreviewCanvas(FigureCanvas):
         highlight_key = _spec_identity(highlight_spec)
         pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
         pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
+        stack_badges = list(view.get("stack_badges") or [])
         for idx, s in enumerate(specs):
             coords = pixel_lookup.get(id(s))
             if coords is None:
@@ -1751,6 +1752,26 @@ class MultiPreviewCanvas(FigureCanvas):
                 core = 140 * (0.7 + 0.3 * pulse)
                 ax.scatter(highlight_xs, highlight_ys, s=outer, marker='o', facecolor='#ffe8fb', edgecolor='none', alpha=0.22, zorder=36)
                 ax.scatter(highlight_xs, highlight_ys, s=core, marker='o', facecolor='none', edgecolor='#ff5fb7', linewidths=2.4, alpha=0.9, zorder=37)
+            for badge in stack_badges:
+                try:
+                    bx, by = _axis_from_pixel(float(badge.get("col")), float(badge.get("row")))
+                    label = str(badge.get("label") or "").strip()
+                    if not label:
+                        continue
+                    ax.text(
+                        bx,
+                        by,
+                        label,
+                        fontsize=7.2 * getattr(self, "_font_scale", 1.0),
+                        fontweight="bold",
+                        color="#ffe478",
+                        ha="left",
+                        va="bottom",
+                        zorder=38,
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="#281e12", edgecolor="#ffe0a0", linewidth=0.9, alpha=0.92),
+                    )
+                except Exception:
+                    continue
             self._spectra_points[ax] = points
         except Exception:
             self._spectra_points[ax] = []

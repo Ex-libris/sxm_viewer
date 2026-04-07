@@ -602,6 +602,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    stack_badges = spectro_overlays._stack_badges_from_coords(spec_pixels)
     spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
         spec_pixels,
         marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
@@ -627,6 +628,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "spectra": overlay_specs,
         "highlight_spec": highlight_spec,
         "spec_pixels": list(spec_pixels),
+        "stack_badges": list(stack_badges),
     }
     clim = _auto_preview_clim(display_arr, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
     if clim:
@@ -759,6 +761,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             coords = None
         if coords is not None:
             spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+    stack_badges = spectro_overlays._stack_badges_from_coords(spec_pixels)
     spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
         spec_pixels,
         marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
@@ -783,6 +786,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'spectra': overlay_specs,
         'highlight_spec': highlight_spec,
         'spec_pixels': list(spec_pixels),
+        'stack_badges': list(stack_badges),
     }
     if clim_main:
         main['clim'] = clim_main

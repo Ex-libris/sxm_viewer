@@ -138,6 +138,7 @@ from ..thumbnail_render import (
     save_wsxm_xyz,
 )
 from .matrix_fit import MatrixFitDialog
+from ..spectroscopy import overlays as spectro_overlays
 
 def _normalize_topo_axis(values: np.ndarray, unit_hint: str | None) -> tuple[np.ndarray, str]:
     arr = np.asarray(values, dtype=float)
@@ -181,6 +182,108 @@ def _topo_axis_from_spec(spec: dict | None) -> dict | None:
             unit_hint = unit_map.get(name) or guess_channel_unit(name) or ""
             arr, unit = _normalize_topo_axis(np.asarray(vals, dtype=float), unit_hint)
             return {"key": "topo", "label": name or "Topo", "unit": unit, "values": arr}
+    return None
+
+
+_Z_UNIT_FACTORS_TO_NM = {
+    "": None,
+    "m": 1e9,
+    "meter": 1e9,
+    "meters": 1e9,
+    "nm": 1.0,
+    "nanometer": 1.0,
+    "nanometers": 1.0,
+    "pm": 1e-3,
+    "picometer": 1e-3,
+    "picometers": 1e-3,
+    "um": 1e3,
+    "micrometer": 1e3,
+    "micrometers": 1e3,
+    "mm": 1e6,
+    "a": 0.1,
+    "angstrom": 0.1,
+    "angstroms": 0.1,
+    "å": 0.1,
+}
+
+
+def _z_like_name(text: str | None) -> bool:
+    low = str(text or "").strip().lower()
+    if not low:
+        return False
+    return any(
+        token in low
+        for token in (
+            "z piezo",
+            "z absolute",
+            "absolute z",
+            "z_abs",
+            "z-abs",
+            "abs z",
+            "topo",
+            "topography",
+            "piezo",
+        )
+    ) or low in {"z", "z abs", "absz"}
+
+
+def _scalar_to_nm(value, unit_hint: str | None = None) -> float | None:
+    if value is None:
+        return None
+    parsed = None
+    parsed_unit = ""
+    if isinstance(value, (int, float, np.floating, np.integer)):
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = None
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        match = re.match(r"^([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(.*)$", text)
+        if match:
+            try:
+                parsed = float(match.group(1))
+            except Exception:
+                parsed = None
+            parsed_unit = match.group(2).strip()
+        else:
+            try:
+                parsed = float(text)
+            except Exception:
+                parsed = None
+    if parsed is None or not np.isfinite(parsed):
+        return None
+    unit_key = str(parsed_unit or unit_hint or "").strip().lower().replace("µ", "u")
+    unit_key = unit_key.strip("[]() ")
+    factor = _Z_UNIT_FACTORS_TO_NM.get(unit_key)
+    if factor is not None:
+        return float(parsed) * factor
+    if not unit_key:
+        return float(parsed) * 1e9 if abs(float(parsed)) < 1e-3 else float(parsed)
+    return None
+
+
+def _constant_axis_value_nm(values, unit_hint: str | None = None, tol_nm: float = 1e-3) -> float | None:
+    try:
+        arr = np.asarray(values, dtype=float).ravel()
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    arr_nm, _unit = _normalize_topo_axis(finite, unit_hint)
+    try:
+        span = float(np.nanmax(arr_nm) - np.nanmin(arr_nm))
+        center = float(np.nanmedian(arr_nm))
+    except Exception:
+        return None
+    limit = max(float(tol_nm), abs(center) * 1e-6)
+    if span <= limit:
+        return center
     return None
 
 
@@ -2662,6 +2765,141 @@ class _SpectroFitWorker(QtCore.QObject):
         self.progress.emit(100, "Fit complete")
         self.finished.emit(results, logs)
 
+
+class KPFMFitTrendDialog(QtWidgets.QDialog):
+    METRIC_OPTIONS = [
+        ("LCPD", "lcpd"),
+        ("a", "a"),
+        ("c", "c"),
+        ("RMSE", "rmse"),
+    ]
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self._rows = list(rows or [])
+        self.setWindowTitle("KPFM fits vs Z")
+        self.resize(760, 500)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Metric:"))
+        self.metric_combo = QtWidgets.QComboBox()
+        for label, key in self.METRIC_OPTIONS:
+            self.metric_combo.addItem(label, key)
+        self.metric_combo.currentIndexChanged.connect(self._update_plot)
+        controls.addWidget(self.metric_combo)
+
+        self.error_cb = QtWidgets.QCheckBox("Show errors")
+        self.error_cb.setChecked(True)
+        self.error_cb.toggled.connect(self._update_plot)
+        controls.addWidget(self.error_cb)
+
+        self.relative_z_cb = QtWidgets.QCheckBox("Relative Z")
+        self.relative_z_cb.setToolTip("Plot Z relative to the minimum fitted Z value")
+        self.relative_z_cb.toggled.connect(self._update_plot)
+        controls.addWidget(self.relative_z_cb)
+
+        self.sort_z_cb = QtWidgets.QCheckBox("Sort by Z")
+        self.sort_z_cb.setChecked(True)
+        self.sort_z_cb.toggled.connect(self._update_plot)
+        controls.addWidget(self.sort_z_cb)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.fig = Figure(figsize=(6, 4))
+        self.canvas = FigureCanvas(self.fig)
+        self.ax = self.fig.add_subplot(111)
+        layout.addWidget(self.canvas, 1)
+
+        self.status_label = QtWidgets.QLabel("")
+        layout.addWidget(self.status_label)
+        self._update_plot()
+
+    def set_rows(self, rows):
+        self._rows = list(rows or [])
+        self._update_plot()
+
+    def _metric_meta(self, key):
+        if key == "lcpd":
+            units = [str(row.get("lcpd_unit") or "").strip() for row in self._rows if row.get("lcpd_unit")]
+            unit = units[0] if units else ""
+            return "LCPD", unit
+        if key == "a":
+            return "a", ""
+        if key == "c":
+            return "c", "Hz"
+        if key == "rmse":
+            return "RMSE", ""
+        return key, ""
+
+    def _update_plot(self):
+        self.ax.clear()
+        metric_key = self.metric_combo.currentData() or "lcpd"
+        rows = []
+        err_key = f"{metric_key}_err"
+        for row in self._rows:
+            try:
+                z_val = float(row.get("z_nm"))
+                y_val = row.get(metric_key)
+                if y_val is None or not np.isfinite(float(y_val)):
+                    continue
+                y_val = float(y_val)
+            except Exception:
+                continue
+            y_err = row.get(err_key)
+            try:
+                y_err = float(y_err) if y_err is not None and np.isfinite(float(y_err)) else None
+            except Exception:
+                y_err = None
+            rows.append((z_val, y_val, y_err, row))
+        if self.sort_z_cb.isChecked():
+            rows.sort(key=lambda item: item[0])
+        if not rows:
+            self.ax.text(0.5, 0.5, "No fitted spectra with Z metadata", ha="center", va="center", transform=self.ax.transAxes)
+            self.ax.set_axis_off()
+            self.status_label.setText("No fit results with usable Z metadata.")
+            self.canvas.draw_idle()
+            return
+
+        self.ax.set_axis_on()
+        z_vals = np.asarray([item[0] for item in rows], dtype=float)
+        if self.relative_z_cb.isChecked():
+            z_plot = z_vals - float(np.nanmin(z_vals))
+            x_label = "Z relative (nm)"
+        else:
+            z_plot = z_vals
+            x_label = "Z (nm)"
+        y_vals = np.asarray([item[1] for item in rows], dtype=float)
+        y_errs = [item[2] for item in rows]
+        use_errors = self.error_cb.isChecked() and any(err is not None for err in y_errs)
+        plotted_yerr = None
+        if use_errors:
+            plotted_yerr = np.asarray([0.0 if err is None else float(err) for err in y_errs], dtype=float)
+        self.ax.errorbar(
+            z_plot,
+            y_vals,
+            yerr=plotted_yerr,
+            fmt="o-",
+            color="#1f77b4",
+            ecolor="#4c78a8",
+            capsize=3,
+            lw=1.3,
+            markersize=4.5,
+        )
+        label, unit = self._metric_meta(metric_key)
+        self.ax.set_xlabel(x_label)
+        self.ax.set_ylabel(f"{label} ({unit})" if unit else label)
+        self.ax.grid(True, alpha=0.25)
+        self.ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        self.ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        self.status_label.setText(f"{len(rows)} fitted spectra shown.")
+        try:
+            self.fig.tight_layout()
+        except Exception:
+            pass
+        self.canvas.draw_idle()
+
+
 class SpectroscopyCompareDialog(QtWidgets.QDialog):
     """Modern comparison UI for spectroscopy overlays and fitting."""
     def __init__(self, specs, parent=None, palette_name=None):
@@ -2679,6 +2917,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_results = {}
         self._fit_thread = None
         self._fit_worker = None
+        self._fit_trend_dialog = None
         self._popup_refs = []
         self._background_spec_id = None
         self._relative_zero_enabled = False
@@ -2813,6 +3052,169 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         base = str(Path(spec.get('path', '')))
         idx = spec.get('matrix_index')
         return f"{base}#m{idx}" if idx is not None else base
+
+    def _fit_result_headers(self):
+        return [
+            "File",
+            "X (nm)",
+            "Y (nm)",
+            "Z (nm)",
+            "a",
+            "da",
+            "LCPD",
+            "dLCPD",
+            "c (Hz)",
+            "dc",
+            "RMSE",
+        ]
+
+    def _resolve_spec_z_value(self, spec):
+        if not spec:
+            return None, ""
+        for key, label in (
+            ("z_level_nm", spec.get("z_level_label") or "Z"),
+            ("xy_stack_z_level_nm", spec.get("xy_stack_z_label") or spec.get("z_level_label") or "Z"),
+            ("z_abs_nm", "Z abs"),
+            ("topo_nm", "Topo"),
+            ("z_nm", "Z"),
+        ):
+            value = spec.get(key)
+            try:
+                if value is not None and np.isfinite(float(value)):
+                    z_val = float(value)
+                    if key == "xy_stack_z_level_nm" and spec.get("z_level_nm") is None:
+                        spec["z_level_nm"] = z_val
+                        spec["z_level_label"] = str(label)
+                        spec["z_level_unit"] = "nm"
+                    return z_val, str(label or "Z")
+            except Exception:
+                continue
+
+        for axis in list(spec.get("AxisChoices") or []):
+            label = str(axis.get("label") or axis.get("key") or "Z")
+            if not _z_like_name(label) and str(axis.get("key") or "").strip().lower() not in {"z", "topo"}:
+                continue
+            level = _constant_axis_value_nm(axis.get("values"), axis.get("unit") or "")
+            if level is not None:
+                spec["z_level_nm"] = float(level)
+                spec["z_level_label"] = label
+                spec["z_level_unit"] = "nm"
+                return float(level), label
+
+        extra_topo = _topo_axis_from_spec(spec)
+        if extra_topo is not None:
+            level = _constant_axis_value_nm(extra_topo.get("values"), extra_topo.get("unit") or "nm")
+            if level is not None:
+                label = str(extra_topo.get("label") or "Topo")
+                spec["z_level_nm"] = float(level)
+                spec["z_level_label"] = label
+                spec["z_level_unit"] = "nm"
+                return float(level), label
+
+        for key, value in list((spec or {}).items()):
+            label = str(key or "")
+            if not _z_like_name(label):
+                continue
+            unit_hint = ""
+            label_low = label.lower()
+            if "(m)" in label_low:
+                unit_hint = "m"
+            elif "(nm)" in label_low:
+                unit_hint = "nm"
+            elif "(pm)" in label_low:
+                unit_hint = "pm"
+            elif "(um)" in label_low:
+                unit_hint = "um"
+            level = _scalar_to_nm(value, unit_hint=unit_hint)
+            if level is not None:
+                clean_label = re.sub(r"\s*\(.*?\)", "", label).strip() or "Z"
+                spec["z_level_nm"] = float(level)
+                spec["z_level_label"] = clean_label
+                spec["z_level_unit"] = "nm"
+                return float(level), clean_label
+        return None, ""
+
+    def _format_fit_result_z(self, spec):
+        if not spec:
+            return "n/a", ""
+        z_num, label = self._resolve_spec_z_value(spec)
+        if z_num is None:
+            return "n/a", ""
+        return f"{z_num:.6g}", f"{str(label or 'Z').strip() or 'Z'}: {z_num:.6g} nm"
+
+    def _fit_trend_rows(self):
+        rows = []
+        for spec_id, res in self._fit_results.items():
+            spec = res.get("spec")
+            if not spec:
+                continue
+            z_nm, z_label = self._resolve_spec_z_value(spec)
+            if z_nm is None:
+                continue
+            axis_unit = str(res.get("axis_unit") or "").strip()
+            lcpd_unit = "mV" if axis_unit.lower() == "v" else (axis_unit or "")
+            lcpd_scale = 1000.0 if axis_unit.lower() == "v" else 1.0
+            v0 = res.get("v0")
+            v0_err = res.get("v0_err")
+            try:
+                lcpd = float(v0) * lcpd_scale if v0 is not None and np.isfinite(float(v0)) else None
+            except Exception:
+                lcpd = None
+            try:
+                lcpd_err = float(v0_err) * lcpd_scale if v0_err is not None and np.isfinite(float(v0_err)) else None
+            except Exception:
+                lcpd_err = None
+            rows.append({
+                "spec_id": spec_id,
+                "name": self._display_name(spec),
+                "z_nm": float(z_nm),
+                "z_label": str(z_label or "Z"),
+                "lcpd": lcpd,
+                "lcpd_err": lcpd_err,
+                "lcpd_unit": lcpd_unit,
+                "a": float(res["a"]) if np.isfinite(float(res["a"])) else None,
+                "a_err": float(res["a_err"]) if np.isfinite(float(res["a_err"])) else None,
+                "c": float(res["c"]) if np.isfinite(float(res["c"])) else None,
+                "c_err": float(res["c_err"]) if np.isfinite(float(res["c_err"])) else None,
+                "rmse": float(res["rmse"]) if np.isfinite(float(res["rmse"])) else None,
+                "rmse_err": None,
+            })
+        return rows
+
+    def _update_fit_trend_state(self):
+        rows = self._fit_trend_rows()
+        if hasattr(self, "fit_vs_z_btn"):
+            self.fit_vs_z_btn.setEnabled(bool(rows))
+        dlg = getattr(self, "_fit_trend_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.set_rows(rows)
+            except Exception:
+                pass
+
+    def _show_fit_vs_z_dialog(self):
+        rows = self._fit_trend_rows()
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "KPFM fits vs Z", "No fitted spectra with usable Z metadata are available.")
+            return
+        dlg = getattr(self, "_fit_trend_dialog", None)
+        if dlg is None or not dlg.isVisible():
+            dlg = KPFMFitTrendDialog(rows, parent=self)
+            try:
+                dlg.setWindowModality(QtCore.Qt.NonModal)
+                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            except Exception:
+                pass
+            dlg.finished.connect(lambda _=None: setattr(self, "_fit_trend_dialog", None))
+            self._fit_trend_dialog = dlg
+            dlg.show()
+        else:
+            dlg.set_rows(rows)
+            try:
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception:
+                pass
 
     def _get_icon(self, name):
         """Get a themed icon, falling back to empty icon if not available."""
@@ -3054,6 +3456,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         export_row.addStretch(1)
         kpfm_layout.addLayout(export_row)
 
+        trend_row = QtWidgets.QHBoxLayout()
+        self.fit_vs_z_btn = QtWidgets.QPushButton(self._get_icon("office-chart-line"), "Plot fits vs Z")
+        self.fit_vs_z_btn.setToolTip("Open an optional plot of fitted KPFM quantities against Z with error bars")
+        self.fit_vs_z_btn.setEnabled(False)
+        trend_row.addWidget(self.fit_vs_z_btn)
+        trend_row.addStretch(1)
+        kpfm_layout.addLayout(trend_row)
+
         analysis_layout.addWidget(kpfm_group)
 
         # Forces/Background subsection
@@ -3118,6 +3528,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_selected_btn.clicked.connect(self._fit_selected)
         self.fit_all_btn.clicked.connect(self._fit_all)
         self.export_btn.clicked.connect(self._export_csv)
+        self.fit_vs_z_btn.clicked.connect(self._show_fit_vs_z_dialog)
         self.bg_set_btn.clicked.connect(self._on_set_background)
         self.bg_clear_btn.clicked.connect(self._on_clear_background)
         self.force_btn.clicked.connect(self._on_convert_force)
@@ -3133,6 +3544,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_all_btn.setAccessibleDescription("Perform parabolic fit on all checked spectra")
         self.export_btn.setAccessibleName("Export results")
         self.export_btn.setAccessibleDescription("Save fit results to CSV file")
+        self.fit_vs_z_btn.setAccessibleName("Plot fits versus Z")
+        self.fit_vs_z_btn.setAccessibleDescription("Open a plot of fitted KPFM values against Z with error bars")
         self.bg_set_btn.setAccessibleName("Set background")
         self.bg_set_btn.setAccessibleDescription("Use selected spectrum as background for subtraction")
         self.bg_clear_btn.setAccessibleName("Clear background")
@@ -3205,8 +3618,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         table_label.setStyleSheet("font-weight: bold;")
         right_layout.addWidget(table_label)
 
-        self.results_table = QtWidgets.QTableWidget(0, 10)
-        self.results_table.setHorizontalHeaderLabels(["File","X (nm)","Y (nm)","a","δa","LCPD","δLCPD","c (Hz)","δc","RMSE"])
+        fit_headers = self._fit_result_headers()
+        self.results_table = QtWidgets.QTableWidget(0, len(fit_headers))
+        self.results_table.setHorizontalHeaderLabels(fit_headers)
         self.results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -3245,6 +3659,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             # Type/Index
             midx = spec.get('matrix_index')
             type_str = f"Matrix [{midx}]" if midx is not None else "Single"
+            stack_label = str(spec.get("xy_stack_display") or "").strip()
+            if stack_label:
+                type_str = f"{type_str} {stack_label}"
             
             # Pos
             x, y = spec.get('x'), spec.get('y')
@@ -3267,6 +3684,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             item.setCheckState(0, QtCore.Qt.Checked)
             item.setData(0, QtCore.Qt.UserRole, spec)
             item.setData(0, QtCore.Qt.UserRole + 1, self._spec_id(spec))
+            stack_summary = str(spec.get("xy_stack_summary") or "").strip()
+            if stack_summary:
+                item.setToolTip(0, stack_summary)
+                item.setToolTip(1, stack_summary)
+                item.setToolTip(2, stack_summary)
             self.spec_list.addTopLevelItem(item)
             self._item_map[self._spec_id(spec)] = item
         
@@ -3278,6 +3700,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         """Update the dialog with a new list of spectra without reopening."""
         self.specs = list(specs)
         self._fit_results = {}
+        self._update_fit_trend_state()
         self._item_map = {}
         prev_channel = self.channel_combo.currentText()
         filter_text = self.filter_edit.text()
@@ -3631,6 +4054,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _on_channel_changed(self):
         self._record_user_action(f"Channel → {self.channel_combo.currentText()}")
         self._fit_results = {}
+        self._update_fit_trend_state()
         self._populate_results_table()
         self._validate_log_axes()
         self._update_plot()
@@ -3638,6 +4062,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _on_axis_changed(self):
         self._record_user_action(f"Axis → {self.axis_combo.currentText()}")
         self._fit_results = {}
+        self._update_fit_trend_state()
         self.results_table.setRowCount(0)
         self._validate_log_axes()
         self._update_plot()
@@ -3907,7 +4332,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec_id = self._spec_id(spec)
             line = self._line_map.get(spec_id)
             color = line.get_color() if line else "#d65f5f"
-            markers.append((color, coords))
+            markers.append({"color": color, "coords": coords, "spec": spec})
         return markers
 
     def _update_position_inset_compare(self):
@@ -3943,8 +4368,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._position_inset_ax.set_xticks([])
         self._position_inset_ax.set_yticks([])
         self._position_inset_ax.set_title("Position", fontsize=7.5 * getattr(self, "_font_scale", 1.0))
-        for color, coords in markers:
+        raw_coords = []
+        for marker in markers:
+            color = marker.get("color")
+            coords = marker.get("coords")
+            spec = marker.get("spec")
             try:
+                raw_coords.append((spec, float(coords[0]), float(coords[1])))
                 self._position_inset_ax.scatter(
                     coords[0],
                     coords[1],
@@ -3952,6 +4382,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     facecolors="none",
                     edgecolors=color,
                     linewidths=1.5,
+                )
+            except Exception:
+                continue
+        for badge in spectro_overlays._stack_badges_from_coords(raw_coords):
+            try:
+                self._position_inset_ax.text(
+                    float(badge.get("col")) + 6.0,
+                    float(badge.get("row")) - 6.0,
+                    str(badge.get("label") or ""),
+                    fontsize=6.6 * getattr(self, "_font_scale", 1.0),
+                    fontweight="bold",
+                    color="#ffe478",
+                    ha="left",
+                    va="bottom",
+                    bbox=dict(boxstyle="round,pad=0.18", facecolor="#281e12", edgecolor="#ffe0a0", linewidth=0.8, alpha=0.92),
                 )
             except Exception:
                 continue
@@ -4212,13 +4657,20 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _update_status(self, plotted=None):
         root = self.spec_list.invisibleRootItem()
         total = 0
+        stack_keys = set()
         for i in range(root.childCount()):
             if not root.child(i).isHidden():
                 total += 1
+                spec = root.child(i).data(0, QtCore.Qt.UserRole) or {}
+                stack_key = spec.get("xy_stack_key")
+                if stack_key and int(spec.get("xy_stack_count") or 0) > 1:
+                    stack_keys.add(str(stack_key))
         checked = len(self._checked_items())
         text = f"{checked} selected / {total} total"
         if plotted is not None:
             text += f" | showing {plotted}"
+        if stack_keys:
+            text += f" | XY stacks {len(stack_keys)}"
         bg_txt = "BG set" if self._background_spec_id else "No BG"
         mode_txt = "Relative" if self._relative_zero_enabled else "Absolute"
         text += f" | {bg_txt} | {mode_txt}"
@@ -4327,7 +4779,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _copy_table_to_clipboard(self):
         rows = []
-        headers = ["File","X (nm)","Y (nm)","a","da","LCPD","dLCPD","c (Hz)","dc","RMSE"]
+        headers = [
+            self.results_table.horizontalHeaderItem(c).text() if self.results_table.horizontalHeaderItem(c) else ""
+            for c in range(self.results_table.columnCount())
+        ]
         rows.append("\t".join(headers))
         for r in range(self.results_table.rowCount()):
             vals = []
@@ -5697,6 +6152,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if removed:
             self._update_plot()
             self._populate_results_table()
+            self._update_fit_trend_state()
             self._update_status()
 
     def _clear_all(self):
@@ -5706,6 +6162,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._line_map.clear()
         self._legend_map.clear()
         self._fit_results = {}
+        self._update_fit_trend_state()
         self.ax.clear()
         self.canvas.draw_idle()
         self.results_table.setRowCount(0)
@@ -5779,6 +6236,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if spec:
                 self._fit_results[self._spec_id(spec)] = res
         self._populate_results_table()
+        self._update_fit_trend_state()
         self._update_plot()
 
     def _on_fit_progress(self, percentage, message):
@@ -5803,28 +6261,35 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 v0_disp = f"{v0 * scale:.4g}"
                 if v0_err is not None and np.isfinite(v0_err):
                     v0_err_disp = f"{v0_err * scale:.3g}"
+            z_disp, z_tooltip = self._format_fit_result_z(spec)
             rows.append((spec_id, self._display_name(spec),
                          "n/a" if xs is None else f"{xs:.1f}",
                          "n/a" if ys is None else f"{ys:.1f}",
+                         z_disp, z_tooltip,
                          f"{res['a']:.4g}", f"{res['a_err']:.2g}",
                          v0_disp, v0_err_disp,
                          f"{res['c']:.4g}", f"{res['c_err']:.2g}",
                          f"{res['rmse']:.4g}"))
         self.results_table.setRowCount(len(rows))
         for r, data in enumerate(rows):
-            spec_id, name, xval, yval, a, ae, b, be, c, ce, rmse = data
-            values = [name, xval, yval, a, ae, b, be, c, ce, rmse]
+            spec_id, name, xval, yval, zval, z_tooltip, a, ae, b, be, c, ce, rmse = data
+            values = [name, xval, yval, zval, a, ae, b, be, c, ce, rmse]
             for col, val in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(val)
                 if col == 0:
                     item.setData(QtCore.Qt.UserRole, spec_id)
+                if col == 3 and z_tooltip:
+                    item.setToolTip(z_tooltip)
                 self.results_table.setItem(r, col, item)
 
     def _export_csv(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export CSV", "spectroscopy_fit.csv", "CSV Files (*.csv)")
         if not path:
             return
-        headers = ["File","X (nm)","Y (nm)","a","da","b (mV)","db","c (Hz)","dc","RMSE"]
+        headers = [
+            self.results_table.horizontalHeaderItem(c).text() if self.results_table.horizontalHeaderItem(c) else ""
+            for c in range(self.results_table.columnCount())
+        ]
         with open(path, 'w', newline='') as f:
             f.write(",".join(headers) + "\n")
             for row in range(self.results_table.rowCount()):

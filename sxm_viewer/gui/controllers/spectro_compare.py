@@ -1,6 +1,7 @@
 """Spectroscopy selection/comparison helpers."""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from ..._shared import QtCore, QtWidgets
@@ -150,11 +151,85 @@ class SpectroCompareController:
             viewer.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(viewer, spec)
 
+    def open_stack_popup(self, spec, file_key=""):
+        viewer = self.viewer
+        specs = self.stack_specs_for_popup(spec, file_key=file_key)
+        if len(specs) < 2:
+            return self.open_single_popup(spec)
+        if not viewer._spectros_loaded:
+            viewer.ensure_spectros_loaded(refresh=False)
+        title = self._stack_popup_title(spec, len(specs))
+        return spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+
     def open_multi_popup(self):
         viewer = self.viewer
         if not viewer._spectros_loaded:
             viewer.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(viewer)
+
+    def stack_specs_for_popup(self, spec, file_key=""):
+        if not spec:
+            return []
+        stack_key = str(spec.get("xy_stack_key") or "").strip()
+        stack_count = int(spec.get("xy_stack_count") or 0)
+        if not stack_key or stack_count <= 1 or spec.get("matrix_index") is not None:
+            return [spec]
+        viewer = self.viewer
+        bucket_keys = []
+        for key in (file_key, spec.get("image_key"), spec.get("path")):
+            text = str(key or "").strip()
+            if text and text not in bucket_keys:
+                bucket_keys.append(text)
+        candidates = []
+        for key in bucket_keys:
+            candidates.extend(list((getattr(viewer, "spectros_by_image", {}) or {}).get(key, []) or []))
+        if not candidates:
+            candidates = list(getattr(viewer, "spectros", []) or [])
+        members = []
+        seen = set()
+        for entry in candidates:
+            if str(entry.get("xy_stack_key") or "").strip() != stack_key:
+                continue
+            ident = self.spec_identity_key(entry) or str(Path(str(entry.get("path") or "")))
+            if ident in seen:
+                continue
+            seen.add(ident)
+            members.append(entry)
+        if not members:
+            return [spec]
+        members.sort(key=self._stack_sort_key)
+        return members
+
+    def _stack_popup_title(self, spec, count):
+        display = str(spec.get("xy_stack_display") or "").strip() or f"x{count}"
+        x_val = spec.get("x")
+        y_val = spec.get("y")
+        try:
+            if x_val is not None and y_val is not None:
+                position = f" ({float(x_val):.1f}, {float(y_val):.1f}) nm"
+            else:
+                position = ""
+        except Exception:
+            position = ""
+        return f"Spectroscopy stack: {display}{position}"
+
+    @staticmethod
+    def _stack_sort_key(spec):
+        z_level = spec.get("xy_stack_z_level_nm")
+        try:
+            z_val = float(z_level)
+            if math.isfinite(z_val):
+                return (0, z_val, int(spec.get("order_idx") or 0), str(spec.get("path") or ""))
+        except Exception:
+            pass
+        time_val = spec.get("time")
+        return (
+            1,
+            0.0,
+            str(time_val or ""),
+            int(spec.get("order_idx") or 0),
+            str(spec.get("path") or ""),
+        )
 
     # ------------------------------------------------------------------
     def _handle_activation(self, spec, file_key, is_matrix_hint, modifiers):
@@ -184,6 +259,8 @@ class SpectroCompareController:
         )
         if is_matrix and file_key:
             viewer._open_matrix_explorer_for_file(file_key)
+        elif int(spec.get("xy_stack_count") or 0) > 1 and spec.get("matrix_index") is None:
+            self.open_stack_popup(spec, file_key=file_key)
         else:
             self.open_single_popup(spec)
         try:

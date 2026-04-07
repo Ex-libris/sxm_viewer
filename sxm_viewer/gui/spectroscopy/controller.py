@@ -34,6 +34,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ...data.spectroscopy import is_matrix_file_entry
 
 
 def _shared_repeat_spec_targets(viewer, spec, primary_key, repeat_groups, image_extents):
@@ -245,6 +246,7 @@ def _assign_spectros_to_images(viewer):
             s.get('display_time') or s.get('time') or datetime.min,
             s.get('order_idx') or 0,
         ))
+    _annotate_xy_stacks(viewer)
 
     # Debug log for nanonis 3ds assignments
     # Suppress debug summary in normal runs
@@ -262,6 +264,209 @@ def _spec_time_for_assignment(spec):
     if _is_dat_spec(spec):
         return spec.get('file_mtime') or spec.get('time')
     return spec.get('time')
+
+
+def _spec_identity_key(spec):
+    if not spec:
+        return None
+    base = spec.get("path")
+    try:
+        base = str(Path(base))
+    except Exception:
+        base = str(base)
+    idx = spec.get("matrix_index")
+    if idx is not None:
+        return f"{base}#idx{idx}"
+    x = spec.get("x")
+    y = spec.get("y")
+    if x is not None or y is not None:
+        try:
+            x_val = float(x) if x is not None else ""
+            y_val = float(y) if y is not None else ""
+            return f"{base}#pos{round(x_val, 6)}_{round(y_val, 6)}"
+        except Exception:
+            return f"{base}#pos{x}_{y}"
+    return base
+
+
+def _value_to_nm(value, unit_hint="nm"):
+    try:
+        val = float(value)
+    except Exception:
+        return None
+    unit = str(unit_hint or "").strip().lower()
+    if unit in ("m", "meter", "meters"):
+        return val * 1e9
+    if unit in ("um", "micron", "microns", "µm"):
+        return val * 1e3
+    if unit in ("pm", "picometer", "picometers"):
+        return val * 1e-3
+    return val
+
+
+def _constant_axis_value_nm(values, unit_hint="nm", tol_nm=1e-3):
+    try:
+        arr = np.asarray(values, dtype=float).ravel()
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    arr_nm = np.asarray([_value_to_nm(v, unit_hint) for v in finite], dtype=float)
+    arr_nm = arr_nm[np.isfinite(arr_nm)]
+    if arr_nm.size == 0:
+        return None
+    try:
+        span = float(np.nanmax(arr_nm) - np.nanmin(arr_nm))
+        center = float(np.nanmedian(arr_nm))
+    except Exception:
+        return None
+    limit = max(float(tol_nm), abs(center) * 1e-6)
+    if span <= limit:
+        return center
+    return None
+
+
+def _extract_spec_z_level(spec):
+    direct = spec.get("z_level_nm")
+    if direct is not None:
+        try:
+            return float(direct), str(spec.get("z_level_label") or "Z"), str(spec.get("z_level_unit") or "nm")
+        except Exception:
+            pass
+    for key, label in (
+        ("z_abs_nm", "Z abs"),
+        ("z_nm", "Z"),
+        ("topo_nm", "Topo"),
+    ):
+        value = spec.get(key)
+        if value is not None:
+            try:
+                return float(value), label, "nm"
+            except Exception:
+                continue
+    for axis in list(spec.get("AxisChoices") or []):
+        try:
+            key = str(axis.get("key") or "").strip().lower()
+            label = str(axis.get("label") or key or "Z")
+            unit = str(axis.get("unit") or "nm")
+            low = label.lower()
+            vals = axis.get("values")
+        except Exception:
+            continue
+        if key not in {"topo", "z"} and not any(token in low for token in ("topo", "piezo", "z abs", "z_abs", "absolute z")):
+            continue
+        level = _constant_axis_value_nm(vals, unit_hint=unit)
+        if level is not None:
+            return level, label, "nm"
+    channels = spec.get("channels") or {}
+    unit_map = spec.get("unit_map") or {}
+    if isinstance(channels, dict):
+        for name, vals in channels.items():
+            low = str(name or "").strip().lower()
+            if not low or not any(token in low for token in ("topo", "piezo", "z_abs", "abs_z", "absolute z")):
+                continue
+            level = _constant_axis_value_nm(vals, unit_hint=unit_map.get(name) or "")
+            if level is not None:
+                return level, str(name), "nm"
+    alt_vals = spec.get("AltAxis")
+    alt_label = str(spec.get("AltAxisLabel") or "Z")
+    if alt_vals is not None and any(token in alt_label.lower() for token in ("z", "topo", "piezo")):
+        level = _constant_axis_value_nm(alt_vals, unit_hint=spec.get("AltAxisUnit") or "nm")
+        if level is not None:
+            return level, alt_label, "nm"
+    return None, None, None
+
+
+def _annotate_xy_stacks(viewer):
+    originals = list(getattr(viewer, "spectros", []) or [])
+    if not originals:
+        return
+    fields = (
+        "xy_stack_key",
+        "xy_stack_count",
+        "xy_stack_display",
+        "xy_stack_summary",
+        "xy_stack_z_varies",
+        "xy_stack_z_level_nm",
+        "xy_stack_z_label",
+        "xy_stack_z_min_nm",
+        "xy_stack_z_max_nm",
+    )
+    for spec in originals:
+        for key in fields:
+            spec.pop(key, None)
+
+    xy_tol_nm = 0.05
+    z_tol_nm = 1e-3
+    groups = OrderedDict()
+    for spec in originals:
+        if is_matrix_file_entry(spec):
+            continue
+        try:
+            sx = float(spec.get("x"))
+            sy = float(spec.get("y"))
+        except Exception:
+            continue
+        owners = [str(key) for key in (spec.get("shared_image_keys") or [spec.get("primary_image_key") or spec.get("image_key")]) if key]
+        owners = sorted(OrderedDict((key, None) for key in owners).keys())
+        owner_key = "|".join(owners) if owners else ""
+        qx = int(round(sx / xy_tol_nm))
+        qy = int(round(sy / xy_tol_nm))
+        group_key = f"{owner_key}::{qx}:{qy}"
+        groups.setdefault(group_key, []).append(spec)
+
+    annotations = {}
+    for group_key, members in groups.items():
+        if len(members) <= 1:
+            continue
+        z_values = []
+        z_label = None
+        for spec in members:
+            level, label, _unit = _extract_spec_z_level(spec)
+            if level is not None:
+                spec["xy_stack_z_level_nm"] = float(level)
+                spec["xy_stack_z_label"] = str(label or "Z")
+                z_values.append(float(level))
+                if z_label is None and label:
+                    z_label = str(label)
+        unique_z = {round(val / z_tol_nm) for val in z_values} if z_values else set()
+        z_varies = len(unique_z) > 1
+        z_min = min(z_values) if z_values else None
+        z_max = max(z_values) if z_values else None
+        if z_varies and z_min is not None and z_max is not None:
+            summary = f"Z-stack: {len(members)} spectra at one XY\n{z_label or 'Z'} {z_min:.3f} to {z_max:.3f} nm"
+            display = f"Zx{len(members)}"
+        else:
+            summary = f"Coincident spectra: {len(members)} at one XY"
+            display = f"x{len(members)}"
+        for spec in members:
+            identity = _spec_identity_key(spec)
+            if not identity:
+                continue
+            annotations[identity] = {
+                "xy_stack_key": group_key,
+                "xy_stack_count": len(members),
+                "xy_stack_display": display,
+                "xy_stack_summary": summary,
+                "xy_stack_z_varies": bool(z_varies),
+                "xy_stack_z_level_nm": spec.get("xy_stack_z_level_nm"),
+                "xy_stack_z_label": spec.get("xy_stack_z_label") or z_label,
+                "xy_stack_z_min_nm": z_min,
+                "xy_stack_z_max_nm": z_max,
+            }
+            spec.update(annotations[identity])
+
+    for entries in list((getattr(viewer, "spectros_by_image", {}) or {}).values()):
+        for spec in entries:
+            identity = _spec_identity_key(spec)
+            if not identity:
+                continue
+            ann = annotations.get(identity)
+            if ann:
+                spec.update(ann)
 
 
 def _choose_image_for_spec(viewer, spec, images, image_extents):
