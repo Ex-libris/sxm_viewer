@@ -69,15 +69,11 @@ class QuickCropController:
         if label is None:
             return
         if viewer.quick_crop_mode:
-            text = (
-                "Shift+drag to size, click to spawn crops. "
-                "Right-click -> Quick tools -> Edit crop frame (or Ctrl+E) enables drag/resize/rotate, Enter applies. "
-                "Ctrl+Z undo, Ctrl+Shift+W close latest pop-out. "
-                "Use the checkboxes in Crop history to show or hide each crop overlay. "
-                "Ctrl+Shift+R reapplies the current real-size template, Ctrl+Shift+T toggles template overlay."
-            )
+            selected = len(self.cleanup_selected_sequences())
+            popups = len(self._tracked_popups())
+            text = f"Click preview to crop. Selected: {selected}  Pop-outs: {popups}"
         else:
-            text = "Quick crop mode is off. Press Ctrl+Shift+C to toggle."
+            text = "Press Ctrl+Shift+C to enable"
         label.setText(text)
 
     # ------------------------------------------------------------------
@@ -114,9 +110,7 @@ class QuickCropController:
             except Exception:
                 px_dims = ()
             if len(px_dims) == 2 and px_dims[0] and px_dims[1]:
-                info_lbl.setText(
-                    f"W: {real_width:.3f} {real_unit} ({px_dims[0]} px)  |  H: {real_height:.3f} {real_unit} ({px_dims[1]} px)"
-                )
+                info_lbl.setText(f"{int(px_dims[0])} x {int(px_dims[1])} px")
             else:
                 info_lbl.setText("")
 
@@ -457,15 +451,17 @@ class QuickCropController:
             layout.addWidget(frame)
         layout.addStretch(1)
         viewer.crop_history_panel.setVisible(bool(entries))
-        viewer.quick_crop_undo_btn.setEnabled(bool(entries))
-        viewer.quick_crop_clear_btn.setEnabled(bool(entries))
-        viewer.quick_crop_close_btn.setEnabled(bool(self.popup_stack))
-        export_btn = getattr(viewer, 'quick_crop_export_btn', None)
-        if export_btn is not None:
-            export_btn.setEnabled(bool(selected_seqs))
-        tile_btn = getattr(viewer, 'quick_crop_tile_btn', None)
-        if tile_btn is not None:
-            self.update_popup_actions()
+        for act_name, enabled in (
+            ("quick_crop_undo_act", bool(entries)),
+            ("quick_crop_clear_act", bool(entries)),
+            ("quick_crop_close_act", bool(self.popup_stack)),
+            ("quick_crop_export_act", bool(selected_seqs)),
+        ):
+            act = getattr(viewer, act_name, None)
+            if act is not None:
+                act.setEnabled(enabled)
+        self.update_popup_actions()
+        self.update_hint()
 
     # ------------------------------------------------------------------
     def cleanup_selected_sequences(self):
@@ -505,21 +501,22 @@ class QuickCropController:
 
     def update_popup_actions(self):
         viewer = self.viewer
-        tile_btn = getattr(viewer, 'quick_crop_tile_btn', None)
-        minimize_btn = getattr(viewer, 'quick_crop_minimize_btn', None)
+        tile_act = getattr(viewer, 'quick_crop_tile_act', None)
+        minimize_act = getattr(viewer, 'quick_crop_minimize_act', None)
         refresh_ui = getattr(viewer, '_refresh_popup_ui', None)
-        if tile_btn is None and minimize_btn is None and not callable(refresh_ui):
+        if tile_act is None and minimize_act is None and not callable(refresh_ui):
             return
         alive = self._tracked_popups()
-        if tile_btn is not None:
-            tile_btn.setEnabled(bool(alive))
-        if minimize_btn is not None:
-            minimize_btn.setEnabled(bool(alive))
+        if tile_act is not None:
+            tile_act.setEnabled(bool(alive))
+        if minimize_act is not None:
+            minimize_act.setEnabled(bool(alive))
         if callable(refresh_ui):
             try:
                 refresh_ui(popups=alive)
             except Exception:
                 pass
+        self.update_hint()
 
     def tracked_popups(self):
         return list(self._tracked_popups())

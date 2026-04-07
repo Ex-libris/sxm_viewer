@@ -144,6 +144,67 @@ def create_main_toolbar(viewer):
     viewer.toolbar_export_xyz_act.triggered.connect(viewer.on_export_xyz_files)
 
     toolbar.addSeparator()
+    viewer.toolbar_image_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_image_btn.setText("Image")
+    viewer.toolbar_image_btn.setToolTip("Histogram, contrast, and crop/rotate actions for the current preview")
+    viewer.toolbar_image_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+    viewer.toolbar_image_menu = QtWidgets.QMenu(viewer.toolbar_image_btn)
+    viewer.toolbar_histogram_act = viewer.toolbar_image_menu.addAction("Histogram...")
+    viewer.toolbar_histogram_act.setToolTip("Show histogram and adjust display range")
+    viewer.toolbar_histogram_act.triggered.connect(lambda: viewer._open_histogram_dialog(viewer.preview_canvas))
+    viewer.toolbar_histogram_auto_act = viewer.toolbar_image_menu.addAction("Auto contrast (1-99%)")
+    viewer.toolbar_histogram_auto_act.triggered.connect(lambda: viewer._auto_contrast(viewer.preview_canvas))
+    viewer.toolbar_histogram_reset_act = viewer.toolbar_image_menu.addAction("Reset range")
+    viewer.toolbar_histogram_reset_act.triggered.connect(lambda: viewer._reset_contrast(viewer.preview_canvas))
+    viewer.toolbar_image_menu.addSeparator()
+    viewer.toolbar_crop_rotate_act = viewer.toolbar_image_menu.addAction("Crop/Rotate...")
+    viewer.toolbar_crop_rotate_act.setToolTip("Open crop, rotate, flip, clipping, gamma, and colormap controls")
+    viewer.toolbar_crop_rotate_act.triggered.connect(viewer.on_adjust_image)
+    viewer.toolbar_image_btn.setMenu(viewer.toolbar_image_menu)
+    toolbar.addWidget(viewer.toolbar_image_btn)
+
+    try:
+        from . import main_window_layout
+
+        viewer.toolbar_display_btn.setText("Display")
+        viewer.toolbar_display_btn.setToolTip("Preview and overlay display options")
+        viewer.toolbar_display_btn.setMenu(main_window_layout._ensure_display_menu(viewer))
+        toolbar.addWidget(viewer.toolbar_display_btn)
+
+        viewer.toolbar_tools_btn = QtWidgets.QToolButton(toolbar)
+        viewer.toolbar_tools_btn.setText("Tools")
+        viewer.toolbar_tools_btn.setToolTip("Preview tools, docking, and recovery options")
+        viewer.toolbar_tools_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        viewer.toolbar_tools_btn.setMenu(main_window_layout._ensure_tools_menu(viewer))
+
+        def _sync_tools_menu():
+            detached = bool(getattr(viewer, "preview_detached", False))
+            locked = bool(getattr(viewer, "preview_locked", False))
+            detach_act = getattr(viewer, "tools_preview_detach_act", None)
+            lock_act = getattr(viewer, "tools_preview_lock_act", None)
+            if detach_act is not None:
+                detach_act.setText("Dock preview" if detached else "Float preview")
+                detach_act.setToolTip(
+                    "Dock the floating preview back into the main window"
+                    if detached
+                    else "Detach the preview pane into its own floating window"
+                )
+                detach_act.setEnabled(not locked)
+            if lock_act is not None:
+                lock_act.blockSignals(True)
+                lock_act.setChecked(locked)
+                lock_act.blockSignals(False)
+
+        viewer.toolbar_tools_menu = viewer.toolbar_tools_btn.menu()
+        viewer.toolbar_tools_menu.aboutToShow.connect(_sync_tools_menu)
+        _sync_tools_menu()
+        toolbar.addWidget(viewer.toolbar_tools_btn)
+
+        if getattr(viewer, "toolbar_dark_btn", None) is not None:
+            toolbar.addWidget(viewer.toolbar_dark_btn)
+    except Exception:
+        pass
+
     viewer.toolbar_spectro_browser_act = QtWidgets.QAction(_icon("view-list"), "Spectroscopy", viewer)
     viewer.toolbar_spectro_browser_act.setToolTip("Open the spectroscopy browser. Use the dropdown for spectroscopy display controls.")
     viewer.toolbar_spectro_browser_act.triggered.connect(lambda: viewer.open_spectro_browser())
@@ -232,3 +293,8 @@ def update_toolbar_actions(viewer, enabled: bool):
     btn = getattr(viewer, "preview_adjust_btn", None)
     if btn is not None:
         btn.setEnabled(bool(enabled))
+    for widget in (
+        getattr(viewer, "toolbar_image_btn", None),
+    ):
+        if widget is not None:
+            widget.setEnabled(bool(enabled))
