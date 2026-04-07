@@ -400,6 +400,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectro_force_single_mode = bool(self.config.get("spectro_force_single_mode", False))
         self.dark_mode = bool(self.config.get('dark_mode', False))
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
+        self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
         self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
@@ -410,6 +411,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
+        self.quick_crop_aspect_mode = str(self.config.get("quick_crop_aspect_mode", "free") or "free").strip().lower()
+        if self.quick_crop_aspect_mode not in {"free", "keep", "square"}:
+            self.quick_crop_aspect_mode = "free"
         # Keep crop template editor opt-in at startup for cleaner preview/popup canvases.
         self.show_crop_template_overlay = False
         self.show_crop_history_overlay = True
@@ -588,6 +592,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_adjust_act = None
         self.toolbar_dark_btn = None
         self.toolbar_display_btn = None
+        self.toolbar_image_btn = None
+        self.toolbar_image_menu = None
+        self.toolbar_tools_btn = None
+        self.toolbar_tools_menu = None
         self.toolbar_load_mol_btn = None
         self.toolbar_spectro_btn = None
         self.toolbar_spectro_menu = None
@@ -1025,7 +1033,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.channel_controls_widget.setLayout(controls_h)
         self.channel_controls_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         preview_header.addWidget(self.channel_controls_widget, 1)
-        preview_header.addStretch(1)
         # Dock/lock controls
         self.preview_lock_cb = QtWidgets.QCheckBox("Lock")
         self.preview_lock_cb.setChecked(self.preview_locked)
@@ -1038,11 +1045,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.scale_bar_cb.setChecked(bool(self.config.get("show_scale_bar", False)))
         self.scale_bar_cb.setToolTip("Show the scale bar in preview and pop-outs")
         self.preview_hist_btn = QtWidgets.QToolButton()
-        self.preview_hist_btn.setText("Levels")
+        self.preview_hist_btn.setText("Histogram")
         self.preview_hist_btn.setToolTip("Show histogram and adjust display range")
         self.preview_hist_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
         self.preview_hist_menu = QtWidgets.QMenu(self.preview_hist_btn)
-        self.preview_hist_menu.addAction("Adjust…", lambda: self._open_histogram_dialog(self.preview_canvas))
+        self.preview_hist_menu.addAction("Histogram...", lambda: self._open_histogram_dialog(self.preview_canvas))
         self.preview_hist_menu.addAction("Auto (1–99%)", lambda: self._auto_contrast(self.preview_canvas))
         self.preview_hist_menu.addAction("Reset range", lambda: self._reset_contrast(self.preview_canvas))
         self.show_preview_title = bool(self.config.get('show_preview_title', True))
@@ -1053,8 +1060,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_hist_btn.setMenu(self.preview_hist_menu)
         self.preview_hist_btn.clicked.connect(lambda _: self._open_histogram_dialog(self.preview_canvas))
         self.preview_adjust_btn = QtWidgets.QToolButton()
-        self.preview_adjust_btn.setText("Adjust")
-        self.preview_adjust_btn.setToolTip("Open image adjustment tools for the current preview")
+        self.preview_adjust_btn.setText("Crop/Rotate")
+        self.preview_adjust_btn.setToolTip("Open crop, rotate, flip, clipping, gamma, and colormap controls")
         self.preview_adjust_btn.clicked.connect(self.on_adjust_image)
         self.preview_adjust_btn.setEnabled(False)
         self.preview_molecules_toggle_btn = QtWidgets.QToolButton()
@@ -1070,9 +1077,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_grid_toggle_btn.setToolTip("Show or hide the detail grid overlay")
         self.preview_grid_toggle_btn.toggled.connect(self.on_detail_grid_toggled)
         self.toolbar_display_btn = QtWidgets.QToolButton()
-        self.toolbar_display_btn.setText("View")
+        self.toolbar_display_btn.setText("Display")
         self.toolbar_display_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.toolbar_display_btn.setToolTip("Preview and overlay options")
+        self.toolbar_display_btn.setToolTip("Preview and overlay display options")
         self.toolbar_display_btn.setMenu(main_window_layout._ensure_display_menu(self))
         self.toolbar_load_mol_btn = QtWidgets.QLabel()
         self.toolbar_load_mol_btn.setFixedSize(44, 28)
@@ -1087,15 +1094,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_dark_btn.setMinimumWidth(64)
         self.toolbar_dark_btn.setFixedHeight(28)
         self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
-        preview_header.addWidget(self.preview_hist_btn)
-        preview_header.addWidget(self.preview_adjust_btn)
-        preview_header.addWidget(self.preview_molecules_toggle_btn)
-        preview_header.addWidget(self.toolbar_load_mol_btn)
-        preview_header.addWidget(self.preview_grid_toggle_btn)
-        preview_header.addWidget(self.toolbar_display_btn)
-        preview_header.addWidget(self.preview_detach_btn)
-        preview_header.addWidget(self.preview_lock_cb)
-        preview_header.addWidget(self.toolbar_dark_btn)
         preview_workspace_layout.addLayout(preview_header)
 
         self.thumb_cmap_label = QtWidgets.QLabel("Thumb")
@@ -1113,104 +1111,127 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
         preview_state_row.addStretch(1)
-        preview_state_row.addWidget(self.unit_display_cb)
-        preview_state_row.addWidget(self.unit_relative_cb)
-        preview_state_row.addWidget(self.relative_axes_cb)
-        preview_state_row.addWidget(self.scale_bar_cb)
         preview_workspace_layout.addLayout(preview_state_row)
         preview_panel_layout.addWidget(self.preview_workspace_frame)
 
         self.quick_crop_controls = QtWidgets.QWidget()
-        quick_layout = QtWidgets.QHBoxLayout(self.quick_crop_controls)
+        quick_layout = QtWidgets.QVBoxLayout(self.quick_crop_controls)
         quick_layout.setContentsMargins(0, 0, 0, 0)
-        quick_layout.setSpacing(6)
-        self.quick_crop_btn = QtWidgets.QPushButton("Quick crop: Off")
+        quick_layout.setSpacing(4)
+        quick_toggle_row = QtWidgets.QHBoxLayout()
+        quick_toggle_row.setContentsMargins(0, 0, 0, 0)
+        quick_toggle_row.setSpacing(6)
+        self.quick_crop_btn = QtWidgets.QPushButton("Crop template: Off")
         self.quick_crop_btn.setCheckable(True)
-        self.quick_crop_btn.setToolTip("Toggle quick crop mode (Ctrl+Shift+C). Shift+drag to size, click to spawn crops.")
-        quick_layout.addWidget(self.quick_crop_btn)
+        self.quick_crop_btn.setToolTip(
+            "Enable repeated cropping from the current template (Ctrl+Shift+C). "
+            "Click the preview to apply the template. Shift+drag draws a manual crop; "
+            "Ctrl+Shift+drag forces a square manual crop."
+        )
+        quick_toggle_row.addWidget(self.quick_crop_btn)
+        self.quick_crop_edit_btn = QtWidgets.QToolButton()
+        self.quick_crop_edit_btn.setText("Edit frame")
+        self.quick_crop_edit_btn.setCheckable(True)
+        self.quick_crop_edit_btn.setToolTip(
+            "Move, resize, and rotate the current crop template on the preview (Ctrl+E)."
+        )
+        quick_toggle_row.addWidget(self.quick_crop_edit_btn)
+        quick_toggle_row.addStretch(1)
+        quick_layout.addLayout(quick_toggle_row)
         self.quick_crop_detail_widget = QtWidgets.QWidget()
-        quick_detail_layout = QtWidgets.QHBoxLayout(self.quick_crop_detail_widget)
+        quick_detail_layout = QtWidgets.QVBoxLayout(self.quick_crop_detail_widget)
         quick_detail_layout.setContentsMargins(0, 0, 0, 0)
-        quick_detail_layout.setSpacing(6)
-        quick_detail_layout.addWidget(QtWidgets.QLabel("Real W"))
+        quick_detail_layout.setSpacing(4)
+        quick_template_row = QtWidgets.QHBoxLayout()
+        quick_template_row.setContentsMargins(0, 0, 0, 0)
+        quick_template_row.setSpacing(6)
+        quick_template_row.addWidget(QtWidgets.QLabel("W"))
         self.quick_crop_real_width_spin = QtWidgets.QDoubleSpinBox()
         self.quick_crop_real_width_spin.setRange(0.01, 10000.0)
         self.quick_crop_real_width_spin.setDecimals(3)
         self.quick_crop_real_width_spin.setSingleStep(0.1)
-        self.quick_crop_real_width_spin.setFixedWidth(80)
-        self.quick_crop_real_width_spin.setToolTip("Real-space width (current preview unit)")
+        self.quick_crop_real_width_spin.setFixedWidth(72)
+        self.quick_crop_real_width_spin.setToolTip("Template width in real-space units.")
         self.quick_crop_real_width_spin.setValue(5.0)
         self._quick_crop_aspect = 1.0
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(), 5.0]
-        quick_detail_layout.addWidget(self.quick_crop_real_width_spin)
-        quick_detail_layout.addWidget(QtWidgets.QLabel("Real H"))
+        quick_template_row.addWidget(self.quick_crop_real_width_spin)
+        quick_template_row.addWidget(QtWidgets.QLabel("H"))
         self.quick_crop_real_height_spin = QtWidgets.QDoubleSpinBox()
         self.quick_crop_real_height_spin.setRange(0.01, 10000.0)
         self.quick_crop_real_height_spin.setDecimals(3)
         self.quick_crop_real_height_spin.setSingleStep(0.1)
-        self.quick_crop_real_height_spin.setFixedWidth(80)
-        self.quick_crop_real_height_spin.setToolTip("Real-space height (current preview unit)")
+        self.quick_crop_real_height_spin.setFixedWidth(72)
+        self.quick_crop_real_height_spin.setToolTip("Template height in real-space units.")
         self.quick_crop_real_height_spin.setValue(5.0)
         self._quick_crop_last_real_size = [self.quick_crop_real_width_spin.value(),
                                            self.quick_crop_real_height_spin.value()]
         self._quick_crop_aspect = self._quick_crop_last_real_size[0] / max(0.001, self._quick_crop_last_real_size[1])
-        quick_detail_layout.addWidget(self.quick_crop_real_height_spin)
-        self.quick_crop_lock_aspect_cb = QtWidgets.QCheckBox("Lock aspect")
-        self.quick_crop_lock_aspect_cb.setToolTip("Keep width/height ratio when editing one dimension")
-        quick_detail_layout.addWidget(self.quick_crop_lock_aspect_cb)
+        quick_template_row.addWidget(self.quick_crop_real_height_spin)
         self.quick_crop_real_unit_lbl = QtWidgets.QLabel("nm")
-        quick_detail_layout.addWidget(self.quick_crop_real_unit_lbl)
-        self.quick_crop_square_cb = QtWidgets.QCheckBox("Square")
-        self.quick_crop_square_cb.setToolTip("Force quick crops to remain square")
-        quick_detail_layout.addWidget(self.quick_crop_square_cb)
+        quick_template_row.addWidget(self.quick_crop_real_unit_lbl)
+        quick_template_row.addWidget(QtWidgets.QLabel("Aspect"))
+        self.quick_crop_aspect_combo = QtWidgets.QComboBox()
+        self.quick_crop_aspect_combo.addItem("Free", "free")
+        self.quick_crop_aspect_combo.addItem("Keep ratio", "keep")
+        self.quick_crop_aspect_combo.addItem("Square", "square")
+        self.quick_crop_aspect_combo.setToolTip(
+            "Free: width and height change independently. "
+            "Keep ratio: template size edits preserve the current ratio. "
+            "Square: the template stays square, and Shift+drag manual crops stay square "
+            "while crop-template mode is on."
+        )
+        aspect_index = max(0, self.quick_crop_aspect_combo.findData(self.quick_crop_aspect_mode))
+        self.quick_crop_aspect_combo.setCurrentIndex(aspect_index)
+        quick_template_row.addWidget(self.quick_crop_aspect_combo)
         self.quick_crop_real_px_info_lbl = QtWidgets.QLabel("")
-        self.quick_crop_real_px_info_lbl.setFixedWidth(140)
-        quick_detail_layout.addWidget(self.quick_crop_real_px_info_lbl)
-        self.quick_crop_undo_btn = QtWidgets.QToolButton()
-        self.quick_crop_undo_btn.setText("Undo")
-        self.quick_crop_undo_btn.setToolTip("Undo latest crop (Ctrl+Z)")
-        quick_detail_layout.addWidget(self.quick_crop_undo_btn)
-        self.quick_crop_close_btn = QtWidgets.QToolButton()
-        self.quick_crop_close_btn.setText("Close pop-out")
-        self.quick_crop_close_btn.setToolTip("Close the latest quick-crop pop-out (Ctrl+Shift+W)")
-        quick_detail_layout.addWidget(self.quick_crop_close_btn)
-        self.quick_crop_clear_btn = QtWidgets.QToolButton()
-        self.quick_crop_clear_btn.setText("Clear history")
-        self.quick_crop_clear_btn.setToolTip("Clear crop history markers and pop-outs")
-        quick_detail_layout.addWidget(self.quick_crop_clear_btn)
-        self.quick_crop_export_btn = QtWidgets.QToolButton()
-        self.quick_crop_export_btn.setText("Export selection")
-        self.quick_crop_export_btn.setToolTip("Export the selected crops (Shift+click) as images")
-        self.quick_crop_export_btn.setEnabled(False)
+        self.quick_crop_real_px_info_lbl.setMinimumWidth(0)
+        self.quick_crop_real_px_info_lbl.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
+        quick_template_row.addWidget(self.quick_crop_real_px_info_lbl)
         self.quick_crop_controller = QuickCropController(self)
         self.thumbnail_controller = ThumbnailController(self)
-        self.quick_crop_export_btn.clicked.connect(self.quick_crop_controller.export_selected_crops)
-        quick_detail_layout.addWidget(self.quick_crop_export_btn)
-        self.quick_crop_tile_btn = QtWidgets.QToolButton()
-        self.quick_crop_tile_btn.setText("Tile pop-outs")
-        self.quick_crop_tile_btn.setToolTip("Arrange all open pop-out windows on screen")
-        self.quick_crop_tile_btn.setEnabled(False)
-        self.quick_crop_tile_btn.clicked.connect(self.on_arrange_popouts)
-        quick_detail_layout.addWidget(self.quick_crop_tile_btn)
-        self.quick_crop_minimize_btn = QtWidgets.QToolButton()
-        self.quick_crop_minimize_btn.setText("Minimize pop-outs")
-        self.quick_crop_minimize_btn.setToolTip("Minimize all open pop-out windows (Ctrl+Shift+M)")
-        self.quick_crop_minimize_btn.setEnabled(False)
-        self.quick_crop_minimize_btn.clicked.connect(self.on_minimize_popouts)
-        quick_detail_layout.addWidget(self.quick_crop_minimize_btn)
-        quick_detail_layout.addStretch(1)
+        self.quick_crop_actions_btn = QtWidgets.QToolButton()
+        self.quick_crop_actions_btn.setText("Actions")
+        self.quick_crop_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.quick_crop_actions_btn.setToolTip(
+            "Crop-template history, export, and pop-out management."
+        )
+        self.quick_crop_actions_menu = QtWidgets.QMenu(self.quick_crop_actions_btn)
+        self.quick_crop_undo_act = self.quick_crop_actions_menu.addAction("Undo latest crop")
+        self.quick_crop_undo_act.setToolTip("Undo latest crop (Ctrl+Z)")
+        self.quick_crop_undo_act.triggered.connect(self.quick_crop_controller.undo_last_crop)
+        self.quick_crop_close_act = self.quick_crop_actions_menu.addAction("Close latest pop-out")
+        self.quick_crop_close_act.setToolTip("Close the latest quick-crop pop-out (Ctrl+Shift+W)")
+        self.quick_crop_close_act.triggered.connect(self.quick_crop_controller.close_latest_popup)
+        self.quick_crop_clear_act = self.quick_crop_actions_menu.addAction("Clear history")
+        self.quick_crop_clear_act.setToolTip("Clear crop history markers and pop-outs")
+        self.quick_crop_clear_act.triggered.connect(self.quick_crop_controller.clear_history)
+        self.quick_crop_export_act = self.quick_crop_actions_menu.addAction("Export selected crops")
+        self.quick_crop_export_act.setToolTip("Export the selected crops (Shift+click) as images")
+        self.quick_crop_export_act.triggered.connect(self.quick_crop_controller.export_selected_crops)
+        self.quick_crop_actions_menu.addSeparator()
+        self.quick_crop_tile_act = self.quick_crop_actions_menu.addAction("Tile pop-outs")
+        self.quick_crop_tile_act.setToolTip("Arrange all open pop-out windows on screen")
+        self.quick_crop_tile_act.triggered.connect(self.on_arrange_popouts)
+        self.quick_crop_minimize_act = self.quick_crop_actions_menu.addAction("Minimize pop-outs")
+        self.quick_crop_minimize_act.setToolTip("Minimize all open pop-out windows (Ctrl+Shift+M)")
+        self.quick_crop_minimize_act.triggered.connect(self.on_minimize_popouts)
+        self.quick_crop_actions_btn.setMenu(self.quick_crop_actions_menu)
+        quick_template_row.addStretch(1)
+        quick_template_row.addWidget(self.quick_crop_actions_btn)
+        quick_detail_layout.addLayout(quick_template_row)
         self.quick_crop_hint_lbl = QtWidgets.QLabel("")
+        self.quick_crop_hint_lbl.setWordWrap(True)
+        self.quick_crop_hint_lbl.setMinimumWidth(0)
+        self.quick_crop_hint_lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         quick_detail_layout.addWidget(self.quick_crop_hint_lbl)
-        quick_layout.addWidget(self.quick_crop_detail_widget, 1)
+        quick_layout.addWidget(self.quick_crop_detail_widget)
         preview_panel_layout.addWidget(self.quick_crop_controls)
         self.quick_crop_btn.clicked.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
-        self.quick_crop_undo_btn.clicked.connect(self.quick_crop_controller.undo_last_crop)
-        self.quick_crop_close_btn.clicked.connect(self.quick_crop_controller.close_latest_popup)
-        self.quick_crop_clear_btn.clicked.connect(self.quick_crop_controller.clear_history)
-        self.quick_crop_square_cb.toggled.connect(lambda _: self.quick_crop_controller.apply_template_from_controls())
+        self.quick_crop_edit_btn.toggled.connect(self._on_quick_crop_edit_toggled)
+        self.quick_crop_aspect_combo.currentIndexChanged.connect(lambda _=None: self._on_quick_crop_aspect_mode_changed())
         self.quick_crop_real_width_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_width_spin))
         self.quick_crop_real_height_spin.valueChanged.connect(lambda _=None: self.quick_crop_controller.on_real_spin_changed(self.quick_crop_real_height_spin))
-        self.quick_crop_lock_aspect_cb.toggled.connect(lambda _: self.quick_crop_controller.on_real_spin_changed())
         self.quick_crop_detail_widget.setVisible(bool(self.quick_crop_mode))
 
         self.crop_history_panel = QtWidgets.QWidget()
@@ -1353,7 +1374,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         self.preview_canvas.set_views_callback(
-            lambda _=None, c=self.preview_canvas: self._on_canvas_display_options_changed(c)
+            lambda _=None, c=self.preview_canvas: self._on_preview_canvas_state_changed(c)
         )
         if self.canvas_display_options:
             self._apply_canvas_display_options(
@@ -1660,10 +1681,33 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _set_detail_dark_view_state(self, enabled: bool, *, follow_dark_mode=None, persist: bool = True):
+        self.detail_dark_view = bool(enabled)
+        if follow_dark_mode is not None:
+            self._detail_theme_follows_dark_mode = bool(follow_dark_mode)
+        act = getattr(self, "detail_dark_act", None)
+        if act is not None:
+            try:
+                act.blockSignals(True)
+                act.setChecked(self.detail_dark_view)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if persist:
+            self.config["detail_dark_view"] = self.detail_dark_view
+            self.config["detail_theme_follows_dark_mode"] = bool(
+                getattr(self, "_detail_theme_follows_dark_mode", True)
+            )
+            save_config(self.config)
+
     def _apply_detail_view_theme(self):
-        canvas = getattr(self, 'preview_canvas', None)
-        if canvas is not None and hasattr(canvas, 'set_detail_theme'):
-            canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []) or [])
+        for canvas in canvases:
+            if canvas is not None and hasattr(canvas, "set_detail_theme"):
+                try:
+                    canvas.set_detail_theme(dark=self.detail_dark_view, grid=self.detail_grid_view)
+                except Exception:
+                    continue
 
     def _apply_preview_workspace_theme(self):
         dark = bool(getattr(self, "dark_mode", False))
@@ -3828,7 +3872,14 @@ QLabel:hover {{
                 self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
-        self.config['dark_mode'] = self.dark_mode; save_config(self.config)
+        if getattr(self, "_detail_theme_follows_dark_mode", True):
+            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        self.config['dark_mode'] = self.dark_mode
+        self.config['detail_dark_view'] = self.detail_dark_view
+        self.config['detail_theme_follows_dark_mode'] = bool(
+            getattr(self, "_detail_theme_follows_dark_mode", True)
+        )
+        save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
@@ -4911,6 +4962,18 @@ QLabel:hover {{
 
     def on_unit_display_toggled(self, checked: bool):
         self.display_units_si = bool(checked)
+        for widget in (
+            getattr(self, "unit_display_cb", None),
+            getattr(self, "display_units_si_act", None),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self.display_units_si)
+                widget.blockSignals(False)
+            except Exception:
+                pass
         self.config['display_units_si'] = self.display_units_si
         save_config(self.config)
         if self.last_preview:
@@ -4918,6 +4981,18 @@ QLabel:hover {{
 
     def on_unit_relative_toggled(self, checked: bool):
         self.display_units_relative = bool(checked)
+        for widget in (
+            getattr(self, "unit_relative_cb", None),
+            getattr(self, "display_units_relative_act", None),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self.display_units_relative)
+                widget.blockSignals(False)
+            except Exception:
+                pass
         self.config['display_units_relative'] = self.display_units_relative
         save_config(self.config)
         if self.last_preview:
@@ -4925,6 +5000,18 @@ QLabel:hover {{
 
     def on_relative_axes_toggled(self, checked: bool):
         self.relative_axes = bool(checked)
+        for widget in (
+            getattr(self, "relative_axes_cb", None),
+            getattr(self, "relative_axes_act", None),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self.relative_axes)
+                widget.blockSignals(False)
+            except Exception:
+                pass
         self.config['relative_axes'] = self.relative_axes
         save_config(self.config)
         # Prevent restoring stale profile state when switching axes mode
@@ -4978,6 +5065,18 @@ QLabel:hover {{
                     pass
 
     def on_scale_bar_toggled(self, checked: bool):
+        for widget in (
+            getattr(self, "scale_bar_cb", None),
+            getattr(self, "display_scale_bar_act", None),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(bool(checked))
+                widget.blockSignals(False)
+            except Exception:
+                pass
         options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
         options["scale_bar_enabled"] = bool(checked)
         self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
@@ -8751,6 +8850,18 @@ QLabel:hover {{
 
     def on_preview_lock_toggled(self, checked: bool):
         self.preview_locked = bool(checked)
+        for widget in (
+            getattr(self, "preview_lock_cb", None),
+            getattr(self, "tools_preview_lock_act", None),
+        ):
+            if widget is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(self.preview_locked)
+                widget.blockSignals(False)
+            except Exception:
+                pass
         self.config["preview_locked"] = self.preview_locked; save_config(self.config)
         self._update_preview_detach_button()
         if self.preview_locked and getattr(self, "preview_detached", False):
@@ -8758,19 +8869,24 @@ QLabel:hover {{
 
     def _update_preview_detach_button(self):
         btn = getattr(self, "preview_detach_btn", None)
-        if btn is None:
-            return
+        act = getattr(self, "tools_preview_detach_act", None)
         detached = bool(getattr(self, "preview_detached", False))
-        try:
-            btn.setText("Dock preview" if detached else "Float preview")
-            btn.setToolTip(
-                "Dock the floating preview back into the main window"
-                if detached
-                else "Detach the preview pane into its own floating window"
-            )
-            btn.setEnabled(not bool(getattr(self, "preview_locked", False)))
-        except Exception:
-            pass
+        locked = bool(getattr(self, "preview_locked", False))
+        label = "Dock preview" if detached else "Float preview"
+        tooltip = (
+            "Dock the floating preview back into the main window"
+            if detached
+            else "Detach the preview pane into its own floating window"
+        )
+        for widget in (btn, act):
+            if widget is None:
+                continue
+            try:
+                widget.setText(label)
+                widget.setToolTip(tooltip)
+                widget.setEnabled(not locked)
+            except Exception:
+                pass
 
     def on_toggle_preview_detach(self):
         if self.preview_locked:
@@ -8869,7 +8985,14 @@ QLabel:hover {{
                 self.toolbar_dark_btn.blockSignals(False)
         except Exception:
             pass
-        self.config['dark_mode'] = self.dark_mode; save_config(self.config)
+        if getattr(self, "_detail_theme_follows_dark_mode", True):
+            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        self.config['dark_mode'] = self.dark_mode
+        self.config['detail_dark_view'] = self.detail_dark_view
+        self.config['detail_theme_follows_dark_mode'] = bool(
+            getattr(self, "_detail_theme_follows_dark_mode", True)
+        )
+        save_config(self.config)
         self._apply_dark_mode(self.dark_mode)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
@@ -9089,8 +9212,11 @@ QLabel:hover {{
                 act.blockSignals(False)
 
     def on_detail_dark_toggled(self, checked: bool):
-        self.detail_dark_view = bool(checked)
-        self.config['detail_dark_view'] = self.detail_dark_view; save_config(self.config)
+        self._set_detail_dark_view_state(
+            checked,
+            follow_dark_mode=(bool(checked) == bool(getattr(self, "dark_mode", False))),
+            persist=True,
+        )
         self._apply_detail_view_theme()
 
     def on_detail_grid_toggled(self, checked: bool):
@@ -9181,6 +9307,10 @@ QLabel:hover {{
                     self.scale_bar_cb.blockSignals(True)
                     self.scale_bar_cb.setChecked(normalized["scale_bar_enabled"])
                     self.scale_bar_cb.blockSignals(False)
+                if hasattr(self, "display_scale_bar_act") and self.display_scale_bar_act is not None:
+                    self.display_scale_bar_act.blockSignals(True)
+                    self.display_scale_bar_act.setChecked(normalized["scale_bar_enabled"])
+                    self.display_scale_bar_act.blockSignals(False)
             except Exception:
                 pass
             for widget_name, key in (
@@ -9349,10 +9479,33 @@ QLabel:hover {{
         if controller:
             controller.update_hint()
 
+    def _on_preview_canvas_state_changed(self, canvas):
+        self._on_canvas_display_options_changed(canvas)
+        self._update_quick_crop_hint()
+
     def _sync_quick_crop_template_controls(self):
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.sync_template_controls()
+
+    def _on_quick_crop_edit_toggled(self, checked: bool):
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.set_edit_mode(bool(checked))
+
+    def _on_quick_crop_aspect_mode_changed(self):
+        combo = getattr(self, "quick_crop_aspect_combo", None)
+        if combo is None:
+            return
+        mode = str(combo.currentData() or combo.currentText() or "free").strip().lower()
+        if mode not in {"free", "keep", "square"}:
+            mode = "free"
+        self.quick_crop_aspect_mode = mode
+        self.config["quick_crop_aspect_mode"] = mode
+        save_config(self.config)
+        controller = getattr(self, "quick_crop_controller", None)
+        if controller:
+            controller.on_aspect_mode_changed()
 
     def _on_quick_crop_real_spin_changed(self, _=None):
         try:

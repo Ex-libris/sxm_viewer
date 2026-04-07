@@ -897,6 +897,9 @@ class SessionController:
         self._set_checked_silent(getattr(viewer, "unit_display_cb", None), viewer.display_units_si)
         self._set_checked_silent(getattr(viewer, "unit_relative_cb", None), viewer.display_units_relative)
         self._set_checked_silent(getattr(viewer, "relative_axes_cb", None), viewer.relative_axes)
+        self._set_checked_silent(getattr(viewer, "display_units_si_act", None), viewer.display_units_si)
+        self._set_checked_silent(getattr(viewer, "display_units_relative_act", None), viewer.display_units_relative)
+        self._set_checked_silent(getattr(viewer, "relative_axes_act", None), viewer.relative_axes)
         self._set_checked_silent(getattr(viewer, "show_spectra_cb", None), viewer.show_preview_spectra)
         self._set_checked_silent(getattr(viewer, "spectro_thumbnail_markers_cb", None), viewer.show_spectra)
         self._set_checked_silent(getattr(viewer, "spectro_preview_markers_cb", None), viewer.show_preview_spectra)
@@ -905,7 +908,9 @@ class SessionController:
         self._set_checked_silent(getattr(viewer, "toolbar_spectro_preview_btn", None), viewer.show_preview_spectra)
         self._set_checked_silent(getattr(viewer, "toolbar_spectro_miniatures_btn", None), viewer.show_spectro_miniatures)
         self._set_checked_silent(getattr(viewer, "scale_bar_cb", None), bool(ui.get("scale_bar", False)))
+        self._set_checked_silent(getattr(viewer, "display_scale_bar_act", None), bool(ui.get("scale_bar", False)))
         self._set_checked_silent(getattr(viewer, "preview_lock_cb", None), viewer.preview_locked)
+        self._set_checked_silent(getattr(viewer, "tools_preview_lock_act", None), viewer.preview_locked)
 
         for action_name, value in (
             ("spectro_overlay_act", viewer.show_spectra),

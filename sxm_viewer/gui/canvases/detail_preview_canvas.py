@@ -5253,6 +5253,7 @@ class MultiPreviewCanvas(FigureCanvas):
         # Crop/outline rectangle start (handle before tool guards):
         #   Shift + drag -> arbitrary rectangle (crop)
         #   Ctrl + Shift + drag -> square selection (crop)
+        #   Shift + drag while crop-template square mode is active -> square selection
         #   Alt + drag -> outline extraction in ROI
         # Right-click: outline context menu (style/clear/undo)
         if event.button == 3 and view is not None:
@@ -5272,7 +5273,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 gui_mods = QtCore.Qt.NoModifier
         mods_qt = gui_mods
         alt_pressed = bool(mods_qt & QtCore.Qt.AltModifier) or 'alt' in str(getattr(event, "key", "")).lower() or bool(getattr(self, "outline_mode", False))
-        want_square = (event.button == 1) and (mods_qt & QtCore.Qt.ControlModifier) and (mods_qt & QtCore.Qt.ShiftModifier)
+        template_square = bool((self._fixed_crop_template or {}).get("square", False))
+        want_square = (
+            (event.button == 1)
+            and bool(mods_qt & QtCore.Qt.ShiftModifier)
+            and (
+                bool(mods_qt & QtCore.Qt.ControlModifier)
+                or (self._fixed_crop_quick_mode and template_square)
+            )
+        )
         want_rect = (event.button == 1) and (mods_qt & QtCore.Qt.ShiftModifier)
         quick_profile = (
             event.button == 1
@@ -5907,12 +5916,12 @@ class MultiPreviewCanvas(FigureCanvas):
             profile_tool_act.setEnabled(False)
             angle_tool_act.setEnabled(False)
         quick_menu.addSeparator()
-        edit_crop_frame_act = quick_menu.addAction("Edit crop frame")
+        edit_crop_frame_act = quick_menu.addAction("Edit crop template")
         edit_crop_frame_act.setCheckable(True)
         edit_crop_frame_act.setChecked(bool(self._fixed_crop_transform_mode))
-        apply_crop_frame_act = quick_menu.addAction("Apply crop frame  (Enter)")
+        apply_crop_frame_act = quick_menu.addAction("Apply crop template  (Enter)")
         apply_crop_frame_act.setEnabled(bool(self._fixed_crop_template_visible and self._fixed_crop_template))
-        exit_crop_frame_act = quick_menu.addAction("Exit crop frame editor")
+        exit_crop_frame_act = quick_menu.addAction("Exit template editor")
         exit_crop_frame_act.setEnabled(bool(self._fixed_crop_transform_mode))
         quick_menu.addSeparator()
         clear_overlays_act = quick_menu.addAction("Clear profile/angle overlays")
@@ -5971,7 +5980,7 @@ class MultiPreviewCanvas(FigureCanvas):
             show_crop_history_act = display_menu.addAction("Show Crop Overlays")
             show_crop_history_act.setCheckable(True)
             show_crop_history_act.setChecked(bool(self._fixed_crop_history_visible))
-            crop_tip = "Show or hide quick-crop frames in this pop-up only."
+            crop_tip = "Show or hide crop-template overlays in this pop-up only."
             show_crop_history_act.setToolTip(crop_tip)
             show_crop_history_act.setStatusTip(crop_tip)
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
