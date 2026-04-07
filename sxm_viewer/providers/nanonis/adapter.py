@@ -364,10 +364,37 @@ def _meters_to_nm_value(value) -> Optional[float]:
             return None
         return float(value) * 1e9
     except Exception:
-        try:
-            return float(str(value).strip()) * 1e9
-        except Exception:
+        parsed, unit = _split_value_and_unit(value)
+        if parsed is None:
+            try:
+                return float(str(value).strip()) * 1e9
+            except Exception:
+                return None
+        unit_key = str(unit or "").strip().lower().replace("µ", "u")
+        scale_map = {
+            "": 1e9,
+            "m": 1e9,
+            "meter": 1e9,
+            "meters": 1e9,
+            "nm": 1.0,
+            "nanometer": 1.0,
+            "nanometers": 1.0,
+            "pm": 1e-3,
+            "picometer": 1e-3,
+            "picometers": 1e-3,
+            "um": 1e3,
+            "micrometer": 1e3,
+            "micrometers": 1e3,
+            "mm": 1e6,
+            "a": 0.1,
+            "angstrom": 0.1,
+            "angstroms": 0.1,
+            "å": 0.1,
+        }
+        factor = scale_map.get(unit_key)
+        if factor is None:
             return None
+        return float(parsed) * factor
 
 
 def _coerce_pixel_tuple(values: Optional[Iterable[int]]) -> Tuple[int, int]:
@@ -476,6 +503,164 @@ def _extract_zctrl_setpoint(zctrl) -> Tuple[Optional[float], str]:
     return None, ""
 
 
+def _extract_zctrl_absolute_z_nm(zctrl) -> Tuple[Optional[float], str]:
+    if not isinstance(zctrl, dict):
+        return None, ""
+    for key in ("Z (m)", "Z", "z", "Z abs (m)", "Z abs"):
+        value_nm = _meters_to_nm_value(zctrl.get(key))
+        if value_nm is not None:
+            return value_nm, "Z piezo absolute"
+    return None, ""
+
+
+def _extract_nanonis_z_level_nm(header: Dict[str, str]) -> Tuple[Optional[float], str]:
+    for key in ("Z-Controller", "z-controller", "Z Controller", "z_controller", "Z_Controller"):
+        value_nm, label = _extract_zctrl_absolute_z_nm(header.get(key))
+        if value_nm is not None:
+            return value_nm, label
+    for key in (
+        "Z-Controller>Z (m)",
+        "Z-Controller>Z",
+        "z-controller>Z (m)",
+        "z-controller>Z",
+        "Z Controller>Z (m)",
+        "Z Controller>Z",
+    ):
+        value_nm = _meters_to_nm_value(header.get(key))
+        if value_nm is not None:
+            return value_nm, "Z piezo absolute"
+    candidates = [
+        ("Z piezo absolute (m)", "Z piezo absolute"),
+        ("Z piezo absolute", "Z piezo absolute"),
+        ("Z piezo abs (m)", "Z piezo absolute"),
+        ("Z piezo abs", "Z piezo absolute"),
+        ("Z piezo (m)", "Z piezo"),
+        ("Z piezo", "Z piezo"),
+        ("Absolute Z (m)", "Absolute Z"),
+        ("Absolute Z", "Absolute Z"),
+        ("Z absolute (m)", "Z absolute"),
+        ("Z absolute", "Z absolute"),
+        ("Z (m)", "Z"),
+        ("Z", "Z"),
+        ("Final Z (m)", "Final Z"),
+        ("Final Z", "Final Z"),
+        ("Z offset (m)", "Z offset"),
+        ("Z offset", "Z offset"),
+    ]
+    for key, label in candidates:
+        value_nm = _meters_to_nm_value(header.get(key))
+        if value_nm is not None:
+            return value_nm, label
+    for key, value in (header or {}).items():
+        key_low = str(key or "").strip().lower()
+        if not key_low:
+            continue
+        if "z" not in key_low and "piezo" not in key_low:
+            continue
+        value_nm = _meters_to_nm_value(value)
+        if value_nm is not None:
+            return value_nm, re.sub(r"\s*\(.*?\)", "", str(key)).strip() or "Z"
+    for key, value in (header or {}).items():
+        key_txt = str(key or "").strip()
+        if isinstance(value, dict):
+            nested_nm, nested_label = _extract_nanonis_z_level_nm(value)
+            if nested_nm is not None:
+                return nested_nm, nested_label or (re.sub(r"\s*\(.*?\)", "", key_txt).strip() or "Z")
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                nested_nm, nested_label = _extract_nanonis_z_level_nm(item)
+                if nested_nm is not None:
+                    return nested_nm, nested_label or (re.sub(r"\s*\(.*?\)", "", key_txt).strip() or "Z")
+    return None, ""
+
+
+def _extract_nanonis_z_level_from_raw_header(path: Path) -> Tuple[Optional[float], str]:
+    patterns = (
+        (re.compile(r"^\s*Z-Controller>\s*Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Z piezo absolute"),
+        (re.compile(r"^\s*Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Z"),
+        (re.compile(r"^\s*Absolute\s+Z\s*\(m\)\s*(?:\t+| {2,}|:\s*|=\s*)(\S+)\s*$", re.IGNORECASE), "Absolute Z"),
+    )
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+            for raw_line in handle:
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                if line.upper().startswith("[DATA]"):
+                    break
+                for pattern, label in patterns:
+                    match = pattern.match(line)
+                    if not match:
+                        continue
+                    value_nm = _meters_to_nm_value(match.group(1))
+                    if value_nm is not None:
+                        return value_nm, label
+    except Exception:
+        return None, ""
+    return None, ""
+
+
+def _signal_unit_to_nm(values, unit_hint: str) -> Optional[np.ndarray]:
+    try:
+        arr = np.asarray(values, dtype=float).ravel()
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    unit_key = str(unit_hint or "").strip().lower().replace("µ", "u")
+    if unit_key in ("m", "meter", "meters"):
+        return arr * 1e9
+    if unit_key in ("nm", "nanometer", "nanometers", ""):
+        try:
+            max_abs = float(np.nanmax(np.abs(arr[arr == arr]))) if arr.size else 0.0
+        except Exception:
+            max_abs = 0.0
+        return arr * 1e9 if max_abs and max_abs < 1e-3 else arr
+    if unit_key in ("pm", "picometer", "picometers"):
+        return arr * 1e-3
+    if unit_key in ("um", "micrometer", "micrometers"):
+        return arr * 1e3
+    if unit_key in ("a", "å", "angstrom", "angstroms"):
+        return arr * 0.1
+    return None
+
+
+def _extract_constant_signal_z_level_nm(signals: Dict[str, np.ndarray]) -> Tuple[Optional[float], str]:
+    if not isinstance(signals, dict):
+        return None, ""
+    for name, values in signals.items():
+        low = str(name or "").strip().lower()
+        if not low:
+            continue
+        if not any(token in low for token in ("topo", "topography", "z piezo", "absolute z", "z absolute", "z_abs", "z-abs")):
+            continue
+        unit_hint = ""
+        if "(m)" in low:
+            unit_hint = "m"
+        elif "(nm)" in low:
+            unit_hint = "nm"
+        elif "(pm)" in low:
+            unit_hint = "pm"
+        elif "(um)" in low:
+            unit_hint = "um"
+        arr_nm = _signal_unit_to_nm(values, unit_hint)
+        if arr_nm is None:
+            continue
+        finite = arr_nm[np.isfinite(arr_nm)]
+        if finite.size == 0:
+            continue
+        try:
+            span = float(np.nanmax(finite) - np.nanmin(finite))
+            center = float(np.nanmedian(finite))
+        except Exception:
+            continue
+        if span <= max(1e-3, abs(center) * 1e-6):
+            return center, re.sub(r"\s*\(.*?\)", "", str(name)).strip() or "Topo"
+    return None, ""
+
+
 def _try_parse_datetime(text: str) -> Optional[datetime]:
     if not text:
         return None
@@ -521,6 +706,13 @@ def _nanonis_spec_metadata(header: Dict[str, str], path: Path) -> Dict[str, obje
         meta["x"] = x_nm
     if y_nm is not None:
         meta["y"] = y_nm
+    z_nm, z_label = _extract_nanonis_z_level_nm(header)
+    if z_nm is None:
+        z_nm, z_label = _extract_nanonis_z_level_from_raw_header(path)
+    if z_nm is not None:
+        meta["z_level_nm"] = z_nm
+        meta["z_level_label"] = z_label or "Z"
+        meta["z_level_unit"] = "nm"
     # Ensure positions exist so thumbnails can render markers even when metadata is partial.
     if "x" not in meta:
         meta["x"] = 0.0
@@ -667,6 +859,12 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
     if not channels:
         return []
     meta = _nanonis_spec_metadata(spec.header or {}, Path(path))
+    if meta.get("z_level_nm") is None:
+        z_nm, z_label = _extract_constant_signal_z_level_nm(spec.signals)
+        if z_nm is not None:
+            meta["z_level_nm"] = z_nm
+            meta["z_level_label"] = z_label or "Topo"
+            meta["z_level_unit"] = "nm"
     entry = {
         "path": str(path),
         "V": axis.copy(),

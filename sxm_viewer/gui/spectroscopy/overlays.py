@@ -154,6 +154,68 @@ def _spread_overlapping_marker_coords(coords, *, marker_size=5.0, cluster_tol=0.
     return spread
 
 
+def _stack_badge_text(spec):
+    try:
+        count = int(spec.get("xy_stack_count") or 0)
+    except Exception:
+        count = 0
+    if count <= 1:
+        return ""
+    label = str(spec.get("xy_stack_display") or "").strip()
+    return label or f"x{count}"
+
+
+def _stack_badge_tooltip(spec):
+    text = str(spec.get("xy_stack_summary") or "").strip()
+    if text:
+        return text
+    label = _stack_badge_text(spec)
+    return f"Coincident spectra: {label}" if label else ""
+
+
+def _stack_badges_from_coords(coords):
+    groups = OrderedDict()
+    for spec, col, row in coords or []:
+        label = _stack_badge_text(spec)
+        if not label:
+            continue
+        key = str(spec.get("xy_stack_key") or f"{round(float(col), 3)}:{round(float(row), 3)}")
+        groups.setdefault(key, {"spec": spec, "coords": [], "label": label})
+        groups[key]["coords"].append((float(col), float(row)))
+    badges = []
+    for group in groups.values():
+        pts = group["coords"]
+        if not pts:
+            continue
+        cx = sum(col for col, _ in pts) / float(len(pts))
+        cy = sum(row for _, row in pts) / float(len(pts))
+        badges.append({
+            "spec": group["spec"],
+            "col": cx,
+            "row": cy,
+            "label": group["label"],
+            "tooltip": _stack_badge_tooltip(group["spec"]),
+        })
+    return badges
+
+
+def _draw_stack_badge(painter, x, y, label, *, tooltip=None):
+    font = QtGui.QFont("Segoe UI", 7, QtGui.QFont.Bold)
+    painter.save()
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    badge_w = max(18, metrics.horizontalAdvance(label) + 10)
+    badge_h = max(14, metrics.height() + 2)
+    rect = QtCore.QRectF(x + 7.0, y - badge_h - 2.0, badge_w, badge_h)
+    painter.setPen(QtGui.QPen(QtGui.QColor(255, 240, 180), 1.0))
+    painter.setBrush(QtGui.QColor(40, 30, 18, 220))
+    painter.drawRoundedRect(rect, 5, 5)
+    painter.setPen(QtGui.QPen(QtGui.QColor(255, 228, 120), 1.0))
+    painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+    painter.restore()
+    return rect
+
+
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
     """
     Map a click in thumbnail pixel coordinates to spectroscopy list ordered by distance.
@@ -316,6 +378,7 @@ def _render_spectroscopy_overlays(
         crowded = count > 200 or bool(getattr(viewer, "compact_markers", False))
         marker_symbol = _normalized_symbol(viewer)
         marker_size = _effective_marker_size(viewer, crowded, reveal_points)
+        badge_defs = _stack_badges_from_coords(coords)
         coords = _spread_overlapping_marker_coords(coords, marker_size=marker_size)
         pulse = float(getattr(viewer, "_highlight_pulse_strength", 1.0) or 1.0)
         for spec, col, row in coords:
@@ -340,6 +403,16 @@ def _render_spectroscopy_overlays(
                 pulse=pulse if highlight else 1.0,
             )
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
+        for badge in badge_defs:
+            bx = float(badge["col"]) * w_scale
+            by = float(badge["row"]) * h_scale
+            rect = _draw_stack_badge(painter, bx, by, badge["label"], tooltip=badge.get("tooltip"))
+            markers.append({
+                'rect': rect,
+                'spec': badge.get("spec"),
+                'label': 'stack-badge',
+                'tooltip': badge.get("tooltip"),
+            })
     # summary badge (S/M counts and matrix grid if available)
     try:
         total_s = len(singles)
@@ -387,6 +460,7 @@ __all__ = [
     "_spectros_near_thumb_pos",
     "_render_spectroscopy_overlays",
     "_spread_overlapping_marker_coords",
+    "_stack_badges_from_coords",
 ]
 
 

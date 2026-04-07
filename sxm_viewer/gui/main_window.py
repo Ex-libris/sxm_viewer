@@ -7369,6 +7369,9 @@ QLabel:hover {{
                     xs = spec.get('x'); ys = spec.get('y')
                     if xs is not None and ys is not None:
                         tooltip = f"{tooltip}\n({xs:.1f}, {ys:.1f}) nm"
+                    stack_summary = str(spec.get("xy_stack_summary") or "").strip()
+                    if stack_summary:
+                        tooltip = f"{tooltip}\n{stack_summary}"
                 QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
                 return True
         QtWidgets.QToolTip.hideText()

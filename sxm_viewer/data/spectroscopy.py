@@ -382,6 +382,23 @@ def _rows_to_spec(
         channels.setdefault(ch_label, np.asarray(axis.get("values"), dtype=float))
 
     entry.update(_extract_meta(meta, path, block_idx))
+    z_level = None
+    z_label = None
+    z_unit = None
+    if topo_axis is not None:
+        z_level = _constant_axis_value(topo_axis)
+        if z_level is not None:
+            z_label = topo_label or "Topo"
+            z_unit = topo_unit or "nm"
+    if z_level is None and alt_axis is not None:
+        z_level = _constant_axis_value(alt_axis)
+        if z_level is not None:
+            z_label = alt_label or "Z"
+            z_unit = alt_unit or "nm"
+    if z_level is not None:
+        entry["z_level_nm"] = float(z_level)
+        entry["z_level_label"] = str(z_label or "Z")
+        entry["z_level_unit"] = str(z_unit or "nm")
     return entry
 
 
@@ -584,6 +601,27 @@ def _maybe_int(value) -> Optional[int]:
         return int(value)
     except Exception:
         return None
+
+
+def _constant_axis_value(values: np.ndarray, tol_nm: float = 1e-3) -> Optional[float]:
+    try:
+        arr = np.asarray(values, dtype=float).ravel()
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    try:
+        span = float(np.nanmax(finite) - np.nanmin(finite))
+        center = float(np.nanmedian(finite))
+    except Exception:
+        return None
+    limit = max(float(tol_nm), abs(center) * 1e-6)
+    if span <= limit:
+        return center
+    return None
 
 
 def _parse_matrix_dat(path: Path) -> Optional[Tuple[List[Dict[str, object]], MatrixDataCube]]:
