@@ -315,6 +315,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._show_profile_overlays = bool(getattr(source_canvas, "_show_profile_overlays", True))
             canvas._show_angle_overlays = bool(getattr(source_canvas, "_show_angle_overlays", True))
             canvas._show_shortcut_hint = bool(getattr(source_canvas, "_show_shortcut_hint", True))
+            canvas._show_molecule_gizmo = bool(getattr(source_canvas, "_show_molecule_gizmo", getattr(owner, "show_molecule_gizmo", False)))
             canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
             canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
             font_family = str(getattr(owner, "_plot_font_family", "sans-serif") or "sans-serif")
@@ -348,6 +349,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             pass
         try:
             canvas.set_show_molecules(getattr(owner, "show_molecules", True))
+        except Exception:
+            pass
+        try:
+            canvas.set_show_molecule_gizmo(bool(getattr(source_canvas, "_show_molecule_gizmo", getattr(owner, "show_molecule_gizmo", False))))
         except Exception:
             pass
         try:

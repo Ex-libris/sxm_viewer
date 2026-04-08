@@ -299,6 +299,13 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_artists = []
         self._molecule_history = []
         self._molecule_drag_snapshot = False
+        self._show_molecule_gizmo = False
+        self._molecule_gizmo_until = 0.0
+        self._molecule_gizmo_axes = None
+        self._molecule_gizmo_artists = {}
+        self._molecule_gizmo_timer = QtCore.QTimer(self)
+        self._molecule_gizmo_timer.setSingleShot(True)
+        self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
         self._show_molecule_shadow = True
         self.show_molecules = True
         self.mpl_connect('scroll_event', self._on_scroll_zoom)
@@ -347,6 +354,24 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("show_molecules")
         self.show_molecules = show
+        self._redraw()
+        self._notify_views_callback()
+
+    def set_show_molecule_gizmo(self, show: bool):
+        """Toggle the molecule orientation gizmo."""
+        show = bool(show)
+        if show == bool(getattr(self, "_show_molecule_gizmo", False)):
+            return
+        self.push_undo_state("show_molecule_gizmo")
+        self._show_molecule_gizmo = show
+        if show:
+            self._wake_molecule_gizmo(1800, redraw=False)
+        else:
+            self._molecule_gizmo_until = 0.0
+            try:
+                self._molecule_gizmo_timer.stop()
+            except Exception:
+                pass
         self._redraw()
         self._notify_views_callback()
 
@@ -1038,6 +1063,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "show_profile_overlays": bool(self._show_profile_overlays),
             "show_angle_overlays": bool(self._show_angle_overlays),
             "show_shortcut_hint": bool(self._show_shortcut_hint),
+            "show_molecule_gizmo": bool(self._show_molecule_gizmo),
             "show_ticks": bool(self._show_ticks),
             "show_colorbar": bool(self._show_colorbar),
             "scale_bar_enabled": bool(self.scale_bar_enabled),
@@ -1096,6 +1122,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._show_profile_overlays = bool(state.get("show_profile_overlays", self._show_profile_overlays))
             self._show_angle_overlays = bool(state.get("show_angle_overlays", self._show_angle_overlays))
             self._show_shortcut_hint = bool(state.get("show_shortcut_hint", self._show_shortcut_hint))
+            self._show_molecule_gizmo = bool(state.get("show_molecule_gizmo", self._show_molecule_gizmo))
             if not self._show_shortcut_hint:
                 self._clear_shortcut_hint_artist()
             self._show_ticks = bool(state.get("show_ticks", self._show_ticks))
@@ -1274,6 +1301,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._ax_view_map = {}
         self._image_meta = {}
         self._fixed_crop_overlay_artists = {}
+        self._molecule_gizmo_axes = None
+        self._molecule_gizmo_artists = {}
         # reset zoom baselines for new axes
         self._zoom_reset_limits = {}
         self._scale_bar_artists = []
@@ -1420,6 +1449,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
             self._draw_molecules(ax)
+            if ax is self.main_ax:
+                self._draw_molecule_gizmo(ax)
             self._draw_spectra(ax)
             try:
                 self._draw_outlines(ax, v)
@@ -1619,6 +1650,174 @@ class MultiPreviewCanvas(FigureCanvas):
                 'shadow': shadow_sc,
                 'lines': lc
             })
+
+    def _active_molecule_for_gizmo(self):
+        if not self.molecules:
+            return None
+        idx = getattr(self, "_active_molecule_idx", None)
+        if isinstance(idx, int) and 0 <= idx < len(self.molecules):
+            return self.molecules[idx]
+        return self.molecules[0] if self.molecules else None
+
+    def _should_show_molecule_gizmo(self):
+        if not self.show_molecules or not self.molecules:
+            return False
+        if bool(getattr(self, "_show_molecule_gizmo", False)):
+            return True
+        return (time.perf_counter() * 1000.0) < float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0)
+
+    def _molecule_orientation_matrix(self, mol):
+        if mol is None:
+            return np.eye(3, dtype=float)
+        rads = np.radians(np.asarray(getattr(mol, "angles", [0.0, 0.0, 0.0]), dtype=float))
+        cx, cy, cz = np.cos(rads)
+        sx, sy, sz = np.sin(rads)
+        rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=float)
+        ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=float)
+        rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        mat = rz @ ry @ rx
+        if bool(getattr(mol, "mirror_x", False)):
+            mat[0, :] *= -1.0
+        if bool(getattr(mol, "mirror_y", False)):
+            mat[1, :] *= -1.0
+        return mat
+
+    def _molecule_axis_screen_vectors(self, mol):
+        mat = self._molecule_orientation_matrix(mol)
+        vectors = []
+        for idx, color in enumerate(("#ef4444", "#22c55e", "#3b82f6")):
+            vec = np.asarray(mat[:, idx], dtype=float)
+            screen = np.array([vec[0] + 0.38 * vec[2], vec[1] + 0.18 * vec[2]], dtype=float)
+            vectors.append((idx, vec, screen, color))
+        return vectors
+
+    def _wake_molecule_gizmo(self, duration_ms: int = 1800, *, redraw: bool = True):
+        now_ms = time.perf_counter() * 1000.0
+        self._molecule_gizmo_until = max(
+            float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0),
+            now_ms + float(duration_ms),
+        )
+        try:
+            self._molecule_gizmo_timer.start(max(40, int(duration_ms)))
+        except Exception:
+            pass
+        if not redraw and self._molecule_gizmo_axes is None:
+            redraw = True
+        if redraw:
+            try:
+                self._redraw()
+            except Exception:
+                try:
+                    self.draw_idle()
+                except Exception:
+                    pass
+
+    def _on_molecule_gizmo_timeout(self):
+        if bool(getattr(self, "_show_molecule_gizmo", False)):
+            return
+        remaining = float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0) - (time.perf_counter() * 1000.0)
+        if remaining > 40.0:
+            try:
+                self._molecule_gizmo_timer.start(int(remaining))
+            except Exception:
+                pass
+            return
+        self._molecule_gizmo_until = 0.0
+        if self._molecule_gizmo_axes is not None:
+            self._redraw()
+
+    def _update_molecule_gizmo_overlay(self):
+        gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+        artists = getattr(self, "_molecule_gizmo_artists", {}) or {}
+        if gizmo_ax is None or not artists:
+            return False
+        mol = self._active_molecule_for_gizmo()
+        if mol is None or not self._should_show_molecule_gizmo():
+            return False
+        vectors = self._molecule_axis_screen_vectors(mol)
+        norms = [max(0.22, float(np.linalg.norm(screen))) for _, _, screen, _ in vectors]
+        scale = 0.74 / max(norms or [1.0])
+        for order, (idx, vec, screen, _color) in enumerate(sorted(vectors, key=lambda item: float(item[1][2]))):
+            arrow = artists.get(f"arrow_{idx}")
+            label = artists.get(f"label_{idx}")
+            if arrow is None or label is None:
+                continue
+            end = screen * scale
+            label_pos = screen * min(scale * 1.14, 0.92)
+            alpha = 0.45 + 0.45 * ((float(vec[2]) + 1.0) * 0.5)
+            try:
+                arrow.set_positions((0.0, 0.0), (float(end[0]), float(end[1])))
+                arrow.set_alpha(alpha)
+                arrow.set_zorder(3 + order)
+                label.set_position((float(label_pos[0]), float(label_pos[1])))
+                label.set_alpha(max(0.68, alpha))
+                label.set_zorder(6 + order)
+            except Exception:
+                continue
+        try:
+            gizmo_ax.figure.canvas.draw_idle()
+        except Exception:
+            pass
+        return True
+
+    def _draw_molecule_gizmo(self, ax):
+        if ax is None or not self._should_show_molecule_gizmo():
+            self._molecule_gizmo_axes = None
+            self._molecule_gizmo_artists = {}
+            return
+        mol = self._active_molecule_for_gizmo()
+        if mol is None:
+            self._molecule_gizmo_axes = None
+            self._molecule_gizmo_artists = {}
+            return
+
+        gizmo_ax = ax.inset_axes([0.02, 0.72, 0.16, 0.16], zorder=36)
+        gizmo_ax.set_facecolor((0.0, 0.0, 0.0, 0.0))
+        gizmo_ax.set_xticks([])
+        gizmo_ax.set_yticks([])
+        gizmo_ax.set_xlim(-1.0, 1.0)
+        gizmo_ax.set_ylim(-1.0, 1.0)
+        for spine in gizmo_ax.spines.values():
+            spine.set_visible(False)
+
+        dark = bool(getattr(self, "_detail_dark", False))
+        ring_edge = "#d7dde7" if dark else "#334155"
+        bg_face = (0.04, 0.06, 0.10, 0.42) if dark else (1.0, 1.0, 1.0, 0.74)
+        ring = patches.Circle((0.0, 0.0), 0.94, facecolor=bg_face, edgecolor=ring_edge, linewidth=1.0, zorder=1)
+        core = patches.Circle((0.0, 0.0), 0.06, facecolor=ring_edge, edgecolor="none", alpha=0.92, zorder=7)
+        gizmo_ax.add_patch(ring)
+        gizmo_ax.add_patch(core)
+
+        artists = {"ring": ring, "core": core}
+        for idx, (label_text, color) in enumerate((("X", "#ef4444"), ("Y", "#22c55e"), ("Z", "#3b82f6"))):
+            arrow = patches.FancyArrowPatch(
+                (0.0, 0.0),
+                (0.0, 0.0),
+                arrowstyle="-|>",
+                mutation_scale=10.5,
+                linewidth=2.2,
+                color=color,
+                alpha=0.92,
+                zorder=4,
+            )
+            gizmo_ax.add_patch(arrow)
+            label = gizmo_ax.text(
+                0.0,
+                0.0,
+                label_text,
+                color=color,
+                fontsize=8.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=8,
+            )
+            artists[f"arrow_{idx}"] = arrow
+            artists[f"label_{idx}"] = label
+
+        self._molecule_gizmo_axes = gizmo_ax
+        self._molecule_gizmo_artists = artists
+        self._update_molecule_gizmo_overlay()
 
     def _draw_spectra(self, ax):
         view = self._ax_view_map.get(ax, {})
@@ -2922,6 +3121,8 @@ class MultiPreviewCanvas(FigureCanvas):
             new_angles[axis] += -5.0 if reverse else 5.0
             mol.angles = new_angles
             self._update_molecule_artists()
+            self._wake_molecule_gizmo(2200, redraw=False)
+            self._update_molecule_gizmo_overlay()
         except Exception:
             return False
         return True
@@ -5550,6 +5751,7 @@ class MultiPreviewCanvas(FigureCanvas):
             # Threshold: 0.5 nm radius click tolerance
             if min_dist < 0.25: 
                 self._active_molecule_idx = idx
+                self._wake_molecule_gizmo(2200, redraw=False)
                 if event.button == 1 or event.button == 2:
                     if not self._molecule_drag_snapshot:
                         self._push_molecule_snapshot()
@@ -5570,7 +5772,7 @@ class MultiPreviewCanvas(FigureCanvas):
                         self._molecule_drag_mode = 'rotate_z'
                     else:
                         self._molecule_drag_mode = 'translate'
-                        
+                    self._update_molecule_gizmo_overlay()
                     return True
                 elif event.button == 3:
                     self._show_molecule_menu(event, mol)
@@ -5606,6 +5808,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if event.xdata is None or event.ydata is None:
                 return
             mol = self.molecules[self._molecule_drag_idx]
+            self._wake_molecule_gizmo(2200, redraw=False)
             
             if self._molecule_drag_mode == 'translate':
                 dx = event.xdata - self._molecule_drag_start[0]
@@ -5647,6 +5850,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._molecule_rotation_guide.center = (mol.offset[0], mol.offset[1])
 
             self._update_molecule_artists()
+            self._update_molecule_gizmo_overlay()
 
     def _on_molecule_release(self, event):
         if self._molecule_drag_idx is not None:
@@ -5989,6 +6193,9 @@ class MultiPreviewCanvas(FigureCanvas):
         hint_act = display_menu.addAction("Show Shortcut Hint")
         hint_act.setCheckable(True)
         hint_act.setChecked(bool(self._show_shortcut_hint))
+        gizmo_act = display_menu.addAction("Show Molecule Gizmo")
+        gizmo_act.setCheckable(True)
+        gizmo_act.setChecked(bool(getattr(self, "_show_molecule_gizmo", False)))
         frame_fill_act = display_menu.addAction("Frame fill")
         frame_fill_act.setCheckable(True)
         frame_fill_act.setChecked(bool(self._frame_fill_mode))
@@ -6306,6 +6513,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
         elif chosen == hint_act:
             self.set_show_shortcut_hint(hint_act.isChecked())
+        elif chosen == gizmo_act:
+            self.set_show_molecule_gizmo(gizmo_act.isChecked())
         elif chosen == frame_fill_act:
             self.set_frame_fill_mode(frame_fill_act.isChecked())
             self._notify_views_callback()
@@ -8855,6 +9064,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 }
         except Exception:
             pass
+
         seq = entry.get("sequence")
         if seq is not None:
             new_view["crop_sequence"] = seq

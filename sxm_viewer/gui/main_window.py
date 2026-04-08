@@ -404,6 +404,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
+        self.show_molecule_gizmo = bool(self.config.get("show_molecule_gizmo", False))
         self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
         self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
         if self.profile_label_mode not in {"length", "full", "hidden"}:
@@ -429,6 +430,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
             'show_molecules': True,
+            'show_molecule_gizmo': False,
             'show_acquisition_overlay': False,
             'profile_label_mode': "length",
             'show_crop_template_overlay': False,
@@ -616,6 +618,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.browse_molecules_btn = None
         self.browse_molecules_menu = None
         self.preview_molecules_toggle_btn = None
+        self.display_molecule_gizmo_act = None
         self.preview_grid_toggle_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
@@ -1288,6 +1291,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self.preview_canvas.set_show_molecule_gizmo(self.show_molecule_gizmo)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_show_acquisition_overlay(self.show_acquisition_overlay)
         except Exception:
             pass
@@ -1925,6 +1932,7 @@ QLabel:hover {{
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
+            (getattr(self, 'display_molecule_gizmo_act', None), defaults.get('show_molecule_gizmo', False)),
             (getattr(self, 'acquisition_overlay_act', None), defaults.get('show_acquisition_overlay', False)),
             (getattr(self, 'crop_template_act', None), defaults.get('show_crop_template_overlay', False)),
             (getattr(self, 'crop_history_act', None), defaults.get('show_crop_history_overlay', False)),
@@ -2190,6 +2198,7 @@ QLabel:hover {{
                 canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
                 canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
                 canvas.show_molecules = bool(display.get("show_molecules", getattr(canvas, "show_molecules", True)))
+                canvas._show_molecule_gizmo = bool(display.get("show_molecule_gizmo", getattr(canvas, "_show_molecule_gizmo", False)))
                 desired_scale_bar = bool(display.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False)))
                 current_scale_bar = bool(getattr(canvas, "scale_bar_enabled", False))
                 canvas.scale_bar_enabled = desired_scale_bar
@@ -9332,6 +9341,7 @@ QLabel:hover {{
             "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
             "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
             "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+            "show_molecule_gizmo": bool(getattr(canvas, "_show_molecule_gizmo", False)),
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
             "relative_axes_override": relative_axes,
@@ -9363,6 +9373,7 @@ QLabel:hover {{
                 "show_profile_overlays": bool(options.get("show_profile_overlays", True)),
                 "show_angle_overlays": bool(options.get("show_angle_overlays", True)),
                 "show_molecules": bool(options.get("show_molecules", True)),
+                "show_molecule_gizmo": bool(options.get("show_molecule_gizmo", False)),
                 "scale_bar_enabled": bool(options.get("scale_bar_enabled", False)),
                 "frame_fill_mode": bool(options.get("frame_fill_mode", False)),
                 "relative_axes_override": options.get("relative_axes_override", None),
@@ -9377,6 +9388,7 @@ QLabel:hover {{
                 normalized["relative_axes_override"] = bool(rel)
 
             self.show_molecules = normalized["show_molecules"]
+            self.show_molecule_gizmo = normalized["show_molecule_gizmo"]
             self.show_acquisition_overlay = normalized["show_acquisition_overlay"]
             try:
                 if hasattr(self, "scale_bar_cb") and self.scale_bar_cb is not None:
@@ -9393,6 +9405,7 @@ QLabel:hover {{
                 ("molecules_act", "show_molecules"),
                 ("browse_molecules_btn", "show_molecules"),
                 ("preview_molecules_toggle_btn", "show_molecules"),
+                ("display_molecule_gizmo_act", "show_molecule_gizmo"),
                 ("acquisition_overlay_act", "show_acquisition_overlay"),
             ):
                 act = getattr(self, widget_name, None)
@@ -9439,6 +9452,10 @@ QLabel:hover {{
                 except Exception:
                     pass
                 try:
+                    canv.set_show_molecule_gizmo(normalized["show_molecule_gizmo"])
+                except Exception:
+                    pass
+                try:
                     canv.enable_scale_bar(normalized["scale_bar_enabled"])
                 except Exception:
                     pass
@@ -9464,6 +9481,7 @@ QLabel:hover {{
             if persist:
                 self.config["canvas_display_options"] = dict(normalized)
                 self.config["show_molecules"] = self.show_molecules
+                self.config["show_molecule_gizmo"] = self.show_molecule_gizmo
                 self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
                 self.config["show_scale_bar"] = normalized["scale_bar_enabled"]
                 save_config(self.config)

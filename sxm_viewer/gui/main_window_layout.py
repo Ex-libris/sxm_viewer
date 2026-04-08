@@ -199,6 +199,20 @@ def _ensure_display_menu(viewer):
     viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
     viewer.molecules_act.setToolTip("Toggle molecular overlays in the preview")
     viewer.molecules_act.toggled.connect(viewer.on_show_molecules_toggled)
+    viewer.display_molecule_gizmo_act = viewer.display_menu.addAction("Molecule gizmo")
+    viewer.display_molecule_gizmo_act.setCheckable(True)
+    viewer.display_molecule_gizmo_act.setChecked(bool(getattr(viewer, "show_molecule_gizmo", False)))
+    viewer.display_molecule_gizmo_act.setToolTip("Show a small orientation gizmo for the active molecule")
+    viewer.display_molecule_gizmo_act.toggled.connect(
+        lambda checked: viewer._apply_canvas_display_options(
+            {
+                **viewer._canvas_display_state_from_canvas(getattr(viewer, "preview_canvas", None)),
+                "show_molecule_gizmo": bool(checked),
+            },
+            source_canvas=getattr(viewer, "preview_canvas", None),
+            persist=True,
+        )
+    )
     viewer.acquisition_overlay_act = viewer.display_menu.addAction("Show acquisition overlay")
     viewer.acquisition_overlay_act.setCheckable(True)
     viewer.acquisition_overlay_act.setChecked(getattr(viewer, "show_acquisition_overlay", False))
