@@ -10,7 +10,7 @@ Associated spectroscopy files appear as **miniature thumbnails** within the main
 
 ### Thumbnail marker customisation
 
-Right-click a spectroscopy thumbnail → **Miniature channel** to choose which channel drives the miniature plot. Marker size, colour, and symbol are also customisable for better visibility on different backgrounds.
+Right-click a spectroscopy thumbnail -> **Miniature channel** to choose which channel drives the miniature plot. Marker size, colour, and symbol are also customisable for better visibility on different backgrounds.
 
 ### Selection
 
@@ -18,7 +18,7 @@ Right-click a spectroscopy thumbnail → **Miniature channel** to choose which c
 |---|---|
 | Single click | Select spectroscopy |
 | Shift+Click | Range-select |
-| Ctrl+Click | Add/remove from selection |
+| Ctrl+Click | Add or remove from selection |
 | Drag | Rubber-band selection |
 | Double-click | Open spectroscopy popup |
 
@@ -26,35 +26,103 @@ Right-click a spectroscopy thumbnail → **Miniature channel** to choose which c
 
 ## Spectroscopy browser
 
-Open the **Spectroscopy Browser** from the toolbar. It presents all associated spectroscopy files as a **multi-column table** with sortable columns. From the browser you can:
+Open the **Spectroscopy Browser** from the toolbar. It presents all associated spectroscopy files as a multi-column table with sortable columns. From the browser you can:
 
-- Select single or multiple spectroscopies
-- Open them in the spectroscopy popup
-- Apply a channel preset to all selected entries
+- select single or multiple spectroscopies
+- open them in the spectroscopy popup
+- reuse the same popup while appending more traces
+- apply a channel preset to selected entries
 
 ---
 
 ## Spectroscopy popup
 
-The spectroscopy popup plots the selected spectrum (or spectra) with full axis labels and units. Multiple selected spectroscopies overlay on the same axes. Waterfall plotting is available for visualising sets of spectra with a vertical offset.
+The spectroscopy popup uses the same general layout style as the profile-measurement window: plot on top, control strip underneath, advanced controls on demand, and a trace list below.
 
-### Colour control
+It can display one spectrum or several overlaid traces in the same window.
 
-Each spectroscopy curve can be given an individual colour from the expanded palette (includes black, gray, white, and an arbitrary colour picker), or colours can be assigned from a shared palette applied to the whole selection.
+### Core controls
 
-### Typography
+The main popup keeps the high-frequency controls visible:
+
+- **Channel**
+- **Axis**
+- **Fit parabola**
+- **Copy channel**
+- toggles for **Markers**, **Lines**, **Grid**, and **Dark**
+
+### Advanced controls
+
+The **Advanced** section exposes:
+
+- **Legend** toggle
+- **Position inset**
+- **Log X / Log Y**
+- colour swatches for the active trace
+- menus for **Traces**, **Legend**, and **Filters**
+
+### Trace styling
+
+The popup supports per-trace visual editing without needing the full comparison dialog:
+
+- change trace colour
+- change line thickness
+- change line style
+- apply a style to all traces
+- reset trace colours to the active palette
+
+The trace list also supports right-click styling for the currently selected trace.
+
+### Legend editing
+
+The popup legend supports:
+
+- show or hide
+- position
+- font size
+- background on or off
+- border on or off
+
+### Filters
+
+Single-spectrum popups can now apply the same core signal-processing stack used in the comparison workflow:
+
+- Gaussian smoothing
+- Savitzky-Golay smoothing
+- Median filtering
+- FFT low-pass
+- Notch filtering
+- first derivative `dY/dX`
+
+These are display and analysis filters for the plotted traces; they do not rewrite the source file.
+
+### Typography and export
 
 Font family, bold, italic, and underline are accessible from the right-click **Typography** menu and stay consistent with the rest of the GUI.
 
-### Export
+Right-click the spectroscopy plot for:
 
-Right-click the spectroscopy plot → **Copy as PNG** or **Copy as SVG**.
+- PNG, SVG, and PDF export
+- direct data-copy actions
+- trace styling
+- legend editing
+- source-file actions
+
+---
+
+## Source-file actions
+
+Both spectroscopy thumbnails and spectroscopy popups expose a **Source file** submenu so you can:
+
+- show the underlying file in the operating-system file manager
+- open the file in the default text editor for the current OS
+- copy the full file path
 
 ---
 
 ## Spatial markers on images
 
-When spectroscopy display is enabled, markers appear on the preview and pop-outs at the acquisition positions. Toggling spectroscopy on/off does not reload the data — the association is cached.
+When spectroscopy display is enabled, markers appear on the preview and pop-outs at the acquisition positions. Toggling spectroscopy on or off does not reload the data; the association is cached.
 
 Marker positions are correctly placed in both absolute and relative axes display modes.
 
@@ -63,7 +131,7 @@ Marker positions are correctly placed in both absolute and relative axes display
 ## Supported spectroscopy types
 
 - Single-point I(V), I(z), df(V), df(z) traces
-- Grid / matrix spectroscopy (see [Matrix Scans](matrix.md))
+- Grid or matrix spectroscopy (see [Matrix Scans](matrix.md))
 - KPFM data (see [KPFM](kpfm.md))
 - Parabola fits (see [Parabola Fits](parabolas.md))
 - WSxM XYZ export

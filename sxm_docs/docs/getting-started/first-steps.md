@@ -33,7 +33,8 @@ Each channel keeps its own display state, including contrast and colormap.
 A good first pass is:
 
 - press ++0++ to test **relative-zero** display
-- use **Shift+Click** for a quick crop
+- turn **Crop template** on and click the preview to apply a fixed crop
+- use ++shift++ + drag for a manual crop
 - hold ++ctrl++ and click to draw a profile
 - right-click and try **Apply filter**
 - double-click the image to open a pop-out and compare workflows there

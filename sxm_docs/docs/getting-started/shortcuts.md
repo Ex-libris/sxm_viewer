@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-A complete reference of all keyboard shortcuts in SXM Viewer.
+A complete reference of the main keyboard shortcuts in SXM Viewer.
 
 !!! tip
     An on-canvas shortcut hint is shown by default. Press ++ctrl+h++ to toggle it at any time.
@@ -24,15 +24,15 @@ A complete reference of all keyboard shortcuts in SXM Viewer.
 
 | Shortcut | Action |
 |---|---|
-| Click | Select thumbnail / preview image |
+| Click | Select thumbnail and load it into the preview |
 | Shift+Click | Range-select thumbnails |
-| Ctrl+Click | Add / remove single thumbnail from selection |
-| Drag | Rubber-band selection box |
-| Double-click | Open image as pop-out popup |
+| Ctrl+Click | Add or remove a single thumbnail from selection |
+| Drag | Rubber-band multi-selection |
+| Double-click | Open image as a pop-out |
 
 ---
 
-## Preview & popup canvas
+## Preview and popup canvas
 
 | Shortcut | Action |
 |---|---|
@@ -44,10 +44,42 @@ A complete reference of all keyboard shortcuts in SXM Viewer.
 | ++ctrl+3++ | Toggle molecule overlays |
 | ++ctrl+4++ | Toggle scale bar |
 | ++ctrl+5++ | Toggle acquisition HUD |
-| ++ctrl+e++ | Toggle crop-frame editor mode |
+| ++ctrl+e++ | Toggle crop-template edit mode |
 | ++0++ | Toggle relative-zero display |
-| Scroll wheel | Zoom in/out |
+| Scroll wheel | Zoom in or out |
 | ++ctrl++ + scroll wheel | Scale font size |
+
+---
+
+## Molecule overlays
+
+| Shortcut or gesture | Action |
+|---|---|
+| Click molecule | Select molecule |
+| ++x++ | Rotate selected molecule around X |
+| ++y++ | Rotate selected molecule around Y |
+| ++z++ | Rotate selected molecule around Z |
+| ++shift+x++ / ++shift+y++ / ++shift+z++ | Rotate in the opposite direction |
+| ++shift++ + drag | Rotate around Z |
+| ++ctrl++ + ++shift++ + drag | Rotate in X/Y |
+| Middle-button drag | Rotate in X/Y |
+| ++shift+r++ | Reset selected molecule to file state |
+
+---
+
+## Crop template and manual crop
+
+| Shortcut or gesture | Action |
+|---|---|
+| Click with crop-template mode on | Apply the current crop template |
+| ++shift++ + drag | Draw a manual crop rectangle |
+| ++ctrl++ + ++shift++ + drag | Force a square manual crop |
+| Drag corner handles | Resize crop frame |
+| Drag frame body | Move crop frame |
+| Drag rotate handle | Rotate crop frame |
+| ++ctrl++ + drag body | Rotate crop frame (alternative) |
+| ++enter++ | Apply crop while editing |
+| ++ctrl+e++ | Exit crop-template edit mode |
 
 ---
 
@@ -62,40 +94,15 @@ A complete reference of all keyboard shortcuts in SXM Viewer.
 | ++m++ | Toggle multi-channel |
 | ++t++ | Toggle extra ticks |
 | ++r++ | Toggle precision mode |
-| ++a++ | Show / hide advanced controls |
+| ++a++ | Show or hide advanced controls |
 | ++delete++ / ++backspace++ | Delete selected overlay |
 
 ---
 
-## Molecule overlays
+## Pop-out window management
 
 | Shortcut | Action |
 |---|---|
-| Click molecule | Select molecule |
-| ++x++ | Rotate selected molecule around X axis |
-| ++y++ | Rotate selected molecule around Y axis |
-| ++z++ | Rotate selected molecule around Z axis |
-| Shift+X/Y/Z | Rotate in the opposite direction |
-
----
-
-## Crop frame editor
-
-| Shortcut | Action |
-|---|---|
-| Drag corner handles | Resize crop frame |
-| Drag frame body | Move crop frame |
-| Drag R handle | Rotate crop frame |
-| ++ctrl++ + drag body | Rotate (alternative to handle) |
-| ++enter++ | Apply crop |
-| ++ctrl+e++ | Exit editor mode |
-
----
-
-## Pop-up window management
-
-| Shortcut | Action |
-|---|---|
-| ++ctrl+shift+p++ | Recall / bring to front all pop-outs |
+| ++ctrl+shift+p++ | Recall or bring to front all pop-outs |
 | ++ctrl+shift+m++ | Minimize all pop-outs |
-| ++ctrl+z++ | Reopen last closed tracked window (6-window history) |
+| ++ctrl+z++ | Reopen last closed tracked window when nothing else is available to undo |
