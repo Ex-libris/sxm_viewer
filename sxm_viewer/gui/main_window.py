@@ -106,6 +106,7 @@ from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
+from .system_open import add_source_file_menu
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
@@ -7689,6 +7690,8 @@ QLabel:hover {{
             clear_sel = QtWidgets.QAction("Clear filter (selected)", menu)
             clear_sel.triggered.connect(lambda _, paths=list(targets): self._clear_filter_for_paths(paths))
             menu.addAction(clear_sel)
+        menu.addSeparator()
+        add_source_file_menu(menu, fp, self)
 
         menu.addSeparator()
         copy_svg_act = QtWidgets.QAction("Copy selected as SVG (current view)", menu)
@@ -7760,6 +7763,7 @@ QLabel:hover {{
         details_act = QtWidgets.QAction("Show metadata in Details", menu)
         details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
         menu.addAction(details_act)
+        add_source_file_menu(menu, spec.get("path"), self)
 
         channels = list((spec.get("channels") or {}).keys())
         common = set(channels)
@@ -7786,15 +7790,6 @@ QLabel:hover {{
                 act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
                 channel_menu.addAction(act)
 
-        menu.addSeparator()
-        copy_path = QtWidgets.QAction("Copy file path", menu)
-        def _copy_path():
-            try:
-                QtWidgets.QApplication.clipboard().setText(str(spec.get("path", "")))
-            except Exception:
-                pass
-        copy_path.triggered.connect(_copy_path)
-        menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):

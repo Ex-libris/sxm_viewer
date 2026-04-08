@@ -51,6 +51,7 @@ from ..._shared import (
     matplotlib,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
+from ..system_open import add_source_file_menu
 from ..figure_layout_presets import (
     iter_figure_layout_presets,
     get_figure_layout_preset,
@@ -1005,6 +1006,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         save_png_600_act = save_menu.addAction("PNG 600 dpi...")
         save_svg_act = save_menu.addAction("SVG (vector)...")
         save_pdf_act = save_menu.addAction("PDF (vector)...")
+        add_source_file_menu(menu, self.spec.get("path"), self)
         add_font_menu_action(
             menu,
             self,

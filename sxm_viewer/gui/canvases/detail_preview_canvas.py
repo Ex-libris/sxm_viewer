@@ -38,6 +38,7 @@ from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
+from ..system_open import add_source_file_menu
 
 try:
     from scipy import ndimage
@@ -6692,6 +6693,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if callable(self._collection_help_callback):
                 collection_menu.addSeparator()
                 collection_help_act = collection_menu.addAction("How Collections Work")
+
+        source_meta = dict((view or {}).get("meta") or {})
+        source_path = str((view or {}).get("path") or source_meta.get("path") or source_meta.get("file_path") or "").strip()
+        add_source_file_menu(menu, source_path, self)
 
         compare_set_a_act = None
         compare_set_b_act = None
