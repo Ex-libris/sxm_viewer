@@ -2,6 +2,8 @@
 
 SXM Viewer includes histogram-based range controls for adjusting image contrast without changing the underlying data.
 
+![Histogram live contrast adjustment](../assets/screenshots/histogram-live-contrast.gif){ width="900" }
+
 ---
 
 ## Opening the histogram tool

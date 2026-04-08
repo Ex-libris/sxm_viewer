@@ -2,6 +2,8 @@
 
 SXM Viewer loads spectroscopy files automatically when a folder is opened, associating them with images using robust timestamp-based matching. Spectroscopy data and scan images live in the same workspace rather than requiring separate tools.
 
+![Spectroscopy markers and thumbnails](../assets/screenshots/spectroscopies.png){ width="900" }
+
 ---
 
 ## Spectroscopy thumbnails
@@ -40,6 +42,10 @@ Open the **Spectroscopy Browser** from the toolbar. It presents all associated s
 The spectroscopy popup uses the same general layout style as the profile-measurement window: plot on top, control strip underneath, advanced controls on demand, and a trace list below.
 
 It can display one spectrum or several overlaid traces in the same window.
+
+![Current spectroscopy popup layout](../assets/screenshots/spectroscopy-popup-current-layout.png){ width="900" }
+
+![Spectroscopy popup workflow](../assets/screenshots/spectro-workflow.gif){ width="900" }
 
 ### Core controls
 

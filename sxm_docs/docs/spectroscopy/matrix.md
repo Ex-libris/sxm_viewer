@@ -2,6 +2,8 @@
 
 SXM Viewer supports MATRIX spectroscopy data and can reconstruct matrix-style spectroscopy grids from the underlying coordinate data.
 
+![Matrix spectroscopy example](../assets/screenshots/matrix-data.png){ width="900" }
+
 ---
 
 ## What a matrix scan is

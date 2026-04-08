@@ -2,6 +2,8 @@
 
 Molecule overlays let you place and manipulate molecular models directly on preview canvases, pop-outs, and canvas tiles.
 
+![Molecule overlay placement and styling](../assets/screenshots/molecule-overlay-styling.gif){ width="900" }
+
 ---
 
 ## Showing molecules
@@ -48,6 +50,8 @@ Once a molecule is selected:
 
 The molecule gizmo is a small orientation widget for the selected molecule.
 
+![Molecule gizmo](../assets/screenshots/molecule-gizmo.png){ width="700" }
+
 - It appears temporarily when you select, move, or rotate a molecule.
 - It can be kept visible through **Display -> Show Molecule Gizmo**.
 - It follows the current X/Y/Z rotation state of the active molecule.
@@ -56,6 +60,8 @@ The gizmo is also interactive:
 
 - dragging the inner area rotates the molecule in **X/Y**
 - dragging the outer ring rotates the molecule around **Z**
+
+![Molecule gizmo rotation](../assets/screenshots/molecule-gizmo-rotation.gif){ width="900" }
 
 ---
 

@@ -1,5 +1,7 @@
 # Publication Canvas
 
+![Canvas export workflow](../assets/screenshots/canvas-export-flow.gif){ width="900" }
+
 The **Canvas** is a multi-image figure composer for building publication-ready layouts from your SPM data.
 
 Open it with the **Canvas** toolbar button or **File → Open Canvas**.

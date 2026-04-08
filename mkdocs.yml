@@ -81,6 +81,7 @@ nav:
     - Export to SVG & PDF: export-and-sharing/vector.md
     - CSV & Data Export: export-and-sharing/data.md
   - Reference:
+    - Documentation Media: reference/documentation-media.md
     - Supported File Formats: reference/file-formats.md
     - Activity Log: reference/activity-log.md
     - Configuration: reference/configuration.md

@@ -1,5 +1,7 @@
 # Filters & Processing
 
+![Image filter pipeline workflow](../assets/screenshots/filters-pipeline.gif){ width="900" }
+
 ## Applying a filter
 
 Right-click the preview or a pop-out → **Apply filter** submenu, or use the thumbnail context menu for batch application to selected thumbnails.

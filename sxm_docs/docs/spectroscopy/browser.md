@@ -2,6 +2,8 @@
 
 The Spectroscopy Browser provides a table-based view of the spectroscopy data associated with the current workspace.
 
+![Spectroscopy workspace context](../assets/screenshots/spectroscopies.png){ width="900" }
+
 ---
 
 ## What it shows

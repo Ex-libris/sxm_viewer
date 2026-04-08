@@ -2,6 +2,8 @@
 
 This page walks through a typical first session in SXM Viewer.
 
+![Open a thumbnail into a pop-out](../assets/screenshots/thumbnail-to-popout.gif){ width="900" }
+
 ---
 
 ## 1. Open a folder

@@ -1,5 +1,7 @@
 # Preview & Pop-out Windows
 
+![Preview toolbar and menu layout](../assets/screenshots/main-menu.png){ width="1100" }
+
 ## The main preview
 
 Clicking a thumbnail loads it into the **main preview** pane. The preview shows the full image with colormap, colorbar, scale bar, and any active overlays. A metadata panel alongside it shows acquisition parameters in correctly scaled SI units.
@@ -30,6 +32,8 @@ Enable **Display -> Show acquisition overlay** to add a top-right HUD showing:
 ## Pop-out windows
 
 Double-click any thumbnail to open it as a floating pop-out window. Pop-outs are independent views with their own channel selector, contrast state, overlays, and analysis state.
+
+![Preview navigation: zoom, pan, reset](../assets/screenshots/wheel-zoom-pan-reset.gif){ width="900" }
 
 ### Creating pop-outs from the preview
 
@@ -67,6 +71,8 @@ Right-clicking the preview or a pop-out exposes a **Source file** submenu so you
 - reveal the underlying file in the OS file manager
 - open the underlying file in the default text editor
 - copy the full file path
+
+![Source file submenu](../assets/screenshots/source-file-context-menu.png){ width="700" }
 
 ---
 

@@ -2,6 +2,8 @@
 
 SXM Viewer has two complementary cropping workflows: a reusable **crop template** and manual drag cropping on the canvas.
 
+![Crop template workflow](../assets/screenshots/crop-to-measure-workflow.gif){ width="900" }
+
 ---
 
 ## Crop template
