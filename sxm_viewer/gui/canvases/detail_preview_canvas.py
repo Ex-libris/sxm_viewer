@@ -7098,7 +7098,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._clear_shortcut_hint_artist()
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
-        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | click molecule then X/Y/Z rotate | Ctrl+1/2/3 saved overlays | click to hide"
+        hint = (
+            "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | "
+            "click molecule then X/Y/Z rotate, Shift+X/Y/Z reverse | Shift+drag mol = Z rotate | "
+            "Ctrl+Shift+drag or middle-drag mol = 3D rotate | Ctrl+1/2/3 saved overlays | click to hide"
+        )
         hint_artist = ax.text(
             0.012,
             0.012,

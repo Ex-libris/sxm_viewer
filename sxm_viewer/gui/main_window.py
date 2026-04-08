@@ -98,6 +98,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
+from .canvases.molecular_overlay import available_atom_palettes
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
@@ -612,6 +613,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_spectro_preview_btn = None
         self.toolbar_spectro_miniatures_btn = None
         self.preview_spectra_toggle_btn = None
+        self.browse_molecules_btn = None
+        self.browse_molecules_menu = None
         self.preview_molecules_toggle_btn = None
         self.preview_grid_toggle_btn = None
         self.preview_adjust_btn = None
@@ -1068,7 +1071,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_molecules_toggle_btn.setText("Mol")
         self.preview_molecules_toggle_btn.setCheckable(True)
         self.preview_molecules_toggle_btn.setChecked(self.show_molecules)
-        self.preview_molecules_toggle_btn.setToolTip("Show or hide molecular overlays on the preview and pop-outs")
+        self.preview_molecules_toggle_btn.setToolTip(
+            "Show or hide molecular overlays on the preview and pop-outs. "
+            "Click a molecule, then use X/Y/Z to rotate; Shift+X/Y/Z rotates the opposite way."
+        )
         self.preview_molecules_toggle_btn.toggled.connect(self.on_show_molecules_toggled)
         self.preview_grid_toggle_btn = QtWidgets.QToolButton()
         self.preview_grid_toggle_btn.setText("Grid")
@@ -2378,7 +2384,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Shift+drag rotates around Z, Ctrl+Shift+drag or middle-drag rotates in 3D, Ctrl+1/2/3 saved overlays</li>"
             "<li><b>Ctrl+S</b> = save current session | <b>Ctrl+Z</b> = reopen last closed window (when no other undo applies)</li>"
             "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
@@ -4070,6 +4076,74 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
+
+    def _load_recent_molecule(self, path):
+        if not self.preview_canvas or not path:
+            return
+        try:
+            self.preview_canvas.add_molecule(path)
+            self.on_show_molecules_toggled(True)
+            self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
+        except Exception:
+            pass
+
+    def _clear_preview_molecules(self):
+        if not self.preview_canvas:
+            return
+        try:
+            self.preview_canvas.reset_molecules()
+        except Exception:
+            try:
+                self.preview_canvas._clear_molecules()
+            except Exception:
+                pass
+
+    def _populate_browse_molecules_menu(self):
+        menu = getattr(self, "browse_molecules_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.clear()
+        except Exception:
+            return
+
+        show_act = menu.addAction("Show molecules")
+        show_act.setCheckable(True)
+        show_act.setChecked(bool(getattr(self, "show_molecules", True)))
+        show_act.toggled.connect(self.on_show_molecules_toggled)
+
+        menu.addSeparator()
+
+        load_act = menu.addAction("Load molecule...")
+        load_act.triggered.connect(self.on_load_molecule)
+
+        recent = []
+        try:
+            if self.preview_canvas is not None:
+                recent = list(self.preview_canvas.get_recent_molecule_paths() or [])
+        except Exception:
+            recent = list(getattr(self, "recent_molecules", []) or [])
+        if recent:
+            recent_menu = menu.addMenu("Load recent")
+            for path in recent[:8]:
+                act = recent_menu.addAction(Path(path).name)
+                act.setToolTip(str(path))
+                act.triggered.connect(lambda _checked=False, p=path: self._load_recent_molecule(p))
+
+        clear_act = menu.addAction("Clear molecules")
+        clear_act.setEnabled(bool(getattr(getattr(self, "preview_canvas", None), "molecules", []) or []))
+        clear_act.triggered.connect(self._clear_preview_molecules)
+
+        palette_menu = menu.addMenu("Palette")
+        palette_group = QtWidgets.QActionGroup(palette_menu)
+        current_palette = str(getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        for palette in available_atom_palettes():
+            label = {"cpk": "CPK", "pymol": "PyMOL", "jmol": "Jmol"}.get(palette, palette.capitalize())
+            act = palette_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(current_palette == palette)
+            act.triggered.connect(lambda checked=False, p=palette: checked and self._on_molecule_palette_changed(p))
+            palette_group.addAction(act)
 
     def _on_toggle_preview_title(self, checked):
         """Toggle title/date overlay in Preview and pop-outs."""
@@ -6990,10 +7064,12 @@ QLabel:hover {{
             chosen = menu.exec_(QtGui.QCursor.pos())
             if chosen and chosen in actions:
                 self.preview_canvas.add_molecule(actions[chosen])
+                self.on_show_molecules_toggled(True)
                 self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
                 return
         # Fallback: open file dialog
         self.preview_canvas._load_molecule_dialog()
+        self.on_show_molecules_toggled(True)
 
     def on_spec_folder_browse(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select spectroscopy folder", str(self.spec_folder_path))
@@ -9315,6 +9391,7 @@ QLabel:hover {{
                 pass
             for widget_name, key in (
                 ("molecules_act", "show_molecules"),
+                ("browse_molecules_btn", "show_molecules"),
                 ("preview_molecules_toggle_btn", "show_molecules"),
                 ("acquisition_overlay_act", "show_acquisition_overlay"),
             ):
