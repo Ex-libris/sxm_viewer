@@ -365,26 +365,22 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.spec = spec
         self.viewer = parent
         self.setWindowTitle(f"Spectroscopy: {Path(spec['path']).name}")
-        self.resize(720, 520)
-        layout = QtWidgets.QVBoxLayout()
-        meta_txt = f"File: {Path(spec['path']).name}\nPosition: {spec.get('x','?')}/{spec.get('y','?')} nm\nTime: {spec.get('time')}"
-        self.meta_label = QtWidgets.QLabel(meta_txt)
-        self.meta_label.setWordWrap(True)
-        layout.addWidget(self.meta_label)
+        self.resize(860, 640)
+        self._toggle_buttons = []
+        self._advanced_controls_visible = False
+        self._dark_background = False
 
-        selector_layout = QtWidgets.QHBoxLayout()
-        selector_layout.addWidget(QtWidgets.QLabel("Channel:"))
-        self.channel_combo = QtWidgets.QComboBox()
-        selector_layout.addWidget(self.channel_combo, 1)
-        self.fit_btn = QtWidgets.QPushButton("Fit parabola")
-        self.copy_btn = QtWidgets.QPushButton("Copy channel")
-        selector_layout.addWidget(self.fit_btn)
-        selector_layout.addWidget(self.copy_btn)
-        layout.addLayout(selector_layout)
+        root_layout = QtWidgets.QVBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(6)
 
-        self.fig = Figure(figsize=(6,4))
+        self.fig = Figure(figsize=(6, 4))
         self.canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111)
+        self.channel_combo = QtWidgets.QComboBox()
+        self.axis_combo = QtWidgets.QComboBox()
+        self.fit_btn = QtWidgets.QPushButton("Fit parabola")
+        self.copy_btn = QtWidgets.QPushButton("Copy channel")
         self._active_line_color = self.SCIENCE_PALETTE[0]
         self._swatch_buttons = []
         self._curve_entries = []
@@ -420,35 +416,139 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._plot_font_underline = bool(getattr(self.viewer, "_plot_font_underline", False))
         self.setAcceptDrops(True)
         self.canvas.installEventFilter(self)
-        self._palette_swatches = self._create_palette_swatch_widget()
-        layout.addWidget(self.canvas, 1)
-        layout.addWidget(self._palette_swatches)
-        self.curve_list = QtWidgets.QListWidget()
-        self.curve_list.setFixedHeight(72)
-        self.curve_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.curve_list.currentRowChanged.connect(self._on_curve_selection_changed)
-        layout.addWidget(self.curve_list)
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._on_canvas_context_menu)
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self._splitter.addWidget(self.canvas)
+
+        info_widget = QtWidgets.QWidget()
+        info_layout = QtWidgets.QVBoxLayout(info_widget)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(6)
+
+        meta_txt = (
+            f"File: {Path(spec['path']).name}\n"
+            f"Position: {spec.get('x','?')}/{spec.get('y','?')} nm\n"
+            f"Time: {spec.get('time')}"
+        )
+        self.meta_label = QtWidgets.QLabel(meta_txt)
+        self.meta_label.setWordWrap(True)
+        self.meta_label.setObjectName("spectroMetaLabel")
+
+        selector_row = QtWidgets.QHBoxLayout()
+        selector_row.setContentsMargins(0, 0, 0, 0)
+        selector_row.setSpacing(6)
+        selector_row.addWidget(QtWidgets.QLabel("Channel:"))
+        selector_row.addWidget(self.channel_combo, 1)
+        selector_row.addWidget(QtWidgets.QLabel("Axis:"))
+        selector_row.addWidget(self.axis_combo, 1)
+        selector_row.addWidget(self.fit_btn)
+        selector_row.addWidget(self.copy_btn)
+        info_layout.addLayout(selector_row)
+
+        controls_panel = QtWidgets.QWidget()
+        controls_layout = QtWidgets.QVBoxLayout(controls_panel)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        primary_row = QtWidgets.QHBoxLayout()
+        primary_row.setContentsMargins(0, 0, 0, 0)
+        primary_row.setSpacing(6)
+        self.markers_toggle = self._make_toggle_button("Markers", checked=self._show_markers, tooltip="Show sampled data points")
+        self.markers_toggle.toggled.connect(lambda checked: self._set_plot_option("markers", checked))
+        primary_row.addWidget(self.markers_toggle)
+        self.lines_toggle = self._make_toggle_button("Lines", checked=self._show_line, tooltip="Show line between spectroscopy samples")
+        self.lines_toggle.toggled.connect(lambda checked: self._set_plot_option("lines", checked))
+        primary_row.addWidget(self.lines_toggle)
+        self.grid_toggle = self._make_toggle_button("Grid", checked=self._grid_enabled, tooltip="Toggle plot grid")
+        self.grid_toggle.toggled.connect(lambda checked: self._set_plot_option("grid", checked))
+        primary_row.addWidget(self.grid_toggle)
+        self.dark_bg_toggle = self._make_toggle_button("Dark", checked=self._dark_background, tooltip="Toggle dark spectroscopy plot background")
+        self.dark_bg_toggle.toggled.connect(lambda checked: self._set_plot_option("dark", checked))
+        primary_row.addWidget(self.dark_bg_toggle)
+        primary_row.addStretch(1)
+        self.advanced_toggle_btn = self._make_toggle_button("Advanced ▼", checked=False, tooltip="Show/hide advanced spectroscopy controls")
+        self.advanced_toggle_btn.toggled.connect(self._set_advanced_options_visible)
+        primary_row.addWidget(self.advanced_toggle_btn)
+        controls_layout.addLayout(primary_row)
+
+        self._advanced_controls_widget = QtWidgets.QWidget()
+        advanced_layout = QtWidgets.QVBoxLayout(self._advanced_controls_widget)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(6)
+        advanced_row = QtWidgets.QHBoxLayout()
+        advanced_row.setContentsMargins(0, 0, 0, 0)
+        advanced_row.setSpacing(6)
+        self.legend_toggle = self._make_toggle_button("Legend", checked=self._legend_enabled, tooltip="Show or hide the legend")
+        self.legend_toggle.toggled.connect(lambda checked: self._set_plot_option("legend", checked))
+        advanced_row.addWidget(self.legend_toggle)
+        self.inset_toggle = self._make_toggle_button("Position inset", checked=self._show_position_inset, tooltip="Show miniature of acquisition image with spectrum position")
+        self.inset_toggle.toggled.connect(lambda checked: self._set_plot_option("inset", checked))
+        advanced_row.addWidget(self.inset_toggle)
+        self.logx_toggle = self._make_toggle_button("Log X", checked=self._x_log, tooltip="Use logarithmic X axis when data permits")
+        self.logx_toggle.toggled.connect(lambda checked: self._set_axis_log("x", checked))
+        advanced_row.addWidget(self.logx_toggle)
+        self.logy_toggle = self._make_toggle_button("Log Y", checked=self._y_log, tooltip="Use logarithmic Y axis when data permits")
+        self.logy_toggle.toggled.connect(lambda checked: self._set_axis_log("y", checked))
+        advanced_row.addWidget(self.logy_toggle)
+        advanced_row.addStretch(1)
+        advanced_layout.addLayout(advanced_row)
+        advanced_layout.addWidget(self.meta_label)
+        self._palette_swatches = self._create_palette_swatch_widget()
+        advanced_layout.addWidget(self._palette_swatches)
+        controls_layout.addWidget(self._advanced_controls_widget)
+        self._set_advanced_options_visible(False)
+        info_layout.addWidget(controls_panel)
+
         self.fit_result_label = QtWidgets.QLabel("")
         self.fit_result_label.setWordWrap(True)
-        layout.addWidget(self.fit_result_label)
-        self.setLayout(layout)
+        self.fit_result_label.setVisible(False)
+        info_layout.addWidget(self.fit_result_label)
+
+        traces_header = QtWidgets.QHBoxLayout()
+        traces_header.setContentsMargins(0, 0, 0, 0)
+        traces_header.setSpacing(6)
+        traces_header.addWidget(QtWidgets.QLabel("Traces"))
+        traces_header.addStretch(1)
+        info_layout.addLayout(traces_header)
+
+        self.curve_list = QtWidgets.QListWidget()
+        self.curve_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.curve_list.setAlternatingRowColors(True)
+        self.curve_list.setUniformItemSizes(True)
+        self.curve_list.currentRowChanged.connect(self._on_curve_selection_changed)
+        info_layout.addWidget(self.curve_list, 1)
+
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        self.copy_all_btn = QtWidgets.QPushButton("Copy all")
+        self.copy_all_btn.clicked.connect(self._copy_all_traces_to_clipboard)
+        button_row.addWidget(self.copy_all_btn)
+        self.remove_btn = QtWidgets.QPushButton("Remove")
+        self.remove_btn.clicked.connect(self._remove_selected_curve)
+        button_row.addWidget(self.remove_btn)
+        button_row.addStretch(1)
+        self.close_btn = QtWidgets.QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+        button_row.addWidget(self.close_btn)
+        info_layout.addLayout(button_row)
+
+        self._splitter.addWidget(info_widget)
+        self._splitter.setStretchFactor(0, 3)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([340, 190])
+        root_layout.addWidget(self._splitter)
+        self._apply_toggle_button_styles()
 
         self.axes = self._collect_axes(spec)
         self.V = np.asarray(self.axes[0]["values"], dtype=float) if self.axes else np.asarray([], dtype=float)
         self.axis_label = self.axes[0].get("label") if self.axes else "Axis"
         self.axis_unit = self.axes[0].get("unit") if self.axes else ""
         self.channels = {name: np.asarray(vals, dtype=float) for name, vals in (spec.get('channels', {}) or {}).items()}
-        # Axis selector
-        selector_layout2 = QtWidgets.QHBoxLayout()
-        selector_layout2.addWidget(QtWidgets.QLabel("Axis:"))
-        self.axis_combo = QtWidgets.QComboBox()
         for ax in self.axes:
             self.axis_combo.addItem(self._axis_display_name(ax), ax.get("key"))
         self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
-        selector_layout2.addWidget(self.axis_combo, 1)
-        layout.addLayout(selector_layout2)
         for name in self.channels.keys():
             self.channel_combo.addItem(name)
         if self.channel_combo.count():
@@ -463,7 +563,172 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         else:
             self.ax.text(0.5, 0.5, "No channels", ha='center', va='center', transform=self.ax.transAxes)
             self.canvas.draw()
+        self._sync_toggle_states()
         self._update_fit_button()
+        self._refresh_action_button_states()
+
+    def _make_toggle_button(self, text, *, checked=False, tooltip=None):
+        btn = QtWidgets.QToolButton(self)
+        btn.setObjectName("spectroToggleButton")
+        btn.setText(text)
+        btn.setCheckable(True)
+        btn.setChecked(bool(checked))
+        btn.setAutoRaise(False)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        self._toggle_buttons.append(btn)
+        return btn
+
+    def _set_advanced_options_visible(self, visible):
+        visible = bool(visible)
+        self._advanced_controls_visible = visible
+        if hasattr(self, "_advanced_controls_widget") and self._advanced_controls_widget is not None:
+            self._advanced_controls_widget.setVisible(visible)
+        if hasattr(self, "advanced_toggle_btn") and self.advanced_toggle_btn is not None:
+            self.advanced_toggle_btn.blockSignals(True)
+            self.advanced_toggle_btn.setChecked(visible)
+            self.advanced_toggle_btn.setText("Advanced ▲" if visible else "Advanced ▼")
+            self.advanced_toggle_btn.blockSignals(False)
+
+    def _apply_toggle_button_styles(self):
+        dark = bool(self._dark_background)
+        if dark:
+            inactive_bg = "#1e2430"
+            inactive_border = "#46556e"
+            inactive_text = "#d4deee"
+            active_bg = "#2f6fcb"
+            active_border = "#79a9f2"
+            active_text = "#ffffff"
+            panel_text = "#dce5f3"
+            list_bg = "#10151f"
+            list_alt = "#171d29"
+            list_border = "#445167"
+        else:
+            inactive_bg = "#f3f5f9"
+            inactive_border = "#aeb7c5"
+            inactive_text = "#1f2a3d"
+            active_bg = "#1f6fd7"
+            active_border = "#5b97e8"
+            active_text = "#ffffff"
+            panel_text = "#314056"
+            list_bg = "#ffffff"
+            list_alt = "#f7f9fc"
+            list_border = "#c2cad6"
+        style = (
+            "QToolButton#spectroToggleButton {"
+            f"background-color: {inactive_bg};"
+            f"color: {inactive_text};"
+            f"border: 1px solid {inactive_border};"
+            "border-radius: 12px;"
+            "padding: 4px 12px;"
+            "font-weight: 600;"
+            "}"
+            "QToolButton#spectroToggleButton:checked {"
+            f"background-color: {active_bg};"
+            f"color: {active_text};"
+            f"border: 1px solid {active_border};"
+            "}"
+            "QToolButton#spectroToggleButton:hover {"
+            f"border: 1px solid {active_border};"
+            "}"
+        )
+        for btn in self._toggle_buttons:
+            try:
+                btn.setStyleSheet(style)
+            except Exception:
+                pass
+        list_style = (
+            "QListWidget {"
+            f"background: {list_bg};"
+            f"alternate-background-color: {list_alt};"
+            f"border: 1px solid {list_border};"
+            "border-radius: 6px;"
+            "}"
+        )
+        try:
+            self.curve_list.setStyleSheet(list_style)
+        except Exception:
+            pass
+        try:
+            self.meta_label.setStyleSheet(f"color: {panel_text};")
+        except Exception:
+            pass
+        try:
+            self.fit_result_label.setStyleSheet(f"color: {panel_text};")
+        except Exception:
+            pass
+
+    def _set_plot_option(self, option, checked):
+        checked = bool(checked)
+        if option == "markers":
+            self._show_markers = checked
+        elif option == "lines":
+            self._show_line = checked
+        elif option == "grid":
+            self._grid_enabled = checked
+        elif option == "dark":
+            self._dark_background = checked
+            self._apply_toggle_button_styles()
+        elif option == "legend":
+            self._legend_enabled = checked
+        elif option == "inset":
+            self._show_position_inset = checked
+        self._sync_toggle_states()
+        self._plot_selected_channel()
+
+    def _sync_toggle_states(self):
+        mapping = (
+            (getattr(self, "markers_toggle", None), bool(self._show_markers)),
+            (getattr(self, "lines_toggle", None), bool(self._show_line)),
+            (getattr(self, "grid_toggle", None), bool(self._grid_enabled)),
+            (getattr(self, "dark_bg_toggle", None), bool(self._dark_background)),
+            (getattr(self, "legend_toggle", None), bool(self._legend_enabled)),
+            (getattr(self, "inset_toggle", None), bool(self._show_position_inset)),
+            (getattr(self, "logx_toggle", None), bool(self._x_log)),
+            (getattr(self, "logy_toggle", None), bool(self._y_log)),
+        )
+        for btn, state in mapping:
+            if btn is None:
+                continue
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(state)
+            finally:
+                try:
+                    btn.blockSignals(False)
+                except Exception:
+                    pass
+
+    def _refresh_action_button_states(self):
+        has_entries = bool(self._curve_entries)
+        try:
+            self.copy_btn.setEnabled(bool(has_entries and self.channel_combo.count()))
+        except Exception:
+            pass
+        try:
+            self.copy_all_btn.setEnabled(bool(len(self._curve_entries) > 1))
+        except Exception:
+            pass
+        try:
+            self.remove_btn.setEnabled(bool(len(self._curve_entries) > 1 and self._selected_curve_index >= 0))
+        except Exception:
+            pass
+
+    def _remove_selected_curve(self):
+        if len(self._curve_entries) <= 1:
+            return
+        idx = int(max(0, min(self._selected_curve_index, len(self._curve_entries) - 1)))
+        try:
+            self._curve_entries.pop(idx)
+        except Exception:
+            return
+        self._selected_curve_index = max(0, min(idx, len(self._curve_entries) - 1))
+        self._update_curve_list()
+        self._plot_selected_channel()
+        self._refresh_action_button_states()
 
     def _channel_label_with_unit(self, name):
         base = name or ""
@@ -596,6 +861,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return
         self._last_fit_result = None
         self.fit_result_label.setText("")
+        self.fit_result_label.setVisible(False)
         self.V = np.asarray(selected.get("values", []), dtype=float)
         self.axis_label = selected.get("label") or "Axis"
         unit = (selected.get("unit") or "").strip()
@@ -614,6 +880,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _on_channel_changed(self, name):
         self._last_fit_result = None
         self.fit_result_label.setText("")
+        self.fit_result_label.setVisible(False)
         self._apply_channel_to_entries(name or "")
         self._plot_selected_channel()
         self._update_fit_button()
@@ -666,6 +933,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _plot_selected_channel(self):
         self.ax.clear()
         if not self._curve_entries:
+            self._apply_plot_theme()
             self.canvas.draw_idle()
             return
         axis_label = self.axis_label or "Axis"
@@ -712,8 +980,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.ax.legend()
         if self._last_fit_result and self._last_fit_result.get('channel') == name:
             self._draw_fit_overlay(self._last_fit_result)
-        self._apply_font_scale()
         self._update_position_inset()
+        self._apply_plot_theme()
+        self._apply_font_scale()
         self.canvas.draw_idle()
 
     def _on_canvas_context_menu(self, pos):
@@ -1088,16 +1357,37 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.curve_list.blockSignals(True)
         self.curve_list.clear()
         for entry in self._curve_entries:
-            self.curve_list.addItem(entry.get("label", ""))
+            item = QtWidgets.QListWidgetItem(entry.get("label", ""))
+            color = entry.get("color")
+            if color:
+                try:
+                    pix = QtGui.QPixmap(12, 12)
+                    pix.fill(QtGui.QColor(color))
+                    item.setIcon(QtGui.QIcon(pix))
+                except Exception:
+                    pass
+            self.curve_list.addItem(item)
         self.curve_list.blockSignals(False)
         if self.curve_list.count():
             self.curve_list.setCurrentRow(current)
         self._selected_curve_index = current
+        self._refresh_action_button_states()
 
     def _on_curve_selection_changed(self, row):
         if row < 0:
             return
         self._selected_curve_index = row
+        entry = self._current_entry()
+        if entry:
+            self._active_line_color = entry.get("color") or self._active_line_color
+            matched = None
+            for btn in self._swatch_buttons:
+                base = str(btn.property("baseStyle") or "")
+                if self._active_line_color and self._active_line_color.lower() in base.lower():
+                    matched = btn
+                    break
+            self._set_active_swatch(matched)
+        self._refresh_action_button_states()
 
     def _current_entry(self):
         if not self._curve_entries:
@@ -1137,6 +1427,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             (self.fit_btn, 9.0),
             (self.copy_btn, 9.0),
             (self.axis_combo, 9.0),
+            (self.copy_all_btn, 9.0),
+            (self.remove_btn, 9.0),
+            (self.close_btn, 9.0),
+            (self.curve_list, 9.0),
         ):
             if widget is None:
                 continue
@@ -1145,6 +1439,58 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 font.setPointSizeF(base * scale)
                 font = apply_qfont_style(font, family=self._plot_font_family, **style)
                 widget.setFont(font)
+            except Exception:
+                pass
+
+    def _apply_plot_theme(self):
+        dark = bool(self._dark_background)
+        fig_face = "#0f1720" if dark else "#ffffff"
+        ax_face = "#111827" if dark else "#ffffff"
+        text = "#e5edf8" if dark else "#1f2937"
+        grid = "#41526a" if dark else "#d7deea"
+        legend_face = "#0f1720" if dark else "#ffffff"
+        legend_edge = "#6f86a5" if dark else "#7d8ea8"
+        self.fig.patch.set_facecolor(fig_face)
+        self.ax.set_facecolor(ax_face)
+        try:
+            self.ax.tick_params(axis='both', colors=text)
+        except Exception:
+            pass
+        for axis in (self.ax.xaxis, self.ax.yaxis):
+            try:
+                axis.label.set_color(text)
+            except Exception:
+                pass
+        for spine in self.ax.spines.values():
+            try:
+                spine.set_color(text)
+            except Exception:
+                pass
+        if self._grid_enabled:
+            try:
+                self.ax.grid(True, color=grid, alpha=0.35 if dark else 0.45)
+            except Exception:
+                pass
+        legend = self.ax.get_legend()
+        if legend:
+            try:
+                frame = legend.get_frame()
+                frame.set_facecolor(legend_face)
+                frame.set_edgecolor(legend_edge)
+                frame.set_alpha(0.88 if dark else 0.95)
+            except Exception:
+                pass
+            for text_artist in legend.get_texts():
+                try:
+                    text_artist.set_color(text)
+                except Exception:
+                    pass
+        if self._position_inset_ax is not None:
+            try:
+                self._position_inset_ax.set_facecolor(ax_face)
+                self._position_inset_ax.title.set_color(text)
+                for spine in self._position_inset_ax.spines.values():
+                    spine.set_color(text)
             except Exception:
                 pass
 
@@ -1173,6 +1519,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self._x_log = checked
         else:
             self._y_log = checked
+        self._sync_toggle_states()
         self._plot_selected_channel()
 
     def _adjust_line_width(self, delta: float):
@@ -1188,6 +1535,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._y_log = False
         self._line_width = 1.5
         self._show_position_inset = True
+        self._sync_toggle_states()
         self._plot_selected_channel()
 
     def _show_plot_warning(self, message: str):
@@ -1678,6 +2026,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             f"RMSE = {res['rmse']:.4g}"
         )
         self.fit_result_label.setText(text)
+        self.fit_result_label.setVisible(True)
 
     def _on_fit_clicked(self):
         name = self.channel_combo.currentText()
@@ -1709,6 +2058,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _update_fit_button(self):
         enable = bool(self.channel_combo.count() and self.V.size)
         self.fit_btn.setEnabled(enable)
+        if not enable:
+            self.fit_result_label.clear()
+            self.fit_result_label.setVisible(False)
 
 class MatrixSpectroViewer(QtWidgets.QDialog):
     MARKER_STYLE_OPTIONS = [
