@@ -201,11 +201,13 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_palette_colors = get_color_cycle(self._profile_palette_name)
         self._profile_color_cycle = itertools.cycle(self._profile_palette_colors)
         self._line_drag_origin = None
+        self._saved_profile_drag = None
         self._active_profile_color = '#fbc02d'
         self._active_profile_lw = 2.0
         self._active_profile_line_style = "-"
         self._active_profile_marker_style = "o"
         self._active_profile_marker_size = 7.0
+        self._active_profile_original_id = None
         self._highlighted_overlay = None
         self._cids = []
         self._base_click_cid = self.mpl_connect('button_press_event', self._on_base_click)
@@ -2513,6 +2515,7 @@ class MultiPreviewCanvas(FigureCanvas):
             'active_line_style': self._active_profile_line_style,
             'active_marker_style': self._active_profile_marker_style,
             'active_marker_size': float(self._active_profile_marker_size),
+            'active_profile_original_id': self._active_profile_original_id,
             'marker_key': self._profile_marker_key,
             'marker_positions_by_key': dict(self._profile_marker_positions_by_key),
             'marker_domain_by_key': dict(self._profile_marker_domain_by_key),
@@ -2530,6 +2533,8 @@ class MultiPreviewCanvas(FigureCanvas):
             marker_size=self._active_profile_marker_size,
             live_profile_ref=self._profile_live_ref(None),
         )
+        if isinstance(active, dict) and self._active_profile_original_id:
+            active["profile_id"] = str(self._active_profile_original_id)
         saved = []
         for entry in self._saved_profiles:
             data = entry.get('data')
@@ -2543,9 +2548,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     marker_size=entry.get('marker_size'),
                     live_profile_ref=self._profile_live_ref(entry=entry),
                 )
+                if isinstance(data, dict):
+                    data["profile_id"] = str(self._ensure_saved_profile_id(entry))
                 entry['data'] = data
             elif isinstance(data, dict):
                 data['live_profile_ref'] = self._profile_live_ref(entry=entry)
+                data["profile_id"] = str(self._ensure_saved_profile_id(entry))
             if data:
                 saved.append(data)
         return active, saved
@@ -2594,6 +2602,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 )
             except Exception:
                 pass
+            original_id = state.get('active_profile_original_id')
+            self._active_profile_original_id = str(original_id).strip() if original_id else None
             marker_key = state.get('marker_key')
             if marker_key in ("null", "None", ""):
                 marker_key = None
@@ -3814,6 +3824,26 @@ class MultiPreviewCanvas(FigureCanvas):
             self.push_undo_state("activate_profile")
         entry = self._saved_profiles.pop(idx)
         self._active_profile_original_color = entry.get('color')
+        self._active_profile_original_id = str(self._ensure_saved_profile_id(entry))
+        entry_color = entry.get('color')
+        if entry_color:
+            self._active_profile_color = str(entry_color)
+        try:
+            self._active_profile_lw = float(entry.get('lw', self._active_profile_lw))
+        except Exception:
+            pass
+        self._active_profile_line_style = self._normalize_profile_line_style(
+            entry.get('line_style'),
+            self._active_profile_line_style,
+        )
+        self._active_profile_marker_style = self._normalize_profile_marker_style(
+            entry.get('marker_style'),
+            self._active_profile_marker_style,
+        )
+        try:
+            self._active_profile_marker_size = float(entry.get('marker_size', self._active_profile_marker_size))
+        except Exception:
+            pass
         if self._profile_marker_positions_by_key:
             new_map = {}
             new_domain = {}
@@ -3994,14 +4024,15 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.profile_pts is None or self.main_ax is None:
             self._remove_profile_markers()
             return
+        color = self._active_profile_color or '#fbc02d'
         
         # Reuse existing artists if possible
         if self._profile_ticks is not None and self._profile_info_text is not None:
             self._remove_profile_markers() # Fallback to recreate if complex update needed, or optimize further
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
         else:
             self._remove_profile_markers()
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
             
         self._profile_ticks = ticks
         self._profile_info_text = text
@@ -4379,6 +4410,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("snapshot_profile")
         pts = tuple(self.profile_pts)
+        original_profile_id = str(self._active_profile_original_id or "").strip() or None
         if self._active_profile_original_color:
             color = self._active_profile_original_color
             self._active_profile_original_color = None
@@ -4453,11 +4485,12 @@ class MultiPreviewCanvas(FigureCanvas):
             marker_style=marker_style,
             marker_size=marker_size,
         )
-        profile_id = self._next_saved_profile_id()
+        profile_id = original_profile_id or self._next_saved_profile_id()
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
                  'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw,
                  'line_style': line_style, 'marker_style': marker_style, 'marker_size': marker_size,
                  'line_artist': line, 'endpoint_artist': endpoints, 'profile_id': profile_id}
+        self._active_profile_original_id = None
         if isinstance(data, dict):
             data['live_profile_ref'] = self._profile_live_ref(entry=entry)
         if text is not None:
@@ -4587,6 +4620,148 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 continue
         return None
+
+    def _saved_profile_hit(self, x, y, thresh=18.0):
+        if x is None or y is None or not self._saved_profiles:
+            return None
+        for idx in reversed(range(len(self._saved_profiles))):
+            entry = self._saved_profiles[idx]
+            pts = entry.get('pts')
+            if pts is None:
+                continue
+            try:
+                x0, y0, x1, y1 = pts
+                d0 = self._pt_distance_pixels(x, y, x0, y0)
+                d1 = self._pt_distance_pixels(x, y, x1, y1)
+                if d0 <= thresh or d1 <= thresh:
+                    return {"idx": idx, "mode": "p0" if d0 <= d1 else "p1"}
+                dist_line = self._distance_to_segment_pixels(x, y, pts)
+                if dist_line <= thresh:
+                    return {"idx": idx, "mode": "line"}
+            except Exception:
+                continue
+        return None
+
+    def _select_saved_profile_overlay(self, idx):
+        if idx is None or idx < 0 or idx >= len(self._saved_profiles):
+            self.highlight_saved_profile(None)
+            if callable(self._profile_highlight_cb):
+                try:
+                    self._profile_highlight_cb(None)
+                except Exception:
+                    pass
+            return
+        self.highlight_saved_profile(idx)
+        if callable(self._profile_highlight_cb):
+            try:
+                self._profile_highlight_cb(idx)
+            except Exception:
+                pass
+        self.set_profile_marker_key(idx)
+
+    def _rebuild_saved_profile_entry(self, idx, pts, *, redraw=True):
+        if idx < 0 or idx >= len(self._saved_profiles) or self.main_ax is None or pts is None:
+            return False
+        prev = self._saved_profiles[idx]
+        for art in prev.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        pts = tuple(pts)
+        color = prev.get('color') or '#ffffff'
+        lw = float(prev.get('lw', 1.5) or 1.5)
+        line_style = self._normalize_profile_line_style(prev.get('line_style'), '--')
+        marker_style = self._normalize_profile_marker_style(prev.get('marker_style'), 'o')
+        marker_size = float(prev.get('marker_size', 5.0) or 5.0)
+        line, = self.main_ax.plot(
+            [pts[0], pts[2]], [pts[1], pts[3]],
+            color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style
+        )
+        endpoints, = self.main_ax.plot(
+            [pts[0], pts[2]], [pts[1], pts[3]],
+            marker=marker_style, linestyle='None', color=color,
+            ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7
+        )
+        artists = [line, endpoints]
+        for ax in self._ax_view_map:
+            if ax is self.main_ax:
+                continue
+            try:
+                l, = ax.plot(
+                    [pts[0], pts[2]], [pts[1], pts[3]],
+                    color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style
+                )
+                ep, = ax.plot(
+                    [pts[0], pts[2]], [pts[1], pts[3]],
+                    marker=marker_style, linestyle='None', color=color,
+                    ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7
+                )
+                artists.extend([l, ep])
+            except Exception:
+                pass
+        base_size = int(prev.get('label_base_size', 8) or 8)
+        ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
+        overlay_label = self._create_profile_id_label(pts, f"Overlay {idx + 1}", color)
+        endpoint_labels = self._create_endpoint_labels(pts, color)
+        if overlay_label is not None:
+            try:
+                overlay_label.set_visible(False)
+            except Exception:
+                pass
+            artists.append(overlay_label)
+        for lbl in endpoint_labels:
+            try:
+                lbl.set_visible(False)
+            except Exception:
+                pass
+        if ticks is not None:
+            artists.append(ticks)
+        if text is not None:
+            artists.append(text)
+        artists += endpoint_labels
+        data = self._build_profile_data(
+            pts,
+            color=color,
+            lw=lw,
+            line_style=line_style,
+            marker_style=marker_style,
+            marker_size=marker_size,
+            live_profile_ref=self._profile_live_ref(entry=prev),
+        )
+        if isinstance(data, dict):
+            data["profile_id"] = str(self._ensure_saved_profile_id(prev))
+        entry = {
+            'artists': artists,
+            'pts': pts,
+            'color': color,
+            'data': data,
+            'overlay_label_artist': overlay_label,
+            'endpoint_labels': endpoint_labels,
+            'lw': lw,
+            'line_style': line_style,
+            'marker_style': marker_style,
+            'marker_size': marker_size,
+            'line_artist': line,
+            'endpoint_artist': endpoints,
+            'profile_id': self._ensure_saved_profile_id(prev),
+        }
+        if text is not None:
+            entry['label_artist'] = text
+            entry['label_base_size'] = base_size
+        self._saved_profiles[idx] = entry
+        self._refresh_overlay_labels()
+        if self._highlighted_overlay is not None:
+            self.highlight_saved_profile(self._highlighted_overlay)
+        else:
+            self._apply_profile_visibility()
+        if self._profile_marker_key == idx:
+            self._update_profile_marker_artists()
+            self._update_profile_hud()
+        if redraw:
+            self.draw_idle()
+        return True
 
     def _undo_last_profile_snapshot(self):
         if not self._saved_profiles:
@@ -4779,6 +4954,18 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_marker_drag_idx = marker_idx
             self._dragging = None
             return
+        saved_hit = self._saved_profile_hit(x, y)
+        if saved_hit is not None:
+            overlay_idx = int(saved_hit.get("idx"))
+            self._select_saved_profile_overlay(overlay_idx)
+            self.push_undo_state("move_saved_profile")
+            self._saved_profile_drag = {
+                "idx": overlay_idx,
+                "mode": str(saved_hit.get("mode") or "line"),
+                "origin": tuple(self._saved_profiles[overlay_idx].get("pts") or (x, y, x, y)),
+                "start": (x, y),
+            }
+            return
         if self.profile_pts is None:
             if not ctrl_pressed:
                 return
@@ -4824,29 +5011,10 @@ class MultiPreviewCanvas(FigureCanvas):
         # Increased threshold to 15.0 to prevent accidental "misses" causing profile loss
         overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
         if overlay_idx is not None:
-            if self.profile_pts is not None:
-                self._snapshot_active_profile()
-            else:
-                self.push_undo_state("activate_profile")
-            activated = self.activate_saved_profile(overlay_idx, push_undo=False)
-            if activated:
-                if callable(self._profile_highlight_cb):
-                    try:
-                        self._profile_highlight_cb(None)
-                    except Exception:
-                        pass
-                x0, y0, x1, y1 = self.profile_pts
-                return
-            else:
-                self.highlight_saved_profile(overlay_idx)
-                if callable(self._profile_highlight_cb):
-                    try:
-                        self._profile_highlight_cb(overlay_idx)
-                    except Exception:
-                        pass
-                self._dragging = None
-                self._line_drag_origin = None
-                return
+            self._select_saved_profile_overlay(overlay_idx)
+            self._dragging = None
+            self._line_drag_origin = None
+            return
         # else: start a new line from here
         if not ctrl_pressed:
             return
@@ -4857,6 +5025,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._profile_move_only:
             return
         self._active_profile_original_color = None
+        self._active_profile_original_id = None
         self._set_profile_pts((x, y, x, y))
         self._dragging = 'p1'
         self._line_drag_origin = None
@@ -5113,6 +5282,28 @@ class MultiPreviewCanvas(FigureCanvas):
         x, y = event.xdata, event.ydata
         if x is None or y is None:
             return
+        if self._saved_profile_drag is not None:
+            drag = self._saved_profile_drag
+            idx = drag.get("idx")
+            if idx is None or idx < 0 or idx >= len(self._saved_profiles):
+                self._saved_profile_drag = None
+                return
+            pts = drag.get("origin") or self._saved_profiles[idx].get("pts")
+            if pts is None:
+                return
+            x0, y0, x1, y1 = pts
+            mode = drag.get("mode")
+            if mode == "p0":
+                new_pts = (x, y, x1, y1)
+            elif mode == "p1":
+                new_pts = (x0, y0, x, y)
+            else:
+                sx, sy = drag.get("start", (x, y))
+                dx = x - sx
+                dy = y - sy
+                new_pts = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._rebuild_saved_profile_entry(idx, new_pts, redraw=True)
+            return
         if self._profile_marker_drag_idx is not None:
             if not self._profile_marker_domain or self._profile_marker_positions is None:
                 return
@@ -5167,6 +5358,10 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _on_release(self, event):
         if not (self.profile_enabled or self._profile_move_only):
+            return
+        if self._saved_profile_drag is not None:
+            self._saved_profile_drag = None
+            self._emit_profile()
             return
         self._dragging = None
         self._set_profile_animated(False)
@@ -5406,6 +5601,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 marker_size=self._active_profile_marker_size,
                 live_profile_ref=self._profile_live_ref(None),
             )
+            if isinstance(active, dict) and self._active_profile_original_id:
+                active["profile_id"] = str(self._active_profile_original_id)
         if active:
             ref = active.get('x_nm') if active.get('x_nm') is not None else active.get('x_px')
             if ref is not None:
@@ -5455,9 +5652,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     marker_size=entry.get('marker_size'),
                     live_profile_ref=self._profile_live_ref(entry=entry),
                 )
+                if isinstance(data, dict):
+                    data["profile_id"] = str(self._ensure_saved_profile_id(entry))
                 entry['data'] = data
             elif isinstance(data, dict):
                 data['live_profile_ref'] = self._profile_live_ref(entry=entry)
+                data["profile_id"] = str(self._ensure_saved_profile_id(entry))
             if data:
                 saved_data.append(data)
         try:

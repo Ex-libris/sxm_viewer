@@ -246,6 +246,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self._marker_domain_by_key = {}
         self._current_marker_key = None
         self._last_saved_count = 0
+        self._line_handles_by_key = {}
+        self._ordered_profile_entries_cache = []
         self._toggle_buttons = []
         self._advanced_controls_visible = False
         self._legend_visible = True
@@ -800,6 +802,57 @@ class ProfileDialog(QtWidgets.QDialog):
         if 0 <= idx < len(self._saved):
             return self._saved[idx]
         return None
+
+    @staticmethod
+    def _profile_id_sort_value(dataset):
+        if not isinstance(dataset, dict):
+            return None
+        profile_id = str(
+            dataset.get("profile_id")
+            or ((dataset.get("live_profile_ref") or {}).get("profile_id"))
+            or ""
+        ).strip()
+        if not profile_id:
+            return None
+        digits = []
+        for ch in reversed(profile_id):
+            if ch.isdigit():
+                digits.append(ch)
+            elif digits:
+                break
+        if digits:
+            try:
+                return int("".join(reversed(digits)))
+            except Exception:
+                return profile_id
+        return profile_id
+
+    def _ordered_profile_entries(self, active_profile, saved_profiles):
+        entries = []
+        if active_profile:
+            entries.append({
+                "key": None,
+                "label": "Active",
+                "data": active_profile,
+                "is_active": True,
+                "sort_value": self._profile_id_sort_value(active_profile),
+                "fallback": -1,
+            })
+        for idx, data in enumerate(saved_profiles or []):
+            entries.append({
+                "key": idx,
+                "label": f"Overlay {idx + 1}",
+                "data": data,
+                "is_active": False,
+                "sort_value": self._profile_id_sort_value(data),
+                "fallback": idx,
+            })
+        def _sort_key(entry):
+            sort_value = entry.get("sort_value")
+            if sort_value is None:
+                return (0 if entry.get("is_active") else 1, entry.get("fallback", 0))
+            return (1, sort_value)
+        return sorted(entries, key=_sort_key)
 
     def _live_profile_ref(self, profile_key):
         dataset = self._dataset_for_profile_key(profile_key)
@@ -2264,6 +2317,8 @@ class ProfileDialog(QtWidgets.QDialog):
         saved_profiles = saved_profiles or []
         self._active = active_profile
         self._saved = saved_profiles
+        entries = self._ordered_profile_entries(active_profile, saved_profiles)
+        self._ordered_profile_entries_cache = entries
         if len(saved_profiles) != self._last_saved_count:
             # Overlay indices may shift; drop overlay-specific marker positions.
             keep = self._marker_positions_by_key.get(None)
@@ -2278,11 +2333,10 @@ class ProfileDialog(QtWidgets.QDialog):
         reference = active_profile or (saved_profiles[0] if saved_profiles else None)
         self._relative_axes = bool((reference or {}).get('relative_axes', True))
         self._line_handles = []
+        self._line_handles_by_key = {}
         datasets = []
-        if active_profile:
-            datasets.append(('Active', active_profile, True))
-        for idx, data in enumerate(saved_profiles, 1):
-            datasets.append((f"Overlay {idx}", data, False))
+        for entry in entries:
+            datasets.append((entry["label"], entry["data"], entry["is_active"], entry["key"]))
         if not datasets:
             self.stats.setText("No profile data")
             self.profile_list.blockSignals(True)
@@ -2319,9 +2373,9 @@ class ProfileDialog(QtWidgets.QDialog):
         # Add extra channels if requested
         if self.multi_channel_cb.isChecked() and active_profile and active_profile.get('extra_channels'):
             for extra in active_profile.get('extra_channels', []):
-                datasets.append((extra.get('name', 'Extra'), extra, True))
+                datasets.append((extra.get('name', 'Extra'), extra, True, None))
 
-        for label, data, is_active in datasets:
+        for label, data, is_active, profile_key in datasets:
             x = data.get('x_nm')
             if x is None:
                 x = data.get('x_px')
@@ -2364,6 +2418,8 @@ class ProfileDialog(QtWidgets.QDialog):
                 alpha=alpha,
             )
             self._line_handles.append(line)
+            if profile_key not in self._line_handles_by_key:
+                self._line_handles_by_key[profile_key] = line
             if is_active and label == 'Active':
                 ref_points = x
                 ref_length = data.get('length_nm')
@@ -2417,10 +2473,13 @@ class ProfileDialog(QtWidgets.QDialog):
         self._apply_plot_theme()
         self.stats.setText(self._format_stats_text(active_profile, saved_profiles))
         self._populate_profile_list(active_profile, saved_profiles)
-        if active_profile is not None:
-            self._current_marker_key = None
-        else:
-            self._current_marker_key = 0 if saved_profiles else None
+        valid_keys = {entry["key"] for entry in entries}
+        if self._current_marker_key not in valid_keys:
+            if active_profile is not None:
+                self._current_marker_key = None
+            else:
+                self._current_marker_key = entries[0]["key"] if entries else None
+        self.select_overlay(self._current_marker_key)
         self._reset_markers(ref_points, ref_length, reference_dataset=marker_dataset)
         if self._current_marker_key in self._marker_positions_by_key:
             positions = self._marker_positions_by_key.get(self._current_marker_key)
@@ -2457,21 +2516,18 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
         target_item = None
-        if active_profile:
-            item = QtWidgets.QListWidgetItem(
-                self._fmt_length(self._dataset_display_name(active_profile, "Active"), active_profile.get('length_nm'))
-            )
-            self._apply_item_color(item, active_profile.get('color'))
-            item.setData(QtCore.Qt.UserRole, None)
-            self.profile_list.addItem(item)
-            target_item = item
-        for idx, data in enumerate(saved_profiles, 1):
-            text = self._fmt_length(self._dataset_display_name(data, f"Overlay {idx}"), data.get('length_nm'))
+        for entry in self._ordered_profile_entries(active_profile, saved_profiles):
+            data = entry["data"] or {}
+            key = entry["key"]
+            label = entry["label"]
+            text = self._fmt_length(self._dataset_display_name(data, label), data.get('length_nm'))
             item = QtWidgets.QListWidgetItem(text)
             self._apply_item_color(item, data.get('color'))
-            item.setData(QtCore.Qt.UserRole, idx - 1)
+            item.setData(QtCore.Qt.UserRole, key)
             self.profile_list.addItem(item)
-            if target_item is None:
+            if target_item is None and key == self._current_marker_key:
+                target_item = item
+            elif target_item is None:
                 target_item = item
         if target_item:
             self.profile_list.setCurrentItem(target_item)
@@ -2667,24 +2723,20 @@ class ProfileDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         # adjust highlight on plotted lines
-        for line_idx, line in enumerate(self._line_handles):
+        for profile_key, line in list(self._line_handles_by_key.items()):
             try:
-                if self._active is not None and line_idx == 0:
-                    dataset = self._active or {}
-                    base_lw = float(dataset.get('lw') or 1.5)
-                else:
-                    saved_idx = line_idx - (1 if self._active else 0)
-                    dataset = self._saved[saved_idx] if 0 <= saved_idx < len(self._saved) else {}
-                    base_lw = float(dataset.get('lw') or 1.0)
+                dataset = self._dataset_for_profile_key(profile_key) or {}
+                base_lw = float(dataset.get('lw') or (1.5 if profile_key is None else 1.0))
                 line.set_linewidth(base_lw)
             except Exception:
                 pass
         if idx is None:
-            if self._line_handles:
+            line = self._line_handles_by_key.get(None)
+            if line is not None:
                 try:
                     dataset = self._active or {}
                     base_lw = float(dataset.get('lw') or 1.5)
-                    self._line_handles[0].set_linewidth(base_lw + 0.4)
+                    line.set_linewidth(base_lw + 0.4)
                 except Exception:
                     pass
         else:
@@ -2723,11 +2775,7 @@ class ProfileDialog(QtWidgets.QDialog):
     def _line_handle_for_overlay(self, idx):
         if idx is None:
             return None
-        offset = 1 if self._active else 0
-        target = idx + offset
-        if target < 0 or target >= len(self._line_handles):
-            return None
-        return self._line_handles[target]
+        return self._line_handles_by_key.get(idx)
 
     def _on_profile_item_activated(self, item):
         if item is None:
