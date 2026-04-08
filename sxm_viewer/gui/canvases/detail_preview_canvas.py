@@ -303,6 +303,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_gizmo_until = 0.0
         self._molecule_gizmo_axes = None
         self._molecule_gizmo_artists = {}
+        self._molecule_gizmo_drag = None
         self._molecule_gizmo_timer = QtCore.QTimer(self)
         self._molecule_gizmo_timer.setSingleShot(True)
         self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
@@ -1659,6 +1660,14 @@ class MultiPreviewCanvas(FigureCanvas):
             return self.molecules[idx]
         return self.molecules[0] if self.molecules else None
 
+    def _active_molecule_index_for_gizmo(self):
+        if not self.molecules:
+            return None
+        idx = getattr(self, "_active_molecule_idx", None)
+        if isinstance(idx, int) and 0 <= idx < len(self.molecules):
+            return idx
+        return 0
+
     def _should_show_molecule_gizmo(self):
         if not self.show_molecules or not self.molecules:
             return False
@@ -1690,6 +1699,51 @@ class MultiPreviewCanvas(FigureCanvas):
             screen = np.array([vec[0] + 0.38 * vec[2], vec[1] + 0.18 * vec[2]], dtype=float)
             vectors.append((idx, vec, screen, color))
         return vectors
+
+    def _molecule_gizmo_hit_test(self, event):
+        gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+        if gizmo_ax is None or not self._should_show_molecule_gizmo():
+            return None
+        if event is None or getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return None
+        bbox = getattr(gizmo_ax, "bbox", None)
+        if bbox is None or not bbox.contains(event.x, event.y):
+            return None
+        if getattr(event, "button", None) not in (1, None):
+            return None
+        width = float(getattr(bbox, "width", 0.0) or 0.0)
+        height = float(getattr(bbox, "height", 0.0) or 0.0)
+        if width <= 0.0 or height <= 0.0:
+            return None
+        local_x = ((float(event.x) - float(bbox.x0)) / width) * 2.0 - 1.0
+        local_y = ((float(event.y) - float(bbox.y0)) / height) * 2.0 - 1.0
+        radius = math.hypot(local_x, local_y)
+        if radius > 1.02:
+            return None
+        mode = "rotate_z" if radius >= 0.58 else "rotate_xy"
+        return {"mode": mode, "local": (float(local_x), float(local_y))}
+
+    def _begin_molecule_gizmo_drag(self, hit, event):
+        idx = self._active_molecule_index_for_gizmo()
+        if idx is None:
+            return False
+        if not hit or event is None or getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return False
+        try:
+            self._push_molecule_snapshot()
+        except Exception:
+            pass
+        self._active_molecule_idx = idx
+        self._molecule_gizmo_drag = {
+            "idx": idx,
+            "mode": str(hit.get("mode") or "rotate_xy"),
+            "start_px": (float(event.x), float(event.y)),
+            "start_local": tuple(hit.get("local") or (0.0, 0.0)),
+            "start_angles": np.array(self.molecules[idx].angles, dtype=float, copy=True),
+        }
+        self._wake_molecule_gizmo(2400, redraw=False)
+        self._update_molecule_gizmo_overlay()
+        return True
 
     def _wake_molecule_gizmo(self, duration_ms: int = 1800, *, redraw: bool = True):
         now_ms = time.perf_counter() * 1000.0
@@ -1818,6 +1872,26 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_gizmo_axes = gizmo_ax
         self._molecule_gizmo_artists = artists
         self._update_molecule_gizmo_overlay()
+
+    def _reset_molecule_to_file_state(self, idx=None, *, keep_offset: bool = True):
+        if idx is None:
+            idx = self._active_molecule_index_for_gizmo()
+        if idx is None or idx < 0 or idx >= len(self.molecules):
+            return False
+        try:
+            current = self.molecules[idx]
+        except Exception:
+            return False
+        try:
+            new_mol = current.reset_to_file_state(keep_offset=keep_offset)
+        except Exception:
+            return False
+        self._push_molecule_snapshot()
+        self.molecules[idx] = new_mol
+        self._active_molecule_idx = idx
+        self._wake_molecule_gizmo(2400, redraw=False)
+        self._redraw()
+        return True
 
     def _draw_spectra(self, ax):
         view = self._ax_view_map.get(ax, {})
@@ -3090,6 +3164,8 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         if self._rotate_selected_molecule_from_key(key, reverse=shift):
             return True
+        if shift and key == QtCore.Qt.Key_R:
+            return self._reset_molecule_to_file_state()
         if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
             setter = getattr(self, "_popup_relative_zero_setter", None)
             if callable(setter):
@@ -5426,8 +5502,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     return
         if self.scale_bar_enabled and self._scale_bar_drag_start is not None:
             return
+        gizmo_hit = self._molecule_gizmo_hit_test(event)
+        if gizmo_hit is not None:
+            self._begin_molecule_gizmo_drag(gizmo_hit, event)
+            return
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
+        if ax is getattr(self, "_molecule_gizmo_axes", None):
+            return
         if self._fixed_crop_transform_mode and event.button == 1 and view is not None:
             mods_qt = self._event_qt_modifiers(event)
             hit = self._fixed_crop_template_handle_hit(event, view, ax)
@@ -5804,6 +5886,41 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 self.draw_idle()
             return
+        gizmo_drag = getattr(self, "_molecule_gizmo_drag", None)
+        if gizmo_drag is not None:
+            idx = gizmo_drag.get("idx")
+            if idx is None or idx < 0 or idx >= len(self.molecules):
+                self._molecule_gizmo_drag = None
+                return
+            if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+                return
+            mol = self.molecules[idx]
+            start_angles = gizmo_drag.get("start_angles")
+            if start_angles is None:
+                start_angles = mol.angles
+            new_angles = np.array(start_angles, dtype=float, copy=True)
+            if gizmo_drag.get("mode") == "rotate_z":
+                gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+                bbox = getattr(gizmo_ax, "bbox", None)
+                if bbox is None:
+                    return
+                center_x = float(bbox.x0 + (bbox.width * 0.5))
+                center_y = float(bbox.y0 + (bbox.height * 0.5))
+                start_local = gizmo_drag.get("start_local") or (0.0, 0.0)
+                start_angle = math.degrees(math.atan2(float(start_local[1]), float(start_local[0])))
+                current_angle = math.degrees(math.atan2(float(event.y) - center_y, float(event.x) - center_x))
+                new_angles[2] += current_angle - start_angle
+            else:
+                dx_px = float(event.x) - float(gizmo_drag["start_px"][0])
+                dy_px = float(event.y) - float(gizmo_drag["start_px"][1])
+                sensitivity = 0.45
+                new_angles[0] += dy_px * sensitivity
+                new_angles[1] += dx_px * sensitivity
+            mol.angles = new_angles
+            self._wake_molecule_gizmo(2400, redraw=False)
+            self._update_molecule_artists()
+            self._update_molecule_gizmo_overlay()
+            return
         if self._molecule_drag_idx is not None:
             if event.xdata is None or event.ydata is None:
                 return
@@ -5853,6 +5970,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._update_molecule_gizmo_overlay()
 
     def _on_molecule_release(self, event):
+        if self._molecule_gizmo_drag is not None:
+            self._molecule_gizmo_drag = None
+            return
         if self._molecule_drag_idx is not None:
             self._molecule_drag_idx = None
             self._molecule_drag_start = None
@@ -5940,6 +6060,9 @@ class MultiPreviewCanvas(FigureCanvas):
         reset_colors_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset colors")
 
         menu.addSeparator()
+        reset_file_act = menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset to file state")
+        reset_file_act.setShortcut(QtGui.QKeySequence("Shift+R"))
+        reset_file_act.setEnabled(bool(getattr(mol, "filepath", None)))
         reset_all_act = menu.addAction(icon(QtWidgets.QStyle.SP_MessageBoxWarning), "Reset all molecules")
 
         # Undo
@@ -5999,6 +6122,13 @@ class MultiPreviewCanvas(FigureCanvas):
             mol.bond_color_mode = 'default'
             mol.atom_color_map = {}
             self._redraw()
+        elif action == reset_file_act:
+            idx = None
+            try:
+                idx = self.molecules.index(mol)
+            except Exception:
+                idx = getattr(self, "_active_molecule_idx", None)
+            self._reset_molecule_to_file_state(idx)
         elif action == reset_all_act:
             self.reset_molecules()
         elif action == undo_act:
