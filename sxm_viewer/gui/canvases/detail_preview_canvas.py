@@ -38,6 +38,7 @@ from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
+from ..system_open import add_source_file_menu
 
 try:
     from scipy import ndimage
@@ -201,11 +202,13 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_palette_colors = get_color_cycle(self._profile_palette_name)
         self._profile_color_cycle = itertools.cycle(self._profile_palette_colors)
         self._line_drag_origin = None
+        self._saved_profile_drag = None
         self._active_profile_color = '#fbc02d'
         self._active_profile_lw = 2.0
         self._active_profile_line_style = "-"
         self._active_profile_marker_style = "o"
         self._active_profile_marker_size = 7.0
+        self._active_profile_original_id = None
         self._highlighted_overlay = None
         self._cids = []
         self._base_click_cid = self.mpl_connect('button_press_event', self._on_base_click)
@@ -299,6 +302,14 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_artists = []
         self._molecule_history = []
         self._molecule_drag_snapshot = False
+        self._show_molecule_gizmo = False
+        self._molecule_gizmo_until = 0.0
+        self._molecule_gizmo_axes = None
+        self._molecule_gizmo_artists = {}
+        self._molecule_gizmo_drag = None
+        self._molecule_gizmo_timer = QtCore.QTimer(self)
+        self._molecule_gizmo_timer.setSingleShot(True)
+        self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
         self._show_molecule_shadow = True
         self.show_molecules = True
         self.mpl_connect('scroll_event', self._on_scroll_zoom)
@@ -347,6 +358,24 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("show_molecules")
         self.show_molecules = show
+        self._redraw()
+        self._notify_views_callback()
+
+    def set_show_molecule_gizmo(self, show: bool):
+        """Toggle the molecule orientation gizmo."""
+        show = bool(show)
+        if show == bool(getattr(self, "_show_molecule_gizmo", False)):
+            return
+        self.push_undo_state("show_molecule_gizmo")
+        self._show_molecule_gizmo = show
+        if show:
+            self._wake_molecule_gizmo(1800, redraw=False)
+        else:
+            self._molecule_gizmo_until = 0.0
+            try:
+                self._molecule_gizmo_timer.stop()
+            except Exception:
+                pass
         self._redraw()
         self._notify_views_callback()
 
@@ -1038,6 +1067,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "show_profile_overlays": bool(self._show_profile_overlays),
             "show_angle_overlays": bool(self._show_angle_overlays),
             "show_shortcut_hint": bool(self._show_shortcut_hint),
+            "show_molecule_gizmo": bool(self._show_molecule_gizmo),
             "show_ticks": bool(self._show_ticks),
             "show_colorbar": bool(self._show_colorbar),
             "scale_bar_enabled": bool(self.scale_bar_enabled),
@@ -1096,6 +1126,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._show_profile_overlays = bool(state.get("show_profile_overlays", self._show_profile_overlays))
             self._show_angle_overlays = bool(state.get("show_angle_overlays", self._show_angle_overlays))
             self._show_shortcut_hint = bool(state.get("show_shortcut_hint", self._show_shortcut_hint))
+            self._show_molecule_gizmo = bool(state.get("show_molecule_gizmo", self._show_molecule_gizmo))
             if not self._show_shortcut_hint:
                 self._clear_shortcut_hint_artist()
             self._show_ticks = bool(state.get("show_ticks", self._show_ticks))
@@ -1274,6 +1305,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._ax_view_map = {}
         self._image_meta = {}
         self._fixed_crop_overlay_artists = {}
+        self._molecule_gizmo_axes = None
+        self._molecule_gizmo_artists = {}
         # reset zoom baselines for new axes
         self._zoom_reset_limits = {}
         self._scale_bar_artists = []
@@ -1420,6 +1453,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
             self._draw_molecules(ax)
+            if ax is self.main_ax:
+                self._draw_molecule_gizmo(ax)
             self._draw_spectra(ax)
             try:
                 self._draw_outlines(ax, v)
@@ -1619,6 +1654,247 @@ class MultiPreviewCanvas(FigureCanvas):
                 'shadow': shadow_sc,
                 'lines': lc
             })
+
+    def _active_molecule_for_gizmo(self):
+        if not self.molecules:
+            return None
+        idx = getattr(self, "_active_molecule_idx", None)
+        if isinstance(idx, int) and 0 <= idx < len(self.molecules):
+            return self.molecules[idx]
+        return self.molecules[0] if self.molecules else None
+
+    def _active_molecule_index_for_gizmo(self):
+        if not self.molecules:
+            return None
+        idx = getattr(self, "_active_molecule_idx", None)
+        if isinstance(idx, int) and 0 <= idx < len(self.molecules):
+            return idx
+        return 0
+
+    def _should_show_molecule_gizmo(self):
+        if not self.show_molecules or not self.molecules:
+            return False
+        if bool(getattr(self, "_show_molecule_gizmo", False)):
+            return True
+        return (time.perf_counter() * 1000.0) < float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0)
+
+    def _molecule_orientation_matrix(self, mol):
+        if mol is None:
+            return np.eye(3, dtype=float)
+        rads = np.radians(np.asarray(getattr(mol, "angles", [0.0, 0.0, 0.0]), dtype=float))
+        cx, cy, cz = np.cos(rads)
+        sx, sy, sz = np.sin(rads)
+        rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=float)
+        ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=float)
+        rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        mat = rz @ ry @ rx
+        if bool(getattr(mol, "mirror_x", False)):
+            mat[0, :] *= -1.0
+        if bool(getattr(mol, "mirror_y", False)):
+            mat[1, :] *= -1.0
+        return mat
+
+    def _molecule_axis_screen_vectors(self, mol):
+        mat = self._molecule_orientation_matrix(mol)
+        vectors = []
+        for idx, color in enumerate(("#ef4444", "#22c55e", "#3b82f6")):
+            vec = np.asarray(mat[:, idx], dtype=float)
+            screen = np.array([vec[0] + 0.38 * vec[2], vec[1] + 0.18 * vec[2]], dtype=float)
+            vectors.append((idx, vec, screen, color))
+        return vectors
+
+    def _molecule_gizmo_hit_test(self, event):
+        gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+        if gizmo_ax is None or not self._should_show_molecule_gizmo():
+            return None
+        if event is None or getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return None
+        bbox = getattr(gizmo_ax, "bbox", None)
+        if bbox is None or not bbox.contains(event.x, event.y):
+            return None
+        if getattr(event, "button", None) not in (1, None):
+            return None
+        width = float(getattr(bbox, "width", 0.0) or 0.0)
+        height = float(getattr(bbox, "height", 0.0) or 0.0)
+        if width <= 0.0 or height <= 0.0:
+            return None
+        local_x = ((float(event.x) - float(bbox.x0)) / width) * 2.0 - 1.0
+        local_y = ((float(event.y) - float(bbox.y0)) / height) * 2.0 - 1.0
+        radius = math.hypot(local_x, local_y)
+        if radius > 1.02:
+            return None
+        mode = "rotate_z" if radius >= 0.58 else "rotate_xy"
+        return {"mode": mode, "local": (float(local_x), float(local_y))}
+
+    def _begin_molecule_gizmo_drag(self, hit, event):
+        idx = self._active_molecule_index_for_gizmo()
+        if idx is None:
+            return False
+        if not hit or event is None or getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return False
+        try:
+            self._push_molecule_snapshot()
+        except Exception:
+            pass
+        self._active_molecule_idx = idx
+        self._molecule_gizmo_drag = {
+            "idx": idx,
+            "mode": str(hit.get("mode") or "rotate_xy"),
+            "start_px": (float(event.x), float(event.y)),
+            "start_local": tuple(hit.get("local") or (0.0, 0.0)),
+            "start_angles": np.array(self.molecules[idx].angles, dtype=float, copy=True),
+        }
+        self._wake_molecule_gizmo(2400, redraw=False)
+        self._update_molecule_gizmo_overlay()
+        return True
+
+    def _wake_molecule_gizmo(self, duration_ms: int = 1800, *, redraw: bool = True):
+        now_ms = time.perf_counter() * 1000.0
+        self._molecule_gizmo_until = max(
+            float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0),
+            now_ms + float(duration_ms),
+        )
+        try:
+            self._molecule_gizmo_timer.start(max(40, int(duration_ms)))
+        except Exception:
+            pass
+        if not redraw and self._molecule_gizmo_axes is None:
+            redraw = True
+        if redraw:
+            try:
+                self._redraw()
+            except Exception:
+                try:
+                    self.draw_idle()
+                except Exception:
+                    pass
+
+    def _on_molecule_gizmo_timeout(self):
+        if bool(getattr(self, "_show_molecule_gizmo", False)):
+            return
+        remaining = float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0) - (time.perf_counter() * 1000.0)
+        if remaining > 40.0:
+            try:
+                self._molecule_gizmo_timer.start(int(remaining))
+            except Exception:
+                pass
+            return
+        self._molecule_gizmo_until = 0.0
+        if self._molecule_gizmo_axes is not None:
+            self._redraw()
+
+    def _update_molecule_gizmo_overlay(self):
+        gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+        artists = getattr(self, "_molecule_gizmo_artists", {}) or {}
+        if gizmo_ax is None or not artists:
+            return False
+        mol = self._active_molecule_for_gizmo()
+        if mol is None or not self._should_show_molecule_gizmo():
+            return False
+        vectors = self._molecule_axis_screen_vectors(mol)
+        norms = [max(0.22, float(np.linalg.norm(screen))) for _, _, screen, _ in vectors]
+        scale = 0.74 / max(norms or [1.0])
+        for order, (idx, vec, screen, _color) in enumerate(sorted(vectors, key=lambda item: float(item[1][2]))):
+            arrow = artists.get(f"arrow_{idx}")
+            label = artists.get(f"label_{idx}")
+            if arrow is None or label is None:
+                continue
+            end = screen * scale
+            label_pos = screen * min(scale * 1.14, 0.92)
+            alpha = 0.45 + 0.45 * ((float(vec[2]) + 1.0) * 0.5)
+            try:
+                arrow.set_positions((0.0, 0.0), (float(end[0]), float(end[1])))
+                arrow.set_alpha(alpha)
+                arrow.set_zorder(3 + order)
+                label.set_position((float(label_pos[0]), float(label_pos[1])))
+                label.set_alpha(max(0.68, alpha))
+                label.set_zorder(6 + order)
+            except Exception:
+                continue
+        try:
+            gizmo_ax.figure.canvas.draw_idle()
+        except Exception:
+            pass
+        return True
+
+    def _draw_molecule_gizmo(self, ax):
+        if ax is None or not self._should_show_molecule_gizmo():
+            self._molecule_gizmo_axes = None
+            self._molecule_gizmo_artists = {}
+            return
+        mol = self._active_molecule_for_gizmo()
+        if mol is None:
+            self._molecule_gizmo_axes = None
+            self._molecule_gizmo_artists = {}
+            return
+
+        gizmo_ax = ax.inset_axes([0.02, 0.72, 0.16, 0.16], zorder=36)
+        gizmo_ax.set_facecolor((0.0, 0.0, 0.0, 0.0))
+        gizmo_ax.set_xticks([])
+        gizmo_ax.set_yticks([])
+        gizmo_ax.set_xlim(-1.0, 1.0)
+        gizmo_ax.set_ylim(-1.0, 1.0)
+        for spine in gizmo_ax.spines.values():
+            spine.set_visible(False)
+
+        dark = bool(getattr(self, "_detail_dark", False))
+        ring_edge = "#d7dde7" if dark else "#334155"
+        bg_face = (0.04, 0.06, 0.10, 0.42) if dark else (1.0, 1.0, 1.0, 0.74)
+        ring = patches.Circle((0.0, 0.0), 0.94, facecolor=bg_face, edgecolor=ring_edge, linewidth=1.0, zorder=1)
+        core = patches.Circle((0.0, 0.0), 0.06, facecolor=ring_edge, edgecolor="none", alpha=0.92, zorder=7)
+        gizmo_ax.add_patch(ring)
+        gizmo_ax.add_patch(core)
+
+        artists = {"ring": ring, "core": core}
+        for idx, (label_text, color) in enumerate((("X", "#ef4444"), ("Y", "#22c55e"), ("Z", "#3b82f6"))):
+            arrow = patches.FancyArrowPatch(
+                (0.0, 0.0),
+                (0.0, 0.0),
+                arrowstyle="-|>",
+                mutation_scale=10.5,
+                linewidth=2.2,
+                color=color,
+                alpha=0.92,
+                zorder=4,
+            )
+            gizmo_ax.add_patch(arrow)
+            label = gizmo_ax.text(
+                0.0,
+                0.0,
+                label_text,
+                color=color,
+                fontsize=8.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=8,
+            )
+            artists[f"arrow_{idx}"] = arrow
+            artists[f"label_{idx}"] = label
+
+        self._molecule_gizmo_axes = gizmo_ax
+        self._molecule_gizmo_artists = artists
+        self._update_molecule_gizmo_overlay()
+
+    def _reset_molecule_to_file_state(self, idx=None, *, keep_offset: bool = True):
+        if idx is None:
+            idx = self._active_molecule_index_for_gizmo()
+        if idx is None or idx < 0 or idx >= len(self.molecules):
+            return False
+        try:
+            current = self.molecules[idx]
+        except Exception:
+            return False
+        try:
+            new_mol = current.reset_to_file_state(keep_offset=keep_offset)
+        except Exception:
+            return False
+        self._push_molecule_snapshot()
+        self.molecules[idx] = new_mol
+        self._active_molecule_idx = idx
+        self._wake_molecule_gizmo(2400, redraw=False)
+        self._redraw()
+        return True
 
     def _draw_spectra(self, ax):
         view = self._ax_view_map.get(ax, {})
@@ -2240,6 +2516,7 @@ class MultiPreviewCanvas(FigureCanvas):
             'active_line_style': self._active_profile_line_style,
             'active_marker_style': self._active_profile_marker_style,
             'active_marker_size': float(self._active_profile_marker_size),
+            'active_profile_original_id': self._active_profile_original_id,
             'marker_key': self._profile_marker_key,
             'marker_positions_by_key': dict(self._profile_marker_positions_by_key),
             'marker_domain_by_key': dict(self._profile_marker_domain_by_key),
@@ -2257,6 +2534,8 @@ class MultiPreviewCanvas(FigureCanvas):
             marker_size=self._active_profile_marker_size,
             live_profile_ref=self._profile_live_ref(None),
         )
+        if isinstance(active, dict) and self._active_profile_original_id:
+            active["profile_id"] = str(self._active_profile_original_id)
         saved = []
         for entry in self._saved_profiles:
             data = entry.get('data')
@@ -2270,9 +2549,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     marker_size=entry.get('marker_size'),
                     live_profile_ref=self._profile_live_ref(entry=entry),
                 )
+                if isinstance(data, dict):
+                    data["profile_id"] = str(self._ensure_saved_profile_id(entry))
                 entry['data'] = data
             elif isinstance(data, dict):
                 data['live_profile_ref'] = self._profile_live_ref(entry=entry)
+                data["profile_id"] = str(self._ensure_saved_profile_id(entry))
             if data:
                 saved.append(data)
         return active, saved
@@ -2321,6 +2603,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 )
             except Exception:
                 pass
+            original_id = state.get('active_profile_original_id')
+            self._active_profile_original_id = str(original_id).strip() if original_id else None
             marker_key = state.get('marker_key')
             if marker_key in ("null", "None", ""):
                 marker_key = None
@@ -2891,6 +3175,8 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         if self._rotate_selected_molecule_from_key(key, reverse=shift):
             return True
+        if shift and key == QtCore.Qt.Key_R:
+            return self._reset_molecule_to_file_state()
         if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
             setter = getattr(self, "_popup_relative_zero_setter", None)
             if callable(setter):
@@ -2922,6 +3208,8 @@ class MultiPreviewCanvas(FigureCanvas):
             new_angles[axis] += -5.0 if reverse else 5.0
             mol.angles = new_angles
             self._update_molecule_artists()
+            self._wake_molecule_gizmo(2200, redraw=False)
+            self._update_molecule_gizmo_overlay()
         except Exception:
             return False
         return True
@@ -3537,6 +3825,26 @@ class MultiPreviewCanvas(FigureCanvas):
             self.push_undo_state("activate_profile")
         entry = self._saved_profiles.pop(idx)
         self._active_profile_original_color = entry.get('color')
+        self._active_profile_original_id = str(self._ensure_saved_profile_id(entry))
+        entry_color = entry.get('color')
+        if entry_color:
+            self._active_profile_color = str(entry_color)
+        try:
+            self._active_profile_lw = float(entry.get('lw', self._active_profile_lw))
+        except Exception:
+            pass
+        self._active_profile_line_style = self._normalize_profile_line_style(
+            entry.get('line_style'),
+            self._active_profile_line_style,
+        )
+        self._active_profile_marker_style = self._normalize_profile_marker_style(
+            entry.get('marker_style'),
+            self._active_profile_marker_style,
+        )
+        try:
+            self._active_profile_marker_size = float(entry.get('marker_size', self._active_profile_marker_size))
+        except Exception:
+            pass
         if self._profile_marker_positions_by_key:
             new_map = {}
             new_domain = {}
@@ -3717,14 +4025,15 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.profile_pts is None or self.main_ax is None:
             self._remove_profile_markers()
             return
+        color = self._active_profile_color or '#fbc02d'
         
         # Reuse existing artists if possible
         if self._profile_ticks is not None and self._profile_info_text is not None:
             self._remove_profile_markers() # Fallback to recreate if complex update needed, or optimize further
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
         else:
             self._remove_profile_markers()
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color='yellow', alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
             
         self._profile_ticks = ticks
         self._profile_info_text = text
@@ -4102,6 +4411,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("snapshot_profile")
         pts = tuple(self.profile_pts)
+        original_profile_id = str(self._active_profile_original_id or "").strip() or None
         if self._active_profile_original_color:
             color = self._active_profile_original_color
             self._active_profile_original_color = None
@@ -4176,11 +4486,12 @@ class MultiPreviewCanvas(FigureCanvas):
             marker_style=marker_style,
             marker_size=marker_size,
         )
-        profile_id = self._next_saved_profile_id()
+        profile_id = original_profile_id or self._next_saved_profile_id()
         entry = {'artists': artists, 'pts': pts, 'color': color, 'data': data,
                  'overlay_label_artist': overlay_label, 'endpoint_labels': endpoint_labels, 'lw': lw,
                  'line_style': line_style, 'marker_style': marker_style, 'marker_size': marker_size,
                  'line_artist': line, 'endpoint_artist': endpoints, 'profile_id': profile_id}
+        self._active_profile_original_id = None
         if isinstance(data, dict):
             data['live_profile_ref'] = self._profile_live_ref(entry=entry)
         if text is not None:
@@ -4310,6 +4621,148 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 continue
         return None
+
+    def _saved_profile_hit(self, x, y, thresh=18.0):
+        if x is None or y is None or not self._saved_profiles:
+            return None
+        for idx in reversed(range(len(self._saved_profiles))):
+            entry = self._saved_profiles[idx]
+            pts = entry.get('pts')
+            if pts is None:
+                continue
+            try:
+                x0, y0, x1, y1 = pts
+                d0 = self._pt_distance_pixels(x, y, x0, y0)
+                d1 = self._pt_distance_pixels(x, y, x1, y1)
+                if d0 <= thresh or d1 <= thresh:
+                    return {"idx": idx, "mode": "p0" if d0 <= d1 else "p1"}
+                dist_line = self._distance_to_segment_pixels(x, y, pts)
+                if dist_line <= thresh:
+                    return {"idx": idx, "mode": "line"}
+            except Exception:
+                continue
+        return None
+
+    def _select_saved_profile_overlay(self, idx):
+        if idx is None or idx < 0 or idx >= len(self._saved_profiles):
+            self.highlight_saved_profile(None)
+            if callable(self._profile_highlight_cb):
+                try:
+                    self._profile_highlight_cb(None)
+                except Exception:
+                    pass
+            return
+        self.highlight_saved_profile(idx)
+        if callable(self._profile_highlight_cb):
+            try:
+                self._profile_highlight_cb(idx)
+            except Exception:
+                pass
+        self.set_profile_marker_key(idx)
+
+    def _rebuild_saved_profile_entry(self, idx, pts, *, redraw=True):
+        if idx < 0 or idx >= len(self._saved_profiles) or self.main_ax is None or pts is None:
+            return False
+        prev = self._saved_profiles[idx]
+        for art in prev.get('artists', []):
+            try:
+                if art is not None:
+                    art.remove()
+            except Exception:
+                pass
+        pts = tuple(pts)
+        color = prev.get('color') or '#ffffff'
+        lw = float(prev.get('lw', 1.5) or 1.5)
+        line_style = self._normalize_profile_line_style(prev.get('line_style'), '--')
+        marker_style = self._normalize_profile_marker_style(prev.get('marker_style'), 'o')
+        marker_size = float(prev.get('marker_size', 5.0) or 5.0)
+        line, = self.main_ax.plot(
+            [pts[0], pts[2]], [pts[1], pts[3]],
+            color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style
+        )
+        endpoints, = self.main_ax.plot(
+            [pts[0], pts[2]], [pts[1], pts[3]],
+            marker=marker_style, linestyle='None', color=color,
+            ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7
+        )
+        artists = [line, endpoints]
+        for ax in self._ax_view_map:
+            if ax is self.main_ax:
+                continue
+            try:
+                l, = ax.plot(
+                    [pts[0], pts[2]], [pts[1], pts[3]],
+                    color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style
+                )
+                ep, = ax.plot(
+                    [pts[0], pts[2]], [pts[1], pts[3]],
+                    marker=marker_style, linestyle='None', color=color,
+                    ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7
+                )
+                artists.extend([l, ep])
+            except Exception:
+                pass
+        base_size = int(prev.get('label_base_size', 8) or 8)
+        ticks, text = self._create_ticks_and_label(pts, color=color, alpha=0.7, base_size=base_size)
+        overlay_label = self._create_profile_id_label(pts, f"Overlay {idx + 1}", color)
+        endpoint_labels = self._create_endpoint_labels(pts, color)
+        if overlay_label is not None:
+            try:
+                overlay_label.set_visible(False)
+            except Exception:
+                pass
+            artists.append(overlay_label)
+        for lbl in endpoint_labels:
+            try:
+                lbl.set_visible(False)
+            except Exception:
+                pass
+        if ticks is not None:
+            artists.append(ticks)
+        if text is not None:
+            artists.append(text)
+        artists += endpoint_labels
+        data = self._build_profile_data(
+            pts,
+            color=color,
+            lw=lw,
+            line_style=line_style,
+            marker_style=marker_style,
+            marker_size=marker_size,
+            live_profile_ref=self._profile_live_ref(entry=prev),
+        )
+        if isinstance(data, dict):
+            data["profile_id"] = str(self._ensure_saved_profile_id(prev))
+        entry = {
+            'artists': artists,
+            'pts': pts,
+            'color': color,
+            'data': data,
+            'overlay_label_artist': overlay_label,
+            'endpoint_labels': endpoint_labels,
+            'lw': lw,
+            'line_style': line_style,
+            'marker_style': marker_style,
+            'marker_size': marker_size,
+            'line_artist': line,
+            'endpoint_artist': endpoints,
+            'profile_id': self._ensure_saved_profile_id(prev),
+        }
+        if text is not None:
+            entry['label_artist'] = text
+            entry['label_base_size'] = base_size
+        self._saved_profiles[idx] = entry
+        self._refresh_overlay_labels()
+        if self._highlighted_overlay is not None:
+            self.highlight_saved_profile(self._highlighted_overlay)
+        else:
+            self._apply_profile_visibility()
+        if self._profile_marker_key == idx:
+            self._update_profile_marker_artists()
+            self._update_profile_hud()
+        if redraw:
+            self.draw_idle()
+        return True
 
     def _undo_last_profile_snapshot(self):
         if not self._saved_profiles:
@@ -4502,6 +4955,18 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_marker_drag_idx = marker_idx
             self._dragging = None
             return
+        saved_hit = self._saved_profile_hit(x, y)
+        if saved_hit is not None:
+            overlay_idx = int(saved_hit.get("idx"))
+            self._select_saved_profile_overlay(overlay_idx)
+            self.push_undo_state("move_saved_profile")
+            self._saved_profile_drag = {
+                "idx": overlay_idx,
+                "mode": str(saved_hit.get("mode") or "line"),
+                "origin": tuple(self._saved_profiles[overlay_idx].get("pts") or (x, y, x, y)),
+                "start": (x, y),
+            }
+            return
         if self.profile_pts is None:
             if not ctrl_pressed:
                 return
@@ -4547,29 +5012,10 @@ class MultiPreviewCanvas(FigureCanvas):
         # Increased threshold to 15.0 to prevent accidental "misses" causing profile loss
         overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
         if overlay_idx is not None:
-            if self.profile_pts is not None:
-                self._snapshot_active_profile()
-            else:
-                self.push_undo_state("activate_profile")
-            activated = self.activate_saved_profile(overlay_idx, push_undo=False)
-            if activated:
-                if callable(self._profile_highlight_cb):
-                    try:
-                        self._profile_highlight_cb(None)
-                    except Exception:
-                        pass
-                x0, y0, x1, y1 = self.profile_pts
-                return
-            else:
-                self.highlight_saved_profile(overlay_idx)
-                if callable(self._profile_highlight_cb):
-                    try:
-                        self._profile_highlight_cb(overlay_idx)
-                    except Exception:
-                        pass
-                self._dragging = None
-                self._line_drag_origin = None
-                return
+            self._select_saved_profile_overlay(overlay_idx)
+            self._dragging = None
+            self._line_drag_origin = None
+            return
         # else: start a new line from here
         if not ctrl_pressed:
             return
@@ -4580,6 +5026,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._profile_move_only:
             return
         self._active_profile_original_color = None
+        self._active_profile_original_id = None
         self._set_profile_pts((x, y, x, y))
         self._dragging = 'p1'
         self._line_drag_origin = None
@@ -4836,6 +5283,28 @@ class MultiPreviewCanvas(FigureCanvas):
         x, y = event.xdata, event.ydata
         if x is None or y is None:
             return
+        if self._saved_profile_drag is not None:
+            drag = self._saved_profile_drag
+            idx = drag.get("idx")
+            if idx is None or idx < 0 or idx >= len(self._saved_profiles):
+                self._saved_profile_drag = None
+                return
+            pts = drag.get("origin") or self._saved_profiles[idx].get("pts")
+            if pts is None:
+                return
+            x0, y0, x1, y1 = pts
+            mode = drag.get("mode")
+            if mode == "p0":
+                new_pts = (x, y, x1, y1)
+            elif mode == "p1":
+                new_pts = (x0, y0, x, y)
+            else:
+                sx, sy = drag.get("start", (x, y))
+                dx = x - sx
+                dy = y - sy
+                new_pts = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._rebuild_saved_profile_entry(idx, new_pts, redraw=True)
+            return
         if self._profile_marker_drag_idx is not None:
             if not self._profile_marker_domain or self._profile_marker_positions is None:
                 return
@@ -4891,6 +5360,10 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_release(self, event):
         if not (self.profile_enabled or self._profile_move_only):
             return
+        if self._saved_profile_drag is not None:
+            self._saved_profile_drag = None
+            self._emit_profile()
+            return
         self._dragging = None
         self._set_profile_animated(False)
         self._reset_profile_blit()
@@ -4908,6 +5381,24 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_quick_transient = False
             self._profile_user_enabled = False
             self._profile_move_only = self.profile_pts is not None
+
+    def _profile_hit_test(self, event, *, thresh: float = 18.0):
+        if event is None or event.inaxes is not self.main_ax:
+            return False
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return False
+        if self._profile_marker_hit(x, y) is not None:
+            return True
+        if self.profile_pts is not None:
+            x0, y0, x1, y1 = self.profile_pts
+            if self._pt_distance_pixels(x, y, x0, y0) <= thresh:
+                return True
+            if self._pt_distance_pixels(x, y, x1, y1) <= thresh:
+                return True
+            if self._distance_to_segment_pixels(x, y, self.profile_pts) <= thresh:
+                return True
+        return self._overlay_index_near(x, y, thresh=15.0) is not None
 
     def _profile_animation_artists(self):
         artists = [
@@ -5111,6 +5602,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 marker_size=self._active_profile_marker_size,
                 live_profile_ref=self._profile_live_ref(None),
             )
+            if isinstance(active, dict) and self._active_profile_original_id:
+                active["profile_id"] = str(self._active_profile_original_id)
         if active:
             ref = active.get('x_nm') if active.get('x_nm') is not None else active.get('x_px')
             if ref is not None:
@@ -5160,9 +5653,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     marker_size=entry.get('marker_size'),
                     live_profile_ref=self._profile_live_ref(entry=entry),
                 )
+                if isinstance(data, dict):
+                    data["profile_id"] = str(self._ensure_saved_profile_id(entry))
                 entry['data'] = data
             elif isinstance(data, dict):
                 data['live_profile_ref'] = self._profile_live_ref(entry=entry)
+                data["profile_id"] = str(self._ensure_saved_profile_id(entry))
             if data:
                 saved_data.append(data)
         try:
@@ -5225,8 +5721,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     return
         if self.scale_bar_enabled and self._scale_bar_drag_start is not None:
             return
+        gizmo_hit = self._molecule_gizmo_hit_test(event)
+        if gizmo_hit is not None:
+            self._begin_molecule_gizmo_drag(gizmo_hit, event)
+            return
         ax = event.inaxes
         view = self._ax_view_map.get(ax)
+        if ax is getattr(self, "_molecule_gizmo_axes", None):
+            return
         if self._fixed_crop_transform_mode and event.button == 1 and view is not None:
             mods_qt = self._event_qt_modifiers(event)
             hit = self._fixed_crop_template_handle_hit(event, view, ax)
@@ -5522,10 +6024,13 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
 
     def _check_molecule_hit(self, event):
-        # When measurement tools are active, avoid picking/dragging molecules to prevent accidental moves.
-        if self.profile_enabled or self.angle_enabled:
+        # Angle editing has exclusive ownership of the canvas.
+        if self.angle_enabled:
             return False
         if not self.show_molecules or not self.molecules or event.inaxes is None:
+            return False
+        # If the pointer is actually on a profile, let the profile tool win.
+        if self._profile_hit_test(event):
             return False
         
         # Simple hit test: check distance to any atom in any molecule
@@ -5550,6 +6055,7 @@ class MultiPreviewCanvas(FigureCanvas):
             # Threshold: 0.5 nm radius click tolerance
             if min_dist < 0.25: 
                 self._active_molecule_idx = idx
+                self._wake_molecule_gizmo(2200, redraw=False)
                 if event.button == 1 or event.button == 2:
                     if not self._molecule_drag_snapshot:
                         self._push_molecule_snapshot()
@@ -5570,7 +6076,7 @@ class MultiPreviewCanvas(FigureCanvas):
                         self._molecule_drag_mode = 'rotate_z'
                     else:
                         self._molecule_drag_mode = 'translate'
-                        
+                    self._update_molecule_gizmo_overlay()
                     return True
                 elif event.button == 3:
                     self._show_molecule_menu(event, mol)
@@ -5602,10 +6108,46 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 self.draw_idle()
             return
+        gizmo_drag = getattr(self, "_molecule_gizmo_drag", None)
+        if gizmo_drag is not None:
+            idx = gizmo_drag.get("idx")
+            if idx is None or idx < 0 or idx >= len(self.molecules):
+                self._molecule_gizmo_drag = None
+                return
+            if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+                return
+            mol = self.molecules[idx]
+            start_angles = gizmo_drag.get("start_angles")
+            if start_angles is None:
+                start_angles = mol.angles
+            new_angles = np.array(start_angles, dtype=float, copy=True)
+            if gizmo_drag.get("mode") == "rotate_z":
+                gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
+                bbox = getattr(gizmo_ax, "bbox", None)
+                if bbox is None:
+                    return
+                center_x = float(bbox.x0 + (bbox.width * 0.5))
+                center_y = float(bbox.y0 + (bbox.height * 0.5))
+                start_local = gizmo_drag.get("start_local") or (0.0, 0.0)
+                start_angle = math.degrees(math.atan2(float(start_local[1]), float(start_local[0])))
+                current_angle = math.degrees(math.atan2(float(event.y) - center_y, float(event.x) - center_x))
+                new_angles[2] += current_angle - start_angle
+            else:
+                dx_px = float(event.x) - float(gizmo_drag["start_px"][0])
+                dy_px = float(event.y) - float(gizmo_drag["start_px"][1])
+                sensitivity = 0.45
+                new_angles[0] += dy_px * sensitivity
+                new_angles[1] += dx_px * sensitivity
+            mol.angles = new_angles
+            self._wake_molecule_gizmo(2400, redraw=False)
+            self._update_molecule_artists()
+            self._update_molecule_gizmo_overlay()
+            return
         if self._molecule_drag_idx is not None:
             if event.xdata is None or event.ydata is None:
                 return
             mol = self.molecules[self._molecule_drag_idx]
+            self._wake_molecule_gizmo(2200, redraw=False)
             
             if self._molecule_drag_mode == 'translate':
                 dx = event.xdata - self._molecule_drag_start[0]
@@ -5647,8 +6189,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._molecule_rotation_guide.center = (mol.offset[0], mol.offset[1])
 
             self._update_molecule_artists()
+            self._update_molecule_gizmo_overlay()
 
     def _on_molecule_release(self, event):
+        if self._molecule_gizmo_drag is not None:
+            self._molecule_gizmo_drag = None
+            return
         if self._molecule_drag_idx is not None:
             self._molecule_drag_idx = None
             self._molecule_drag_start = None
@@ -5736,6 +6282,9 @@ class MultiPreviewCanvas(FigureCanvas):
         reset_colors_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset colors")
 
         menu.addSeparator()
+        reset_file_act = menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset to file state")
+        reset_file_act.setShortcut(QtGui.QKeySequence("Shift+R"))
+        reset_file_act.setEnabled(bool(getattr(mol, "filepath", None)))
         reset_all_act = menu.addAction(icon(QtWidgets.QStyle.SP_MessageBoxWarning), "Reset all molecules")
 
         # Undo
@@ -5795,6 +6344,13 @@ class MultiPreviewCanvas(FigureCanvas):
             mol.bond_color_mode = 'default'
             mol.atom_color_map = {}
             self._redraw()
+        elif action == reset_file_act:
+            idx = None
+            try:
+                idx = self.molecules.index(mol)
+            except Exception:
+                idx = getattr(self, "_active_molecule_idx", None)
+            self._reset_molecule_to_file_state(idx)
         elif action == reset_all_act:
             self.reset_molecules()
         elif action == undo_act:
@@ -5989,6 +6545,9 @@ class MultiPreviewCanvas(FigureCanvas):
         hint_act = display_menu.addAction("Show Shortcut Hint")
         hint_act.setCheckable(True)
         hint_act.setChecked(bool(self._show_shortcut_hint))
+        gizmo_act = display_menu.addAction("Show Molecule Gizmo")
+        gizmo_act.setCheckable(True)
+        gizmo_act.setChecked(bool(getattr(self, "_show_molecule_gizmo", False)))
         frame_fill_act = display_menu.addAction("Frame fill")
         frame_fill_act.setCheckable(True)
         frame_fill_act.setChecked(bool(self._frame_fill_mode))
@@ -6134,6 +6693,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if callable(self._collection_help_callback):
                 collection_menu.addSeparator()
                 collection_help_act = collection_menu.addAction("How Collections Work")
+
+        source_meta = dict((view or {}).get("meta") or {})
+        source_path = str((view or {}).get("path") or source_meta.get("path") or source_meta.get("file_path") or "").strip()
+        add_source_file_menu(menu, source_path, self)
 
         compare_set_a_act = None
         compare_set_b_act = None
@@ -6306,6 +6869,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
         elif chosen == hint_act:
             self.set_show_shortcut_hint(hint_act.isChecked())
+        elif chosen == gizmo_act:
+            self.set_show_molecule_gizmo(gizmo_act.isChecked())
         elif chosen == frame_fill_act:
             self.set_frame_fill_mode(frame_fill_act.isChecked())
             self._notify_views_callback()
@@ -7098,7 +7663,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._clear_shortcut_hint_artist()
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
-        hint = "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | click molecule then X/Y/Z rotate | Ctrl+1/2/3 saved overlays | click to hide"
+        hint = (
+            "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | "
+            "click molecule then X/Y/Z rotate, Shift+X/Y/Z reverse | Shift+drag mol = Z rotate | "
+            "Ctrl+Shift+drag or middle-drag mol = 3D rotate | Ctrl+1/2/3 saved overlays | click to hide"
+        )
         hint_artist = ax.text(
             0.012,
             0.012,
@@ -8851,6 +9420,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 }
         except Exception:
             pass
+
         seq = entry.get("sequence")
         if seq is not None:
             new_view["crop_sequence"] = seq

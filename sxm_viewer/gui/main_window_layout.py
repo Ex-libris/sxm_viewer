@@ -62,6 +62,22 @@ def create_lower_controls(viewer):
         viewer.mode_buttons[mode] = btn
         mode_layout.addWidget(btn)
     top_row.addWidget(mode_widget)
+    viewer.browse_molecules_btn = _configure_compact_control(QtWidgets.QToolButton(frame))
+    viewer.browse_molecules_btn.setObjectName("modeAccessoryButton")
+    viewer.browse_molecules_btn.setText("Molecules")
+    viewer.browse_molecules_btn.setCheckable(True)
+    viewer.browse_molecules_btn.setChecked(bool(getattr(viewer, "show_molecules", True)))
+    viewer.browse_molecules_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+    viewer.browse_molecules_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+    viewer.browse_molecules_btn.setToolTip(
+        "Toggle molecule overlays. Use the arrow for load, recent, clear, and palette options. "
+        "Click a molecule, then use X/Y/Z to rotate; Shift+X/Y/Z rotates the opposite way."
+    )
+    viewer.browse_molecules_btn.toggled.connect(viewer.on_show_molecules_toggled)
+    viewer.browse_molecules_menu = QtWidgets.QMenu(viewer.browse_molecules_btn)
+    viewer.browse_molecules_menu.aboutToShow.connect(viewer._populate_browse_molecules_menu)
+    viewer.browse_molecules_btn.setMenu(viewer.browse_molecules_menu)
+    top_row.addWidget(viewer.browse_molecules_btn)
     top_row.addStretch(1)
     layout.addLayout(top_row)
 
@@ -183,6 +199,20 @@ def _ensure_display_menu(viewer):
     viewer.molecules_act.setChecked(getattr(viewer, "show_molecules", True))
     viewer.molecules_act.setToolTip("Toggle molecular overlays in the preview")
     viewer.molecules_act.toggled.connect(viewer.on_show_molecules_toggled)
+    viewer.display_molecule_gizmo_act = viewer.display_menu.addAction("Molecule gizmo")
+    viewer.display_molecule_gizmo_act.setCheckable(True)
+    viewer.display_molecule_gizmo_act.setChecked(bool(getattr(viewer, "show_molecule_gizmo", False)))
+    viewer.display_molecule_gizmo_act.setToolTip("Show a small orientation gizmo for the active molecule")
+    viewer.display_molecule_gizmo_act.toggled.connect(
+        lambda checked: viewer._apply_canvas_display_options(
+            {
+                **viewer._canvas_display_state_from_canvas(getattr(viewer, "preview_canvas", None)),
+                "show_molecule_gizmo": bool(checked),
+            },
+            source_canvas=getattr(viewer, "preview_canvas", None),
+            persist=True,
+        )
+    )
     viewer.acquisition_overlay_act = viewer.display_menu.addAction("Show acquisition overlay")
     viewer.acquisition_overlay_act.setCheckable(True)
     viewer.acquisition_overlay_act.setChecked(getattr(viewer, "show_acquisition_overlay", False))
@@ -331,6 +361,7 @@ def build_display_widget(viewer, parent):
 def apply_lower_control_theme(viewer):
     frame = getattr(viewer, "lower_control_frame", None)
     mode_widget = getattr(viewer, "mode_selector_widget", None)
+    molecules_btn = getattr(viewer, "browse_molecules_btn", None)
     if frame is None:
         return
     dark = bool(getattr(viewer, "dark_mode", False))
@@ -349,6 +380,19 @@ def apply_lower_control_theme(viewer):
     frame.setStyleSheet(lower_control_frame_style(border, bg))
     if mode_widget is not None:
         mode_widget.setStyleSheet(mode_selector_style(mode_border, mode_text, mode_checked))
+    if molecules_btn is not None:
+        molecules_btn.setStyleSheet(
+            "QToolButton#modeAccessoryButton {"
+            f" border: 1px solid {mode_border};"
+            " padding: 6px 12px;"
+            " background: transparent;"
+            f" color: {mode_text};"
+            "}"
+            "QToolButton#modeAccessoryButton:checked {"
+            f" background: {mode_checked};"
+            " color: #ffffff;"
+            "}"
+        )
 
 
 def create_shortcuts_panel(viewer):

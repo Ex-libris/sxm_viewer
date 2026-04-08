@@ -325,6 +325,31 @@ class Molecule:
         new_mol.z_height_scale = self.z_height_scale
         return new_mol
 
+    def reset_to_file_state(self, *, keep_offset: bool = True) -> "Molecule":
+        """Return a fresh molecule built from its source file or raw geometry.
+
+        This resets rotation, scale, mirrors, colors, and render overrides.
+        When ``keep_offset`` is true, the current on-canvas placement is
+        preserved so users can reset orientation without losing position.
+        """
+        preserved_offset = self.offset.copy()
+        if isinstance(self.filepath, (str, Path)) and str(self.filepath).strip():
+            new_mol = Molecule(self.filepath)
+            if len(new_mol.coordinates) == 0 and len(self.coordinates) > 0:
+                raise ValueError(f"Failed to reload molecule from {self.filepath}")
+        else:
+            new_mol = Molecule()
+            new_mol.filepath = self.filepath
+            new_mol.coordinates = np.asarray(self.coordinates, dtype=float).copy()
+            new_mol.elements = list(self.elements or [])
+            if len(new_mol.coordinates) > 0:
+                center = np.mean(new_mol.coordinates, axis=0)
+                new_mol.coordinates -= center
+            new_mol.recalculate_bonds()
+        if keep_offset:
+            new_mol.offset = preserved_offset
+        return new_mol
+
     def to_dict(self) -> dict:
         return {
             "filepath": str(self.filepath) if self.filepath else None,

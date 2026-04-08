@@ -98,6 +98,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
+from .canvases.molecular_overlay import available_atom_palettes
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
@@ -105,6 +106,7 @@ from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
+from .system_open import add_source_file_menu
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
@@ -403,6 +405,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
         self.show_molecules = bool(self.config.get('show_molecules', True))
+        self.show_molecule_gizmo = bool(self.config.get("show_molecule_gizmo", False))
         self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
         self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
         if self.profile_label_mode not in {"length", "full", "hidden"}:
@@ -428,6 +431,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             'detail_dark_view': bool(self.dark_mode),
             'detail_grid_view': False,
             'show_molecules': True,
+            'show_molecule_gizmo': False,
             'show_acquisition_overlay': False,
             'profile_label_mode': "length",
             'show_crop_template_overlay': False,
@@ -612,7 +616,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_spectro_preview_btn = None
         self.toolbar_spectro_miniatures_btn = None
         self.preview_spectra_toggle_btn = None
+        self.browse_molecules_btn = None
+        self.browse_molecules_menu = None
         self.preview_molecules_toggle_btn = None
+        self.display_molecule_gizmo_act = None
         self.preview_grid_toggle_btn = None
         self.preview_adjust_btn = None
         self._canvas_window = None
@@ -1068,7 +1075,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_molecules_toggle_btn.setText("Mol")
         self.preview_molecules_toggle_btn.setCheckable(True)
         self.preview_molecules_toggle_btn.setChecked(self.show_molecules)
-        self.preview_molecules_toggle_btn.setToolTip("Show or hide molecular overlays on the preview and pop-outs")
+        self.preview_molecules_toggle_btn.setToolTip(
+            "Show or hide molecular overlays on the preview and pop-outs. "
+            "Click a molecule, then use X/Y/Z to rotate; Shift+X/Y/Z rotates the opposite way."
+        )
         self.preview_molecules_toggle_btn.toggled.connect(self.on_show_molecules_toggled)
         self.preview_grid_toggle_btn = QtWidgets.QToolButton()
         self.preview_grid_toggle_btn.setText("Grid")
@@ -1279,6 +1289,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         try:
             self.preview_canvas.set_show_molecules(self.show_molecules)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_show_molecule_gizmo(self.show_molecule_gizmo)
         except Exception:
             pass
         try:
@@ -1919,6 +1933,7 @@ QLabel:hover {{
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
+            (getattr(self, 'display_molecule_gizmo_act', None), defaults.get('show_molecule_gizmo', False)),
             (getattr(self, 'acquisition_overlay_act', None), defaults.get('show_acquisition_overlay', False)),
             (getattr(self, 'crop_template_act', None), defaults.get('show_crop_template_overlay', False)),
             (getattr(self, 'crop_history_act', None), defaults.get('show_crop_history_overlay', False)),
@@ -2184,6 +2199,7 @@ QLabel:hover {{
                 canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
                 canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
                 canvas.show_molecules = bool(display.get("show_molecules", getattr(canvas, "show_molecules", True)))
+                canvas._show_molecule_gizmo = bool(display.get("show_molecule_gizmo", getattr(canvas, "_show_molecule_gizmo", False)))
                 desired_scale_bar = bool(display.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False)))
                 current_scale_bar = bool(getattr(canvas, "scale_bar_enabled", False))
                 canvas.scale_bar_enabled = desired_scale_bar
@@ -2378,7 +2394,7 @@ QLabel:hover {{
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
-            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Ctrl+1/2/3 saved overlays</li>"
+            "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Shift+drag rotates around Z, Ctrl+Shift+drag or middle-drag rotates in 3D, Ctrl+1/2/3 saved overlays</li>"
             "<li><b>Ctrl+S</b> = save current session | <b>Ctrl+Z</b> = reopen last closed window (when no other undo applies)</li>"
             "<li><b>Ctrl+Shift+M</b> = minimize all open pop-outs</li>"
             "</ul>"
@@ -4070,6 +4086,74 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
+
+    def _load_recent_molecule(self, path):
+        if not self.preview_canvas or not path:
+            return
+        try:
+            self.preview_canvas.add_molecule(path)
+            self.on_show_molecules_toggled(True)
+            self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
+        except Exception:
+            pass
+
+    def _clear_preview_molecules(self):
+        if not self.preview_canvas:
+            return
+        try:
+            self.preview_canvas.reset_molecules()
+        except Exception:
+            try:
+                self.preview_canvas._clear_molecules()
+            except Exception:
+                pass
+
+    def _populate_browse_molecules_menu(self):
+        menu = getattr(self, "browse_molecules_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.clear()
+        except Exception:
+            return
+
+        show_act = menu.addAction("Show molecules")
+        show_act.setCheckable(True)
+        show_act.setChecked(bool(getattr(self, "show_molecules", True)))
+        show_act.toggled.connect(self.on_show_molecules_toggled)
+
+        menu.addSeparator()
+
+        load_act = menu.addAction("Load molecule...")
+        load_act.triggered.connect(self.on_load_molecule)
+
+        recent = []
+        try:
+            if self.preview_canvas is not None:
+                recent = list(self.preview_canvas.get_recent_molecule_paths() or [])
+        except Exception:
+            recent = list(getattr(self, "recent_molecules", []) or [])
+        if recent:
+            recent_menu = menu.addMenu("Load recent")
+            for path in recent[:8]:
+                act = recent_menu.addAction(Path(path).name)
+                act.setToolTip(str(path))
+                act.triggered.connect(lambda _checked=False, p=path: self._load_recent_molecule(p))
+
+        clear_act = menu.addAction("Clear molecules")
+        clear_act.setEnabled(bool(getattr(getattr(self, "preview_canvas", None), "molecules", []) or []))
+        clear_act.triggered.connect(self._clear_preview_molecules)
+
+        palette_menu = menu.addMenu("Palette")
+        palette_group = QtWidgets.QActionGroup(palette_menu)
+        current_palette = str(getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        for palette in available_atom_palettes():
+            label = {"cpk": "CPK", "pymol": "PyMOL", "jmol": "Jmol"}.get(palette, palette.capitalize())
+            act = palette_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(current_palette == palette)
+            act.triggered.connect(lambda checked=False, p=palette: checked and self._on_molecule_palette_changed(p))
+            palette_group.addAction(act)
 
     def _on_toggle_preview_title(self, checked):
         """Toggle title/date overlay in Preview and pop-outs."""
@@ -6990,10 +7074,12 @@ QLabel:hover {{
             chosen = menu.exec_(QtGui.QCursor.pos())
             if chosen and chosen in actions:
                 self.preview_canvas.add_molecule(actions[chosen])
+                self.on_show_molecules_toggled(True)
                 self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
                 return
         # Fallback: open file dialog
         self.preview_canvas._load_molecule_dialog()
+        self.on_show_molecules_toggled(True)
 
     def on_spec_folder_browse(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select spectroscopy folder", str(self.spec_folder_path))
@@ -7604,6 +7690,8 @@ QLabel:hover {{
             clear_sel = QtWidgets.QAction("Clear filter (selected)", menu)
             clear_sel.triggered.connect(lambda _, paths=list(targets): self._clear_filter_for_paths(paths))
             menu.addAction(clear_sel)
+        menu.addSeparator()
+        add_source_file_menu(menu, fp, self)
 
         menu.addSeparator()
         copy_svg_act = QtWidgets.QAction("Copy selected as SVG (current view)", menu)
@@ -7675,6 +7763,7 @@ QLabel:hover {{
         details_act = QtWidgets.QAction("Show metadata in Details", menu)
         details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
         menu.addAction(details_act)
+        add_source_file_menu(menu, spec.get("path"), self)
 
         channels = list((spec.get("channels") or {}).keys())
         common = set(channels)
@@ -7701,15 +7790,6 @@ QLabel:hover {{
                 act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
                 channel_menu.addAction(act)
 
-        menu.addSeparator()
-        copy_path = QtWidgets.QAction("Copy file path", menu)
-        def _copy_path():
-            try:
-                QtWidgets.QApplication.clipboard().setText(str(spec.get("path", "")))
-            except Exception:
-                pass
-        copy_path.triggered.connect(_copy_path)
-        menu.addAction(copy_path)
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
@@ -9256,6 +9336,7 @@ QLabel:hover {{
             "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
             "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
             "show_molecules": bool(getattr(canvas, "show_molecules", True)),
+            "show_molecule_gizmo": bool(getattr(canvas, "_show_molecule_gizmo", False)),
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
             "relative_axes_override": relative_axes,
@@ -9287,6 +9368,7 @@ QLabel:hover {{
                 "show_profile_overlays": bool(options.get("show_profile_overlays", True)),
                 "show_angle_overlays": bool(options.get("show_angle_overlays", True)),
                 "show_molecules": bool(options.get("show_molecules", True)),
+                "show_molecule_gizmo": bool(options.get("show_molecule_gizmo", False)),
                 "scale_bar_enabled": bool(options.get("scale_bar_enabled", False)),
                 "frame_fill_mode": bool(options.get("frame_fill_mode", False)),
                 "relative_axes_override": options.get("relative_axes_override", None),
@@ -9301,6 +9383,7 @@ QLabel:hover {{
                 normalized["relative_axes_override"] = bool(rel)
 
             self.show_molecules = normalized["show_molecules"]
+            self.show_molecule_gizmo = normalized["show_molecule_gizmo"]
             self.show_acquisition_overlay = normalized["show_acquisition_overlay"]
             try:
                 if hasattr(self, "scale_bar_cb") and self.scale_bar_cb is not None:
@@ -9315,7 +9398,9 @@ QLabel:hover {{
                 pass
             for widget_name, key in (
                 ("molecules_act", "show_molecules"),
+                ("browse_molecules_btn", "show_molecules"),
                 ("preview_molecules_toggle_btn", "show_molecules"),
+                ("display_molecule_gizmo_act", "show_molecule_gizmo"),
                 ("acquisition_overlay_act", "show_acquisition_overlay"),
             ):
                 act = getattr(self, widget_name, None)
@@ -9362,6 +9447,10 @@ QLabel:hover {{
                 except Exception:
                     pass
                 try:
+                    canv.set_show_molecule_gizmo(normalized["show_molecule_gizmo"])
+                except Exception:
+                    pass
+                try:
                     canv.enable_scale_bar(normalized["scale_bar_enabled"])
                 except Exception:
                     pass
@@ -9387,6 +9476,7 @@ QLabel:hover {{
             if persist:
                 self.config["canvas_display_options"] = dict(normalized)
                 self.config["show_molecules"] = self.show_molecules
+                self.config["show_molecule_gizmo"] = self.show_molecule_gizmo
                 self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
                 self.config["show_scale_bar"] = normalized["scale_bar_enabled"]
                 save_config(self.config)
