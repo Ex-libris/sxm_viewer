@@ -56,4 +56,10 @@ See [Spectroscopy Overview](overview.md).
 
 ## Plot controls
 
-Spectroscopy windows support a richer set of display controls, including grid and legend toggles, line and point display, typography control, and export/copy actions.
+Spectroscopy windows support a richer set of display controls, including:
+
+- grid, line, point, and dark-background toggles
+- per-trace styling for colour, thickness, and line style
+- legend editing for position, font size, background, and border
+- smoothing and derivative filters
+- typography and export or copy actions

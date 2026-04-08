@@ -30,6 +30,14 @@ Depending on the file and current workflow, thumbnails may show:
 
 The current preview is tied directly to thumbnail selection.
 
+### Source-file actions
+
+Right-clicking an image thumbnail or a spectroscopy miniature exposes a **Source file** submenu so you can:
+
+- show the file in the operating-system file manager
+- open the raw file in the default text editor for the current OS
+- copy the full file path
+
 ---
 
 ## Multi-selection

@@ -11,25 +11,25 @@ A **session** is folder-oriented: it saves the full state of a working folder, i
 ### Saving a session
 
 - Press ++ctrl+s++ to save to the current session file. If none exists yet, you are prompted once for a location.
-- Use **File → Save Session** from the toolbar.
+- Use **File -> Save Session** from the toolbar.
 
-**Autosave** is enabled by default every 5 minutes. Controls are under **Display → Recovery**: enable/disable, change interval, recover the latest autosave, or discard it.
+**Autosave** is enabled by default every 5 minutes. Recovery controls live in the top-level **Tools** menu, where you can enable or disable autosave, change the interval, recover the latest autosave, or discard it.
 
 ### Loading a session
 
-- Use **File → Load Session** from the toolbar.
-- A **Recent sessions** drop-down remembers up to 10 previously used session folders.
+- Use **File -> Load Session** from the toolbar.
+- A **Recent sessions** drop-down remembers previously used session files and folders.
 
 ### What is restored
 
 Sessions restore:
 
-- Cached headers and processed views for fast first paint
-- Thumbnail grid state and the active preview
-- All open pop-out windows with their geometry and analysis state (profiles, crop, channel, display options)
-- Profile measurement window positions
-- Spectroscopy selection and browser state
-- Display options (colormap, overlays, typography, dark/light mode)
+- cached headers and processed views for fast first paint
+- thumbnail-grid state and the active preview
+- all open pop-out windows with their geometry and analysis state
+- profile-measurement window positions
+- spectroscopy selection and browser state
+- display options such as colormap, overlays, typography, and dark/light mode
 
 !!! tip
     Pop-outs from a previous session are loaded as **deferred pop-outs** to avoid opening a storm of windows on startup. A **Pop-ups (N)** toolbar menu lets you restore them one by one or all at once.
@@ -48,9 +48,9 @@ Use a collection when you want to assemble a set of "hero" images from different
 
 Entry points:
 
-- **Toolbar → Collection** menu
-- **Display → Collection** menu
-- Right-click on any preview or popup → **Collection** submenu
+- toolbar collection actions
+- preview or pop-out **Collection** submenus
+- right-click on any preview or popup -> **Collection**
 
 Available actions:
 
@@ -71,6 +71,6 @@ When saving, you choose between two modes:
 
 ### Restoring a collection
 
-Opening a collection clears the current workspace and rebuilds it as a curated virtual set. Items flagged as pop-outs are reopened as pop-out windows. All per-item analysis state (profiles, angles, molecules, scale-bar settings) is reapplied.
+Opening a collection clears the current workspace and rebuilds it as a curated virtual set. Items flagged as pop-outs are reopened as pop-out windows. All per-item analysis state such as profiles, angles, molecules, and scale-bar settings is reapplied.
 
 The collection file format is `.sxmcoll.json`.
