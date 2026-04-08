@@ -5186,6 +5186,24 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_user_enabled = False
             self._profile_move_only = self.profile_pts is not None
 
+    def _profile_hit_test(self, event, *, thresh: float = 18.0):
+        if event is None or event.inaxes is not self.main_ax:
+            return False
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return False
+        if self._profile_marker_hit(x, y) is not None:
+            return True
+        if self.profile_pts is not None:
+            x0, y0, x1, y1 = self.profile_pts
+            if self._pt_distance_pixels(x, y, x0, y0) <= thresh:
+                return True
+            if self._pt_distance_pixels(x, y, x1, y1) <= thresh:
+                return True
+            if self._distance_to_segment_pixels(x, y, self.profile_pts) <= thresh:
+                return True
+        return self._overlay_index_near(x, y, thresh=15.0) is not None
+
     def _profile_animation_artists(self):
         artists = [
             self._profile_line,
@@ -5805,10 +5823,13 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
 
     def _check_molecule_hit(self, event):
-        # When measurement tools are active, avoid picking/dragging molecules to prevent accidental moves.
-        if self.profile_enabled or self.angle_enabled:
+        # Angle editing has exclusive ownership of the canvas.
+        if self.angle_enabled:
             return False
         if not self.show_molecules or not self.molecules or event.inaxes is None:
+            return False
+        # If the pointer is actually on a profile, let the profile tool win.
+        if self._profile_hit_test(event):
             return False
         
         # Simple hit test: check distance to any atom in any molecule
