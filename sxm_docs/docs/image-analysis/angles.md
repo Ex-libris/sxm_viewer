@@ -2,6 +2,8 @@
 
 SXM Viewer supports angle overlays directly on the image canvas, alongside the profile tools.
 
+![Angle measurement overlay](../assets/screenshots/angle.png){ width="900" }
+
 ---
 
 ## Creating an angle measurement

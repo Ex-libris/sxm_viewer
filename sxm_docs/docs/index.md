@@ -2,7 +2,7 @@
 
 **SXM Viewer** is a scientific SPM (Scanning Probe Microscopy) data analysis tool tuned for data acquired with an Anfatec SXM controller running an Omicron Infinity microscope (tribus head, QPlus sensors at 8.6 K). It also supports MATRIX vendor files and Nanonis formats.
 
-![Main window overview](assets/screenshots/main-window-overview.png){ width="1100" }
+![Main menu overview](assets/screenshots/main-menu.png){ width="1100" }
 
 
 ---

@@ -2,6 +2,8 @@
 
 ## Drawing a profile
 
+![Drawing a profile](../assets/screenshots/profiles.png){ width="900" }
+
 Hold ++ctrl++ and click on the preview or any pop-out to start a new profile line. Drag to set the endpoint and release. The **Profile measurement** dialog opens automatically with the extracted line profile.
 
 Plain click does **not** start a profile — it only selects. This prevents accidental profile creation during normal navigation.
