@@ -32,6 +32,7 @@ from .molecular_overlay import (
     get_atom_color,
     get_atom_radius,
     available_atom_palettes,
+    normalize_molecule_render_style,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
@@ -1512,43 +1513,121 @@ class MultiPreviewCanvas(FigureCanvas):
                 z_range = 1.0
 
             lc = None
+            lc_underlay = None
             sc = None
             shadow_sc = None
-            atom_style = (mol.render_style or "shaded").lower()
+            atom_underlay_sc = None
+            atom_style = normalize_molecule_render_style(mol.render_style)
             bond_style = (mol.bond_style or "default").lower()
-            # Style params
-            if atom_style == "spacefill":
-                size_base, size_scale = 120, 200
-                shadow_alpha = 0.25
-            elif atom_style == "sticks":
-                # Sticks: medium bonds, tiny atom caps
-                size_base, size_scale = 18, 35
-                shadow_alpha = 0.12
-            elif atom_style == "skeletal":
-                size_base, size_scale = 10, 20
-                shadow_alpha = 0.0
-            elif atom_style == "licorice":
-                size_base, size_scale = 60, 100
-                shadow_alpha = 0.2
-            elif atom_style == "wire":
-                size_base, size_scale = 20, 40
-                shadow_alpha = 0.1
-            else:  # shaded / flat default
-                size_base, size_scale = 80, 140
-                shadow_alpha = 0.25
+            style_profiles = {
+                "shaded": {
+                    "size_base": 80, "size_scale": 140, "shadow_alpha": 0.25,
+                    "show_shadow": True, "atom_alpha": 1.0, "highlight": 0.25,
+                    "edgecolor": "black", "edgewidth": 0.6, "bond_scale": 1.0,
+                    "bond_alpha_min": 0.4, "bond_alpha_span": 0.6, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+                "flat": {
+                    "size_base": 76, "size_scale": 126, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.98, "highlight": 0.0,
+                    "edgecolor": "black", "edgewidth": 0.5, "bond_scale": 1.0,
+                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+                "ballstick": {
+                    "size_base": 34, "size_scale": 62, "shadow_alpha": 0.14,
+                    "show_shadow": True, "atom_alpha": 1.0, "highlight": 0.18,
+                    "edgecolor": "black", "edgewidth": 0.75, "bond_scale": 1.35,
+                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": True,
+                    "force_bond_by_atoms": True, "outline": False,
+                },
+                "cpk": {
+                    "size_base": 150, "size_scale": 240, "shadow_alpha": 0.28,
+                    "show_shadow": True, "atom_alpha": 0.96, "highlight": 0.3,
+                    "edgecolor": "black", "edgewidth": 0.75, "bond_scale": 0.75,
+                    "bond_alpha_min": 0.3, "bond_alpha_span": 0.35, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+                "licorice": {
+                    "size_base": 48, "size_scale": 82, "shadow_alpha": 0.2,
+                    "show_shadow": True, "atom_alpha": 0.98, "highlight": 0.12,
+                    "edgecolor": "black", "edgewidth": 0.55, "bond_scale": 1.5,
+                    "bond_alpha_min": 0.5, "bond_alpha_span": 0.45, "split_bonds": True,
+                    "force_bond_by_atoms": True, "outline": False,
+                },
+                "wire": {
+                    "size_base": 14, "size_scale": 24, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.82, "highlight": 0.0,
+                    "edgecolor": "black", "edgewidth": 0.3, "bond_scale": 0.65,
+                    "bond_alpha_min": 0.45, "bond_alpha_span": 0.35, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+                "line": {
+                    "size_base": 8, "size_scale": 14, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.8, "highlight": 0.0,
+                    "edgecolor": "none", "edgewidth": 0.0, "bond_scale": 0.5,
+                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.25, "split_bonds": True,
+                    "force_bond_by_atoms": True, "outline": False,
+                },
+                "sticks": {
+                    "size_base": 18, "size_scale": 35, "shadow_alpha": 0.12,
+                    "show_shadow": True, "atom_alpha": 0.96, "highlight": 0.08,
+                    "edgecolor": "black", "edgewidth": 0.35, "bond_scale": 1.6,
+                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": True,
+                    "force_bond_by_atoms": True, "outline": False,
+                },
+                "skeletal": {
+                    "size_base": 10, "size_scale": 20, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.88, "highlight": 0.0,
+                    "edgecolor": "black", "edgewidth": 0.25, "bond_scale": 0.85,
+                    "bond_alpha_min": 0.5, "bond_alpha_span": 0.35, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+                "outline": {
+                    "size_base": 78, "size_scale": 128, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.12, "highlight": 0.0,
+                    "edgecolor": "white", "edgewidth": 1.0, "bond_scale": 1.1,
+                    "bond_alpha_min": 0.85, "bond_alpha_span": 0.05, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": True,
+                },
+                "ghost": {
+                    "size_base": 82, "size_scale": 132, "shadow_alpha": 0.0,
+                    "show_shadow": False, "atom_alpha": 0.28, "highlight": 0.05,
+                    "edgecolor": "black", "edgewidth": 0.35, "bond_scale": 0.9,
+                    "bond_alpha_min": 0.22, "bond_alpha_span": 0.18, "split_bonds": False,
+                    "force_bond_by_atoms": False, "outline": False,
+                },
+            }
+            profile = style_profiles.get(atom_style, style_profiles["shaded"])
+            size_base = profile["size_base"]
+            size_scale = profile["size_scale"]
+            shadow_alpha = profile["shadow_alpha"]
+
+            def _atom_base_rgba(idx):
+                elem = mol.elements[idx] if idx < len(mol.elements) else ""
+                cmap = getattr(mol, "atom_color_map", {}) or {}
+                override = cmap.get(str(elem).upper()) or cmap.get(str(elem).title())
+                if override:
+                    return matplotlib.colors.to_rgba(override)
+                if mol.atom_color_override:
+                    return matplotlib.colors.to_rgba(mol.atom_color_override)
+                return matplotlib.colors.to_rgba(get_atom_color(elem, self.molecule_palette))
 
             # Draw Bonds
             if 'Bonds' in mol.display_mode and len(mol.bonds) > 0:
                 lines = []
+                underlay_lines = []
                 colors = []
+                underlay_colors = []
                 linewidths = []
-                lw_scale = 1.0
+                underlay_widths = []
+                lw_scale = profile["bond_scale"]
                 if bond_style == "thick":
-                    lw_scale = 1.6
+                    lw_scale *= 1.6
                 elif bond_style == "thin":
-                    lw_scale = 0.7
+                    lw_scale *= 0.7
                 display_mode_lower = (mol.display_mode or "").lower()
-                force_atom_bond_colors = (atom_style == "sticks") or ("bonds only" in display_mode_lower)
+                force_atom_bond_colors = profile["force_bond_by_atoms"] or ("bonds only" in display_mode_lower)
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     ei = (mol.elements[i] or "").strip().upper() if i < len(mol.elements) else ""
@@ -1561,34 +1640,77 @@ class MultiPreviewCanvas(FigureCanvas):
                             pass
                     p1 = coords[i]
                     p2 = coords[j]
-                    lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                    
-                    # Depth cueing for bonds
                     z_mid = (p1[2] + p2[2]) * 0.5
                     z_norm = (z_mid - z_min) / z_range
-                    alpha = 0.4 + 0.6 * z_norm
-                    # Choose bond color
+                    alpha = profile["bond_alpha_min"] + profile["bond_alpha_span"] * z_norm
+                    lw = (1.0 + 2.0 * z_norm) * lw_scale
                     bond_mode = getattr(mol, "bond_color_mode", None) or self._bond_color_mode
                     if force_atom_bond_colors and bond_mode == "default":
                         bond_mode = "by_atoms"
+                    rgba1 = _atom_base_rgba(i)
+                    rgba2 = _atom_base_rgba(j)
                     if bond_mode == "single" and mol.bond_color_override:
                         br, bg, bb, _ = matplotlib.colors.to_rgba(mol.bond_color_override)
+                        segment_color = (br, bg, bb, alpha)
+                        lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                        colors.append(segment_color)
+                        linewidths.append(lw)
+                        if profile["outline"]:
+                            underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                            underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                            underlay_widths.append(lw + 2.4)
                     elif bond_mode == "by_atoms":
-                        c1 = mol.atom_color_map.get(ei, mol.atom_color_map.get(ei.title(), None)) if hasattr(mol, "atom_color_map") else None
-                        c2 = mol.atom_color_map.get(ej, mol.atom_color_map.get(ej.title(), None)) if hasattr(mol, "atom_color_map") else None
-                        if not c1: c1 = get_atom_color(ei, self.molecule_palette)
-                        if not c2: c2 = get_atom_color(ej, self.molecule_palette)
-                        r1, g1, b1, _ = matplotlib.colors.to_rgba(c1)
-                        r2, g2, b2, _ = matplotlib.colors.to_rgba(c2)
-                        br, bg, bb = (0.5*(r1+r2), 0.5*(g1+g2), 0.5*(b1+b2))
+                        r1, g1, b1, _ = rgba1
+                        r2, g2, b2, _ = rgba2
+                        if profile["split_bonds"]:
+                            mid = 0.5 * (p1 + p2)
+                            lines.append([(p1[0], p1[1]), (mid[0], mid[1])])
+                            colors.append((r1, g1, b1, alpha))
+                            linewidths.append(lw)
+                            lines.append([(mid[0], mid[1]), (p2[0], p2[1])])
+                            colors.append((r2, g2, b2, alpha))
+                            linewidths.append(lw)
+                            if profile["outline"]:
+                                underlay_lines.extend([
+                                    [(p1[0], p1[1]), (mid[0], mid[1])],
+                                    [(mid[0], mid[1]), (p2[0], p2[1])],
+                                ])
+                                underlay_colors.extend([(0.0, 0.0, 0.0, 0.95)] * 2)
+                                underlay_widths.extend([lw + 2.4, lw + 2.4])
+                        else:
+                            br, bg, bb = (0.5 * (r1 + r2), 0.5 * (g1 + g2), 0.5 * (b1 + b2))
+                            lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                            colors.append((br, bg, bb, alpha))
+                            linewidths.append(lw)
+                            if profile["outline"]:
+                                underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                                underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                                underlay_widths.append(lw + 2.4)
                     else:
                         br, bg, bb = self._default_bond_color
-                    colors.append((br, bg, bb, alpha))
-                    linewidths.append((1.0 + 2.0 * z_norm) * lw_scale)
-                
+                        lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                        colors.append((br, bg, bb, alpha))
+                        linewidths.append(lw)
+                        if profile["outline"]:
+                            underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
+                            underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                            underlay_widths.append(lw + 2.4)
+
+                if underlay_lines:
+                    lc_underlay = LineCollection(underlay_lines, colors=underlay_colors, linewidths=underlay_widths, zorder=28.7)
+                    ax.add_collection(lc_underlay)
+                    try:
+                        lc_underlay.set_capstyle("round")
+                    except Exception:
+                        pass
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
                 ax.add_collection(lc)
-                lc.set_pickradius(5) # Help hit testing if needed later
+                lc.set_pickradius(5)
+                try:
+                    if atom_style in {"ballstick", "licorice", "sticks", "line"}:
+                        lc.set_capstyle("round")
+                except Exception:
+                    pass
 
             # Draw Atoms
             if 'Atoms' in mol.display_mode:
@@ -1607,6 +1729,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 
                 z_norm = (z - z_min) / z_range
                 rad_mode = getattr(mol, "radius_mode", "covalent")
+                if atom_style == "cpk" and str(rad_mode or "").lower() == "covalent":
+                    rad_mode = "vdw"
                 rad_scale = getattr(mol, "radius_scale", 1.0)
                 rad_ref = max(get_atom_radius('C', 'covalent'), 1e-3)
                 radius_factors = []
@@ -1615,27 +1739,26 @@ class MultiPreviewCanvas(FigureCanvas):
                     radius_factors.append(max(r_el / rad_ref, 0.05) * rad_scale)
                 sizes = (size_base + size_scale * z_norm) * np.array(radius_factors)
                 
-                base_colors = []
-                for e in elements_sorted:
-                    m = getattr(mol, "atom_color_map", {}) or {}
-                    override = m.get(e.upper()) or m.get(e.title())
-                    if override:
-                        base_colors.append(override)
-                    elif mol.atom_color_override:
-                        base_colors.append(mol.atom_color_override)
-                    else:
-                        base_colors.append(get_atom_color(e, self.molecule_palette))
-                rgba_colors = [matplotlib.colors.to_rgba(c) for c in base_colors]
+                rgba_colors = [_atom_base_rgba(i) for i in order]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = 0.45 + 0.55 * z_norm[i]
-                    highlight = 0.25 if atom_style in ("shaded", "spacefill") else 0.0
+                    depth_alpha = profile["atom_alpha"] * (0.45 + 0.55 * z_norm[i])
+                    highlight = profile["highlight"]
                     r_h = min(1.0, r + (1 - r) * highlight)
                     g_h = min(1.0, g + (1 - g) * highlight)
                     b_h = min(1.0, b + (1 - b) * highlight)
                     final_colors.append((r_h, g_h, b_h, depth_alpha))
                 
-                if self._show_molecule_shadow and atom_style in ("shaded", "spacefill", "licorice"):
+                if profile["outline"]:
+                    atom_underlay_sc = ax.scatter(
+                        x, y,
+                        s=sizes * 1.55,
+                        c=[(0.0, 0.0, 0.0, 0.92)] * len(x),
+                        edgecolors='none',
+                        linewidths=0,
+                        zorder=28.85,
+                    )
+                if self._show_molecule_shadow and profile["show_shadow"]:
                     shadow_sc = ax.scatter(
                         x + 0.05, y - 0.05,
                         s=sizes * 1.25,
@@ -1644,14 +1767,28 @@ class MultiPreviewCanvas(FigureCanvas):
                         linewidths=0,
                         zorder=28,
                     )
-                sc = ax.scatter(x, y, s=sizes, c=final_colors, edgecolors='black',
-                                linewidths=0.6 if atom_style != "wire" else 0.3, zorder=30)
+                sc = ax.scatter(
+                    x,
+                    y,
+                    s=sizes,
+                    c=final_colors,
+                    edgecolors=profile["edgecolor"],
+                    linewidths=profile["edgewidth"],
+                    zorder=30,
+                )
+                if atom_style == "outline":
+                    try:
+                        sc.set_path_effects([PathEffects.Stroke(linewidth=2.2, foreground='black'), PathEffects.Normal()])
+                    except Exception:
+                        pass
 
             self._molecule_artists.append({
                 'mol': mol,
                 'ax': ax,
                 'scatter': sc,
+                'atom_underlay': atom_underlay_sc,
                 'shadow': shadow_sc,
+                'line_underlay': lc_underlay,
                 'lines': lc
             })
 
@@ -6262,37 +6399,30 @@ class MultiPreviewCanvas(FigureCanvas):
 
         menu = QtWidgets.QMenu(self)
 
-        # Properties
-        props_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogDetailedView), "Properties (Rotate/Scale)...")
+        # Main edit entry point
+        props_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogDetailedView), "Edit molecule...")
         menu.addSeparator()
 
-        # View toggles
+        # Quick view toggles
         toggle_shadow_act = menu.addAction(icon(QtWidgets.QStyle.SP_DialogYesButton), "Show shadows")
         toggle_shadow_act.setCheckable(True)
         toggle_shadow_act.setChecked(self._show_molecule_shadow)
         show_h_act = menu.addAction(icon(QtWidgets.QStyle.SP_TitleBarShadeButton), "Show hydrogens")
         show_h_act.setCheckable(True)
         show_h_act.setChecked(getattr(self, "_show_hydrogens", True))
-
-        # Colors submenu
-        colors_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogOpenButton), "Colors...")
-        atom_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_DriveDVDIcon), "Set atom color...")
-        atom_elem_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_FileIcon), "Set element color...")
-        bond_color_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogListView), "Set bond color...")
-        reset_colors_act = colors_menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset colors")
-
         menu.addSeparator()
+
+        # Reset/state
         reset_file_act = menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset to file state")
         reset_file_act.setShortcut(QtGui.QKeySequence("Shift+R"))
         reset_file_act.setEnabled(bool(getattr(mol, "filepath", None)))
         reset_all_act = menu.addAction(icon(QtWidgets.QStyle.SP_MessageBoxWarning), "Reset all molecules")
 
-        # Undo
         undo_act = menu.addAction(icon(QtWidgets.QStyle.SP_ArrowBack), "Undo last change")
         undo_act.setShortcut(QtGui.QKeySequence("Ctrl+Z"))
 
         # Palette submenu
-        pal_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogHelpButton), "Palette")
+        pal_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogHelpButton), "Atom palette")
         current_pal = (getattr(self, "molecule_palette", "cpk") or "cpk").lower()
         palette_actions = {}
         for pal in available_atom_palettes():
@@ -6310,40 +6440,21 @@ class MultiPreviewCanvas(FigureCanvas):
 
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
-            dlg = MoleculePropertiesDialog(mol, self, callback=self._redraw)
+            overlay_settings = {
+                "palette": getattr(self, "molecule_palette", "pymol"),
+                "show_shadows": bool(self._show_molecule_shadow),
+                "show_hydrogens": bool(getattr(self, "_show_hydrogens", True)),
+                "show_shadows_available": True,
+                "show_hydrogens_available": True,
+                "palette_available": True,
+            }
+            def _apply():
+                self._show_molecule_shadow = bool(overlay_settings.get("show_shadows", True))
+                self._show_hydrogens = bool(overlay_settings.get("show_hydrogens", True))
+                self.set_molecule_palette(overlay_settings.get("palette", "pymol"), notify=False)
+                self._redraw()
+            dlg = MoleculePropertiesDialog(mol, self, callback=_apply, overlay_settings=overlay_settings)
             dlg.show()
-        elif action == atom_color_act:
-            c = self._pick_color(mol.atom_color_override or get_atom_color('C', self.molecule_palette))
-            if c:
-                self._push_molecule_snapshot()
-                mol.atom_color_override = c
-                self._redraw()
-        elif action == atom_elem_color_act:
-            elem, ok = QtWidgets.QInputDialog.getText(self, "Element", "Element symbol:", text="C")
-            if ok and elem.strip():
-                c = self._pick_color(get_atom_color(elem.strip(), self.molecule_palette))
-                if c:
-                    self._push_molecule_snapshot()
-                    m = getattr(mol, "atom_color_map", None)
-                    if m is None:
-                        mol.atom_color_map = {}
-                        m = mol.atom_color_map
-                    m[elem.strip().upper()] = c
-                    self._redraw()
-        elif action == bond_color_act:
-            c = self._pick_color(mol.bond_color_override or "#e0e0e0")
-            if c:
-                self._push_molecule_snapshot()
-                mol.bond_color_override = c
-                mol.bond_color_mode = "single"
-                self._redraw()
-        elif action == reset_colors_act:
-            self._push_molecule_snapshot()
-            mol.atom_color_override = None
-            mol.bond_color_override = None
-            mol.bond_color_mode = 'default'
-            mol.atom_color_map = {}
-            self._redraw()
         elif action == reset_file_act:
             idx = None
             try:

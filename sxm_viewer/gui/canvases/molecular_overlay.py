@@ -55,6 +55,62 @@ ATOM_PALETTES = {
     }
 }
 
+MOLECULE_RENDER_STYLE_OPTIONS = [
+    ("Shaded", "shaded"),
+    ("Flat", "flat"),
+    ("Ball-and-Stick", "ballstick"),
+    ("CPK / Spacefill", "cpk"),
+    ("Licorice", "licorice"),
+    ("Wireframe", "wire"),
+    ("Line", "line"),
+    ("Sticks", "sticks"),
+    ("Skeleton", "skeletal"),
+    ("Outline", "outline"),
+    ("Ghost", "ghost"),
+]
+
+_MOLECULE_RENDER_STYLE_ALIASES = {
+    "classic": "shaded",
+    "shaded": "shaded",
+    "flat": "flat",
+    "ballstick": "ballstick",
+    "ballandstick": "ballstick",
+    "cpk": "cpk",
+    "spacefill": "cpk",
+    "licorice": "licorice",
+    "wire": "wire",
+    "wireframe": "wire",
+    "line": "line",
+    "sticks": "sticks",
+    "skeletal": "skeletal",
+    "skeleton": "skeletal",
+    "stickskeletal": "skeletal",
+    "outline": "outline",
+    "ghost": "ghost",
+}
+
+
+def available_molecule_render_styles():
+    """Return user-facing render style labels."""
+    return [label for label, _key in MOLECULE_RENDER_STYLE_OPTIONS]
+
+
+def normalize_molecule_render_style(style):
+    """Map persisted/user style values to stable internal keys."""
+    token = str(style or "shaded").strip().lower()
+    token = token.replace("/", " ").replace("-", " ").replace("+", " ")
+    token = "".join(ch for ch in token if ch.isalnum())
+    return _MOLECULE_RENDER_STYLE_ALIASES.get(token, "shaded")
+
+
+def molecule_render_style_label(style):
+    """Return the display label for a render style key or alias."""
+    key = normalize_molecule_render_style(style)
+    for label, candidate in MOLECULE_RENDER_STYLE_OPTIONS:
+        if candidate == key:
+            return label
+    return "Shaded"
+
 COVALENT_RADII = {
     'H': 0.31, 'He': 0.28, 'Li': 1.28, 'Be': 0.96, 'B': 0.84, 'C': 0.76, 
     'N': 0.71, 'O': 0.66, 'F': 0.57, 'Ne': 0.58, 'Na': 1.66, 'Mg': 1.41, 
@@ -141,13 +197,13 @@ class Molecule:
         self.z_height_scale = 1.0 # For visual depth cue
         self.bonds = [] # List of (index1, index2)
         self.display_mode = 'Bonds Only'
-        self.render_style = 'classic'   # classic | flat | spacefill | licorice | wire | sticks | skeletal
-        self.bond_style = 'default'    # default | thin | thick
+        self.render_style = 'sticks'   # shaded | flat | ballstick | cpk | licorice | wire | line | sticks | skeletal | outline | ghost
+        self.bond_style = 'thick'    # default | thin | thick
         self.atom_color_override = None  # Hex string or None (use palette)
         self.atom_color_map = {}         # Element -> hex override
         self.bond_color_override = None  # Hex string or None (use default)
         self.bond_color_mode = 'default' # default | single | by_atoms
-        self.radius_mode = 'covalent'    # covalent | vdw | atomic | constant
+        self.radius_mode = 'vdw'    # covalent | vdw | atomic | constant
         self.radius_scale = 1.0
         
         # Avoid truth-testing numpy arrays or other iterables; only treat valid paths.
@@ -390,7 +446,7 @@ class Molecule:
         mol.z_height_scale = float(data.get("z_height_scale", 1.0))
         mol.bonds = [tuple(b) for b in (data.get("bonds") or [])]
         mol.display_mode = data.get("display_mode", "Atoms + Bonds")
-        mol.render_style = data.get("render_style", "classic")
+        mol.render_style = normalize_molecule_render_style(data.get("render_style", "shaded"))
         mol.bond_style = data.get("bond_style", "default")
         mol.atom_color_override = data.get("atom_color_override")
         mol.atom_color_map = dict(data.get("atom_color_map") or {})
@@ -403,11 +459,15 @@ class Molecule:
         return mol
 
 class MoleculePropertiesDialog(QtWidgets.QDialog):
-    def __init__(self, molecule, parent=None, callback=None):
+    def __init__(self, molecule, parent=None, callback=None, overlay_settings=None):
         super().__init__(parent)
         self.molecule = molecule
         self.callback = callback
-        self.setWindowTitle("Molecule Properties")
+        self.overlay_settings = overlay_settings if isinstance(overlay_settings, dict) else None
+        self._show_shadow_option = bool((self.overlay_settings or {}).get("show_shadows_available", True))
+        self._show_hydrogen_option = bool((self.overlay_settings or {}).get("show_hydrogens_available", True))
+        self._show_palette_option = bool((self.overlay_settings or {}).get("palette_available", True))
+        self.setWindowTitle("Molecule Appearance & Transform")
         self.setWindowFlags(QtCore.Qt.Tool)
         
         layout = QtWidgets.QVBoxLayout(self)
@@ -421,17 +481,15 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.combo_mode.currentTextChanged.connect(self._on_change)
         form_disp.addRow("Style:", self.combo_mode)
         self.combo_atom_style = QtWidgets.QComboBox()
-        self.combo_atom_style.addItems(["Shaded", "Flat", "Spacefill", "Licorice", "Wireframe", "Sticks", "Stick/Skeletal"])
-        style_label = molecule.render_style.lower()
-        if style_label == 'flat': self.combo_atom_style.setCurrentText("Flat")
-        elif style_label == 'spacefill': self.combo_atom_style.setCurrentText("Spacefill")
-        elif style_label == 'licorice': self.combo_atom_style.setCurrentText("Licorice")
-        elif style_label == 'wire': self.combo_atom_style.setCurrentText("Wireframe")
-        elif style_label == 'sticks': self.combo_atom_style.setCurrentText("Sticks")
-        elif style_label == 'skeletal': self.combo_atom_style.setCurrentText("Stick/Skeletal")
-        else: self.combo_atom_style.setCurrentText("Shaded")
+        self.combo_atom_style.addItems(available_molecule_render_styles())
+        self.combo_atom_style.setCurrentText(molecule_render_style_label(molecule.render_style))
         self.combo_atom_style.currentTextChanged.connect(self._on_change)
-        form_disp.addRow("Atom style:", self.combo_atom_style)
+        self.combo_atom_style.setToolTip(
+            "Choose the molecule representation.\n"
+            "Shaded/Flat are general-purpose; Ball-and-Stick and CPK are chemistry-style; "
+            "Outline and Ghost are optimized for busy scan backgrounds."
+        )
+        form_disp.addRow("Representation:", self.combo_atom_style)
         self.combo_bond_style = QtWidgets.QComboBox()
         self.combo_bond_style.addItems(["Default", "Thin", "Thick"])
         bs = molecule.bond_style.lower()
@@ -455,6 +513,33 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.spin_radius_scale.setValue(molecule.radius_scale)
         self.spin_radius_scale.valueChanged.connect(self._on_change)
         form_disp.addRow("Radius scale:", self.spin_radius_scale)
+        self.combo_palette = None
+        if self._show_palette_option:
+            self.combo_palette = QtWidgets.QComboBox()
+            for pal in available_atom_palettes():
+                self.combo_palette.addItem(pal.title(), pal)
+            current_palette = str((self.overlay_settings or {}).get("palette", "pymol") or "pymol").lower()
+            current_idx = max(0, self.combo_palette.findData(current_palette))
+            self.combo_palette.setCurrentIndex(current_idx)
+            self.combo_palette.currentTextChanged.connect(self._on_change)
+            self.combo_palette.setToolTip("Choose the atom color palette used when no per-atom override is set.")
+            form_disp.addRow("Palette:", self.combo_palette)
+        self.chk_show_shadows = None
+        self.chk_show_hydrogens = None
+        if self._show_shadow_option or self._show_hydrogen_option:
+            row_vis = QtWidgets.QHBoxLayout()
+            if self._show_shadow_option:
+                self.chk_show_shadows = QtWidgets.QCheckBox("Show shadows")
+                self.chk_show_shadows.setChecked(bool((self.overlay_settings or {}).get("show_shadows", True)))
+                self.chk_show_shadows.toggled.connect(self._on_change)
+                row_vis.addWidget(self.chk_show_shadows)
+            if self._show_hydrogen_option:
+                self.chk_show_hydrogens = QtWidgets.QCheckBox("Show hydrogens")
+                self.chk_show_hydrogens.setChecked(bool((self.overlay_settings or {}).get("show_hydrogens", True)))
+                self.chk_show_hydrogens.toggled.connect(self._on_change)
+                row_vis.addWidget(self.chk_show_hydrogens)
+            row_vis.addStretch(1)
+            form_disp.addRow("Canvas:", row_vis)
         # Color overrides
         self.btn_atom_color = QtWidgets.QPushButton("Atom color...")
         self.btn_atom_color.clicked.connect(self._pick_atom_color)
@@ -520,11 +605,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.mirror_x = self.chk_mx.isChecked()
         self.molecule.mirror_y = self.chk_my.isChecked()
         self.molecule.display_mode = self.combo_mode.currentText()
-        style_choice = self.combo_atom_style.currentText()
-        if style_choice == "Stick/Skeletal":
-            self.molecule.render_style = "skeletal"
-        else:
-            self.molecule.render_style = style_choice.lower()
+        self.molecule.render_style = normalize_molecule_render_style(self.combo_atom_style.currentText())
         self.molecule.bond_style = self.combo_bond_style.currentText().lower()
         rm_choice = self.combo_radius_mode.currentText()
         if rm_choice.lower().startswith("van"):
@@ -536,6 +617,13 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else:
             self.molecule.radius_mode = "covalent"
         self.molecule.radius_scale = self.spin_radius_scale.value()
+        if self.overlay_settings is not None:
+            if self.combo_palette is not None:
+                self.overlay_settings["palette"] = str(self.combo_palette.currentData() or "pymol").lower()
+            if self.chk_show_shadows is not None:
+                self.overlay_settings["show_shadows"] = bool(self.chk_show_shadows.isChecked())
+            if self.chk_show_hydrogens is not None:
+                self.overlay_settings["show_hydrogens"] = bool(self.chk_show_hydrogens.isChecked())
         if self.callback:
             self.callback()
 

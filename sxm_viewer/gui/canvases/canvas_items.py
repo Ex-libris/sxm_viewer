@@ -1190,11 +1190,11 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             return
         mol = molecules[mol_idx]
         menu = QtWidgets.QMenu()
-        props_act = menu.addAction("Properties (Rotate/Scale)...")
+        props_act = menu.addAction("Edit molecule...")
         show_h_act = menu.addAction("Show hydrogens")
         show_h_act.setCheckable(True)
         show_h_act.setChecked(self._show_hydrogens)
-        palette_menu = menu.addMenu("Palette")
+        palette_menu = menu.addMenu("Atom palette")
         palette_actions = {}
         current_pal = (self._molecule_palette or "pymol").lower()
         for pal in available_atom_palettes():
@@ -1253,14 +1253,23 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             return
         mol = molecules[mol_idx]
         original = mol.to_dict()
+        overlay_settings = {
+            "palette": self._molecule_palette,
+            "show_hydrogens": bool(self._show_hydrogens),
+            "show_shadows_available": False,
+            "show_hydrogens_available": True,
+            "palette_available": True,
+        }
         def _apply():
             updated = self._molecule_objects()
             if 0 <= mol_idx < len(updated):
                 updated[mol_idx] = mol
                 self._store_molecule_objects(updated)
+                self._molecule_palette = str(overlay_settings.get("palette", self._molecule_palette or "pymol")).lower()
+                self._show_hydrogens = bool(overlay_settings.get("show_hydrogens", self._show_hydrogens))
                 if self._parent_window is not None:
                     self._parent_window._persist_item_molecules(self)
-        dlg = MoleculePropertiesDialog(mol, parent=self._parent_window, callback=_apply)
+        dlg = MoleculePropertiesDialog(mol, parent=self._parent_window, callback=_apply, overlay_settings=overlay_settings)
         self._molecule_props_dialog = dlg
         dlg.finished.connect(lambda _res: self._finalize_molecule_dialog_change(original, mol_idx, mol))
         dlg.show()
