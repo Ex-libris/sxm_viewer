@@ -186,6 +186,25 @@ def _topo_axis_from_spec(spec: dict | None) -> dict | None:
     return None
 
 
+def _available_channel_names(spec: dict | None) -> list[str]:
+    if not spec:
+        return []
+    channels = spec.get("channels") or {}
+    names = []
+    if isinstance(channels, dict):
+        names.extend(str(name) for name in channels.keys() if str(name).strip())
+    if not names:
+        names.extend(str(name) for name in (spec.get("available_channels") or []) if str(name).strip())
+    deduped = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    return deduped
+
+
 _Z_UNIT_FACTORS_TO_NM = {
     "": None,
     "m": 1e9,
@@ -4722,7 +4741,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 time_str = str(t)
 
             # Channels
-            chans = list((spec.get('channels') or {}).keys())
+            chans = _available_channel_names(spec)
             chans_str = ", ".join(chans)
 
             item = QtWidgets.QTreeWidgetItem([name, type_str, pos_str, time_str, chans_str])
@@ -4797,7 +4816,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_color_swatches()
 
     def _populate_channels(self):
-        channels = sorted({name for spec in self.specs for name in (spec.get('channels') or {}).keys()})
+        channels = sorted({name for spec in self.specs for name in _available_channel_names(spec)})
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         for name in channels:

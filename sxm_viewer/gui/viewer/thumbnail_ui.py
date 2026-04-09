@@ -161,16 +161,19 @@ def _spectro_thumb_selection_key(viewer, path):
 
 def _spectro_available_channels(spec):
     channels = list((spec.get("channels") or {}).keys())
+    if not channels:
+        channels = list(spec.get("available_channels") or [])
     return [str(ch) for ch in channels if str(ch).strip()]
 
 
 def _spectro_display_channel(viewer, spec):
     path = _spectro_thumb_selection_key(viewer, spec.get("path", ""))
     override = getattr(viewer, "spectro_thumb_channel_by_path", {}).get(path, "")
-    if override and override in (spec.get("channels") or {}):
+    available = set(_spectro_available_channels(spec))
+    if override and override in available:
         return override
     default = getattr(viewer, "spectro_miniature_default_channel", "")
-    if default and default in (spec.get("channels") or {}):
+    if default and default in available:
         return default
     channels = _spectro_available_channels(spec)
     return channels[0] if channels else ""
@@ -305,6 +308,26 @@ def _set_thumbnail_selection_by_order(viewer, ordered_keys, start_key, end_key, 
 
 def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=None):
     """Render a compact spectral preview for spectroscopy-only thumbnail cards."""
+    try:
+        cache_key = (
+            str(spec.get("path") or ""),
+            spec.get("file_mtime") or spec.get("time") or "",
+            int(width),
+            int(height),
+            str(channel_name or ""),
+            str(getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)),
+        )
+        pix_cache = getattr(viewer, "_spectro_miniature_cache", None)
+        if pix_cache is not None and cache_key in pix_cache:
+            return QtGui.QPixmap(pix_cache[cache_key])
+    except Exception:
+        cache_key = None
+        pix_cache = None
+    if not (spec.get("channels") or {}) and hasattr(viewer, "hydrate_spectro_entry"):
+        try:
+            viewer.hydrate_spectro_entry(spec)
+        except Exception:
+            pass
     pix = QtGui.QPixmap(max(32, int(width)), max(32, int(height)))
     pix.fill(QtGui.QColor("#0d1220"))
     painter = QtGui.QPainter(pix)
@@ -430,6 +453,13 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
         painter.drawText(QtCore.QRectF(rect.left() + 6, rect.bottom() - 16, rect.width() - 12, 12), QtCore.Qt.AlignLeft, footer)
     finally:
         painter.end()
+    try:
+        if pix_cache is not None and cache_key is not None:
+            pix_cache[cache_key] = QtGui.QPixmap(pix)
+            while len(pix_cache) > 96:
+                pix_cache.popitem(last=False)
+    except Exception:
+        pass
     return pix
 
 
