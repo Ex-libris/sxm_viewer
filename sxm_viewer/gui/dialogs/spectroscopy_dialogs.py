@@ -4105,6 +4105,34 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _clear_curve_data_cache(self):
         self._curve_data_cache.clear()
 
+    def _decimate_curve_for_display(self, x_vals, y_vals, plotted_count=1):
+        try:
+            x_arr = np.asarray(x_vals, dtype=float)
+            y_arr = np.asarray(y_vals, dtype=float)
+        except Exception:
+            return x_vals, y_vals
+        n = int(min(x_arr.size, y_arr.size))
+        if n <= 0:
+            return x_vals, y_vals
+        try:
+            canvas_width = max(320, int(self.canvas.width()))
+        except Exception:
+            canvas_width = 800
+        if plotted_count >= 24:
+            max_points = canvas_width
+        elif plotted_count >= 12:
+            max_points = int(canvas_width * 1.35)
+        else:
+            max_points = int(canvas_width * 2.0)
+        max_points = max(256, max_points)
+        if n <= max_points:
+            return x_arr, y_arr
+        step = max(1, int(math.ceil(n / float(max_points))))
+        idx = np.arange(0, n, step, dtype=int)
+        if idx.size == 0 or idx[-1] != (n - 1):
+            idx = np.append(idx, n - 1)
+        return x_arr[idx], y_arr[idx]
+
     def _visible_plot_items(self):
         items = []
         root = self.spec_list.invisibleRootItem()
@@ -5310,6 +5338,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         colors = self._iter_color_cycle()
+        plot_items = self._visible_plot_items()
+        visible_count = max(1, len(plot_items))
         plotted = 0
         plotted_spec_ids = []
         axis_choice = self.axis_combo.currentData() if getattr(self, "axis_combo", None) is not None else "primary"
@@ -5331,14 +5361,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 rel_zero = min(mins)
 
         # Plot both checked items AND selected items (even if unchecked) for quick preview
-        root = self.spec_list.invisibleRootItem()
         y_units_after_filters = []
-        for i in range(root.childCount()):
-            item = root.child(i)
-            if item.isHidden(): continue
-            if item.checkState(0) != QtCore.Qt.Checked and not item.isSelected():
-                continue
-
+        for item in plot_items:
             spec = item.data(0, QtCore.Qt.UserRole)
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             channels = spec.get('channels') or {}
@@ -5383,8 +5407,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 continue
             # Apply waterfall offset
             y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
-            if relative_nm and axis_unit == "nm":
-                x_vals = x_vals - rel_zero
+            x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
+            x_plot, y_plot = self._decimate_curve_for_display(x_plot, y_data, visible_count)
             y_units_after_filters.append(y_unit_final or y_unit_raw)
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
@@ -5410,7 +5434,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     "markeredgecolor": color,
                     "markeredgewidth": 0.6,
                 })
-            line, = self.ax.plot(x_vals, y_filtered, **line_kwargs)
+            line, = self.ax.plot(x_plot, y_plot, **line_kwargs)
             style = self._curve_styles.get(spec_id)
             if style:
                 try:
