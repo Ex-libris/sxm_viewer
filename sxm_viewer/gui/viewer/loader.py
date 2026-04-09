@@ -1466,6 +1466,36 @@ def _scan_spectros(
             if key in spec:
                 spec.pop(key, None)
 
+    def _rebuild_matrix_datasets_from_specs(spec_list):
+        datasets = {}
+        grouped = defaultdict(list)
+        for spec in list(spec_list or []):
+            if spec.get("matrix_index") is None:
+                continue
+            dataset_key = spec.get("matrix_dataset") or Path(spec.get("path") or "").stem
+            grouped[(str(dataset_key), _normalize_spectro_path_key(spec.get("path") or ""))].append(spec)
+        for (dataset_key, _path_key), members in grouped.items():
+            if not members:
+                continue
+            first = members[0]
+            rows = int(first.get("grid_rows") or 1)
+            cols = int(first.get("grid_cols") or 1)
+            ds = datasets.get(dataset_key)
+            if ds is None:
+                ds = MatrixDataset(dataset_key, rows, cols)
+                datasets[dataset_key] = ds
+            filename = Path(first.get("path") or "").name or str(first.get("path") or dataset_key)
+            ds.add_channel(
+                filename,
+                channel_code=first.get("channel_code"),
+                label=first.get("channel_name") or first.get("channel_code"),
+                spectra_count=len(members),
+                path=first.get("path"),
+                points_per_trace=_points_per_trace_for_list(members),
+            )
+        viewer.matrix_datasets = datasets
+        return datasets
+
     def _classify_file(spec_list, path_obj: Path):
         info = {
             "is_matrix": False,
@@ -1677,6 +1707,94 @@ def _scan_spectros(
             image_paths = [str(p) for p in getattr(viewer, "files", []) or []]
         except Exception:
             image_paths = []
+
+    bulk_manifest_ready = False
+    if manifest_enabled and lazy_payload and file_records:
+        try:
+            bulk_manifest_ready = all(
+                _manifest_entry_valid(manifest_entries.get(record["rel_key"]), mtime=record["mtime"], fsize=record["size"])
+                for record in file_records
+            )
+        except Exception:
+            bulk_manifest_ready = False
+
+    if bulk_manifest_ready:
+        t_manifest = time.perf_counter()
+        for record in file_records:
+            p = record["path"]
+            norm_key = record["norm_key"]
+            ext = record["suffix"]
+            if ext == ".dat":
+                stats['dat_files'] += 1
+                stats['single_dat_files'] += 1
+            elif ext == ".txt":
+                stats['txt_files'] += 1
+            elif ext == ".3ds":
+                stats['dat_files'] += 1
+            seen_keys.add(norm_key)
+            entry = manifest_entries.get(record["rel_key"]) or {}
+            spec_list = [_restore_spec_metadata(spec_entry) for spec_entry in (entry.get("specs") or [])]
+            specs.extend(spec_list)
+            stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
+        stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
+        stats['display_count'] = len(specs)
+        stats['single_entries'] = sum(1 for spec in specs if spec.get("matrix_index") is None)
+        stats['matrix_specs'] = sum(1 for spec in specs if spec.get("matrix_index") is not None)
+        matrix_datasets = _rebuild_matrix_datasets_from_specs(specs)
+        stats['matrix_dat_files'] = sum(len(ds.channels) for ds in matrix_datasets.values())
+        stats['matrix_files'] = len(matrix_datasets)
+        try:
+            log_status("  - spectroscopy finalize metadata...")
+            log_status("  - spectroscopy finalize ordering...")
+        except Exception:
+            pass
+        stale = [k for k in list(cache.keys()) if k not in seen_keys]
+        for k in stale:
+            cache.pop(k, None)
+        current_rel_keys = {record["rel_key"] for record in file_records}
+        stale_manifest = [key for key in list(manifest_entries.keys()) if key not in current_rel_keys]
+        if stale_manifest:
+            for key in stale_manifest:
+                manifest_entries.pop(key, None)
+            manifest_changed = True
+        viewer._spectro_manifest_entries = manifest_entries
+        if manifest_changed:
+            if hasattr(viewer, "_schedule_spectro_manifest_save"):
+                viewer._schedule_spectro_manifest_save()
+            else:
+                _save_spectro_manifest(disk_cache_dir, manifest_entries)
+        specs.sort(key=lambda s: s.get('time') or datetime.min)
+        stats['total_specs'] = len(specs)
+        log_status("Spectroscopy scan summary:")
+        log_status(
+            f"  Files: {len(file_records)} total  |  singles: {stats['single_dat_files']}  |  matrices: {stats['matrix_dat_files']}  |  empty/deferred: {stats['empty_files']}/{stats['deferred_files']}  |  invalid: {stats['invalid_files']}"
+        )
+        log_status(
+            f"  Spectra: {stats['total_specs']} total  |  from singles: {stats['single_entries']} traces  |  from matrices: {stats['matrix_specs']} traces"
+        )
+        log_status(
+            f"  Cache: {len(file_records)}/{len(file_records)} files (100% hit rate)  |  memory: 0  |  manifest: {stats.get('manifest_hits', 0)}  |  disk: 0  |  parsed: 0"
+        )
+        log_status(
+            f"  Timings: discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload 0 ms  |  raw parse 0 ms"
+        )
+        try:
+            json_line = {
+                "folder": str(folder_path) if folder_path is not None else "",
+                "files_scanned": len(file_records),
+                "spectra_total": stats.get("total_specs", 0),
+                "single_files": stats.get("single_dat_files", 0),
+                "single_entries": stats.get("single_entries", 0),
+                "matrix_datasets": len(matrix_datasets),
+                "matrix_spectra": stats.get("matrix_specs", 0),
+                "empty_files": stats.get("empty_files", 0),
+                "invalid_files": stats.get("invalid_files", 0),
+            }
+            log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
+        except Exception:
+            pass
+        return specs, stats
+
     for idx, record in enumerate(file_records, 1):
         spec_list = None
         parse_error = None

@@ -3915,6 +3915,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_worker = None
         self._fit_trend_dialog = None
         self._popup_refs = []
+        self._compare_inset_image_cache = OrderedDict()
         self._background_spec_id = None
         self._relative_zero_enabled = False
         self._font_scale = 1.0
@@ -4003,11 +4004,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._resize_timer = QtCore.QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._update_plot)
+        self._plot_update_timer = QtCore.QTimer(self)
+        self._plot_update_timer.setSingleShot(True)
+        self._plot_update_timer.timeout.connect(self._flush_requested_plot_update)
         # Suppress canvas updates while the window is being moved; re-enable shortly after movement stops
         self._move_timer = QtCore.QTimer(self)
         self._move_timer.setSingleShot(True)
         self._move_timer.timeout.connect(self._end_move_updates)
         self._movement_active = False
+        self._plot_update_pending = False
+        self._last_hint_text = None
+        self._last_mouse_text = None
+        self._last_canvas_cursor = None
+        self._last_hover_update_ts = 0.0
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -4045,6 +4054,25 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._update_plot()
         except Exception:
             pass
+
+    def _request_plot_update(self, *, delay_ms=35):
+        self._plot_update_pending = True
+        try:
+            self._plot_update_timer.start(max(0, int(delay_ms)))
+        except Exception:
+            self._flush_requested_plot_update()
+
+    def _flush_requested_plot_update(self):
+        if not getattr(self, "_plot_update_pending", False):
+            return
+        if getattr(self, "_movement_active", False):
+            try:
+                self._plot_update_timer.start(80)
+            except Exception:
+                pass
+            return
+        self._plot_update_pending = False
+        self._update_plot()
 
     def _get_icon(self, name):
         """Get a themed icon, falling back to empty icon if not available."""
@@ -4314,7 +4342,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.canvas.mpl_connect("button_press_event", self._on_inset_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_inset_motion)
         self.canvas.mpl_connect("button_release_event", self._on_inset_release)
-        self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.canvas.mpl_connect("button_press_event", self._on_minima_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_minima_motion)
         self.canvas.mpl_connect("button_release_event", self._on_minima_release)
@@ -4876,6 +4903,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     break
             item.setHidden(not match)
         self._update_status()
+        self._request_plot_update(delay_ms=90)
 
     def _checked_items(self):
         items = []
@@ -4922,12 +4950,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         spec = items[0].data(0, QtCore.Qt.UserRole)
         self._background_spec_id = self._spec_id(spec) if spec else None
         self._log(f"Background set: {Path(spec.get('path','')).name if spec else ''}")
-        self._update_plot()
+        self._request_plot_update()
 
     def _on_clear_background(self):
         self._record_user_action("Clear background")
         self._background_spec_id = None
-        self._update_plot()
+        self._request_plot_update()
 
     def _background_for(self, spec):
         if not self._background_spec_id:
@@ -5133,7 +5161,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_fit_trend_state()
         self._populate_results_table()
         self._validate_log_axes()
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _on_axis_changed(self):
         self._record_user_action(f"Axis → {self.axis_combo.currentText()}")
@@ -5141,20 +5169,20 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_fit_trend_state()
         self.results_table.setRowCount(0)
         self._validate_log_axes()
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _on_relative_toggled(self, checked):
         self._record_user_action(f"Relative Z → {'on' if checked else 'off'}")
         self._relative_zero_enabled = bool(checked)
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _on_item_check_changed(self, item, column):
         self._record_user_action("Traffic: checked item changed")
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _on_list_selection_changed(self):
         self._record_user_action("Selection changed")
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _update_plot(self):
         channel = self.channel_combo.currentText()
@@ -5272,9 +5300,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if plotted == 0:
             self.ax.text(0.5,0.5,"No data for selected items", ha='center', va='center', transform=self.ax.transAxes)
         elif self._plot_legend_enabled:
-            legend = self.ax.legend(loc=self._legend_loc or 'best', fontsize=self._legend_font)
+            legend_loc = self._legend_loc or ("upper right" if plotted >= 12 else "best")
+            legend = self.ax.legend(loc=legend_loc, fontsize=self._legend_font)
             if legend:
-                legend.set_draggable(True)
+                legend.set_draggable(plotted < 16)
                 try:
                     frame = legend.get_frame()
                     frame.set_alpha(0.9 if self._legend_bg else 0.0)
@@ -5325,17 +5354,26 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         viewer = getattr(self, "viewer", None)
         if not viewer or not file_key:
             return None
+        cache_key = None
+        try:
+            width = int(getattr(viewer, "thumb_size_px", 160))
+            height = max(48, int(round(width * 0.75)))
+            cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
+            cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
+            channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
+            cache_key = (str(file_key), width, height, str(cmap), int(channel_idx))
+            cached = self._compare_inset_image_cache.get(cache_key)
+            if cached is not None:
+                self._compare_inset_image_cache.move_to_end(cache_key)
+                return np.array(cached, copy=True)
+        except Exception:
+            cache_key = None
         thumb = None
         label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
         if label is not None and label.pixmap():
             thumb = label.pixmap()
         if thumb is None:
             try:
-                width = int(getattr(viewer, "thumb_size_px", 160))
-                height = max(48, int(round(width * 0.75)))
-                cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
-                cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
-                channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
                 thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
             except Exception:
                 return None
@@ -5348,6 +5386,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         arr = arr[..., :3] / 255.0
         gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
         tinted = np.stack([gray, gray, gray], axis=-1)
+        if cache_key is not None:
+            self._compare_inset_image_cache[cache_key] = np.array(tinted, copy=True)
+            while len(self._compare_inset_image_cache) > 6:
+                self._compare_inset_image_cache.popitem(last=False)
         return tinted
 
     def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None):
@@ -5571,7 +5613,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 )
                 return
         setattr(self, attr, bool(enabled))
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _reset_plot_style(self):
         self._plot_grid_enabled = True
@@ -5581,7 +5623,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plot_line_width = 1.6
         self._set_visual_checkbox(self.show_points_cb, False)
         self._set_visual_checkbox(self.lines_cb, True)
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _set_visual_checkbox(self, checkbox, state):
         checkbox.blockSignals(True)
@@ -5591,7 +5633,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _bump_line_width(self, delta):
         self._plot_line_width = float(min(4.5, max(0.4, self._plot_line_width + delta)))
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _iter_color_cycle(self):
         palette = self._color_cycle or get_color_cycle(DEFAULT_COLOR_CYCLE)
@@ -5673,7 +5715,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if parent and hasattr(parent, "set_spectro_color_cycle"):
             parent.set_spectro_color_cycle(self._palette_name)
         self._update_color_swatches()
-        self._update_plot()
+        self._request_plot_update(delay_ms=25)
 
     def _draw_fit_for_spec(self, spec_id, color, offset=0.0):
         res = self._fit_results.get(spec_id)
@@ -6112,13 +6154,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _set_filter_enabled(self, section, enabled):
         self._filter_cfg.setdefault(section, {})["enabled"] = bool(enabled)
         self._sync_filter_controls(section)
-        self._update_plot()
+        self._request_plot_update(delay_ms=50)
 
     def _set_filter_value(self, section, key, value):
         cfg = self._filter_cfg.setdefault(section, {})
         cfg[key] = value
         self._sync_filter_controls(section)
-        self._update_plot()
+        self._request_plot_update(delay_ms=60)
 
     def _build_filter_menu(self, menu):
         cfg = self._filter_cfg
@@ -6202,7 +6244,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         for name, section in self._filter_cfg.items():
             section["enabled"] = False
             self._sync_filter_controls(name)
-        self._update_plot()
+        self._request_plot_update(delay_ms=60)
 
     def _build_filter_panel(self):
         group = QtWidgets.QGroupBox("Filters")
@@ -6711,12 +6753,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 y_min_spin.setValue(x_min_spin.value())
                 y_len_spin.setValue(x_len_spin.value())
             _apply_axis("y", y_pos_combo, y_maj_spin, y_min_spin, y_len_spin)
-            self._update_plot()
-        grid_major_cb.toggled.connect(lambda chk: setattr(self, "_grid_major", bool(chk)) or self._update_plot())
-        grid_minor_cb.toggled.connect(lambda chk: setattr(self, "_grid_minor", bool(chk)) or self._update_plot())
-        alpha_spin.valueChanged.connect(lambda v: setattr(self, "_grid_alpha", float(v)) or self._update_plot())
-        lw_spin.valueChanged.connect(lambda v: setattr(self, "_grid_lw", float(v)) or self._update_plot())
-        ls_combo.currentIndexChanged.connect(lambda _i: setattr(self, "_grid_ls", ls_combo.currentData()) or self._update_plot())
+            self._request_plot_update(delay_ms=25)
+        grid_major_cb.toggled.connect(lambda chk: setattr(self, "_grid_major", bool(chk)) or self._request_plot_update(delay_ms=20))
+        grid_minor_cb.toggled.connect(lambda chk: setattr(self, "_grid_minor", bool(chk)) or self._request_plot_update(delay_ms=20))
+        alpha_spin.valueChanged.connect(lambda v: setattr(self, "_grid_alpha", float(v)) or self._request_plot_update(delay_ms=25))
+        lw_spin.valueChanged.connect(lambda v: setattr(self, "_grid_lw", float(v)) or self._request_plot_update(delay_ms=25))
+        ls_combo.currentIndexChanged.connect(lambda _i: setattr(self, "_grid_ls", ls_combo.currentData()) or self._request_plot_update(delay_ms=20))
         x_pos_combo.currentIndexChanged.connect(lambda _i: apply_ticks())
         y_pos_combo.currentIndexChanged.connect(lambda _i: apply_ticks())
         x_maj_spin.valueChanged.connect(lambda _v: apply_ticks())
@@ -6902,7 +6944,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _set_hint_text(self, text=None):
         label = getattr(self, "hint_label", None)
         if label:
-            label.setText(text or self._delta_hint_text)
+            value = text or self._delta_hint_text
+            if value != getattr(self, "_last_hint_text", None):
+                label.setText(value)
+                self._last_hint_text = value
+
+    def _set_canvas_cursor(self, shape):
+        if shape == getattr(self, "_last_canvas_cursor", None):
+            return
+        try:
+            self.canvas.setCursor(shape)
+            self._last_canvas_cursor = shape
+        except Exception:
+            pass
 
     def _on_compare_canvas_click(self, event):
         if not event or event.button != MouseButton.LEFT or event.inaxes != self.ax:
@@ -6934,6 +6988,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._delta_selection = []
 
     def _on_compare_canvas_motion(self, event):
+        now = time.perf_counter()
+        dragging_minima = bool(getattr(self, "_dragging_minima", None))
+        if not dragging_minima and (now - getattr(self, "_last_hover_update_ts", 0.0)) < 0.04:
+            return
+        self._last_hover_update_ts = now
         # Mouse readout
         try:
             x = event.xdata
@@ -6945,12 +7004,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         lbl = getattr(self, "mouse_label", None)
         if lbl is not None:
             if x is None or y is None:
-                lbl.setText("x: —   y: —")
+                text = "x: —   y: —"
             else:
                 try:
-                    lbl.setText(f"x: {float(x):.4g}   y: {float(y):.4g}")
+                    text = f"x: {float(x):.4g}   y: {float(y):.4g}"
                 except Exception:
-                    lbl.setText(f"x: {x}   y: {y}")
+                    text = f"x: {x}   y: {y}"
+            if text != getattr(self, "_last_mouse_text", None):
+                lbl.setText(text)
+                self._last_mouse_text = text
 
         hovered = None
         if event and event.inaxes == self.ax and event.xdata is not None:
@@ -6961,21 +7023,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self._set_hint_text(
                     f"Shift+click {info.get('display_name', 'the line')} to finish ΔLCPD."
                 )
-                self.canvas.setCursor(QtCore.Qt.PointingHandCursor)
+                self._set_canvas_cursor(QtCore.Qt.PointingHandCursor)
             else:
                 self._set_hint_text("Shift+click a second LCPD line to annotate ΔLCPD.")
-                self.canvas.setCursor(QtCore.Qt.ArrowCursor)
+                self._set_canvas_cursor(QtCore.Qt.ArrowCursor)
             return
         if hovered:
             info = hovered[1]
             self._set_hint_text(
                 f"Shift+click {info.get('display_name', 'this LCPD')} to tag it for ΔLCPD."
             )
-            self.canvas.setCursor(QtCore.Qt.PointingHandCursor)
+            self._set_canvas_cursor(QtCore.Qt.PointingHandCursor)
         else:
             self._set_hint_text()
-            self.canvas.setCursor(QtCore.Qt.ArrowCursor)
-        if self._dragging_minima and event and event.inaxes == self.ax and event.ydata is not None:
+            self._set_canvas_cursor(QtCore.Qt.ArrowCursor)
+        if dragging_minima and event and event.inaxes == self.ax and event.ydata is not None:
             meta = self._dragging_minima
             txt = meta.get("text")
             if txt:
@@ -7102,11 +7164,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 except Exception:
                     pass
         self._record_user_action(f"{label} → {'on' if checked else 'off'}")
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _on_offset_changed(self, value):
         self._record_user_action(f"Waterfall offset → {value:.3g}")
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _undo_last_action(self):
         if not self._undo_stack:
@@ -7226,7 +7288,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self.spec_list.takeTopLevelItem(row)
             removed = True
         if removed:
-            self._update_plot()
+            self._request_plot_update(delay_ms=20)
             self._populate_results_table()
             self._update_fit_trend_state()
             self._update_status()
@@ -7259,7 +7321,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             item = root.child(i)
             if not item.isHidden():
                 item.setCheckState(0, QtCore.Qt.Checked)
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _invert_selection(self):
         """Invert the checked state of all visible spectra."""
@@ -7271,7 +7333,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 current_state = item.checkState(0)
                 new_state = QtCore.Qt.Unchecked if current_state == QtCore.Qt.Checked else QtCore.Qt.Checked
                 item.setCheckState(0, new_state)
-        self._update_plot()
+        self._request_plot_update(delay_ms=20)
 
     def _fit_selected(self):
         items = self._selected_items() or self._checked_items()
