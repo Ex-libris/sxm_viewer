@@ -3916,6 +3916,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_trend_dialog = None
         self._popup_refs = []
         self._compare_inset_image_cache = OrderedDict()
+        self._curve_data_cache = OrderedDict()
         self._background_spec_id = None
         self._relative_zero_enabled = False
         self._font_scale = 1.0
@@ -3963,6 +3964,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._point_label_drag = None
         self._last_mouse_xy = None
         self._curve_styles = {}  # spec_id -> {color, lw, ls}
+        self._plotted_spec_ids = []
         self._legend_loc = "best"
         self._legend_font = 8
         self._legend_bg = True
@@ -4088,6 +4090,102 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         base = str(Path(spec.get('path', '')))
         idx = spec.get('matrix_index')
         return f"{base}#m{idx}" if idx is not None else base
+
+    def _filter_signature(self):
+        cfg = self._filter_cfg or {}
+        return (
+            bool(cfg.get("gaussian", {}).get("enabled")), float(cfg.get("gaussian", {}).get("sigma", 1.0)),
+            bool(cfg.get("savgol", {}).get("enabled")), int(cfg.get("savgol", {}).get("window", 11)), int(cfg.get("savgol", {}).get("poly", 3)),
+            bool(cfg.get("median", {}).get("enabled")), int(cfg.get("median", {}).get("size", 3)),
+            bool(cfg.get("fft", {}).get("enabled")), float(cfg.get("fft", {}).get("cutoff", 0.15)),
+            bool(cfg.get("notch", {}).get("enabled")), float(cfg.get("notch", {}).get("freq", 50.0)), float(cfg.get("notch", {}).get("width", 5.0)),
+            bool(cfg.get("derive", {}).get("enabled")), int(cfg.get("derive", {}).get("window", 11)), int(cfg.get("derive", {}).get("poly", 3)),
+        )
+
+    def _clear_curve_data_cache(self):
+        self._curve_data_cache.clear()
+
+    def _visible_plot_items(self):
+        items = []
+        root = self.spec_list.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.isHidden():
+                continue
+            if item.checkState(0) == QtCore.Qt.Checked or item.isSelected():
+                items.append(item)
+        return items
+
+    def _restyle_existing_lines(self):
+        if not self._line_map or not self._plotted_spec_ids:
+            return False
+        selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
+        base_width = self._plot_line_width
+        show_points = self.show_points_cb.isChecked()
+        show_lines = self.lines_cb.isChecked()
+        for spec_id in self._plotted_spec_ids:
+            line = self._line_map.get(spec_id)
+            if line is None:
+                continue
+            style = self._curve_styles.get(spec_id) or {}
+            width = float(style.get("lw", base_width))
+            highlight = spec_id in selected_ids or not selected_ids
+            line.set_linewidth(width * (1.35 if highlight else 0.85))
+            line.set_alpha(1.0 if highlight else 0.4)
+            line.set_linestyle(style.get("ls") or ("-" if show_lines else "None"))
+            marker = "o" if show_points else "None"
+            line.set_marker(marker)
+            if show_points:
+                color = style.get("color") or line.get_color()
+                try:
+                    line.set_markersize(2.6)
+                    line.set_markerfacecolor(color)
+                    line.set_markeredgecolor(color)
+                    line.set_markeredgewidth(0.6)
+                except Exception:
+                    pass
+        self.canvas.draw_idle()
+        return True
+
+    def _apply_palette_to_existing_lines(self):
+        if not self._line_map or not self._plotted_spec_ids:
+            return False
+        cycle = list(self._color_cycle or [])
+        if not cycle:
+            cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        if not cycle:
+            return False
+        for idx, spec_id in enumerate(self._plotted_spec_ids):
+            line = self._line_map.get(spec_id)
+            if line is None:
+                continue
+            style = self._curve_styles.get(spec_id) or {}
+            if style.get("color"):
+                color = style.get("color")
+            else:
+                color = cycle[idx % len(cycle)]
+            try:
+                line.set_color(color)
+                line.set_markerfacecolor(color)
+                line.set_markeredgecolor(color)
+            except Exception:
+                pass
+        legend = self.ax.get_legend()
+        if legend:
+            for idx, leg_line in enumerate(legend.get_lines()):
+                if idx >= len(self._plotted_spec_ids):
+                    break
+                spec_id = self._plotted_spec_ids[idx]
+                style = self._curve_styles.get(spec_id) or {}
+                color = style.get("color") or cycle[idx % len(cycle)]
+                try:
+                    leg_line.set_color(color)
+                    leg_line.set_markerfacecolor(color)
+                    leg_line.set_markeredgecolor(color)
+                except Exception:
+                    pass
+        self.canvas.draw_idle()
+        return True
 
     def _fit_result_headers(self):
         return [
@@ -4794,6 +4892,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_results = {}
         self._update_fit_trend_state()
         self._item_map = {}
+        self._clear_curve_data_cache()
+        self._plotted_spec_ids = []
         prev_channel = self.channel_combo.currentText()
         filter_text = self.filter_edit.text()
         self.spec_list.blockSignals(True)
@@ -5182,6 +5282,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _on_list_selection_changed(self):
         self._record_user_action("Selection changed")
+        target_ids = [item.data(0, QtCore.Qt.UserRole + 1) for item in self._visible_plot_items()]
+        if target_ids == list(getattr(self, "_plotted_spec_ids", [])) and self._restyle_existing_lines():
+            return
         self._request_plot_update(delay_ms=20)
 
     def _update_plot(self):
@@ -5208,6 +5311,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         colors = self._iter_color_cycle()
         plotted = 0
+        plotted_spec_ids = []
+        axis_choice = self.axis_combo.currentData() if getattr(self, "axis_combo", None) is not None else "primary"
+        bg_id = self._background_spec_id or ""
+        filter_sig = self._filter_signature()
 
         # Precompute relative zero if needed
         rel_zero = 0.0
@@ -5235,27 +5342,49 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec = item.data(0, QtCore.Qt.UserRole)
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             channels = spec.get('channels') or {}
-            data = channels.get(channel)
-            axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
-            if data is None or not axis_vals.size:
-                continue
+            cache_key = (spec_id, channel, axis_choice, bg_id, filter_sig)
+            cached_curve = self._curve_data_cache.get(cache_key)
+            if cached_curve is not None:
+                self._curve_data_cache.move_to_end(cache_key)
+                x_vals = np.array(cached_curve["x"], copy=True)
+                y_filtered = np.array(cached_curve["y"], copy=True)
+                axis_label = cached_curve["axis_label"]
+                axis_unit = cached_curve["axis_unit"]
+                axis_unit_plot = cached_curve["axis_unit_plot"]
+                y_unit_raw = cached_curve["y_unit_raw"]
+                y_unit_final = cached_curve["y_unit_final"]
+            else:
+                data = channels.get(channel)
+                axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
+                if data is None or not axis_vals.size:
+                    continue
 
-            # Apply background subtraction if requested
-            bg_spec = self._background_for(spec)
-            y_base = self._subtract_background(axis_vals, data, bg_spec)
+                bg_spec = self._background_for(spec)
+                y_base = self._subtract_background(axis_vals, data, bg_spec)
+                x_vals = axis_vals
+                axis_unit_plot = axis_unit
+                if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
+                    axis_unit_plot = "mV"
+                    x_vals = x_vals * 1000.0
+                y_unit_raw = self._channel_unit_for_spec(spec, channel)
+                y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_base, y_unit_raw, axis_unit_plot)
+                self._curve_data_cache[cache_key] = {
+                    "x": np.array(x_vals, copy=True),
+                    "y": np.array(y_filtered, copy=True),
+                    "axis_label": axis_label,
+                    "axis_unit": axis_unit,
+                    "axis_unit_plot": axis_unit_plot,
+                    "y_unit_raw": y_unit_raw,
+                    "y_unit_final": y_unit_final,
+                }
+                while len(self._curve_data_cache) > 512:
+                    self._curve_data_cache.popitem(last=False)
+            if not x_vals.size:
+                continue
             # Apply waterfall offset
-            y_data = y_base + (plotted * offset_val) if waterfall else y_base
-            x_vals = axis_vals
+            y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
             if relative_nm and axis_unit == "nm":
                 x_vals = x_vals - rel_zero
-            axis_plot_scale = 1.0
-            axis_unit_plot = axis_unit
-            if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
-                axis_plot_scale = 1000.0
-                axis_unit_plot = "mV"
-                x_vals = x_vals * axis_plot_scale
-            y_unit_raw = self._channel_unit_for_spec(spec, channel)
-            y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_data, y_unit_raw, axis_unit_plot)
             y_units_after_filters.append(y_unit_final or y_unit_raw)
             color = next(colors)
             highlight = spec_id in selected_ids or not selected_ids
@@ -5294,6 +5423,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 except Exception:
                     pass
             self._line_map[spec_id] = line
+            plotted_spec_ids.append(spec_id)
             plotted += 1
             if spec_id in self._fit_results:
                 self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
@@ -5348,6 +5478,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_position_inset_compare()
         self._apply_font_scale()
         # canvas.draw_idle() is called in _apply_font_scale
+        self._plotted_spec_ids = plotted_spec_ids
         self._update_status(plotted)
 
     def _load_thumbnail_array_for_inset(self, file_key):
@@ -5715,6 +5846,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if parent and hasattr(parent, "set_spectro_color_cycle"):
             parent.set_spectro_color_cycle(self._palette_name)
         self._update_color_swatches()
+        if self._apply_palette_to_existing_lines():
+            return
         self._request_plot_update(delay_ms=25)
 
     def _draw_fit_for_spec(self, spec_id, color, offset=0.0):
@@ -7300,6 +7433,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._line_map.clear()
         self._legend_map.clear()
         self._fit_results = {}
+        self._plotted_spec_ids = []
+        self._clear_curve_data_cache()
         self._update_fit_trend_state()
         self.ax.clear()
         self.canvas.draw_idle()
