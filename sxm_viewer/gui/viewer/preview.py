@@ -43,6 +43,16 @@ from ..thumbnail_render import detect_valid_scan_region
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)
 
+
+def _resolve_view_clim(viewer, file_key, channel_idx, arr, *, relative_zero: bool = False):
+    helper = getattr(viewer, "_resolve_preview_clim", None)
+    if callable(helper):
+        try:
+            return helper(str(file_key), int(channel_idx), arr, relative_zero=relative_zero)
+        except Exception:
+            pass
+    return _auto_preview_clim(arr, relative_zero=relative_zero)
+
 def _build_spec_transform(header, xpix, ypix):
     if not header:
         return None
@@ -630,7 +640,13 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "spec_pixels": list(spec_pixels),
         "stack_badges": list(stack_badges),
     }
-    clim = _auto_preview_clim(display_arr, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
+    clim = _resolve_view_clim(
+        viewer,
+        header_path,
+        channel_idx,
+        display_arr,
+        relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+    )
     if clim:
         view["clim"] = clim
     return {
@@ -751,7 +767,13 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'acquisition_bias_text': acq_overlay.get("bias_text", ""),
         'acquisition_setpoint_text': acq_overlay.get("setpoint_text", ""),
     }
-    clim_main = _auto_preview_clim(display_arr, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
+    clim_main = _resolve_view_clim(
+        viewer,
+        file_key,
+        channel_idx,
+        display_arr,
+        relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+    )
     spec_pixels = []
     for spec in overlay_specs:
         coords = None
@@ -816,7 +838,13 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             meta2 = dict(meta)
             meta2['channel'] = caption2
             meta2['channel_index'] = int(idx2)
-            clim2 = _auto_preview_clim(arr2_display, relative_zero=bool(getattr(viewer, "display_units_relative", False)))
+            clim2 = _resolve_view_clim(
+                viewer,
+                file_key,
+                idx2,
+                arr2_display,
+                relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+            )
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
                      'cmap': cmap2, 'unit_normalized': unit2_final, 'unit': unit2_display,
                      'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),

@@ -128,7 +128,7 @@ def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
 
 # ---------- Background thumbnail helpers ----------
 class _ThumbnailJobSignals(QtCore.QObject):
-    finished = QtCore.pyqtSignal(str, int, object, object, str, int)
+    finished = QtCore.pyqtSignal(str, int, object, object, str, object, int)
     failed = QtCore.pyqtSignal(str, int, str, int)
 
 
@@ -137,7 +137,7 @@ class _ThumbnailJob(QtCore.QRunnable):
     Background task that builds a QImage for a thumbnail and passes it back
     to the GUI thread via signals.
     """
-    def __init__(self, viewer, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation):
+    def __init__(self, viewer, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, clim, generation):
         super().__init__()
         self.viewer = viewer
         self.file_key = str(file_key)
@@ -147,6 +147,7 @@ class _ThumbnailJob(QtCore.QRunnable):
         self.thumb_w = int(thumb_w)
         self.thumb_h = int(thumb_h)
         self.cmap_name = str(cmap_name)
+        self.clim = clim
         self.generation = int(generation)
         self.signals = _ThumbnailJobSignals()
 
@@ -160,8 +161,22 @@ class _ThumbnailJob(QtCore.QRunnable):
                 self.thumb_w,
                 self.thumb_h,
             )
-            qimg = array_to_qimage(thumb_arr, cmap_name=self.cmap_name)
-            self.signals.finished.emit(self.file_key, self.channel_idx, qimg, data_key, self.cmap_name, self.generation)
+            vmin = vmax = None
+            try:
+                if self.clim is not None:
+                    vmin, vmax = self.clim
+            except Exception:
+                vmin = vmax = None
+            qimg = array_to_qimage(thumb_arr, cmap_name=self.cmap_name, vmin=vmin, vmax=vmax)
+            self.signals.finished.emit(
+                self.file_key,
+                self.channel_idx,
+                qimg,
+                data_key,
+                self.cmap_name,
+                self.clim,
+                self.generation,
+            )
         except Exception as exc:
             self.signals.failed.emit(self.file_key, self.channel_idx, str(exc), self.generation)
 
