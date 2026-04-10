@@ -4852,6 +4852,60 @@ QLabel:hover {{
         self._virtual_counter = ctr
         return f"processed_{stem}_{op}{chan}_{ctr}"
 
+    def _thumbnail_cmap_override(self, file_key: str, channel_idx: int, default_cmap: str | None = None):
+        try:
+            key = str(file_key)
+            idx = int(channel_idx)
+        except Exception:
+            return default_cmap
+        try:
+            cmap = (getattr(self, "per_file_channel_cmap", {}) or {}).get((key, idx))
+        except Exception:
+            cmap = None
+        return str(cmap) if cmap else default_cmap
+
+    def _set_virtual_copy_cmap(self, paths, cmap_name=None):
+        targets = [str(Path(p)) for p in list(paths or []) if self._is_processed_key(str(p))]
+        if not targets:
+            return 0
+        changed = 0
+        for key in targets:
+            payload = (getattr(self, "_processed_views", {}) or {}).get(key) or {}
+            channel_idx = payload.get("channel_idx")
+            if channel_idx is None:
+                continue
+            try:
+                channel_idx = int(channel_idx)
+            except Exception:
+                continue
+            cmap_key = (key, channel_idx)
+            if cmap_name:
+                if self.per_file_channel_cmap.get(cmap_key) == str(cmap_name):
+                    continue
+                self.per_file_channel_cmap[cmap_key] = str(cmap_name)
+            else:
+                if cmap_key not in self.per_file_channel_cmap:
+                    continue
+                self.per_file_channel_cmap.pop(cmap_key, None)
+            changed += 1
+        if changed:
+            try:
+                self._invalidate_thumbnail_cache(paths=targets)
+            except Exception:
+                pass
+            try:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
+            try:
+                if self.last_preview:
+                    preview_key, preview_idx = self.last_preview
+                    if str(preview_key) in targets:
+                        self.show_file_channel(preview_key, preview_idx, use_local_cmap=True)
+            except Exception:
+                pass
+        return changed
+
     def _normalize_virtual_copy_order(self):
         ordered = []
         seen = set()
@@ -7850,6 +7904,37 @@ QLabel:hover {{
         virt_other = QtWidgets.QAction("Choose channel...", virt_menu)
         virt_other.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, None))
         virt_menu.addAction(virt_other)
+        virtual_targets = [str(p) for p in targets if self._is_processed_key(str(p))]
+        if virtual_targets:
+            virt_menu.addSeparator()
+            cmap_menu = virt_menu.addMenu("Colormap")
+            try:
+                cmap_names = sorted(colormaps.keys())
+            except Exception:
+                cmap_names = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+            featured = []
+            for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
+                if name in cmap_names and name not in featured:
+                    featured.append(name)
+            remaining = [name for name in cmap_names if name not in featured]
+            shown = featured + remaining
+            more_cmaps_menu = None
+            for idx, cmap_name in enumerate(shown):
+                parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
+                if parent_menu is None:
+                    more_cmaps_menu = cmap_menu.addMenu("More...")
+                    parent_menu = more_cmaps_menu
+                act = QtWidgets.QAction(cmap_name, parent_menu)
+                try:
+                    act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
+                except Exception:
+                    pass
+                act.triggered.connect(lambda _, paths=list(virtual_targets), name=cmap_name: self._set_virtual_copy_cmap(paths, name))
+                parent_menu.addAction(act)
+            cmap_menu.addSeparator()
+            cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
+            cmap_reset.triggered.connect(lambda _, paths=list(virtual_targets): self._set_virtual_copy_cmap(paths, None))
+            cmap_menu.addAction(cmap_reset)
         virt_menu.addSeparator()
         virt_remove = QtWidgets.QAction("Remove virtual copies (selected)", virt_menu)
         virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))

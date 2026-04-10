@@ -16,7 +16,12 @@ class ThumbnailController:
     def handle_thumbnail_clicked(self, header_path_str, channel_idx):
         """Display the clicked thumbnail in preview and record selection."""
         viewer = self.viewer
-        viewer.show_file_channel(header_path_str, channel_idx)
+        use_local_cmap = False
+        try:
+            use_local_cmap = bool(viewer._is_processed_key(str(header_path_str)))
+        except Exception:
+            use_local_cmap = False
+        viewer.show_file_channel(header_path_str, channel_idx, use_local_cmap=use_local_cmap)
         key = str(header_path_str)
         viewer.selected_file_for_thumbs = key
         viewer._refresh_thumb_selection_styles()

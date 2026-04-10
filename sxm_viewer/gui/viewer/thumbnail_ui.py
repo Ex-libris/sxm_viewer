@@ -65,6 +65,13 @@ def _thumbnail_channel_for_key(viewer, file_key, default_channel_idx):
         return 0
 
 
+def _thumbnail_cmap_for_key(viewer, file_key, channel_idx, default_cmap):
+    try:
+        return viewer._thumbnail_cmap_override(file_key, channel_idx, default_cmap)
+    except Exception:
+        return default_cmap
+
+
 def _ensure_thumb_click_timer(viewer):
     timer = getattr(viewer, "_thumb_click_timer", None)
     if timer is not None:
@@ -616,6 +623,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     fds = item["fds"]
                     t = item["path"]
                     thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
+                    entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
                     lbl = QtWidgets.QLabel()
                     lbl.setAlignment(QtCore.Qt.AlignCenter)
                     lbl.setProperty("file_path", key)
@@ -664,7 +672,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                         except Exception:
                             data_key = None
                         if data_key:
-                            base_pix = viewer.thumb_cache.get((data_key, cmap_name))
+                            base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
                         if base_pix is not None:
                             pix = base_pix.copy()
                             crop_info = None
@@ -683,7 +691,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                             viewer._thumb_loaded.add(key)
                         else:
                             lbl.setProperty("spec_markers", [])
-                        viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+                        viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
                     else:
                         blank = QtGui.QPixmap(thumb_w, thumb_h)
                         blank.fill(QtGui.QColor('black'))
@@ -752,6 +760,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             continue
         header, fds = viewer.headers[key]
         thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
+        entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
         lbl = QtWidgets.QLabel()
         lbl.setAlignment(QtCore.Qt.AlignCenter)
         lbl.setProperty("file_path", key)
@@ -801,7 +810,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             except Exception:
                 data_key = None
             if data_key:
-                base_pix = viewer.thumb_cache.get((data_key, cmap_name))
+                base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
             if base_pix is not None:
                 pix = base_pix.copy()
                 crop_info = None
@@ -820,7 +829,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 viewer._thumb_loaded.add(key)
             else:
                 lbl.setProperty("spec_markers", [])
-            viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+            viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
         else:
             blank = QtGui.QPixmap(thumb_w, thumb_h)
             blank.fill(QtGui.QColor('black'))
