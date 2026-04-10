@@ -4133,6 +4133,251 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             idx = np.append(idx, n - 1)
         return x_arr[idx], y_arr[idx]
 
+    def _curve_payload_for_plot(self, spec, spec_id, channel, axis_choice, bg_id, filter_sig):
+        cache_key = (spec_id, channel, axis_choice, bg_id, filter_sig)
+        cached_curve = self._curve_data_cache.get(cache_key)
+        if cached_curve is not None:
+            self._curve_data_cache.move_to_end(cache_key)
+            return {
+                "x": np.array(cached_curve["x"], copy=True),
+                "y": np.array(cached_curve["y"], copy=True),
+                "axis_label": cached_curve["axis_label"],
+                "axis_unit": cached_curve["axis_unit"],
+                "axis_unit_plot": cached_curve["axis_unit_plot"],
+                "y_unit_raw": cached_curve["y_unit_raw"],
+                "y_unit_final": cached_curve["y_unit_final"],
+            }
+        channels = spec.get("channels") or {}
+        data = channels.get(channel)
+        axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
+        if data is None or not axis_vals.size:
+            return None
+        bg_spec = self._background_for(spec)
+        y_base = self._subtract_background(axis_vals, data, bg_spec)
+        x_vals = axis_vals
+        axis_unit_plot = axis_unit
+        if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
+            axis_unit_plot = "mV"
+            x_vals = x_vals * 1000.0
+        y_unit_raw = self._channel_unit_for_spec(spec, channel)
+        y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_base, y_unit_raw, axis_unit_plot)
+        payload = {
+            "x": np.array(x_vals, copy=True),
+            "y": np.array(y_filtered, copy=True),
+            "axis_label": axis_label,
+            "axis_unit": axis_unit,
+            "axis_unit_plot": axis_unit_plot,
+            "y_unit_raw": y_unit_raw,
+            "y_unit_final": y_unit_final,
+        }
+        self._curve_data_cache[cache_key] = {
+            "x": np.array(payload["x"], copy=True),
+            "y": np.array(payload["y"], copy=True),
+            "axis_label": axis_label,
+            "axis_unit": axis_unit,
+            "axis_unit_plot": axis_unit_plot,
+            "y_unit_raw": y_unit_raw,
+            "y_unit_final": y_unit_final,
+        }
+        while len(self._curve_data_cache) > 512:
+            self._curve_data_cache.popitem(last=False)
+        return payload
+
+    def _clear_empty_plot_text(self):
+        txt = getattr(self, "_empty_plot_text", None)
+        if txt is not None:
+            try:
+                txt.remove()
+            except Exception:
+                pass
+        self._empty_plot_text = None
+
+    def _set_empty_plot_text(self):
+        self._clear_empty_plot_text()
+        try:
+            self._empty_plot_text = self.ax.text(
+                0.5,
+                0.5,
+                "No data for selected items",
+                ha="center",
+                va="center",
+                transform=self.ax.transAxes,
+            )
+        except Exception:
+            self._empty_plot_text = None
+
+    def _rebuild_compare_legend(self, plotted_spec_ids):
+        self._legend_map.clear()
+        existing = self.ax.get_legend()
+        if existing is not None:
+            try:
+                existing.remove()
+            except Exception:
+                pass
+        if not self._plot_legend_enabled or not plotted_spec_ids:
+            return
+        legend_loc = self._legend_loc or ("upper right" if len(plotted_spec_ids) >= 12 else "best")
+        legend = self.ax.legend(loc=legend_loc, fontsize=self._legend_font)
+        if not legend:
+            return
+        legend.set_draggable(len(plotted_spec_ids) < 16)
+        try:
+            frame = legend.get_frame()
+            frame.set_alpha(0.9 if self._legend_bg else 0.0)
+            frame.set_facecolor("white" if self._legend_bg else (0, 0, 0, 0))
+            frame.set_edgecolor("black" if self._legend_border else (0, 0, 0, 0))
+            frame.set_linewidth(0.8 if self._legend_border else 0.0)
+        except Exception:
+            pass
+        for leg_line, spec_id in zip(legend.get_lines(), plotted_spec_ids):
+            try:
+                leg_line.set_picker(True)
+            except Exception:
+                pass
+            self._legend_map[leg_line] = spec_id
+
+    def _can_incremental_plot_update(self):
+        if not self._line_map:
+            return False
+        if getattr(self, "_fit_results", None):
+            return False
+        if getattr(self, "_minima_meta", None):
+            return False
+        if getattr(self, "_point_labels", None):
+            return False
+        if getattr(self, "_delta_annotation_artists", None):
+            return False
+        return True
+
+    def _update_plot_incremental(self):
+        plot_items = self._visible_plot_items()
+        if not plot_items:
+            return False
+        old_plotted_ids = list(getattr(self, "_plotted_spec_ids", []))
+        channel = self.channel_combo.currentText()
+        waterfall = self.waterfall_cb.isChecked()
+        show_points = self.show_points_cb.isChecked()
+        show_lines = self.lines_cb.isChecked()
+        offset_val = self.offset_spin.value()
+        relative_nm = bool(self._relative_zero_enabled)
+        axis_choice = self.axis_combo.currentData() if getattr(self, "axis_combo", None) is not None else "primary"
+        bg_id = self._background_spec_id or ""
+        filter_sig = self._filter_signature()
+        selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
+        colors = self._iter_color_cycle()
+        visible_count = max(1, len(plot_items))
+        rel_zero = 0.0
+        if relative_nm:
+            mins = []
+            for item in self._selected_items() or self._checked_items():
+                spec = item.data(0, QtCore.Qt.UserRole)
+                if not spec:
+                    continue
+                axis_vals, _, unit = self._axis_for_spec(spec)
+                if axis_vals.size and unit == "nm":
+                    mins.append(np.nanmin(axis_vals))
+            if mins:
+                rel_zero = min(mins)
+        y_units_after_filters = []
+        plotted = 0
+        plotted_spec_ids = []
+        active_ids = set()
+        xlabel = "Axis"
+        for item in plot_items:
+            spec = item.data(0, QtCore.Qt.UserRole)
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
+            payload = self._curve_payload_for_plot(spec, spec_id, channel, axis_choice, bg_id, filter_sig)
+            if payload is None:
+                line = self._line_map.pop(spec_id, None)
+                if line is not None:
+                    try:
+                        line.remove()
+                    except Exception:
+                        pass
+                continue
+            x_vals = payload["x"]
+            y_filtered = payload["y"]
+            axis_label = payload["axis_label"]
+            axis_unit = payload["axis_unit"]
+            y_unit_raw = payload["y_unit_raw"]
+            y_unit_final = payload["y_unit_final"]
+            y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
+            x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
+            x_plot, y_plot = self._decimate_curve_for_display(x_plot, y_data, visible_count)
+            if not x_plot.size:
+                continue
+            y_units_after_filters.append(y_unit_final or y_unit_raw)
+            color = next(colors)
+            highlight = spec_id in selected_ids or not selected_ids
+            label_txt = self._display_name(spec)
+            if self._legend_filename_only:
+                try:
+                    label_txt = Path(spec.get("path") or "").name or label_txt
+                except Exception:
+                    pass
+            line = self._line_map.get(spec_id)
+            if line is None:
+                line, = self.ax.plot([], [])
+                self._line_map[spec_id] = line
+            style = self._curve_styles.get(spec_id) or {}
+            line.set_data(x_plot, y_plot)
+            line.set_label(label_txt)
+            line.set_visible(True)
+            line.set_color(style.get("color") or color)
+            width = float(style.get("lw", self._plot_line_width))
+            line.set_linewidth(width * (1.35 if highlight else 0.85))
+            line.set_alpha(1.0 if highlight else 0.4)
+            line.set_linestyle(style.get("ls") or ("-" if show_lines else "None"))
+            line.set_marker("o" if show_points else "None")
+            if show_points:
+                try:
+                    line.set_markersize(2.6)
+                    line.set_markerfacecolor(style.get("color") or color)
+                    line.set_markeredgecolor(style.get("color") or color)
+                    line.set_markeredgewidth(0.6)
+                except Exception:
+                    pass
+            active_ids.add(spec_id)
+            plotted_spec_ids.append(spec_id)
+            plotted += 1
+            if relative_nm:
+                xlabel = "Z (nm, relative)"
+            elif axis_label:
+                if axis_unit and axis_unit.lower() == "v":
+                    xlabel = f"{axis_label} (mV)"
+                elif axis_unit and axis_unit not in str(axis_label):
+                    xlabel = f"{axis_label} ({axis_unit})"
+                else:
+                    xlabel = axis_label
+        for spec_id in list(self._line_map.keys()):
+            if spec_id not in active_ids:
+                line = self._line_map.pop(spec_id, None)
+                if line is not None:
+                    try:
+                        line.remove()
+                    except Exception:
+                        pass
+        if not plotted_spec_ids:
+            return False
+        self._clear_empty_plot_text()
+        self.ax.set_xlabel(xlabel)
+        unit = next((val for val in y_units_after_filters if val), None)
+        self.ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
+        self.ax.set_xscale("log" if self._plot_x_log else "linear")
+        self.ax.set_yscale("log" if self._plot_y_log else "linear")
+        self._apply_grid_and_ticks()
+        self.ax.relim()
+        self.ax.autoscale_view()
+        if plotted_spec_ids != old_plotted_ids or self.ax.get_legend() is None:
+            self._rebuild_compare_legend(plotted_spec_ids)
+            self._update_position_inset_compare()
+        else:
+            self._apply_legend_settings()
+        self._apply_font_scale()
+        self._plotted_spec_ids = plotted_spec_ids
+        self._update_status(plotted)
+        return True
+
     def _visible_plot_items(self):
         items = []
         root = self.spec_list.invisibleRootItem()
@@ -5316,8 +5561,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._request_plot_update(delay_ms=20)
 
     def _update_plot(self):
+        if self._can_incremental_plot_update() and self._update_plot_incremental():
+            return
         channel = self.channel_combo.currentText()
         self.ax.clear()
+        self._empty_plot_text = None
         self._grid_major = bool(self._plot_grid_enabled)
         # Base grid handled in _apply_grid_and_ticks
         self.ax.grid(False)
@@ -5365,46 +5613,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         for item in plot_items:
             spec = item.data(0, QtCore.Qt.UserRole)
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
-            channels = spec.get('channels') or {}
-            cache_key = (spec_id, channel, axis_choice, bg_id, filter_sig)
-            cached_curve = self._curve_data_cache.get(cache_key)
-            if cached_curve is not None:
-                self._curve_data_cache.move_to_end(cache_key)
-                x_vals = np.array(cached_curve["x"], copy=True)
-                y_filtered = np.array(cached_curve["y"], copy=True)
-                axis_label = cached_curve["axis_label"]
-                axis_unit = cached_curve["axis_unit"]
-                axis_unit_plot = cached_curve["axis_unit_plot"]
-                y_unit_raw = cached_curve["y_unit_raw"]
-                y_unit_final = cached_curve["y_unit_final"]
-            else:
-                data = channels.get(channel)
-                axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
-                if data is None or not axis_vals.size:
-                    continue
-
-                bg_spec = self._background_for(spec)
-                y_base = self._subtract_background(axis_vals, data, bg_spec)
-                x_vals = axis_vals
-                axis_unit_plot = axis_unit
-                if axis_unit.lower() == "v" and np.isfinite(x_vals).any():
-                    axis_unit_plot = "mV"
-                    x_vals = x_vals * 1000.0
-                y_unit_raw = self._channel_unit_for_spec(spec, channel)
-                y_filtered, y_unit_final = self._apply_data_filters(x_vals, y_base, y_unit_raw, axis_unit_plot)
-                self._curve_data_cache[cache_key] = {
-                    "x": np.array(x_vals, copy=True),
-                    "y": np.array(y_filtered, copy=True),
-                    "axis_label": axis_label,
-                    "axis_unit": axis_unit,
-                    "axis_unit_plot": axis_unit_plot,
-                    "y_unit_raw": y_unit_raw,
-                    "y_unit_final": y_unit_final,
-                }
-                while len(self._curve_data_cache) > 512:
-                    self._curve_data_cache.popitem(last=False)
-            if not x_vals.size:
+            payload = self._curve_payload_for_plot(spec, spec_id, channel, axis_choice, bg_id, filter_sig)
+            if payload is None:
                 continue
+            x_vals = payload["x"]
+            y_filtered = payload["y"]
+            axis_label = payload["axis_label"]
+            axis_unit = payload["axis_unit"]
+            y_unit_raw = payload["y_unit_raw"]
+            y_unit_final = payload["y_unit_final"]
             # Apply waterfall offset
             y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
             x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
@@ -5452,7 +5669,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if spec_id in self._fit_results:
                 self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
         if plotted == 0:
-            self.ax.text(0.5,0.5,"No data for selected items", ha='center', va='center', transform=self.ax.transAxes)
+            self._set_empty_plot_text()
         elif self._plot_legend_enabled:
             legend_loc = self._legend_loc or ("upper right" if plotted >= 12 else "best")
             legend = self.ax.legend(loc=legend_loc, fontsize=self._legend_font)
@@ -7805,13 +8022,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         try:
             legend.set_visible(self._plot_legend_enabled)
-            legend._loc = self._legend_loc or legend._loc
-            legend.set_fontsize(self._legend_font)
             frame = legend.get_frame()
             frame.set_alpha(0.9 if self._legend_bg else 0.0)
             frame.set_facecolor("white" if self._legend_bg else (0, 0, 0, 0))
             frame.set_edgecolor("black" if self._legend_border else (0, 0, 0, 0))
             frame.set_linewidth(0.8 if self._legend_border else 0.0)
+            for text in legend.get_texts():
+                text.set_fontsize(self._legend_font)
+            if self._plot_legend_enabled:
+                legend.set_draggable(len(getattr(self, "_plotted_spec_ids", [])) < 16)
             self.canvas.draw_idle()
         except Exception:
             pass
