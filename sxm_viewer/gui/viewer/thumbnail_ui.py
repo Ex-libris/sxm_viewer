@@ -507,7 +507,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     card_w = thumb_w + 24
     max_cols = max(1, min(12, int(avail_w / card_w)))
     row = 0; col = 0
-    cmap_name = viewer.thumb_cmap_combo.currentText() or viewer.thumb_cmap
+    cmap_name = getattr(viewer, "thumb_cmap", None) or viewer.thumb_cmap_combo.currentText()
     viewer._thumb_generation += 1
     generation = viewer._thumb_generation
     files_iter = list(viewer.files)
@@ -1195,7 +1195,30 @@ def _clear_thumb_multi_selection(viewer, update_styles=True):
 
 
 def on_thumb_cmap_changed(viewer, idx):
-    viewer.thumb_cmap = viewer.thumb_cmap_combo.currentText(); viewer.config['thumbnail_cmap'] = viewer.thumb_cmap; save_config(viewer.config)
+    cmap_name = viewer.thumb_cmap_combo.currentText()
+    targets = list(getattr(viewer, "_ordered_thumbnail_selection", lambda: [])() or [])
+    if not targets:
+        current = str(getattr(viewer, "selected_file_for_thumbs", "") or "")
+        if current:
+            targets = [current]
+    image_targets = [str(path) for path in targets if str(path) in getattr(viewer, "thumb_widgets", {})]
+    if image_targets:
+        try:
+            changed = int(viewer._set_thumbnail_entry_cmap(image_targets, cmap_name) or 0)
+        except Exception:
+            changed = 0
+        if changed:
+            combo = getattr(viewer, "thumb_cmap_combo", None)
+            if combo is not None:
+                try:
+                    combo.blockSignals(True)
+                    combo.setCurrentText(getattr(viewer, "thumb_cmap", "") or cmap_name)
+                finally:
+                    combo.blockSignals(False)
+            return
+    viewer.thumb_cmap = cmap_name
+    viewer.config['thumbnail_cmap'] = viewer.thumb_cmap
+    save_config(viewer.config)
     viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
 __all__ = [
     "_thumb_dimensions",

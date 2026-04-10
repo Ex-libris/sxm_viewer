@@ -4864,14 +4864,27 @@ QLabel:hover {{
             cmap = None
         return str(cmap) if cmap else default_cmap
 
-    def _set_virtual_copy_cmap(self, paths, cmap_name=None):
-        targets = [str(Path(p)) for p in list(paths or []) if self._is_processed_key(str(p))]
+    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None):
+        targets = [str(Path(p)) for p in list(paths or []) if p]
         if not targets:
             return 0
         changed = 0
         for key in targets:
-            payload = (getattr(self, "_processed_views", {}) or {}).get(key) or {}
-            channel_idx = payload.get("channel_idx")
+            channel_idx = None
+            label = (getattr(self, "_thumb_labels", {}) or {}).get(key)
+            if label is not None:
+                try:
+                    channel_idx = label.property("channel_index")
+                except Exception:
+                    channel_idx = None
+            if channel_idx is None:
+                payload = (getattr(self, "_processed_views", {}) or {}).get(key) or {}
+                channel_idx = payload.get("channel_idx")
+            if channel_idx is None:
+                try:
+                    channel_idx = int(self.channel_dropdown.currentIndex())
+                except Exception:
+                    channel_idx = 0
             if channel_idx is None:
                 continue
             try:
@@ -4905,6 +4918,10 @@ QLabel:hover {{
             except Exception:
                 pass
         return changed
+
+    def _set_virtual_copy_cmap(self, paths, cmap_name=None):
+        targets = [str(Path(p)) for p in list(paths or []) if self._is_processed_key(str(p))]
+        return self._set_thumbnail_entry_cmap(targets, cmap_name)
 
     def _normalize_virtual_copy_order(self):
         ordered = []

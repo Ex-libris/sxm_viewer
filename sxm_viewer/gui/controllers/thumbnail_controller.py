@@ -18,7 +18,7 @@ class ThumbnailController:
         viewer = self.viewer
         use_local_cmap = False
         try:
-            use_local_cmap = bool(viewer._is_processed_key(str(header_path_str)))
+            use_local_cmap = bool((getattr(viewer, "per_file_channel_cmap", {}) or {}).get((str(header_path_str), int(channel_idx))))
         except Exception:
             use_local_cmap = False
         viewer.show_file_channel(header_path_str, channel_idx, use_local_cmap=use_local_cmap)
