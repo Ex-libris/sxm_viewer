@@ -47,6 +47,31 @@ def _safe_set_property(widget, name, value):
         return False
 
 
+def _thumbnail_channel_for_key(viewer, file_key, default_channel_idx):
+    try:
+        key = str(file_key)
+    except Exception:
+        key = file_key
+    try:
+        processed = getattr(viewer, "_processed_views", {}) or {}
+        payload = processed.get(key)
+        if payload and "channel_idx" in payload:
+            return int(payload.get("channel_idx"))
+    except Exception:
+        pass
+    try:
+        return int(default_channel_idx)
+    except Exception:
+        return 0
+
+
+def _thumbnail_cmap_for_key(viewer, file_key, channel_idx, default_cmap):
+    try:
+        return viewer._thumbnail_cmap_override(file_key, channel_idx, default_cmap)
+    except Exception:
+        return default_cmap
+
+
 def _ensure_thumb_click_timer(viewer):
     timer = getattr(viewer, "_thumb_click_timer", None)
     if timer is not None:
@@ -161,16 +186,19 @@ def _spectro_thumb_selection_key(viewer, path):
 
 def _spectro_available_channels(spec):
     channels = list((spec.get("channels") or {}).keys())
+    if not channels:
+        channels = list(spec.get("available_channels") or [])
     return [str(ch) for ch in channels if str(ch).strip()]
 
 
 def _spectro_display_channel(viewer, spec):
     path = _spectro_thumb_selection_key(viewer, spec.get("path", ""))
     override = getattr(viewer, "spectro_thumb_channel_by_path", {}).get(path, "")
-    if override and override in (spec.get("channels") or {}):
+    available = set(_spectro_available_channels(spec))
+    if override and override in available:
         return override
     default = getattr(viewer, "spectro_miniature_default_channel", "")
-    if default and default in (spec.get("channels") or {}):
+    if default and default in available:
         return default
     channels = _spectro_available_channels(spec)
     return channels[0] if channels else ""
@@ -305,6 +333,26 @@ def _set_thumbnail_selection_by_order(viewer, ordered_keys, start_key, end_key, 
 
 def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=None):
     """Render a compact spectral preview for spectroscopy-only thumbnail cards."""
+    try:
+        cache_key = (
+            str(spec.get("path") or ""),
+            spec.get("file_mtime") or spec.get("time") or "",
+            int(width),
+            int(height),
+            str(channel_name or ""),
+            str(getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)),
+        )
+        pix_cache = getattr(viewer, "_spectro_miniature_cache", None)
+        if pix_cache is not None and cache_key in pix_cache:
+            return QtGui.QPixmap(pix_cache[cache_key])
+    except Exception:
+        cache_key = None
+        pix_cache = None
+    if not (spec.get("channels") or {}) and hasattr(viewer, "hydrate_spectro_entry"):
+        try:
+            viewer.hydrate_spectro_entry(spec)
+        except Exception:
+            pass
     pix = QtGui.QPixmap(max(32, int(width)), max(32, int(height)))
     pix.fill(QtGui.QColor("#0d1220"))
     painter = QtGui.QPainter(pix)
@@ -430,6 +478,13 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
         painter.drawText(QtCore.QRectF(rect.left() + 6, rect.bottom() - 16, rect.width() - 12, 12), QtCore.Qt.AlignLeft, footer)
     finally:
         painter.end()
+    try:
+        if pix_cache is not None and cache_key is not None:
+            pix_cache[cache_key] = QtGui.QPixmap(pix)
+            while len(pix_cache) > 96:
+                pix_cache.popitem(last=False)
+    except Exception:
+        pass
     return pix
 
 
@@ -452,7 +507,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     card_w = thumb_w + 24
     max_cols = max(1, min(12, int(avail_w / card_w)))
     row = 0; col = 0
-    cmap_name = viewer.thumb_cmap_combo.currentText() or viewer.thumb_cmap
+    cmap_name = getattr(viewer, "thumb_cmap", None) or viewer.thumb_cmap_combo.currentText()
     viewer._thumb_generation += 1
     generation = viewer._thumb_generation
     files_iter = list(viewer.files)
@@ -567,10 +622,12 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     header = item["header"]
                     fds = item["fds"]
                     t = item["path"]
+                    thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
+                    entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
                     lbl = QtWidgets.QLabel()
                     lbl.setAlignment(QtCore.Qt.AlignCenter)
                     lbl.setProperty("file_path", key)
-                    lbl.setProperty("channel_index", int(channel_idx))
+                    lbl.setProperty("channel_index", int(thumb_channel_idx))
                     lbl.setProperty("spec_markers", [])
                     lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
                     lbl.setProperty("drag_start", None)
@@ -606,16 +663,16 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                             card.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
                     except Exception:
                         pass
-                    if fds and 0 <= channel_idx < len(fds):
-                        fd = fds[channel_idx]
+                    if fds and 0 <= thumb_channel_idx < len(fds):
+                        fd = fds[thumb_channel_idx]
                         base_pix = None
                         data_key = None
                         try:
-                            data_key = viewer._thumbnail_data_key(key, channel_idx, fd, thumb_w, thumb_h)
+                            data_key = viewer._thumbnail_data_key(key, thumb_channel_idx, fd, thumb_w, thumb_h)
                         except Exception:
                             data_key = None
                         if data_key:
-                            base_pix = viewer.thumb_cache.get((data_key, cmap_name))
+                            base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
                         if base_pix is not None:
                             pix = base_pix.copy()
                             crop_info = None
@@ -624,7 +681,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                                     crop_info = viewer._thumb_crop_cache.get(data_key)
                             except Exception:
                                 crop_info = None
-                            markers = viewer._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds, thumb_crop=crop_info)
+                            markers = viewer._decorate_thumbnail_pixmap(pix, key, thumb_channel_idx, header, fds, thumb_crop=crop_info)
                             lbl.setPixmap(pix)
                             lbl.setProperty("spec_markers", markers)
                             try:
@@ -634,7 +691,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                             viewer._thumb_loaded.add(key)
                         else:
                             lbl.setProperty("spec_markers", [])
-                        viewer._thumb_meta[key] = (channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+                        viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
                     else:
                         blank = QtGui.QPixmap(thumb_w, thumb_h)
                         blank.fill(QtGui.QColor('black'))
@@ -702,10 +759,12 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         if key not in viewer.headers:
             continue
         header, fds = viewer.headers[key]
+        thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
+        entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
         lbl = QtWidgets.QLabel()
         lbl.setAlignment(QtCore.Qt.AlignCenter)
         lbl.setProperty("file_path", key)
-        lbl.setProperty("channel_index", int(channel_idx))
+        lbl.setProperty("channel_index", int(thumb_channel_idx))
         lbl.setProperty("spec_markers", [])
         lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
         lbl.setProperty("drag_start", None)
@@ -742,16 +801,16 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         except Exception:
             pass
 
-        if fds and 0 <= channel_idx < len(fds):
-            fd = fds[channel_idx]
+        if fds and 0 <= thumb_channel_idx < len(fds):
+            fd = fds[thumb_channel_idx]
             base_pix = None
             data_key = None
             try:
-                data_key = viewer._thumbnail_data_key(key, channel_idx, fd, thumb_w, thumb_h)
+                data_key = viewer._thumbnail_data_key(key, thumb_channel_idx, fd, thumb_w, thumb_h)
             except Exception:
                 data_key = None
             if data_key:
-                base_pix = viewer.thumb_cache.get((data_key, cmap_name))
+                base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
             if base_pix is not None:
                 pix = base_pix.copy()
                 crop_info = None
@@ -760,7 +819,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                         crop_info = viewer._thumb_crop_cache.get(data_key)
                 except Exception:
                     crop_info = None
-                markers = viewer._decorate_thumbnail_pixmap(pix, key, channel_idx, header, fds, thumb_crop=crop_info)
+                markers = viewer._decorate_thumbnail_pixmap(pix, key, thumb_channel_idx, header, fds, thumb_crop=crop_info)
                 lbl.setPixmap(pix)
                 lbl.setProperty("spec_markers", markers)
                 try:
@@ -770,7 +829,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 viewer._thumb_loaded.add(key)
             else:
                 lbl.setProperty("spec_markers", [])
-            viewer._thumb_meta[key] = (channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+            viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
         else:
             blank = QtGui.QPixmap(thumb_w, thumb_h)
             blank.fill(QtGui.QColor('black'))
@@ -1136,7 +1195,30 @@ def _clear_thumb_multi_selection(viewer, update_styles=True):
 
 
 def on_thumb_cmap_changed(viewer, idx):
-    viewer.thumb_cmap = viewer.thumb_cmap_combo.currentText(); viewer.config['thumbnail_cmap'] = viewer.thumb_cmap; save_config(viewer.config)
+    cmap_name = viewer.thumb_cmap_combo.currentText()
+    targets = list(getattr(viewer, "_ordered_thumbnail_selection", lambda: [])() or [])
+    if not targets:
+        current = str(getattr(viewer, "selected_file_for_thumbs", "") or "")
+        if current:
+            targets = [current]
+    image_targets = [str(path) for path in targets if str(path) in getattr(viewer, "thumb_widgets", {})]
+    if image_targets:
+        try:
+            changed = int(viewer._set_thumbnail_entry_cmap(image_targets, cmap_name) or 0)
+        except Exception:
+            changed = 0
+        if changed:
+            combo = getattr(viewer, "thumb_cmap_combo", None)
+            if combo is not None:
+                try:
+                    combo.blockSignals(True)
+                    combo.setCurrentText(getattr(viewer, "thumb_cmap", "") or cmap_name)
+                finally:
+                    combo.blockSignals(False)
+            return
+    viewer.thumb_cmap = cmap_name
+    viewer.config['thumbnail_cmap'] = viewer.thumb_cmap
+    save_config(viewer.config)
     viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
 __all__ = [
     "_thumb_dimensions",

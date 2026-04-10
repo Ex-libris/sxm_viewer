@@ -100,6 +100,10 @@ def _open_spectroscopy_popup(viewer, spec):
     if not spec:
         return None
     try:
+        if hasattr(viewer, "hydrate_spectro_entry"):
+            hydrated = viewer.hydrate_spectro_entry(spec)
+            if hydrated:
+                spec = hydrated
         dlg = SpectroscopyPopup(spec, parent=viewer)
         _prepare_popup_window(dlg, viewer)
         dlg.show()
@@ -118,6 +122,11 @@ def _open_spectroscopy_compare_popup(viewer, specs, *, title=None, palette_name=
     specs = list(specs or [])
     if not specs:
         return None
+    if hasattr(viewer, "hydrate_spectro_entries"):
+        try:
+            viewer.hydrate_spectro_entries(specs)
+        except Exception:
+            pass
     if len(specs) == 1:
         return _open_spectroscopy_popup(viewer, specs[0])
     palette_name = palette_name or getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
@@ -142,6 +151,11 @@ def _open_multi_spectroscopy_popup(viewer):
     specs = list(viewer._multi_spec_selection)
     if len(specs) < 2:
         return
+    if hasattr(viewer, "hydrate_spectro_entries"):
+        try:
+            viewer.hydrate_spectro_entries(specs)
+        except Exception:
+            pass
     dlg = viewer._multi_spectro_popups[0] if getattr(viewer, "_multi_spectro_popups", None) else None
     palette_name = getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
     if dlg is None or not dlg.isVisible():
@@ -179,6 +193,11 @@ def on_show_matrix_spectro_viewer(viewer):
     if not specs:
         QtWidgets.QMessageBox.information(viewer, "Matrix spectra", "No spectra entries found for that dataset.")
         return
+    if hasattr(viewer, "hydrate_spectro_entries"):
+        try:
+            viewer.hydrate_spectro_entries(specs)
+        except Exception:
+            pass
     anchor = _find_anchor_image_for_matrix(viewer, specs, ds.base)
     if anchor is None:
         QtWidgets.QMessageBox.warning(viewer, "Matrix spectra", "Could not find a preceding SXM image for this matrix dataset.")

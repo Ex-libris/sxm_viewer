@@ -369,6 +369,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
         # Enable persistent spectroscopy disk cache (per-folder) by default
         self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
+        self.spectro_manifest_cache_enabled = bool(self.config.get("spectro_manifest_cache_enabled", True))
+        self.spectro_lazy_payload_enabled = bool(self.config.get("spectro_lazy_payload_enabled", True))
         # Lazily load spectroscopies (defer until requested) to speed up initial folder loads
         self.lazy_spectros_enabled = bool(self.config.get("lazy_spectros_enabled", True))
         self.thumb_size_px = int(self.config.get("thumb_size_px", 160))
@@ -467,6 +469,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._marker_refresh_timer = QtCore.QTimer(self)
         self._marker_refresh_timer.setSingleShot(True)
         self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
+        self._spectro_manifest_save_timer = QtCore.QTimer(self)
+        self._spectro_manifest_save_timer.setSingleShot(True)
+        self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
+        self._spectro_manifest_save_inflight = False
+        self._spectro_manifest_save_pending = False
         # Preview docking state
         self.preview_detached = False
         self.preview_locked = bool(self.config.get("preview_locked", False))
@@ -511,7 +518,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectros_loading = False
         self._spectros_pending = False
         self._spectro_cache = {}
+        self._spectro_manifest_entries = {}
         self._spectro_deferred = set()
+        self._spectro_miniature_cache = OrderedDict()
+        self._spectro_autoload_timer = QtCore.QTimer(self)
+        self._spectro_autoload_timer.setSingleShot(True)
+        self._spectro_autoload_timer.timeout.connect(self._run_pending_spectro_load)
         # spectro_eager_limit: 0 means no deferral; otherwise parse at most N spectroscopy files eagerly
         limit_cfg = int(self.config.get("spectro_eager_limit", 300))
         self.spectro_eager_limit = max(0, limit_cfg)
@@ -526,6 +538,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._popup_counter = 0  # used to stagger dialog positions
         self._multi_spec_selection = []
         self._multi_spec_selection_keys = set()
+        self._workspace_loading = False
         self.spectro_compare_controller = SpectroCompareController(self)
         from .controllers.image_compare import ImageCompareController
 
@@ -630,6 +643,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._session_activity_hide_timer = QtCore.QTimer(self)
         self._session_activity_hide_timer.setSingleShot(True)
         self._session_activity_hide_timer.timeout.connect(self._hide_session_activity)
+        self._activity_log_pending = []
+        self._activity_log_flush_timer = QtCore.QTimer(self)
+        self._activity_log_flush_timer.setSingleShot(True)
+        self._activity_log_flush_timer.timeout.connect(self._flush_activity_log_pending)
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(LEFT_PANEL_SPACING)
@@ -1830,17 +1847,42 @@ QLabel:hover {{
         box = getattr(self, "activity_log_box", None)
         if box is None:
             return
-        entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
-        box.appendPlainText(entry)
-        box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
         try:
-            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+            self._activity_log_pending.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+            if not self._activity_log_flush_timer.isActive():
+                self._activity_log_flush_timer.start(60)
+        except Exception:
+            entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+            box.appendPlainText(entry)
+            box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
+
+    def _flush_activity_log_pending(self):
+        box = getattr(self, "activity_log_box", None)
+        if box is None:
+            self._activity_log_pending = []
+            return
+        pending = list(getattr(self, "_activity_log_pending", []) or [])
+        if not pending:
+            return
+        self._activity_log_pending = []
+        try:
+            box.appendPlainText("\n".join(pending))
+            box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
+        except Exception:
+            for entry in pending:
+                try:
+                    box.appendPlainText(entry)
+                except Exception:
+                    pass
+        try:
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents, 5)
         except Exception:
             pass
 
     def _on_clear_activity_log(self):
         if hasattr(self, "activity_log_box"):
             self.activity_log_box.clear()
+        self._activity_log_pending = []
 
     def _create_lower_controls(self):
         return main_window_layout.create_lower_controls(self)
@@ -2825,7 +2867,7 @@ QLabel:hover {{
         self._save_recovery_snapshot(reason="autosave")
 
     def _maybe_offer_recovery_session(self):
-        if not self._session_recovery_enabled or self._workspace_has_content():
+        if not self._session_recovery_enabled or self._workspace_has_content() or getattr(self, "_workspace_loading", False):
             return
         recovery_path = self._session_recovery_path()
         if not recovery_path.exists():
@@ -4224,8 +4266,12 @@ QLabel:hover {{
 
     def load_folder(self, folder:Path):
         start = time.perf_counter()
-        self._prepare_for_workspace_load(kind="folder")
-        result = viewer_loader.load_folder(self, folder)
+        self._workspace_loading = True
+        try:
+            self._prepare_for_workspace_load(kind="folder")
+            result = viewer_loader.load_folder(self, folder)
+        finally:
+            self._workspace_loading = False
         end = time.perf_counter()
         folder_ms = (end - start) * 1000.0
         gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
@@ -4239,14 +4285,18 @@ QLabel:hover {{
 
     def load_files(self, files, folder_hint: Path | None = None, *, append: bool = False, refresh_spectros: bool = True):
         start = time.perf_counter()
-        result = viewer_loader.load_files(
-            self,
-            files,
-            folder_hint=folder_hint,
-            source_label="drop" if append else "files",
-            append=append,
-            refresh_spectros=refresh_spectros,
-        )
+        self._workspace_loading = True
+        try:
+            result = viewer_loader.load_files(
+                self,
+                files,
+                folder_hint=folder_hint,
+                source_label="drop" if append else "files",
+                append=append,
+                refresh_spectros=refresh_spectros,
+            )
+        finally:
+            self._workspace_loading = False
         end = time.perf_counter()
         files_ms = (end - start) * 1000.0
         gui_ms = (end - getattr(self, "_app_start_ts", start)) * 1000.0
@@ -4801,6 +4851,77 @@ QLabel:hover {{
         ctr = getattr(self, "_virtual_counter", 0) + 1
         self._virtual_counter = ctr
         return f"processed_{stem}_{op}{chan}_{ctr}"
+
+    def _thumbnail_cmap_override(self, file_key: str, channel_idx: int, default_cmap: str | None = None):
+        try:
+            key = str(file_key)
+            idx = int(channel_idx)
+        except Exception:
+            return default_cmap
+        try:
+            cmap = (getattr(self, "per_file_channel_cmap", {}) or {}).get((key, idx))
+        except Exception:
+            cmap = None
+        return str(cmap) if cmap else default_cmap
+
+    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None):
+        targets = [str(Path(p)) for p in list(paths or []) if p]
+        if not targets:
+            return 0
+        changed = 0
+        for key in targets:
+            channel_idx = None
+            label = (getattr(self, "_thumb_labels", {}) or {}).get(key)
+            if label is not None:
+                try:
+                    channel_idx = label.property("channel_index")
+                except Exception:
+                    channel_idx = None
+            if channel_idx is None:
+                payload = (getattr(self, "_processed_views", {}) or {}).get(key) or {}
+                channel_idx = payload.get("channel_idx")
+            if channel_idx is None:
+                try:
+                    channel_idx = int(self.channel_dropdown.currentIndex())
+                except Exception:
+                    channel_idx = 0
+            if channel_idx is None:
+                continue
+            try:
+                channel_idx = int(channel_idx)
+            except Exception:
+                continue
+            cmap_key = (key, channel_idx)
+            if cmap_name:
+                if self.per_file_channel_cmap.get(cmap_key) == str(cmap_name):
+                    continue
+                self.per_file_channel_cmap[cmap_key] = str(cmap_name)
+            else:
+                if cmap_key not in self.per_file_channel_cmap:
+                    continue
+                self.per_file_channel_cmap.pop(cmap_key, None)
+            changed += 1
+        if changed:
+            try:
+                self._invalidate_thumbnail_cache(paths=targets)
+            except Exception:
+                pass
+            try:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
+            try:
+                if self.last_preview:
+                    preview_key, preview_idx = self.last_preview
+                    if str(preview_key) in targets:
+                        self.show_file_channel(preview_key, preview_idx, use_local_cmap=True)
+            except Exception:
+                pass
+        return changed
+
+    def _set_virtual_copy_cmap(self, paths, cmap_name=None):
+        targets = [str(Path(p)) for p in list(paths or []) if self._is_processed_key(str(p))]
+        return self._set_thumbnail_entry_cmap(targets, cmap_name)
 
     def _normalize_virtual_copy_order(self):
         ordered = []
@@ -7093,13 +7214,22 @@ QLabel:hover {{
             return
         self._set_spec_folder(Path(text))
 
-    def _set_spec_folder(self, path:Path):
+    def _set_spec_folder(self, path:Path, *, force_reload: bool = False):
+        current = getattr(self, "spec_folder_path", None)
+        same_folder = False
+        try:
+            if current is not None:
+                same_folder = Path(current).resolve() == Path(path).resolve()
+        except Exception:
+            same_folder = str(current or "") == str(path or "")
         try:
             self.spec_folder_path = Path(path)
             self.config['spectra_folder'] = str(self.spec_folder_path)
             save_config(self.config)
         except Exception:
             pass
+        if same_folder and not force_reload:
+            return
         # Changing the spectroscopy path should refresh spectroscopy immediately.
         self._reload_spectros(refresh=True)
 
@@ -7109,6 +7239,10 @@ QLabel:hover {{
             return True
         if getattr(self, "_spectros_loading", False):
             return False
+        try:
+            self._spectro_autoload_timer.stop()
+        except Exception:
+            pass
         self._spectros_loading = True
         self._spectros_pending = False
         try:
@@ -7125,10 +7259,28 @@ QLabel:hover {{
             self._spectros_loading = False
         return True
 
+    def _schedule_pending_spectro_load(self, delay_ms: int = 1200):
+        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
+            return
+        if getattr(self, "_spectros_loading", False):
+            return
+        try:
+            self._spectro_autoload_timer.start(max(0, int(delay_ms)))
+        except Exception:
+            pass
+
+    def _run_pending_spectro_load(self):
+        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
+            return
+        if getattr(self, "_spectros_loading", False):
+            return
+        self.ensure_spectros_loaded(refresh=True)
+
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
         self._spectros_loaded = False
         self._spectros_pending = False
+        self._spectro_miniature_cache.clear()
         t_scan_start = time.perf_counter()
         try:
             folder = getattr(self, 'spec_folder_path', None) or self.last_dir
@@ -7173,6 +7325,52 @@ QLabel:hover {{
     def _scan_spectros(self, folder:Path):
         return viewer_loader._scan_spectros(self, folder)
 
+    def hydrate_spectro_entry(self, spec):
+        return viewer_loader.hydrate_spectro_file(self, spec)
+
+    def hydrate_spectro_entries(self, specs):
+        return viewer_loader.hydrate_spectro_entries(self, specs)
+
+    def refresh_spectro_manifest(self):
+        return viewer_loader.refresh_spectro_manifest_from_viewer(self)
+
+    def _schedule_spectro_manifest_save(self):
+        self._spectro_manifest_save_pending = True
+        try:
+            self._spectro_manifest_save_timer.start(400)
+        except Exception:
+            self._flush_spectro_manifest_save()
+
+    def _flush_spectro_manifest_save(self):
+        if self._spectro_manifest_save_inflight:
+            self._spectro_manifest_save_pending = True
+            return
+        folder = getattr(self, "spec_folder_path", None) or getattr(self, "last_dir", None)
+        manifest_entries = dict(getattr(self, "_spectro_manifest_entries", {}) or {})
+        if not folder or not manifest_entries:
+            self._spectro_manifest_save_pending = False
+            return
+        self._spectro_manifest_save_pending = False
+        self._spectro_manifest_save_inflight = True
+
+        def _persist(snapshot_folder, snapshot_manifest):
+            try:
+                viewer_loader.save_spectro_manifest_snapshot(snapshot_folder, snapshot_manifest)
+            finally:
+                QtCore.QTimer.singleShot(0, self._on_spectro_manifest_save_finished)
+
+        threading.Thread(
+            target=_persist,
+            args=(folder, manifest_entries),
+            name="spectro-manifest-save",
+            daemon=True,
+        ).start()
+
+    def _on_spectro_manifest_save_finished(self):
+        self._spectro_manifest_save_inflight = False
+        if self._spectro_manifest_save_pending:
+            self._schedule_spectro_manifest_save()
+
     def _assign_spectros_to_images(self):
         spectro_controller._assign_spectros_to_images(self)
         try:
@@ -7182,6 +7380,10 @@ QLabel:hover {{
             }
         except Exception:
             self.files_with_matrix = set()
+        try:
+            QtCore.QTimer.singleShot(0, self.refresh_spectro_manifest)
+        except Exception:
+            pass
         self._update_matrix_summary_banner()
 
     def _choose_image_for_spec(self, spec, images, image_extents):
@@ -7364,7 +7566,7 @@ QLabel:hover {{
         if not self._spectros_loaded:
             if getattr(self, "lazy_spectros_enabled", False) and getattr(self, "_spectros_pending", False):
                 try:
-                    QtCore.QTimer.singleShot(0, lambda: self.ensure_spectros_loaded(refresh=True))
+                    self._schedule_pending_spectro_load(delay_ms=250)
                 except Exception:
                     pass
             return []
@@ -7719,6 +7921,37 @@ QLabel:hover {{
         virt_other = QtWidgets.QAction("Choose channel...", virt_menu)
         virt_other.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, None))
         virt_menu.addAction(virt_other)
+        virtual_targets = [str(p) for p in targets if self._is_processed_key(str(p))]
+        if virtual_targets:
+            virt_menu.addSeparator()
+            cmap_menu = virt_menu.addMenu("Colormap")
+            try:
+                cmap_names = sorted(colormaps.keys())
+            except Exception:
+                cmap_names = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+            featured = []
+            for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
+                if name in cmap_names and name not in featured:
+                    featured.append(name)
+            remaining = [name for name in cmap_names if name not in featured]
+            shown = featured + remaining
+            more_cmaps_menu = None
+            for idx, cmap_name in enumerate(shown):
+                parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
+                if parent_menu is None:
+                    more_cmaps_menu = cmap_menu.addMenu("More...")
+                    parent_menu = more_cmaps_menu
+                act = QtWidgets.QAction(cmap_name, parent_menu)
+                try:
+                    act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
+                except Exception:
+                    pass
+                act.triggered.connect(lambda _, paths=list(virtual_targets), name=cmap_name: self._set_virtual_copy_cmap(paths, name))
+                parent_menu.addAction(act)
+            cmap_menu.addSeparator()
+            cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
+            cmap_reset.triggered.connect(lambda _, paths=list(virtual_targets): self._set_virtual_copy_cmap(paths, None))
+            cmap_menu.addAction(cmap_reset)
         virt_menu.addSeparator()
         virt_remove = QtWidgets.QAction("Remove virtual copies (selected)", virt_menu)
         virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))

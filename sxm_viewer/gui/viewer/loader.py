@@ -88,6 +88,524 @@ from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_s
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
+_SPECTRO_MANIFEST_VERSION = 3
+_SPECTRO_CACHE_MTIME_TOLERANCE = 2.0
+_SPECTRO_MANIFEST_FILE = "manifest_v2.json"
+_SPECTRO_METADATA_ARRAY_KEYS = {
+    "channels",
+    "V",
+    "data",
+    "AltAxis",
+}
+_SPECTRO_METADATA_KEYS = {
+    "path",
+    "time",
+    "x",
+    "y",
+    "source",
+    "display_time",
+    "available_channels",
+    "trace_length",
+    "unit_map",
+    "AxisLabel",
+    "AxisUnit",
+    "AltAxisLabel",
+    "AltAxisUnit",
+    "order_idx",
+    "matrix_dataset",
+    "matrix_index",
+    "grid_rows",
+    "grid_cols",
+    "grid_row",
+    "grid_col",
+    "channel_name",
+    "channel_code",
+    "image_key",
+    "image_path",
+    "primary_image_key",
+    "shared_image_keys",
+    "shared_repeat_assignment",
+    "xy_stack_count",
+    "xy_stack_display",
+    "xy_stack_key",
+    "xy_stack_summary",
+    "xy_stack_z_varies",
+    "xy_stack_z_level_nm",
+    "xy_stack_z_label",
+    "xy_stack_z_min_nm",
+    "xy_stack_z_max_nm",
+    "z_level_nm",
+    "z_level_label",
+    "z_level_unit",
+}
+
+
+def _fast_abs_path(path: Path | str | None) -> str:
+    try:
+        raw = os.fspath(path)
+    except Exception:
+        raw = str(path or "")
+    try:
+        return os.path.abspath(raw)
+    except Exception:
+        return raw
+
+
+def _normalize_spectro_path_key(path: Path | str | None) -> str:
+    key = _fast_abs_path(path)
+    return key.lower() if os.name == "nt" else key
+
+
+def _spectro_relative_key(base_folder: Path | None, filepath: Path) -> str:
+    if base_folder is not None:
+        try:
+            return os.path.relpath(_fast_abs_path(filepath), _fast_abs_path(base_folder)).replace("\\", "/")
+        except Exception:
+            pass
+    return filepath.name
+
+
+def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict]:
+    records = []
+    seen = set()
+    valid_exts = {".dat", ".3ds"}
+    if files:
+        for f in files:
+            if not f:
+                continue
+            try:
+                p = Path(f)
+            except Exception:
+                continue
+            suffix = p.suffix.lower()
+            if suffix not in valid_exts:
+                continue
+            norm_key = _normalize_spectro_path_key(p)
+            if norm_key in seen:
+                continue
+            seen.add(norm_key)
+            try:
+                st = p.stat()
+                mtime = float(st.st_mtime)
+                size = int(st.st_size)
+            except Exception:
+                mtime = 0.0
+                size = -1
+            records.append(
+                {
+                    "path": p,
+                    "norm_key": norm_key,
+                    "rel_key": _spectro_relative_key(folder_path, p),
+                    "suffix": suffix,
+                    "mtime": mtime,
+                    "size": size,
+                }
+            )
+        records.sort(key=lambda rec: str(rec["path"]).lower())
+        return records
+    if folder_path is None:
+        return records
+    try:
+        base_abs = _fast_abs_path(folder_path)
+        with os.scandir(base_abs) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                except Exception:
+                    continue
+                suffix = Path(entry.name).suffix.lower()
+                if suffix not in valid_exts:
+                    continue
+                full_path = Path(entry.path)
+                norm_key = _normalize_spectro_path_key(full_path)
+                if norm_key in seen:
+                    continue
+                seen.add(norm_key)
+                try:
+                    st = entry.stat()
+                    mtime = float(st.st_mtime)
+                    size = int(st.st_size)
+                except Exception:
+                    mtime = 0.0
+                    size = -1
+                records.append(
+                    {
+                        "path": full_path,
+                        "norm_key": norm_key,
+                        "rel_key": entry.name.replace("\\", "/"),
+                        "suffix": suffix,
+                        "mtime": mtime,
+                        "size": size,
+                    }
+                )
+    except Exception:
+        try:
+            fallback_files = []
+            for pat in ("*.dat", "*.DAT", "*.3ds", "*.3DS"):
+                fallback_files.extend(folder_path.glob(pat))
+            return _discover_spectro_file_records(folder_path, fallback_files)
+        except Exception:
+            return []
+    records.sort(key=lambda rec: str(rec["path"]).lower())
+    return records
+
+
+def _spectro_payload_cache_key(base_folder: Path | None, filepath: Path, *, legacy: bool = False) -> str:
+    source = filepath.name if legacy else _spectro_relative_key(base_folder, filepath)
+    return hashlib.md5(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _spectro_payload_paths(cache_dir: Path, base_folder: Path | None, filepath: Path, *, legacy: bool = False):
+    cache_key = _spectro_payload_cache_key(base_folder, filepath, legacy=legacy)
+    return (
+        cache_dir / f"{cache_key}_meta.json",
+        cache_dir / f"{cache_key}_data.npy",
+        cache_key,
+    )
+
+
+def _serialize_cache_value(value):
+    if isinstance(value, datetime):
+        return {"__datetime__": value.isoformat()}
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return None
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            serialized = _serialize_cache_value(item)
+            if serialized is not None:
+                out[str(key)] = serialized
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            serialized = _serialize_cache_value(item)
+            if serialized is not None:
+                out.append(serialized)
+        return out
+    return value
+
+
+def _deserialize_cache_value(value):
+    if isinstance(value, dict):
+        if set(value.keys()) == {"__datetime__"}:
+            try:
+                return datetime.fromisoformat(str(value["__datetime__"]))
+            except Exception:
+                return None
+        return {key: _deserialize_cache_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deserialize_cache_value(item) for item in value]
+    return value
+
+
+def _spec_channel_names(spec) -> list[str]:
+    names = []
+    channels = spec.get("channels") or {}
+    if isinstance(channels, dict):
+        names.extend(str(name) for name in channels.keys() if str(name).strip())
+    if not names:
+        names.extend(str(name) for name in (spec.get("available_channels") or []) if str(name).strip())
+    deduped = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    return deduped
+
+
+def _spec_points_per_trace(spec) -> int | None:
+    trace_length = spec.get("trace_length")
+    if trace_length is not None:
+        try:
+            return int(trace_length)
+        except Exception:
+            pass
+    vals = spec.get("V")
+    if vals is not None:
+        try:
+            arr = np.asarray(vals)
+            if arr.size:
+                return int(arr.size)
+        except Exception:
+            pass
+    channels = spec.get("channels") or {}
+    if isinstance(channels, dict):
+        for values in channels.values():
+            try:
+                arr = np.asarray(values)
+                if arr.size:
+                    return int(arr.size)
+            except Exception:
+                continue
+    return None
+
+
+def _spec_has_payload_data(spec) -> bool:
+    try:
+        vals = spec.get("V")
+        if vals is not None and np.asarray(vals).size:
+            return True
+    except Exception:
+        pass
+    try:
+        alt_vals = spec.get("AltAxis")
+        if alt_vals is not None and np.asarray(alt_vals).size:
+            return True
+    except Exception:
+        pass
+    channels = spec.get("channels") or {}
+    if isinstance(channels, dict):
+        for values in channels.values():
+            try:
+                if values is not None and np.asarray(values).size:
+                    return True
+            except Exception:
+                continue
+    for axis in spec.get("AxisChoices") or []:
+        if not isinstance(axis, dict):
+            continue
+        try:
+            if np.asarray(axis.get("values", [])).size:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _payload_specs_usable(specs) -> bool:
+    specs = list(specs or [])
+    if not specs:
+        return False
+    return any(_spec_has_payload_data(spec) for spec in specs)
+
+
+def _spec_metadata_entry(spec):
+    entry = {}
+    spec_dict = dict(spec or {})
+    for key in _SPECTRO_METADATA_KEYS:
+        if key not in spec_dict:
+            continue
+        value = spec_dict.get(key)
+        if key == "AxisChoices":
+            axes = []
+            for axis in value or []:
+                if not isinstance(axis, dict):
+                    continue
+                axis_meta = {}
+                for axis_key in ("key", "label", "unit"):
+                    axis_val = axis.get(axis_key)
+                    if axis_val not in (None, ""):
+                        axis_meta[axis_key] = axis_val
+                if axis_meta:
+                    axes.append(axis_meta)
+            if axes:
+                entry["AxisChoices"] = axes
+            continue
+        serialized = _serialize_cache_value(value)
+        if serialized is not None:
+            entry[key] = _deserialize_cache_value(serialized)
+    axis_choices = spec_dict.get("AxisChoices")
+    if axis_choices:
+        axes = []
+        for axis in axis_choices or []:
+            if not isinstance(axis, dict):
+                continue
+            axis_meta = {}
+            for axis_key in ("key", "label", "unit"):
+                axis_val = axis.get(axis_key)
+                if axis_val not in (None, ""):
+                    axis_meta[axis_key] = axis_val
+            if axis_meta:
+                axes.append(axis_meta)
+        if axes:
+            entry["AxisChoices"] = axes
+    entry["available_channels"] = _spec_channel_names(spec)
+    trace_length = _spec_points_per_trace(spec)
+    if trace_length is not None:
+        entry["trace_length"] = int(trace_length)
+    entry["_payload_hydrated"] = False
+    return entry
+
+
+def _spec_metadata_list(specs):
+    return [_spec_metadata_entry(spec) for spec in list(specs or [])]
+
+
+def _restore_spec_metadata(entry):
+    spec = dict(_deserialize_cache_value(entry or {}))
+    spec["_payload_hydrated"] = bool(spec.get("_payload_hydrated", False))
+    return spec
+
+
+def _restore_spectro_payload_specs(entries):
+    specs = []
+    for entry_dict in entries or []:
+        spec = dict(entry_dict)
+        if "channels" in spec and isinstance(spec["channels"], dict):
+            spec["channels"] = {k: np.array(v) for k, v in spec["channels"].items()}
+        if "V" in spec:
+            spec["V"] = np.array(spec["V"])
+        spec["available_channels"] = _spec_channel_names(spec)
+        trace_length = _spec_points_per_trace(spec)
+        if trace_length is not None:
+            spec["trace_length"] = int(trace_length)
+        spec["_payload_hydrated"] = True
+        specs.append(spec)
+    return specs
+
+
+def _clone_payload_spec_entry(spec):
+    clone = dict(spec or {})
+    channels = spec.get("channels")
+    if isinstance(channels, dict):
+        clone["channels"] = {
+            key: (np.array(value) if value is not None else value)
+            for key, value in channels.items()
+        }
+    if "V" in spec:
+        try:
+            clone["V"] = np.array(spec["V"])
+        except Exception:
+            clone["V"] = spec.get("V")
+    axis_choices = spec.get("AxisChoices")
+    if isinstance(axis_choices, (list, tuple)):
+        rebuilt = []
+        for axis in axis_choices:
+            if not isinstance(axis, dict):
+                continue
+            axis_clone = dict(axis)
+            if "values" in axis:
+                try:
+                    axis_clone["values"] = np.array(axis.get("values"))
+                except Exception:
+                    axis_clone["values"] = axis.get("values")
+            rebuilt.append(axis_clone)
+        clone["AxisChoices"] = rebuilt
+    clone["available_channels"] = _spec_channel_names(clone)
+    clone["_payload_hydrated"] = True
+    return clone
+
+
+def _spec_identity_token(spec):
+    base = _normalize_spectro_path_key(spec.get("path") or "")
+    matrix_index = spec.get("matrix_index")
+    if matrix_index is not None:
+        return f"{base}#idx:{matrix_index}"
+    x_val = spec.get("x")
+    y_val = spec.get("y")
+    if x_val is not None or y_val is not None:
+        try:
+            return f"{base}#pos:{round(float(x_val), 6)}:{round(float(y_val), 6)}"
+        except Exception:
+            return f"{base}#pos:{x_val}:{y_val}"
+    order_idx = spec.get("order_idx")
+    if order_idx is not None:
+        return f"{base}#order:{order_idx}"
+    return base
+
+
+def _merge_payload_into_spec(target, payload):
+    if target is payload:
+        return target
+    preserved = {
+        "image_key": target.get("image_key"),
+        "image_path": target.get("image_path"),
+        "primary_image_key": target.get("primary_image_key"),
+        "shared_image_keys": target.get("shared_image_keys"),
+        "shared_repeat_assignment": target.get("shared_repeat_assignment"),
+        "display_time": target.get("display_time"),
+        "xy_stack_summary": target.get("xy_stack_summary"),
+        "xy_stack_display": target.get("xy_stack_display"),
+        "xy_stack_count": target.get("xy_stack_count"),
+        "xy_stack_key": target.get("xy_stack_key"),
+        "xy_stack_z_level_nm": target.get("xy_stack_z_level_nm"),
+    }
+    target.clear()
+    target.update(payload)
+    for key, value in preserved.items():
+        if value not in (None, "", []):
+            target[key] = value
+    target["available_channels"] = _spec_channel_names(target)
+    trace_length = _spec_points_per_trace(target)
+    if trace_length is not None:
+        target["trace_length"] = int(trace_length)
+    target["_payload_hydrated"] = True
+    return target
+
+
+def _load_spectro_manifest(cache_dir: Path | None):
+    if cache_dir is None:
+        return {}
+    manifest_path = cache_dir / _SPECTRO_MANIFEST_FILE
+    if not manifest_path.exists():
+        return {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if int(payload.get("version", 0)) != _SPECTRO_MANIFEST_VERSION:
+            return {}
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            return {}
+        return entries
+    except Exception:
+        return {}
+
+
+def _save_spectro_manifest(cache_dir: Path | None, manifest_entries: dict):
+    if cache_dir is None:
+        return
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = cache_dir / _SPECTRO_MANIFEST_FILE
+        payload = {
+            "version": _SPECTRO_MANIFEST_VERSION,
+            "saved_at": datetime.utcnow().isoformat(),
+            "entries": manifest_entries,
+        }
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+    except Exception:
+        pass
+
+
+def save_spectro_manifest_snapshot(folder: Path | None, manifest_entries: dict):
+    try:
+        folder_path = Path(folder) if folder else None
+    except Exception:
+        folder_path = None
+    if folder_path is None:
+        return
+    cache_dir = folder_path / ".sxmviewer_spectro_cache"
+    _save_spectro_manifest(cache_dir, manifest_entries or {})
+
+
+def _manifest_entry_valid(entry, *, mtime: float, fsize: int) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    meta_mtime = entry.get("mtime")
+    meta_size = entry.get("size")
+    if meta_mtime is None or meta_size is None:
+        return False
+    try:
+        drift = abs(float(meta_mtime) - float(mtime))
+    except Exception:
+        return False
+    try:
+        size_ok = int(meta_size) == int(fsize)
+    except Exception:
+        return False
+    return drift <= _SPECTRO_CACHE_MTIME_TOLERANCE and size_ok
+
+
 def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
     """Return the image header files implied by a folder load."""
     folder = Path(folder)
@@ -321,12 +839,36 @@ def load_files(
                 except Exception:
                     pass
 
-        # Always load spectroscopy together with an image-folder load.
-        # Visibility toggles decide whether markers/miniatures are shown, not
-        # whether spectroscopy metadata is available in memory.
-        log_status("Loading spectroscopy references...")
-        viewer._spectros_pending = False
-        viewer._reload_spectros(refresh=False)
+        defer_spectros = bool(
+            getattr(viewer, "lazy_spectros_enabled", False)
+            and source_label == "folder"
+        )
+        if defer_spectros:
+            log_status("Deferring spectroscopy references until after initial folder load...")
+            viewer._spectros_loaded = False
+            viewer._spectros_pending = True
+            viewer._spectros_loading = False
+            viewer.spectros = []
+            viewer.matrix_spectros = []
+            viewer.matrix_datasets = {}
+            viewer.spectros_by_image = defaultdict(list)
+            try:
+                viewer._clear_multi_spec_selection()
+            except Exception:
+                pass
+            try:
+                viewer._update_spectro_stats_label()
+            except Exception:
+                pass
+            if hasattr(viewer, "_schedule_pending_spectro_load"):
+                try:
+                    viewer._schedule_pending_spectro_load(delay_ms=1200)
+                except Exception:
+                    pass
+        else:
+            log_status("Loading spectroscopy references...")
+            viewer._spectros_pending = False
+            viewer._reload_spectros(refresh=False)
         t_specs = time.perf_counter()
     else:
         log_status("Skipping spectroscopy reload for explicit file drop")
@@ -395,6 +937,10 @@ def load_spectroscopy_files(viewer, files, folder_hint: Path | None = None, *, a
     viewer._spectros_loaded = False
     viewer._spectros_pending = False
     viewer._assign_spectros_to_images()
+    try:
+        refresh_spectro_manifest_from_viewer(viewer)
+    except Exception:
+        pass
     viewer.matrix_spectros = [spec for spec in viewer.spectros if spec.get('matrix_index') is not None]
     viewer._update_spectro_stats_label(spec_stats)
     viewer._spectros_loaded = True
@@ -458,6 +1004,365 @@ def _parse_header_datetime(viewer, header, path: Path | str | None = None):
         return 0.0
 
 
+def _load_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None, filepath: Path, mtime: float, fsize: int):
+    if not cache_dir or not cache_dir.exists():
+        return None, None
+    candidate_paths = [
+        _spectro_payload_paths(cache_dir, base_folder, filepath, legacy=False),
+        _spectro_payload_paths(cache_dir, base_folder, filepath, legacy=True),
+    ]
+    seen = set()
+    for meta_file, data_file, cache_key in candidate_paths:
+        token = (str(meta_file), str(data_file))
+        if token in seen:
+            continue
+        seen.add(token)
+        if not meta_file.exists() or not data_file.exists():
+            continue
+        try:
+            with open(meta_file, "r", encoding="utf-8") as handle:
+                cache_meta = json.load(handle)
+            if not _manifest_entry_valid(cache_meta, mtime=mtime, fsize=fsize):
+                continue
+            cache_data = np.load(data_file, allow_pickle=True)
+            specs = _restore_spectro_payload_specs(cache_data)
+            return specs, {
+                "payload_meta": meta_file.name,
+                "payload_data": data_file.name,
+                "cache_key": cache_key,
+            }
+        except Exception:
+            continue
+    return None, None
+
+
+def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None, filepath: Path, mtime: float, fsize: int, specs):
+    if not cache_dir:
+        return None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        meta_file, data_file, cache_key = _spectro_payload_paths(cache_dir, base_folder, filepath, legacy=False)
+        cache_meta = {
+            "filename": filepath.name,
+            "mtime": float(mtime),
+            "size": int(fsize),
+            "cached_at": datetime.utcnow().isoformat(),
+            "spec_count": len(specs or []),
+            "relative_path": _spectro_relative_key(base_folder, filepath),
+        }
+        with open(meta_file, "w", encoding="utf-8") as handle:
+            json.dump(cache_meta, handle, indent=2)
+        serializable_specs = []
+        for spec in specs or []:
+            entry = dict(spec)
+            if "channels" in entry and isinstance(entry["channels"], dict):
+                entry["channels"] = {
+                    key: (value.tolist() if hasattr(value, "tolist") else value)
+                    for key, value in entry["channels"].items()
+                }
+            if "V" in entry and hasattr(entry["V"], "tolist"):
+                entry["V"] = entry["V"].tolist()
+            serializable_specs.append(entry)
+        np.save(data_file, np.array(serializable_specs, dtype=object), allow_pickle=True)
+        return {
+            "payload_meta": meta_file.name,
+            "payload_data": data_file.name,
+            "cache_key": cache_key,
+        }
+    except Exception as exc:
+        try:
+            log_status(f"  - spectroscopy cache store failed: {exc}")
+        except Exception:
+            pass
+        return None
+
+
+def _build_manifest_entry(base_folder: Path | None, filepath: Path, mtime: float, fsize: int, specs, payload_info=None):
+    info = payload_info or {}
+    return {
+        "relpath": _spectro_relative_key(base_folder, filepath),
+        "filename": filepath.name,
+        "extension": filepath.suffix.lower(),
+        "mtime": float(mtime),
+        "size": int(fsize),
+        "payload_meta": info.get("payload_meta"),
+        "payload_data": info.get("payload_data"),
+        "cache_key": info.get("cache_key"),
+        "spec_count": len(specs or []),
+        "source_type": str((specs or [{}])[0].get("source") or ""),
+        "specs": [_serialize_cache_value(spec) for spec in _spec_metadata_list(specs or [])],
+    }
+
+
+def _parse_spectro_file_payload(filepath: Path, mtime: float):
+    spec_list = None
+    parse_error = None
+    ext = filepath.suffix.lower()
+    if ext == ".dat":
+        try:
+            spec_list = parse_nanonis_spectroscopy(filepath)
+        except Exception:
+            spec_list = None
+    elif ext == ".3ds":
+        try:
+            spec_list = parse_nanonis_3ds(filepath)
+        except Exception:
+            spec_list = None
+    if spec_list is None and ext not in (".3ds",):
+        try:
+            spec_list = parse_spectroscopy_file(filepath)
+        except SpectroscopyParseError as exc:
+            parse_error = exc
+            spec_list = None
+        except Exception:
+            spec_list = None
+    if not spec_list:
+        return spec_list, parse_error
+    if ext == ".dat" and any(s.get("x") is None or s.get("y") is None for s in spec_list):
+        try:
+            with open(filepath, "r", encoding="latin-1") as handle:
+                for _ in range(30):
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if "x/y-Pos:" not in line:
+                        continue
+                    parts = line.split(":", 1)[1].strip().split("/")
+                    if len(parts) != 2:
+                        break
+                    try:
+                        x_nm = _coerce_pos_to_nm(float(parts[0]))
+                        y_nm = _coerce_pos_to_nm(float(parts[1]))
+                        for spec in spec_list:
+                            if spec.get("x") is None:
+                                spec["x"] = x_nm
+                            if spec.get("y") is None:
+                                spec["y"] = y_nm
+                    except ValueError:
+                        pass
+                    break
+        except Exception:
+            pass
+    for spec in spec_list or []:
+        if "path" not in spec or not spec.get("path"):
+            spec["path"] = str(filepath)
+        time_value = spec.get("time")
+        use_mtime = False
+        if time_value is None:
+            use_mtime = True
+        elif isinstance(time_value, datetime):
+            if time_value.year < 1990:
+                use_mtime = True
+        elif isinstance(time_value, (int, float)):
+            try:
+                spec["time"] = datetime.fromtimestamp(float(time_value))
+            except Exception:
+                use_mtime = True
+        elif isinstance(time_value, str):
+            if not time_value.strip():
+                use_mtime = True
+            else:
+                try:
+                    spec["time"] = datetime.fromisoformat(time_value)
+                except Exception:
+                    use_mtime = True
+        if use_mtime:
+            try:
+                spec["time"] = datetime.fromtimestamp(mtime)
+            except Exception:
+                pass
+        spec["available_channels"] = _spec_channel_names(spec)
+        trace_length = _spec_points_per_trace(spec)
+        if trace_length is not None:
+            spec["trace_length"] = int(trace_length)
+        spec["_payload_hydrated"] = True
+    return spec_list, parse_error
+
+
+def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_stage: bool = False):
+    if not spec_or_path:
+        return None
+    try:
+        filepath = Path(spec_or_path.get("path")) if isinstance(spec_or_path, dict) else Path(spec_or_path)
+    except Exception:
+        return None
+    if not filepath:
+        return None
+    norm_key = _normalize_spectro_path_key(filepath)
+    try:
+        st = filepath.stat()
+        mtime = st.st_mtime
+        fsize = st.st_size
+    except Exception:
+        mtime = 0.0
+        fsize = -1
+    cached = (getattr(viewer, "_spectro_cache", {}) or {}).get(norm_key)
+    full_specs = None
+    hydrate_stage = "memory"
+    t_hydrate = time.perf_counter()
+    if cached and not cached.get("deferred"):
+        try:
+            if abs(float(cached.get("mtime", 0.0)) - float(mtime)) <= _SPECTRO_CACHE_MTIME_TOLERANCE:
+                candidate_specs = [_clone_payload_spec_entry(spec) for spec in (cached.get("data") or [])]
+                if _payload_specs_usable(candidate_specs):
+                    full_specs = candidate_specs
+                else:
+                    viewer._spectro_cache.pop(norm_key, None)
+            else:
+                viewer._spectro_cache.pop(norm_key, None)
+        except Exception:
+            full_specs = None
+    folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
+    try:
+        folder = Path(folder) if folder else filepath.parent
+    except Exception:
+        folder = filepath.parent
+    disk_cache_dir = None
+    if getattr(viewer, "spectro_disk_cache_enabled", True):
+        try:
+            disk_cache_dir = folder / ".sxmviewer_spectro_cache"
+        except Exception:
+            disk_cache_dir = None
+    if full_specs is None:
+        hydrate_stage = "disk"
+        full_specs, payload_info = _load_spectro_disk_payload(disk_cache_dir, folder, filepath, mtime, fsize)
+        if full_specs is not None and not _payload_specs_usable(full_specs):
+            full_specs = None
+        if full_specs is None:
+            hydrate_stage = "parse"
+            full_specs, parse_error = _parse_spectro_file_payload(filepath, mtime)
+            if parse_error is not None:
+                raise parse_error
+            if not full_specs:
+                return (None, hydrate_stage) if return_stage else None
+            payload_info = _store_spectro_disk_payload(disk_cache_dir, folder, filepath, mtime, fsize, full_specs)
+        if full_specs:
+            viewer._spectro_cache[norm_key] = {
+                "mtime": float(mtime),
+                "data": [_clone_payload_spec_entry(spec) for spec in full_specs],
+            }
+            if getattr(viewer, "spectro_manifest_cache_enabled", True):
+                manifest = getattr(viewer, "_spectro_manifest_entries", {}) or {}
+                rel_key = _spectro_relative_key(folder, filepath)
+                manifest[rel_key] = _build_manifest_entry(folder, filepath, mtime, fsize, full_specs, payload_info=payload_info)
+                viewer._spectro_manifest_entries = manifest
+                if hasattr(viewer, "_schedule_spectro_manifest_save"):
+                    viewer._schedule_spectro_manifest_save()
+                else:
+                    _save_spectro_manifest(disk_cache_dir, manifest)
+    elapsed_ms = (time.perf_counter() - t_hydrate) * 1000.0
+    if log_perf and (hydrate_stage != "memory" or elapsed_ms >= 5.0):
+        try:
+            log_status(f"[Perf] Spectro hydrate {filepath.name}: {hydrate_stage} {elapsed_ms:.0f} ms")
+        except Exception:
+            pass
+    full_specs = list(full_specs or [])
+    target_specs = [spec for spec in getattr(viewer, "spectros", []) or [] if _normalize_spectro_path_key(spec.get("path")) == norm_key]
+    payload_by_id = {_spec_identity_token(spec): spec for spec in full_specs}
+    for target in target_specs:
+        payload = payload_by_id.get(_spec_identity_token(target))
+        if payload is None and full_specs:
+            payload = full_specs[0]
+        if payload is not None:
+            _merge_payload_into_spec(target, dict(payload))
+    if isinstance(spec_or_path, dict):
+        payload = payload_by_id.get(_spec_identity_token(spec_or_path))
+        if payload is None and full_specs:
+            payload = full_specs[0]
+        if payload is not None:
+            _merge_payload_into_spec(spec_or_path, dict(payload))
+            return (spec_or_path, hydrate_stage) if return_stage else spec_or_path
+    return (full_specs, hydrate_stage) if return_stage else full_specs
+
+
+def hydrate_spectro_entries(viewer, specs):
+    hydrated = []
+    by_path = OrderedDict()
+    stages = {"memory": 0, "disk": 0, "parse": 0}
+    for spec in list(specs or []):
+        path = spec.get("path")
+        if not path:
+            continue
+        norm_key = _normalize_spectro_path_key(path)
+        by_path.setdefault(norm_key, []).append(spec)
+    for grouped_specs in by_path.values():
+        seed = grouped_specs[0]
+        full_specs, stage = hydrate_spectro_file(viewer, seed.get("path"), log_perf=False, return_stage=True)
+        if full_specs is None:
+            continue
+        stages[str(stage or "memory")] = stages.get(str(stage or "memory"), 0) + 1
+        payload_by_id = {
+            _spec_identity_token(entry): entry for entry in (full_specs or [])
+        }
+        for spec in grouped_specs:
+            payload = payload_by_id.get(_spec_identity_token(spec))
+            if payload is None and full_specs:
+                payload = full_specs[0]
+            if payload is not None:
+                _merge_payload_into_spec(spec, _clone_payload_spec_entry(payload))
+                hydrated.append(spec)
+    total = sum(stages.values())
+    if total > 1:
+        try:
+            log_status(
+                f"[Perf] Spectro hydrate batch: files={total} | memory={stages['memory']} | disk={stages['disk']} | parsed={stages['parse']}"
+            )
+        except Exception:
+            pass
+    return hydrated
+
+
+def refresh_spectro_manifest_from_viewer(viewer):
+    if not getattr(viewer, "spectro_manifest_cache_enabled", True):
+        return
+    folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
+    try:
+        folder = Path(folder) if folder else None
+    except Exception:
+        folder = None
+    if folder is None:
+        return
+    cache_dir = folder / ".sxmviewer_spectro_cache"
+    manifest = dict(getattr(viewer, "_spectro_manifest_entries", {}) or {})
+    grouped = defaultdict(list)
+    for spec in getattr(viewer, "spectros", []) or []:
+        path = spec.get("path")
+        if not path:
+            continue
+        grouped[_normalize_spectro_path_key(path)].append(spec)
+    updated = False
+    for norm_key, spec_list in grouped.items():
+        try:
+            filepath = Path(spec_list[0].get("path"))
+        except Exception:
+            continue
+        rel_key = _spectro_relative_key(folder, filepath)
+        previous = manifest.get(rel_key, {})
+        mtime = previous.get("mtime")
+        fsize = previous.get("size")
+        if mtime is None or fsize is None:
+            try:
+                st = filepath.stat()
+                mtime = st.st_mtime
+                fsize = st.st_size
+            except Exception:
+                mtime = 0.0 if mtime is None else mtime
+                fsize = -1 if fsize is None else fsize
+        payload_info = {
+            "payload_meta": previous.get("payload_meta"),
+            "payload_data": previous.get("payload_data"),
+            "cache_key": previous.get("cache_key"),
+        }
+        manifest[rel_key] = _build_manifest_entry(folder, filepath, float(mtime), int(fsize), spec_list, payload_info=payload_info)
+        updated = True
+    if updated:
+        viewer._spectro_manifest_entries = manifest
+        if hasattr(viewer, "_schedule_spectro_manifest_save"):
+            viewer._schedule_spectro_manifest_save()
+        else:
+            _save_spectro_manifest(cache_dir, manifest)
+
+
 def _scan_spectros(
     viewer,
     folder: Path | None,
@@ -482,29 +1387,18 @@ def _scan_spectros(
         'single_entries': 0,
         'deferred_files': 0,
         'invalid_files': 0,
+        'manifest_ms': 0.0,
+        'disk_cache_ms': 0.0,
+        'parse_ms': 0.0,
     }
     prefer_grid_as_matrix = bool(getattr(viewer, "spectro_single_grid_as_matrix", False))
     force_single_mode = bool(getattr(viewer, "spectro_force_single_mode", False))
 
     def _points_per_trace_for_list(spec_list):
         for spec in spec_list:
-            vals = spec.get("V")
-            if vals is not None:
-                try:
-                    arr = np.asarray(vals)
-                    if arr.size:
-                        return int(arr.size)
-                except Exception:
-                    pass
-            ch = (spec.get("channels") or {})
-            if ch:
-                try:
-                    first = next(iter(ch.values()))
-                    arr = np.asarray(first)
-                    if arr.size:
-                        return int(arr.size)
-                except Exception:
-                    continue
+            points = _spec_points_per_trace(spec)
+            if points:
+                return int(points)
         return None
 
     def _derive_grid_from_specs(spec_list):
@@ -571,6 +1465,36 @@ def _scan_spectros(
         for key in ("matrix_dataset", "grid_rows", "grid_cols", "matrix_index", "grid_row", "grid_col", "channel_name", "channel_code"):
             if key in spec:
                 spec.pop(key, None)
+
+    def _rebuild_matrix_datasets_from_specs(spec_list):
+        datasets = {}
+        grouped = defaultdict(list)
+        for spec in list(spec_list or []):
+            if spec.get("matrix_index") is None:
+                continue
+            dataset_key = spec.get("matrix_dataset") or Path(spec.get("path") or "").stem
+            grouped[(str(dataset_key), _normalize_spectro_path_key(spec.get("path") or ""))].append(spec)
+        for (dataset_key, _path_key), members in grouped.items():
+            if not members:
+                continue
+            first = members[0]
+            rows = int(first.get("grid_rows") or 1)
+            cols = int(first.get("grid_cols") or 1)
+            ds = datasets.get(dataset_key)
+            if ds is None:
+                ds = MatrixDataset(dataset_key, rows, cols)
+                datasets[dataset_key] = ds
+            filename = Path(first.get("path") or "").name or str(first.get("path") or dataset_key)
+            ds.add_channel(
+                filename,
+                channel_code=first.get("channel_code"),
+                label=first.get("channel_name") or first.get("channel_code"),
+                spectra_count=len(members),
+                path=first.get("path"),
+                points_per_trace=_points_per_trace_for_list(members),
+            )
+        viewer.matrix_datasets = datasets
+        return datasets
 
     def _classify_file(spec_list, path_obj: Path):
         info = {
@@ -733,125 +1657,19 @@ def _scan_spectros(
         disk_cache_dir = folder_path / ".sxmviewer_spectro_cache"
         try:
             disk_cache_dir.mkdir(exist_ok=True)
-            try:
-                existing = list(disk_cache_dir.glob("*.pkl"))
-                log_status(f"Spectroscopy cache dir: {disk_cache_dir} (entries={len(existing)})")
-            except Exception:
-                pass
         except Exception:
             disk_cache_dir = None
-
-    def _load_disk_cache(cache_dir: Path, filepath: Path, mtime: float, fsize: int):
-        """Load cached spectroscopy data if valid."""
-        if not cache_dir or not cache_dir.exists():
-            return None
-        cache_key = hashlib.md5(filepath.name.encode("utf-8")).hexdigest()[:16]
-        meta_file = cache_dir / f"{cache_key}_meta.json"
-        data_file = cache_dir / f"{cache_key}_data.npy"
-        if not meta_file.exists() or not data_file.exists():
-            return None
-        try:
-            with open(meta_file, "r") as f:
-                cache_meta = json.load(f)
-            meta_mtime = cache_meta.get("mtime")
-            meta_size = cache_meta.get("size")
-            # allow small drift (network/OneDrive) when comparing mtime
-            if meta_mtime is None or meta_size is None:
-                return None
-            try:
-                drift = abs(float(meta_mtime) - float(mtime))
-            except Exception:
-                drift = None
-            if drift is None or drift > 2.0:
-                return None
-            if int(meta_size) != int(fsize):
-                return None
-            cache_data = np.load(data_file, allow_pickle=True)
-            specs = []
-            for entry_dict in cache_data:
-                spec = dict(entry_dict)
-                if "channels" in spec and isinstance(spec["channels"], dict):
-                    spec["channels"] = {k: np.array(v) for k, v in spec["channels"].items()}
-                if "V" in spec:
-                    spec["V"] = np.array(spec["V"])
-                specs.append(spec)
-            return specs
-        except Exception:
-            return None
-
-    cache_store_errors = {"count": 0}
-
-    def _store_disk_cache(cache_dir: Path, filepath: Path, mtime: float, fsize: int, specs):
-        """Store spectroscopy data to disk cache."""
-        if not cache_dir:
-            return
-        try:
-            if not cache_dir.exists():
-                cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_key = hashlib.md5(filepath.name.encode("utf-8")).hexdigest()[:16]
-            meta_file = cache_dir / f"{cache_key}_meta.json"
-            data_file = cache_dir / f"{cache_key}_data.npy"
-            cache_meta = {
-                "filename": filepath.name,
-                "mtime": float(mtime),
-                "size": int(fsize),
-                "cached_at": datetime.utcnow().isoformat(),
-                "spec_count": len(specs),
-            }
-            with open(meta_file, "w") as f:
-                json.dump(cache_meta, f, indent=2)
-            serializable_specs = []
-            for spec in specs:
-                s = dict(spec)
-                if "channels" in s and isinstance(s["channels"], dict):
-                    s["channels"] = {
-                        k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in s["channels"].items()
-                    }
-                if "V" in s and hasattr(s["V"], "tolist"):
-                    s["V"] = s["V"].tolist()
-                serializable_specs.append(s)
-            np.save(data_file, np.array(serializable_specs, dtype=object), allow_pickle=True)
-        except Exception as exc:
-            if cache_store_errors["count"] < 3:
-                cache_store_errors["count"] += 1
-                try:
-                    log_status(f"  - spectroscopy cache store failed: {exc}")
-                except Exception:
-                    pass
-    patterns = ("*.dat","*.DAT","*.3ds","*.3DS")
+    manifest_enabled = bool(getattr(viewer, "spectro_manifest_cache_enabled", True))
+    lazy_payload = bool(getattr(viewer, "spectro_lazy_payload_enabled", True))
+    manifest_entries = _load_spectro_manifest(disk_cache_dir) if manifest_enabled else {}
+    manifest_changed = False
     cache = viewer._spectro_cache
     seen_keys = set()
-    file_map = {}
     cache_miss_logged = 0
-    if files:
-        for f in files:
-            if not f:
-                continue
-            try:
-                f = Path(f)
-            except Exception:
-                continue
-            if f.is_dir():
-                continue
-            try:
-                key = str(f.resolve())
-            except Exception:
-                key = str(f)
-            norm_key = key.lower() if os.name == "nt" else key
-            if norm_key not in file_map:
-                file_map[norm_key] = f
-    elif folder_path is not None:
-        for pat in patterns:
-            for f in folder_path.glob(pat):
-                # normalize path for dedup (case-insensitive on Windows)
-                try:
-                    key = str(f.resolve())
-                except Exception:
-                    key = str(f)
-                norm_key = key.lower() if os.name == "nt" else key
-                if norm_key not in file_map:
-                    file_map[norm_key] = f
-    files = sorted(file_map.values(), key=lambda p: str(p).lower())
+    discovery_start = time.perf_counter()
+    file_records = _discover_spectro_file_records(folder_path, files)
+    files = [record["path"] for record in file_records]
+    stats["discovery_ms"] = (time.perf_counter() - discovery_start) * 1000.0
     total = len(files)
     if total:
         log_status(f"Scanning {total} spectroscopy file(s)...")
@@ -889,19 +1707,101 @@ def _scan_spectros(
             image_paths = [str(p) for p in getattr(viewer, "files", []) or []]
         except Exception:
             image_paths = []
-    for idx, f in enumerate(files, 1):
+
+    bulk_manifest_ready = False
+    if manifest_enabled and lazy_payload and file_records:
+        try:
+            bulk_manifest_ready = all(
+                _manifest_entry_valid(manifest_entries.get(record["rel_key"]), mtime=record["mtime"], fsize=record["size"])
+                for record in file_records
+            )
+        except Exception:
+            bulk_manifest_ready = False
+
+    if bulk_manifest_ready:
+        t_manifest = time.perf_counter()
+        for record in file_records:
+            p = record["path"]
+            norm_key = record["norm_key"]
+            ext = record["suffix"]
+            if ext == ".dat":
+                stats['dat_files'] += 1
+                stats['single_dat_files'] += 1
+            elif ext == ".txt":
+                stats['txt_files'] += 1
+            elif ext == ".3ds":
+                stats['dat_files'] += 1
+            seen_keys.add(norm_key)
+            entry = manifest_entries.get(record["rel_key"]) or {}
+            spec_list = [_restore_spec_metadata(spec_entry) for spec_entry in (entry.get("specs") or [])]
+            specs.extend(spec_list)
+            stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
+        stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
+        stats['display_count'] = len(specs)
+        stats['single_entries'] = sum(1 for spec in specs if spec.get("matrix_index") is None)
+        stats['matrix_specs'] = sum(1 for spec in specs if spec.get("matrix_index") is not None)
+        matrix_datasets = _rebuild_matrix_datasets_from_specs(specs)
+        stats['matrix_dat_files'] = sum(len(ds.channels) for ds in matrix_datasets.values())
+        stats['matrix_files'] = len(matrix_datasets)
+        try:
+            log_status("  - spectroscopy finalize metadata...")
+            log_status("  - spectroscopy finalize ordering...")
+        except Exception:
+            pass
+        stale = [k for k in list(cache.keys()) if k not in seen_keys]
+        for k in stale:
+            cache.pop(k, None)
+        current_rel_keys = {record["rel_key"] for record in file_records}
+        stale_manifest = [key for key in list(manifest_entries.keys()) if key not in current_rel_keys]
+        if stale_manifest:
+            for key in stale_manifest:
+                manifest_entries.pop(key, None)
+            manifest_changed = True
+        viewer._spectro_manifest_entries = manifest_entries
+        if manifest_changed:
+            if hasattr(viewer, "_schedule_spectro_manifest_save"):
+                viewer._schedule_spectro_manifest_save()
+            else:
+                _save_spectro_manifest(disk_cache_dir, manifest_entries)
+        specs.sort(key=lambda s: s.get('time') or datetime.min)
+        stats['total_specs'] = len(specs)
+        log_status("Spectroscopy scan summary:")
+        log_status(
+            f"  Files: {len(file_records)} total  |  singles: {stats['single_dat_files']}  |  matrices: {stats['matrix_dat_files']}  |  empty/deferred: {stats['empty_files']}/{stats['deferred_files']}  |  invalid: {stats['invalid_files']}"
+        )
+        log_status(
+            f"  Spectra: {stats['total_specs']} total  |  from singles: {stats['single_entries']} traces  |  from matrices: {stats['matrix_specs']} traces"
+        )
+        log_status(
+            f"  Cache: {len(file_records)}/{len(file_records)} files (100% hit rate)  |  memory: 0  |  manifest: {stats.get('manifest_hits', 0)}  |  disk: 0  |  parsed: 0"
+        )
+        log_status(
+            f"  Timings: discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload 0 ms  |  raw parse 0 ms"
+        )
+        try:
+            json_line = {
+                "folder": str(folder_path) if folder_path is not None else "",
+                "files_scanned": len(file_records),
+                "spectra_total": stats.get("total_specs", 0),
+                "single_files": stats.get("single_dat_files", 0),
+                "single_entries": stats.get("single_entries", 0),
+                "matrix_datasets": len(matrix_datasets),
+                "matrix_spectra": stats.get("matrix_specs", 0),
+                "empty_files": stats.get("empty_files", 0),
+                "invalid_files": stats.get("invalid_files", 0),
+            }
+            log_status(f"[SXMViewer-JSON] {json.dumps(json_line)}")
+        except Exception:
+            pass
+        return specs, stats
+
+    for idx, record in enumerate(file_records, 1):
         spec_list = None
         parse_error = None
         disk_cached = None
-        p = Path(f)
-        if p.is_dir():
-            continue
-        try:
-            key = str(p.resolve())
-        except Exception:
-            key = str(p)
-        norm_key = key.lower() if os.name == "nt" else key
-        ext = p.suffix.lower()
+        p = record["path"]
+        norm_key = record["norm_key"]
+        ext = record["suffix"]
         if ext == ".dat":
             stats['dat_files'] += 1
         elif ext == ".txt":
@@ -911,21 +1811,27 @@ def _scan_spectros(
         if norm_key in seen_keys:
             continue
         seen_keys.add(norm_key)
-        try:
-            st = p.stat()
-            mtime = st.st_mtime
-            fsize = st.st_size
-        except Exception:
-            mtime = 0.0
-            fsize = -1
+        mtime = float(record.get("mtime", 0.0))
+        fsize = int(record.get("size", -1))
         cached = cache.get(norm_key)
+        rel_key = record["rel_key"]
+        manifest_entry = manifest_entries.get(rel_key) if manifest_enabled else None
+        payload_info = None
         # eager parse limit (0 means no deferral)
         if viewer.spectro_eager_limit and idx > viewer.spectro_eager_limit:
-            # Try disk cache even when over eager limit; otherwise defer
-            if disk_cache_dir:
-                disk_cached = _load_disk_cache(disk_cache_dir, p, mtime, fsize)
+            if manifest_entry and _manifest_entry_valid(manifest_entry, mtime=mtime, fsize=fsize):
+                t_manifest = time.perf_counter()
+                spec_list = [_restore_spec_metadata(entry) for entry in (manifest_entry.get("specs") or [])]
+                stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
+                stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
+            elif disk_cache_dir:
+                t_disk = time.perf_counter()
+                disk_cached, payload_info = _load_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize)
+                stats["disk_cache_ms"] += (time.perf_counter() - t_disk) * 1000.0
                 if disk_cached is not None:
-                    spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
+                    manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, disk_cached, payload_info=payload_info)
+                    manifest_changed = True
+                    spec_list = _spec_metadata_list(disk_cached) if lazy_payload else [_clone_spec_entry(entry) for entry in disk_cached]
                     stats["disk_cache_hits"] = stats.get("disk_cache_hits", 0) + 1
             if not spec_list:
                 stats['deferred_files'] += 1
@@ -933,16 +1839,25 @@ def _scan_spectros(
                 viewer._spectro_deferred.add(norm_key)
                 continue
 
-        if cached and abs(cached.get('mtime', 0.0) - mtime) <= 1e-6 and not cached.get('deferred'):
+        if cached and abs(cached.get('mtime', 0.0) - mtime) <= _SPECTRO_CACHE_MTIME_TOLERANCE and not cached.get('deferred'):
             raw_list = cached.get('data') or []
-            spec_list = [_clone_spec_entry(entry) for entry in raw_list]
+            restored = [_clone_payload_spec_entry(entry) for entry in raw_list]
+            spec_list = _spec_metadata_list(restored) if lazy_payload else [_clone_spec_entry(entry) for entry in restored]
             stats["cache_hits"] = stats.get("cache_hits", 0) + 1
         else:
-            # try disk cache
-            if disk_cache_dir:
-                disk_cached = _load_disk_cache(disk_cache_dir, p, mtime, fsize)
+            if manifest_entry and _manifest_entry_valid(manifest_entry, mtime=mtime, fsize=fsize):
+                t_manifest = time.perf_counter()
+                spec_list = [_restore_spec_metadata(entry) for entry in (manifest_entry.get("specs") or [])]
+                stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
+                stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
+            elif disk_cache_dir:
+                t_disk = time.perf_counter()
+                disk_cached, payload_info = _load_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize)
+                stats["disk_cache_ms"] += (time.perf_counter() - t_disk) * 1000.0
                 if disk_cached is not None:
-                    spec_list = [_clone_spec_entry(entry) for entry in disk_cached]
+                    manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, disk_cached, payload_info=payload_info)
+                    manifest_changed = True
+                    spec_list = _spec_metadata_list(disk_cached) if lazy_payload else [_clone_spec_entry(entry) for entry in disk_cached]
                     stats["disk_cache_hits"] = stats.get("disk_cache_hits", 0) + 1
             if spec_list is None and disk_cache_dir and cache_miss_logged < 10:
                 cache_miss_logged += 1
@@ -952,33 +1867,10 @@ def _scan_spectros(
                     pass
             if spec_list is None:
                 stats["cache_miss"] = stats.get("cache_miss", 0) + 1
-                if ext == ".dat":
-                    # Prefer Nanonis parsing first for .dat; fallback to legacy/Omicron parser if empty.
-                    try:
-                        spec_list = parse_nanonis_spectroscopy(p)
-                    except Exception:
-                        spec_list = None
-                    if not spec_list:
-                        spec_list = None
-                elif ext == ".3ds":
-                    try:
-                        spec_list = parse_nanonis_3ds(p)
-                    except Exception:
-                        spec_list = None
-                    # do NOT fall back to text parser for .3ds
-                    if not spec_list:
-                        try:
-                            log_status(f"Spectroscopy parse rejected: {p} returned no spectra (.3ds)")
-                        except Exception:
-                            pass
-                if spec_list is None and ext not in (".3ds",):
-                    try:
-                        spec_list = parse_spectroscopy_file(p)
-                    except SpectroscopyParseError as exc:
-                        parse_error = exc
-                        spec_list = None
-                    except Exception:
-                        spec_list = None
+                t_parse = time.perf_counter()
+                parsed_specs, parse_error = _parse_spectro_file_payload(p, mtime)
+                stats["parse_ms"] += (time.perf_counter() - t_parse) * 1000.0
+                spec_list = parsed_specs
             if parse_error is not None:
                 stats['invalid_files'] += 1
                 try:
@@ -989,65 +1881,14 @@ def _scan_spectros(
             if not spec_list:
                 stats['empty_files'] += 1
                 continue
-            # --- Fallback: Parse coordinates from header comments if missing (e.g. Nanonis .dat) ---
-            if spec_list and ext == ".dat":
-                if any(s.get('x') is None or s.get('y') is None for s in spec_list):
-                    try:
-                        with open(p, 'r', encoding='latin-1') as f:
-                            # Scan first 30 lines for metadata
-                            for _ in range(30):
-                                line = f.readline()
-                                if not line: break
-                                # Look for line like: ;x/y-Pos: -104.75/-266
-                                if "x/y-Pos:" in line:
-                                    parts = line.split(":", 1)[1].strip().split("/")
-                                    if len(parts) == 2:
-                                        try:
-                                            x_val, y_val = float(parts[0]), float(parts[1])
-                                            x_nm = _coerce_pos_to_nm(x_val)
-                                            y_nm = _coerce_pos_to_nm(y_val)
-                                            for s in spec_list:
-                                                if s.get('x') is None: s['x'] = x_nm
-                                                if s.get('y') is None: s['y'] = y_nm
-                                        except ValueError: pass
-                                    break
-                    except Exception: pass
-
-            # ensure basic metadata is present for assignment
-            for s in spec_list or []:
-                if 'path' not in s or not s.get('path'):
-                    s['path'] = str(p)
-                # normalize/ensure time for ordering; fallback to file mtime
-                t = s.get('time')
-                use_mtime = False
-                if t is None:
-                    use_mtime = True
-                elif isinstance(t, datetime):
-                    if t.year < 1990:
-                        use_mtime = True
-                elif isinstance(t, (int, float)):
-                    try:
-                        s['time'] = datetime.fromtimestamp(float(t))
-                    except Exception:
-                        use_mtime = True
-                elif isinstance(t, str):
-                    if not t.strip():
-                        use_mtime = True
-                    else:
-                        try:
-                            s['time'] = datetime.fromisoformat(t)
-                        except Exception:
-                            use_mtime = True
-                
-                if use_mtime:
-                    try:
-                        s['time'] = datetime.fromtimestamp(mtime)
-                    except Exception:
-                        pass
-            cache[norm_key] = {'mtime': mtime, 'data': [_clone_spec_entry(spec) for spec in spec_list]}
-            # persist to disk cache with final image_key/image_path anchoring
+            cache[norm_key] = {'mtime': mtime, 'data': [_clone_payload_spec_entry(spec) for spec in spec_list]}
             if disk_cache_dir:
-                _store_disk_cache(disk_cache_dir, p, mtime, fsize, spec_list)
+                payload_info = _store_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize, spec_list)
+            if manifest_enabled:
+                manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, spec_list, payload_info=payload_info)
+                manifest_changed = True
+            if lazy_payload:
+                spec_list = _spec_metadata_list(spec_list)
         for spec in spec_list or []:
             _reset_spec_classification(spec)
         specs.extend(spec_list or [])
@@ -1113,9 +1954,29 @@ def _scan_spectros(
         if total and (idx % progress_step == 0 or idx == total):
             pct = idx / total * 100.0
             log_status(f"  - spectroscopy load {idx}/{total} ({pct:4.0f}%)")
+    try:
+        log_status("  - spectroscopy finalize metadata...")
+    except Exception:
+        pass
     stale = [k for k in list(cache.keys()) if k not in seen_keys]
     for k in stale:
         cache.pop(k, None)
+    if manifest_enabled:
+        current_rel_keys = {record["rel_key"] for record in file_records}
+        stale_manifest = [key for key in list(manifest_entries.keys()) if key not in current_rel_keys]
+        for key in stale_manifest:
+            manifest_entries.pop(key, None)
+            manifest_changed = True
+        viewer._spectro_manifest_entries = manifest_entries
+        if manifest_changed:
+            if hasattr(viewer, "_schedule_spectro_manifest_save"):
+                viewer._schedule_spectro_manifest_save()
+            else:
+                _save_spectro_manifest(disk_cache_dir, manifest_entries)
+    try:
+        log_status("  - spectroscopy finalize ordering...")
+    except Exception:
+        pass
     specs.sort(key=lambda s: s.get('time') or datetime.min)
     stats['total_specs'] = len(specs)
     # logging summary
@@ -1133,13 +1994,17 @@ def _scan_spectros(
         f"  Spectra: {stats['total_specs']} total  |  from singles: {single_entries} traces  |  from matrices: {matrix_specs} traces"
     )
     cache_hits = stats.get("cache_hits", 0)
+    manifest_hits = stats.get("manifest_hits", 0)
     disk_hits = stats.get("disk_cache_hits", 0)
     cache_miss = stats.get("cache_miss", 0)
-    total_cached = cache_hits + disk_hits
+    total_cached = cache_hits + manifest_hits + disk_hits
     if total:
         cache_pct = (total_cached / max(total, 1)) * 100
         log_status(
-            f"  Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
+            f"  Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  manifest: {manifest_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
+        )
+        log_status(
+            f"  Timings: discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload {stats.get('disk_cache_ms', 0.0):.0f} ms  |  raw parse {stats.get('parse_ms', 0.0):.0f} ms"
         )
     if viewer.matrix_datasets:
         log_status("  Matrix datasets:")
