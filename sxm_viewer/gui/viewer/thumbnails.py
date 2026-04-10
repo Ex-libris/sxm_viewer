@@ -55,6 +55,22 @@ def _thumbnail_filter_signature(viewer, file_key):
     return _filter_signature(spec)
 
 
+def _thumbnail_display_signature(viewer, file_key, channel_idx):
+    try:
+        adjust_spec = viewer._get_adjust_spec(file_key, channel_idx)
+    except Exception:
+        adjust_spec = None
+    try:
+        adjust_sig = json.dumps(adjust_spec, sort_keys=True, default=str) if adjust_spec else ""
+    except Exception:
+        adjust_sig = repr(adjust_spec)
+    return (
+        bool(getattr(viewer, "display_units_si", False)),
+        bool(getattr(viewer, "display_units_relative", False)),
+        adjust_sig,
+    )
+
+
 def _downsample_for_thumbnail(viewer, arr, thumb_w, thumb_h):
     arr = np.asarray(arr, dtype=float)
     if arr.size == 0:
@@ -75,6 +91,7 @@ def _downsample_for_thumbnail(viewer, arr, thumb_w, thumb_h):
 
 def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thumb_h):
     filter_sig = viewer._thumbnail_filter_signature(file_key)
+    display_sig = _thumbnail_display_signature(viewer, file_key, channel_idx)
     fname = fd.get("FileName")
     if not fname:
         raise ValueError("Missing FileName for channel")
@@ -83,28 +100,41 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
         bin_mtime = bin_path.stat().st_mtime
     except Exception:
         bin_mtime = 0.0
-    data_key = (file_key, channel_idx, bin_mtime, filter_sig, thumb_w, thumb_h)
+    data_key = (file_key, channel_idx, bin_mtime, filter_sig, display_sig, thumb_w, thumb_h)
     with viewer._thumb_data_lock:
         cached = viewer._thumb_data_cache.get(data_key)
     if cached is not None:
         return data_key, cached
     _, arr_conv = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
-    arr_use = arr_conv
+    arr_use = np.asarray(arr_conv, dtype=float)
+    try:
+        base_extent = viewer._header_extent(header)
+    except Exception:
+        base_extent = None
+    try:
+        arr_use, _ = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_use, base_extent)
+    except Exception:
+        pass
+    try:
+        _, arr_use, _ = viewer._scale_unit_for_display(fd.get("PhysUnit", ""), arr_use)
+    except Exception:
+        arr_use = np.asarray(arr_use, dtype=float)
     crop_info = None
     try:
-        if arr_conv.ndim == 2:
-            region = detect_valid_scan_region(arr_conv)
+        if arr_use.ndim == 2:
+            orig_rows, orig_cols = int(arr_use.shape[0]), int(arr_use.shape[1])
+            region = detect_valid_scan_region(arr_use)
             if region:
                 r0, r1 = region
-                arr_use = arr_conv[r0 : r1 + 1, :]
+                arr_use = arr_use[r0 : r1 + 1, :]
                 crop_info = {
                     "r0": int(r0),
                     "r1": int(r1),
-                    "orig_rows": int(arr_conv.shape[0]),
-                    "orig_cols": int(arr_conv.shape[1]),
+                    "orig_rows": orig_rows,
+                    "orig_cols": orig_cols,
                 }
     except Exception:
-        arr_use = arr_conv
+        arr_use = np.asarray(arr_use, dtype=float)
         crop_info = None
     thumb_arr = viewer._downsample_for_thumbnail(arr_use, thumb_w, thumb_h)
     with viewer._thumb_data_lock:
@@ -119,6 +149,7 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
 
 def _thumbnail_data_key(viewer, file_key, channel_idx, fd, thumb_w, thumb_h):
     filter_sig = viewer._thumbnail_filter_signature(file_key)
+    display_sig = _thumbnail_display_signature(viewer, file_key, channel_idx)
     fname = fd.get("FileName")
     if not fname:
         raise ValueError("Missing FileName for channel")
@@ -127,7 +158,7 @@ def _thumbnail_data_key(viewer, file_key, channel_idx, fd, thumb_w, thumb_h):
         bin_mtime = bin_path.stat().st_mtime
     except Exception:
         bin_mtime = 0.0
-    return (file_key, channel_idx, bin_mtime, filter_sig, thumb_w, thumb_h)
+    return (file_key, channel_idx, bin_mtime, filter_sig, display_sig, thumb_w, thumb_h)
 
 
 def _invalidate_thumbnail_cache(viewer, paths=None):

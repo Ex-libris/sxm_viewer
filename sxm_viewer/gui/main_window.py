@@ -469,6 +469,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._marker_refresh_timer = QtCore.QTimer(self)
         self._marker_refresh_timer.setSingleShot(True)
         self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
+        self._thumbnail_render_state_timer = QtCore.QTimer(self)
+        self._thumbnail_render_state_timer.setSingleShot(True)
+        self._thumbnail_render_state_timer.timeout.connect(self._flush_thumbnail_render_state_refresh)
+        self._thumbnail_render_state_pending_paths = set()
         self._spectro_manifest_save_timer = QtCore.QTimer(self)
         self._spectro_manifest_save_timer.setSingleShot(True)
         self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
@@ -509,6 +513,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._last_profile_payload = None
 
         self.per_file_channel_cmap = {}
+        self.per_file_channel_clim = {}
         self.last_preview = None
         self.spectros = []
         self.matrix_spectros = []
@@ -4727,16 +4732,16 @@ QLabel:hover {{
                 marker_defs = []
         return marker_defs
 
-    def _schedule_thumbnail_job(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation):
+    def _schedule_thumbnail_job(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, clim, generation):
         if file_key in self._thumb_inflight or file_key in self._thumb_loaded:
             return
         self._thumb_inflight.add(file_key)
-        job = _ThumbnailJob(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, generation)
+        job = _ThumbnailJob(self, file_key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, clim, generation)
         job.signals.finished.connect(self._on_thumbnail_job_finished)
         job.signals.failed.connect(self._on_thumbnail_job_failed)
         self._thumb_threadpool.start(job)
 
-    def _on_thumbnail_job_finished(self, file_key, channel_idx, qimg, data_key, cmap_name, generation):
+    def _on_thumbnail_job_finished(self, file_key, channel_idx, qimg, data_key, cmap_name, clim, generation):
         if generation != self._thumb_generation:
             return
         label = self._thumb_labels.get(file_key)
@@ -4748,7 +4753,7 @@ QLabel:hover {{
         thumb_w, thumb_h = dims
         base_pix = QtGui.QPixmap.fromImage(qimg).scaled(thumb_w, thumb_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
         try:
-            self.thumb_cache[(data_key, cmap_name)] = base_pix
+            self.thumb_cache[(data_key, cmap_name, self._normalize_clim(clim))] = base_pix
         except Exception:
             pass
         crop_info = None
@@ -4821,10 +4826,10 @@ QLabel:hover {{
             meta = self._thumb_meta.get(key)
             if not meta:
                 continue
-            channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen = meta
+            channel_idx, header, fd, thumb_w, thumb_h, cmap_name, clim, gen = meta
             if gen != self._thumb_generation:
                 continue
-            self._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, gen)
+            self._schedule_thumbnail_job(key, channel_idx, header, fd, thumb_w, thumb_h, cmap_name, clim, gen)
 
     def _get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h):
         return viewer_thumbnails._get_thumbnail_array(self, file_key, channel_idx, header, fd, thumb_w, thumb_h)
@@ -4863,6 +4868,91 @@ QLabel:hover {{
         except Exception:
             cmap = None
         return str(cmap) if cmap else default_cmap
+
+    def _normalize_clim(self, clim):
+        try:
+            if clim is None:
+                return None
+            lo, hi = clim
+            lo = float(lo)
+            hi = float(hi)
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                return None
+            if hi < lo:
+                lo, hi = hi, lo
+            return (lo, hi)
+        except Exception:
+            return None
+
+    def _thumbnail_clim_override(self, file_key: str, channel_idx: int, default_clim=None):
+        try:
+            key = str(file_key)
+            idx = int(channel_idx)
+        except Exception:
+            return self._normalize_clim(default_clim)
+        try:
+            clim = (getattr(self, "per_file_channel_clim", {}) or {}).get((key, idx))
+        except Exception:
+            clim = None
+        clim = self._normalize_clim(clim)
+        return clim if clim is not None else self._normalize_clim(default_clim)
+
+    def _resolve_preview_clim(self, file_key: str, channel_idx: int, arr, *, relative_zero: bool = False):
+        stored = self._thumbnail_clim_override(file_key, channel_idx)
+        if stored is not None:
+            return stored
+        return self._auto_preview_clim(arr, relative_zero=relative_zero)
+
+    def _schedule_thumbnail_render_state_refresh(self, paths):
+        path_set = {str(Path(p)) for p in list(paths or []) if p}
+        if not path_set:
+            return
+        self._thumbnail_render_state_pending_paths.update(path_set)
+        try:
+            self._thumbnail_render_state_timer.start(120)
+        except Exception:
+            self._flush_thumbnail_render_state_refresh()
+
+    def _flush_thumbnail_render_state_refresh(self):
+        paths = list(getattr(self, "_thumbnail_render_state_pending_paths", set()) or [])
+        self._thumbnail_render_state_pending_paths.clear()
+        if not paths:
+            return
+        try:
+            self._invalidate_thumbnail_cache(paths=paths)
+        except Exception:
+            pass
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+
+    def _store_canvas_view_clims(self, canvas):
+        views = list(getattr(canvas, "views", None) or [])
+        changed_paths = set()
+        changed = False
+        for view in views:
+            try:
+                file_key = str(view.get("path") or "")
+                channel_idx = int(view.get("channel_idx"))
+            except Exception:
+                continue
+            if not file_key:
+                continue
+            clim_key = (file_key, channel_idx)
+            clim = self._normalize_clim(view.get("clim"))
+            previous = self._normalize_clim(self.per_file_channel_clim.get(clim_key))
+            if clim == previous:
+                continue
+            if clim is None:
+                self.per_file_channel_clim.pop(clim_key, None)
+            else:
+                self.per_file_channel_clim[clim_key] = clim
+            changed = True
+            changed_paths.add(file_key)
+        if changed and changed_paths:
+            self._schedule_thumbnail_render_state_refresh(changed_paths)
+        return changed
 
     def _set_thumbnail_entry_cmap(self, paths, cmap_name=None):
         targets = [str(Path(p)) for p in list(paths or []) if p]
@@ -7054,6 +7144,10 @@ QLabel:hover {{
             return
         try:
             canvas.set_view_clim(view, (float(lo), float(hi)))
+        except Exception:
+            pass
+        try:
+            self._store_canvas_view_clims(canvas)
         except Exception:
             pass
 
@@ -9803,6 +9897,7 @@ QLabel:hover {{
             controller.update_hint()
 
     def _on_preview_canvas_state_changed(self, canvas):
+        self._store_canvas_view_clims(canvas)
         self._on_canvas_display_options_changed(canvas)
         self._update_quick_crop_hint()
 
@@ -9877,6 +9972,7 @@ QLabel:hover {{
             self._invalidate_thumbnail_cache()
             self._invalidate_channel_cache()
             self.per_file_channel_cmap.clear()
+            self.per_file_channel_clim.clear()
             # clear config file on disk
             try:
                 if CONFIG_PATH.exists():

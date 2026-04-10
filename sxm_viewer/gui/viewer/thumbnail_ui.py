@@ -72,6 +72,17 @@ def _thumbnail_cmap_for_key(viewer, file_key, channel_idx, default_cmap):
         return default_cmap
 
 
+def _thumbnail_clim_for_key(viewer, file_key, channel_idx, default_clim=None):
+    try:
+        return viewer._thumbnail_clim_override(file_key, channel_idx, default_clim)
+    except Exception:
+        return default_clim
+
+
+def _thumb_render_cache_key(data_key, cmap_name, clim):
+    return (data_key, cmap_name, clim)
+
+
 def _ensure_thumb_click_timer(viewer):
     timer = getattr(viewer, "_thumb_click_timer", None)
     if timer is not None:
@@ -624,6 +635,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     t = item["path"]
                     thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
                     entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
+                    entry_clim = _thumbnail_clim_for_key(viewer, key, thumb_channel_idx)
                     lbl = QtWidgets.QLabel()
                     lbl.setAlignment(QtCore.Qt.AlignCenter)
                     lbl.setProperty("file_path", key)
@@ -672,7 +684,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                         except Exception:
                             data_key = None
                         if data_key:
-                            base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
+                            base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(data_key, entry_cmap_name, entry_clim))
                         if base_pix is not None:
                             pix = base_pix.copy()
                             crop_info = None
@@ -691,7 +703,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                             viewer._thumb_loaded.add(key)
                         else:
                             lbl.setProperty("spec_markers", [])
-                        viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
+                        viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, entry_clim, generation)
                     else:
                         blank = QtGui.QPixmap(thumb_w, thumb_h)
                         blank.fill(QtGui.QColor('black'))
@@ -761,6 +773,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         header, fds = viewer.headers[key]
         thumb_channel_idx = _thumbnail_channel_for_key(viewer, key, channel_idx)
         entry_cmap_name = _thumbnail_cmap_for_key(viewer, key, thumb_channel_idx, cmap_name)
+        entry_clim = _thumbnail_clim_for_key(viewer, key, thumb_channel_idx)
         lbl = QtWidgets.QLabel()
         lbl.setAlignment(QtCore.Qt.AlignCenter)
         lbl.setProperty("file_path", key)
@@ -810,7 +823,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             except Exception:
                 data_key = None
             if data_key:
-                base_pix = viewer.thumb_cache.get((data_key, entry_cmap_name))
+                base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(data_key, entry_cmap_name, entry_clim))
             if base_pix is not None:
                 pix = base_pix.copy()
                 crop_info = None
@@ -829,7 +842,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 viewer._thumb_loaded.add(key)
             else:
                 lbl.setProperty("spec_markers", [])
-            viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, generation)
+            viewer._thumb_meta[key] = (thumb_channel_idx, header, fd, thumb_w, thumb_h, entry_cmap_name, entry_clim, generation)
         else:
             blank = QtGui.QPixmap(thumb_w, thumb_h)
             blank.fill(QtGui.QColor('black'))
@@ -874,26 +887,31 @@ def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cma
             return None
         channel_idx = min(max(channel_idx, 0), len(fds) - 1)
     fd = fds[channel_idx]
+    clim = _thumbnail_clim_for_key(viewer, file_key, channel_idx)
     data_key = None
     try:
         data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fd, width, height)
     except Exception:
         data_key = None
     if data_key is not None:
-        cache_key = ('frame', data_key, cmap_name)
+        cache_key = ('frame', data_key, cmap_name, clim)
         pix = viewer._frame_real_pixmap_cache.get(cache_key)
         if pix is not None:
             return pix
-        base_pix = viewer.thumb_cache.get((data_key, cmap_name))
+        base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(data_key, cmap_name, clim))
         if base_pix is not None:
             viewer._frame_real_pixmap_cache[cache_key] = base_pix
             return base_pix
         prefix = data_key[:4]
-        for key, cmap in list(viewer.thumb_cache.keys()):
-            if cmap != cmap_name:
+        for cache_entry in list(viewer.thumb_cache.keys()):
+            try:
+                key, cmap, key_clim = cache_entry
+            except Exception:
+                continue
+            if cmap != cmap_name or key_clim != clim:
                 continue
             if key[:4] == prefix:
-                base_pix = viewer.thumb_cache.get((key, cmap_name))
+                base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(key, cmap_name, clim))
                 if base_pix is not None:
                     viewer._frame_real_pixmap_cache[cache_key] = base_pix
                     return base_pix
@@ -901,11 +919,14 @@ def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cma
         data_key, arr = viewer._get_thumbnail_array(str(file_key), channel_idx, header, fd, width, height)
     except Exception:
         return None
-    cache_key = ('frame', data_key, cmap_name)
+    cache_key = ('frame', data_key, cmap_name, clim)
     pix = viewer._frame_real_pixmap_cache.get(cache_key)
     if pix is None:
         try:
-            qimg = array_to_qimage(arr, cmap_name=cmap_name)
+            vmin = vmax = None
+            if clim is not None:
+                vmin, vmax = clim
+            qimg = array_to_qimage(arr, cmap_name=cmap_name, vmin=vmin, vmax=vmax)
             pix = QtGui.QPixmap.fromImage(qimg)
             viewer._frame_real_pixmap_cache[cache_key] = pix
         except Exception:
