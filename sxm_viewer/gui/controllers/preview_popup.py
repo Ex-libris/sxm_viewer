@@ -556,7 +556,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     except Exception:
         pass
     def _on_popup_canvas_state_changed(_=None):
-        _schedule_resize(force=False)
+        if not getattr(canvas, "_popup_style_resize_lock", False):
+            _schedule_resize(force=False)
         try:
             dlg.setWindowTitle(_popup_window_title(owner, dlg))
         except Exception:

@@ -707,7 +707,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         viewer.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
 
     local_cmap = viewer.per_file_channel_cmap.get((file_key, channel_idx))
-    cmap_to_use = local_cmap or (viewer.preview_cmap_combo.currentText() or viewer.preview_cmap)
+    cmap_to_use = local_cmap or getattr(viewer, "preview_cmap", None) or (viewer.preview_cmap_combo.currentText() or viewer.preview_cmap)
     try:
         viewer._sync_cmap_controls_for_selection(
             file_key,

@@ -2202,6 +2202,14 @@ QLabel:hover {{
                     rel_zero_enabled = bool((views[0] or {}).get("display_relative_zero", False))
             except Exception:
                 rel_zero_enabled = None
+        window_size = None
+        try:
+            window = canvas.window()
+            if window is not None:
+                size = window.size()
+                window_size = [int(size.width()), int(size.height())]
+        except Exception:
+            window_size = None
         return {
             "plot_typography": {
                 "family": family,
@@ -2216,6 +2224,7 @@ QLabel:hover {{
             "relative_axes_enabled": rel_axes_enabled,
             "relative_zero_enabled": rel_zero_enabled,
             "view_cmaps": [str((view or {}).get("cmap") or "") for view in list(getattr(canvas, "views", []) or [])],
+            "window_size": window_size,
         }
 
     def _apply_canvas_style_snapshot(self, canvas, style_snapshot, *, notify=True, redraw=True):
@@ -2350,10 +2359,27 @@ QLabel:hover {{
             if canvas is None or canvas is source_canvas:
                 continue
             try:
+                setattr(canvas, "_popup_style_resize_lock", True)
                 if self._apply_canvas_style_snapshot(canvas, style_snapshot, notify=True):
                     count += 1
+                window_size = style_snapshot.get("window_size")
+                if isinstance(window_size, (list, tuple)) and len(window_size) == 2:
+                    try:
+                        dlg = canvas.window()
+                        if dlg is not None:
+                            w = max(1, int(window_size[0]))
+                            h = max(1, int(window_size[1]))
+                            if not (dlg.isMaximized() or dlg.isFullScreen()):
+                                dlg.resize(w, h)
+                    except Exception:
+                        pass
             except Exception:
                 continue
+            finally:
+                try:
+                    setattr(canvas, "_popup_style_resize_lock", False)
+                except Exception:
+                    pass
         if count:
             try:
                 log_status(f"Applied popup style to {count} pop-out(s)")
@@ -3291,6 +3317,19 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _scale_splitter_sizes(self, target_sizes, total_size):
+        target_sizes = [max(1, int(s)) for s in (target_sizes or []) if int(s) > 0]
+        if not target_sizes or total_size <= 0:
+            return []
+        target_total = sum(target_sizes)
+        if target_total <= 0:
+            return []
+        sizes = [max(1, int(round(total_size * (s / float(target_total))))) for s in target_sizes]
+        diff = int(total_size) - sum(sizes)
+        if diff:
+            sizes[-1] = max(1, sizes[-1] + diff)
+        return sizes
+
     def _rebalance_main_splitter(self):
         splitter = getattr(self, "main_splitter", None)
         if splitter is None:
@@ -3302,10 +3341,35 @@ QLabel:hover {{
         if len(sizes) < 2:
             return
         try:
-            if not self.isMaximized() and self.width() < 1500:
+            maximized = self.isMaximized()
+            if not maximized and self.width() < 1500:
                 return
         except Exception:
-            pass
+            maximized = False
+        if len(sizes) >= 3 and maximized:
+            target = self._scale_splitter_sizes(
+                MAIN_SPLITTER_SIZES_COLUMNS,
+                sum(sizes),
+            )
+            if len(target) == len(sizes) and target != sizes:
+                try:
+                    splitter.setSizes(target)
+                    self._layout_sizes[self._layout_mode] = splitter.sizes()
+                except Exception:
+                    pass
+                return
+        if len(sizes) == 2 and maximized:
+            target = self._scale_splitter_sizes(
+                MAIN_SPLITTER_SIZES_STACKED,
+                sum(sizes),
+            )
+            if len(target) == len(sizes) and target != sizes:
+                try:
+                    splitter.setSizes(target)
+                    self._layout_sizes[self._layout_mode] = splitter.sizes()
+                except Exception:
+                    pass
+                return
         left_size = int(sizes[0])
         soft_max = int(getattr(self, "_left_sidebar_soft_max_width", 380) or 380)
         min_left = int(getattr(self, "_left_sidebar_min_width", 300) or 300)
@@ -6822,6 +6886,52 @@ QLabel:hover {{
             return idx
         return None
 
+    def _channel_picker_label(self, fd, idx: int) -> str:
+        cap = ""
+        try:
+            if fd:
+                cap = str(fd.get("Caption") or fd.get("FileName") or "").strip()
+        except Exception:
+            cap = ""
+        if not cap:
+            cap = f"chan{idx}"
+        return f"{idx}: {cap}"
+
+    def _choose_channel_index_for_virtual_copy(self, fds, *, current_idx=0):
+        """Let the user choose a channel by readable label instead of raw index."""
+        if not fds:
+            return None
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Choose virtual copy channel")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.addWidget(QtWidgets.QLabel("Choose the channel to replicate as a virtual copy:"))
+        combo = QtWidgets.QComboBox()
+        combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        combo.setMinimumWidth(260)
+        for idx, fd in enumerate(fds):
+            combo.addItem(self._channel_picker_label(fd, idx), idx)
+        try:
+            if 0 <= int(current_idx) < combo.count():
+                combo.setCurrentIndex(int(current_idx))
+        except Exception:
+            pass
+        layout.addWidget(combo)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+        try:
+            return int(combo.currentData())
+        except Exception:
+            try:
+                return int(combo.currentIndex())
+            except Exception:
+                return None
+
     # ---------- Export PNGs ----------
     def _sanitize_filename_component(self, s: str) -> str:
         try:
@@ -9173,14 +9283,12 @@ QLabel:hover {{
                 header, fds = parse_header(Path(first))
             if not fds:
                 return
-            dlg = QtWidgets.QInputDialog(self)
-            dlg.setInputMode(QtWidgets.QInputDialog.IntInput)
-            dlg.setIntRange(0, len(fds) - 1)
-            dlg.setIntValue(self.channel_dropdown.currentIndex())
-            dlg.setLabelText(f"Channel index (0-{len(fds)-1}) for virtual copy")
-            if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            channel_idx = self._choose_channel_index_for_virtual_copy(
+                fds,
+                current_idx=self.channel_dropdown.currentIndex(),
+            )
+            if channel_idx is None:
                 return 0
-            channel_idx = dlg.intValue()
         added = 0
         anchor_key = insert_after_key
         for p in targets:
