@@ -879,6 +879,7 @@ def on_thumb_filter_changed(viewer, idx):
 def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cmap_name):
     if not file_key:
         return None
+    cmap_name = _thumbnail_cmap_for_key(viewer, file_key, channel_idx, cmap_name)
     header, fds = viewer.headers.get(str(file_key), (None, None))
     if not header or not fds:
         return None
@@ -1225,18 +1226,17 @@ def on_thumb_cmap_changed(viewer, idx):
     image_targets = [str(path) for path in targets if str(path) in getattr(viewer, "thumb_widgets", {})]
     if image_targets:
         try:
-            changed = int(viewer._set_thumbnail_entry_cmap(image_targets, cmap_name) or 0)
+            viewer._set_thumbnail_entry_cmap(image_targets, cmap_name)
         except Exception:
-            changed = 0
-        if changed:
-            combo = getattr(viewer, "thumb_cmap_combo", None)
-            if combo is not None:
-                try:
-                    combo.blockSignals(True)
-                    combo.setCurrentText(getattr(viewer, "thumb_cmap", "") or cmap_name)
-                finally:
-                    combo.blockSignals(False)
-            return
+            pass
+        combo = getattr(viewer, "thumb_cmap_combo", None)
+        if combo is not None:
+            try:
+                combo.blockSignals(True)
+                combo.setCurrentText(str(cmap_name))
+            finally:
+                combo.blockSignals(False)
+        return
     viewer.thumb_cmap = cmap_name
     viewer.config['thumbnail_cmap'] = viewer.thumb_cmap
     save_config(viewer.config)

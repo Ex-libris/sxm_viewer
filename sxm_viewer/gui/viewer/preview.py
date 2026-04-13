@@ -706,9 +706,17 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     except Exception as e:
         viewer.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
 
-    cmap_to_use = viewer.preview_cmap_combo.currentText() or viewer.preview_cmap
-    if use_local_cmap:
-        cmap_to_use = viewer.per_file_channel_cmap.get((file_key, channel_idx), cmap_to_use)
+    local_cmap = viewer.per_file_channel_cmap.get((file_key, channel_idx))
+    cmap_to_use = local_cmap or getattr(viewer, "preview_cmap", None) or (viewer.preview_cmap_combo.currentText() or viewer.preview_cmap)
+    try:
+        viewer._sync_cmap_controls_for_selection(
+            file_key,
+            channel_idx,
+            thumb_cmap=getattr(viewer, "thumb_cmap", None),
+            preview_cmap=getattr(viewer, "preview_cmap", None),
+        )
+    except Exception:
+        pass
 
     # Spectroscopy entries for this file (singles only for overlay)
     show_preview_specs = bool(getattr(viewer, 'show_preview_spectra', getattr(viewer, 'show_spectra', True)))
@@ -924,10 +932,20 @@ def _on_preview_value(viewer, value, x, y, view):
 
 def on_preview_cmap_changed(viewer, idx):
     viewer._suppress_profile_restart = False
-    viewer.preview_cmap = viewer.preview_cmap_combo.currentText(); viewer.config['preview_cmap'] = viewer.preview_cmap; save_config(viewer.config)
+    cmap_name = viewer.preview_cmap_combo.currentText()
     if viewer.last_preview:
-        viewer._suppress_profile_restart = True
-        viewer.show_file_channel(viewer.last_preview[0], viewer.last_preview[1])
+        try:
+            viewer._set_thumbnail_entry_cmap([viewer.last_preview[0]], cmap_name)
+        except Exception:
+            pass
+        try:
+            viewer._set_combo_text_silent(getattr(viewer, "preview_cmap_combo", None), cmap_name)
+        except Exception:
+            pass
+        return
+    viewer.preview_cmap = cmap_name
+    viewer.config['preview_cmap'] = viewer.preview_cmap
+    save_config(viewer.config)
 __all__ = [
     "_build_metadata_html",
     "show_file_channel",
