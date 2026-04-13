@@ -478,6 +478,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
         self._spectro_manifest_save_inflight = False
         self._spectro_manifest_save_pending = False
+        self._left_sidebar_min_width = 300
+        self._left_sidebar_target_width = 340
+        self._left_sidebar_soft_max_width = 380
+        self._left_sidebar_rebalance_timer = QtCore.QTimer(self)
+        self._left_sidebar_rebalance_timer.setSingleShot(True)
+        self._left_sidebar_rebalance_timer.timeout.connect(self._rebalance_main_splitter)
         # Preview docking state
         self.preview_detached = False
         self.preview_locked = bool(self.config.get("preview_locked", False))
@@ -1498,7 +1504,7 @@ class SXMGridViewer(QtWidgets.QWidget):
 
         # Ensure the left widget cannot shrink below a useful width
         try:
-            left_w.setMinimumWidth(360)
+            left_w.setMinimumWidth(int(getattr(self, "_left_sidebar_min_width", 300)))
         except Exception:
             pass
         try:
@@ -1528,6 +1534,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumbs_reflow_timer.timeout.connect(lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
         try:
             main_splitter.splitterMoved.connect(lambda pos, idx: self._thumbs_reflow_timer.start(150))
+            main_splitter.splitterMoved.connect(lambda pos, idx: self._on_main_splitter_moved(pos, idx))
         except Exception:
             # older Qt versions may not expose splitterMoved the same way; ignore
             pass
@@ -3235,6 +3242,29 @@ QLabel:hover {{
                     return
         super().keyPressEvent(event)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self._left_sidebar_rebalance_timer.start(0)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            if self.isMaximized():
+                self._left_sidebar_rebalance_timer.start(80)
+        except Exception:
+            pass
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        try:
+            if event.type() == QtCore.QEvent.WindowStateChange:
+                self._left_sidebar_rebalance_timer.start(0)
+        except Exception:
+            pass
+
     def _focus_widget_blocks_thumb_nav(self, widget):
         if widget is None:
             return False
@@ -3248,6 +3278,56 @@ QLabel:hover {{
             QtWidgets.QComboBox,
         )
         return isinstance(widget, blocking_types)
+
+    def _on_main_splitter_moved(self, _pos=None, _index=None):
+        try:
+            self._layout_sizes[self._layout_mode] = self.main_splitter.sizes()
+        except Exception:
+            pass
+
+    def _rebalance_main_splitter(self):
+        splitter = getattr(self, "main_splitter", None)
+        if splitter is None:
+            return
+        try:
+            sizes = list(splitter.sizes())
+        except Exception:
+            return
+        if len(sizes) < 2:
+            return
+        try:
+            if not self.isMaximized() and self.width() < 1500:
+                return
+        except Exception:
+            pass
+        left_size = int(sizes[0])
+        soft_max = int(getattr(self, "_left_sidebar_soft_max_width", 380) or 380)
+        min_left = int(getattr(self, "_left_sidebar_min_width", 300) or 300)
+        target_left = int(getattr(self, "_left_sidebar_target_width", 340) or 340)
+        if left_size <= soft_max:
+            return
+        desired_left = max(min_left, min(soft_max, target_left if left_size > soft_max else left_size))
+        delta = left_size - desired_left
+        if delta <= 0:
+            return
+        if len(sizes) >= 3:
+            right_total = max(1, int(sizes[1]) + int(sizes[2]))
+            add_mid = int(round(delta * (int(sizes[1]) / float(right_total))))
+            add_right = delta - add_mid
+            sizes[0] = desired_left
+            sizes[1] = int(sizes[1]) + add_mid
+            sizes[2] = int(sizes[2]) + add_right
+        else:
+            sizes[0] = desired_left
+            sizes[1] = int(sizes[1]) + delta
+        try:
+            splitter.setSizes(sizes)
+        except Exception:
+            return
+        try:
+            self._layout_sizes[self._layout_mode] = splitter.sizes()
+        except Exception:
+            pass
 
     def _is_widget_descendant(self, widget, ancestor):
         if widget is None or ancestor is None:
@@ -3925,6 +4005,10 @@ QLabel:hover {{
                 self.main_splitter.setSizes(list(MAIN_SPLITTER_SIZES_COLUMNS))
             else:
                 self.main_splitter.setSizes(list(MAIN_SPLITTER_SIZES_STACKED))
+        try:
+            self._left_sidebar_rebalance_timer.start(0)
+        except Exception:
+            pass
 
     def on_dark_mode_toggled(self, checked: bool):
         self.dark_mode = bool(checked)
