@@ -17,7 +17,14 @@ def open_histogram_dialog(owner, canvas):
         return
 
     views = list(canvas.views)
-    dlg = QtWidgets.QDialog(owner)
+    dialog_parent = None
+    try:
+        dialog_parent = canvas.window() if canvas is not None else None
+    except Exception:
+        dialog_parent = None
+    if dialog_parent is None:
+        dialog_parent = owner
+    dlg = QtWidgets.QDialog(dialog_parent)
     dlg.setWindowTitle("Histogram & Range")
     dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     layout = QtWidgets.QVBoxLayout(dlg)

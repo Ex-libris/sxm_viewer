@@ -1140,6 +1140,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_cmap_label.setToolTip("Colormap used for the preview")
         self.thumb_cmap_combo.setMinimumWidth(120)
         self.preview_cmap_combo.setMinimumWidth(120)
+        self.preview_zero_cb = QtWidgets.QCheckBox("Zero")
+        self.preview_zero_cb.setChecked(self.display_units_relative)
+        self.preview_zero_cb.setToolTip("Display values relative to the current zero/reference")
+        self.preview_zero_cb.toggled.connect(self.on_unit_relative_toggled)
         preview_state_row = QtWidgets.QHBoxLayout()
         preview_state_row.setContentsMargins(0, 0, 0, 0)
         preview_state_row.setSpacing(8)
@@ -1148,6 +1152,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
+        preview_state_row.addSpacing(8)
+        preview_state_row.addWidget(self.preview_zero_cb)
         preview_state_row.addStretch(1)
         preview_workspace_layout.addLayout(preview_state_row)
         preview_panel_layout.addWidget(self.preview_workspace_frame)
@@ -4953,6 +4959,104 @@ QLabel:hover {{
             cmap = None
         return str(cmap) if cmap else default_cmap
 
+    def _thumbnail_clim_key(self, file_key: str, channel_idx: int, relative_zero: bool | None = None):
+        try:
+            key = str(file_key)
+            idx = int(channel_idx)
+        except Exception:
+            return None
+        if relative_zero is None:
+            relative_zero = bool(getattr(self, "display_units_relative", False))
+        return (key, idx, bool(relative_zero))
+
+    def _set_combo_text_silent(self, widget, text):
+        if widget is None:
+            return
+        try:
+            prev = widget.blockSignals(True)
+            widget.setCurrentText(str(text) if text is not None else "")
+            widget.blockSignals(prev)
+        except Exception:
+            pass
+
+    def _sync_cmap_controls_for_selection(self, file_key=None, channel_idx=None, *, thumb_cmap=None, preview_cmap=None):
+        file_key = str(file_key or "")
+        local_cmap = None
+        if file_key and channel_idx is not None:
+            local_cmap = (getattr(self, "per_file_channel_cmap", {}) or {}).get((file_key, int(channel_idx)))
+        thumb_value = local_cmap if local_cmap else (thumb_cmap or getattr(self, "thumb_cmap", None))
+        preview_value = local_cmap if local_cmap else (preview_cmap or getattr(self, "preview_cmap", None))
+        self._set_combo_text_silent(getattr(self, "thumb_cmap_combo", None), thumb_value)
+        self._set_combo_text_silent(getattr(self, "preview_cmap_combo", None), preview_value)
+
+    def _sync_view_cmaps_from_canvas(self, canvas):
+        views = list(getattr(canvas, "views", None) or [])
+        if not views:
+            return 0
+        changed = {}
+        for view in views:
+            try:
+                file_key = str(view.get("path") or "")
+                channel_idx = int(view.get("channel_idx"))
+            except Exception:
+                continue
+            cmap_name = str(view.get("cmap") or "").strip()
+            if not file_key or not cmap_name:
+                continue
+            key = (file_key, channel_idx)
+            if self.per_file_channel_cmap.get(key) != cmap_name:
+                self.per_file_channel_cmap[key] = cmap_name
+                changed[key] = cmap_name
+        if not changed:
+            return 0
+        changed_paths = {file_key for (file_key, _idx) in changed.keys()}
+        try:
+            self._invalidate_thumbnail_cache(paths=changed_paths)
+        except Exception:
+            pass
+        try:
+            self._schedule_thumbnail_render_state_refresh(changed_paths)
+        except Exception:
+            pass
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []) or [])
+        source_canvas = canvas
+        for canv in canvases:
+            if canv is None:
+                continue
+            try:
+                if canv is source_canvas:
+                    continue
+                canv_views = list(getattr(canv, "views", None) or [])
+                if not canv_views:
+                    continue
+                updated = False
+                for view in canv_views:
+                    try:
+                        file_key = str(view.get("path") or "")
+                        channel_idx = int(view.get("channel_idx"))
+                    except Exception:
+                        continue
+                    cmap_name = changed.get((file_key, channel_idx))
+                    if cmap_name and str(view.get("cmap") or "") != cmap_name:
+                        view["cmap"] = cmap_name
+                        updated = True
+                if updated:
+                    try:
+                        canv._redraw()
+                    except Exception:
+                        try:
+                            canv.draw_idle()
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+        try:
+            if self.last_preview:
+                self._sync_cmap_controls_for_selection(self.last_preview[0], self.last_preview[1])
+        except Exception:
+            pass
+        return len(changed)
+
     def _normalize_clim(self, clim):
         try:
             if clim is None:
@@ -4975,7 +5079,10 @@ QLabel:hover {{
         except Exception:
             return self._normalize_clim(default_clim)
         try:
-            clim = (getattr(self, "per_file_channel_clim", {}) or {}).get((key, idx))
+            clim_map = getattr(self, "per_file_channel_clim", {}) or {}
+            clim = clim_map.get(self._thumbnail_clim_key(key, idx))
+            if clim is None:
+                clim = clim_map.get((key, idx))
         except Exception:
             clim = None
         clim = self._normalize_clim(clim)
@@ -5023,13 +5130,16 @@ QLabel:hover {{
                 continue
             if not file_key:
                 continue
-            clim_key = (file_key, channel_idx)
+            clim_key = self._thumbnail_clim_key(file_key, channel_idx)
             clim = self._normalize_clim(view.get("clim"))
             previous = self._normalize_clim(self.per_file_channel_clim.get(clim_key))
+            if previous is None:
+                previous = self._normalize_clim(self.per_file_channel_clim.get((file_key, channel_idx)))
             if clim == previous:
                 continue
             if clim is None:
                 self.per_file_channel_clim.pop(clim_key, None)
+                self.per_file_channel_clim.pop((file_key, channel_idx), None)
             else:
                 self.per_file_channel_clim[clim_key] = clim
             changed = True
@@ -5362,6 +5472,7 @@ QLabel:hover {{
         self.display_units_relative = bool(checked)
         for widget in (
             getattr(self, "unit_relative_cb", None),
+            getattr(self, "preview_zero_cb", None),
             getattr(self, "display_units_relative_act", None),
         ):
             if widget is None:
@@ -5576,7 +5687,8 @@ QLabel:hover {{
         thumb_w, thumb_h = 96, 72
         for entry in self.frame_map_entries:
             key = entry.get('key')
-            pix = self._thumbnail_pixmap_for_file(key, channel_idx, thumb_w, thumb_h, cmap)
+            cmap_to_use = self._thumbnail_cmap_override(key, channel_idx, cmap)
+            pix = self._thumbnail_pixmap_for_file(key, channel_idx, thumb_w, thumb_h, cmap_to_use)
             if pix is not None:
                 pixmaps[key] = pix
         self.frame_entry_pixmaps = pixmaps
@@ -9757,6 +9869,10 @@ QLabel:hover {{
     def _on_canvas_display_options_changed(self, canvas):
         if self._canvas_display_syncing:
             return
+        try:
+            self._sync_view_cmaps_from_canvas(canvas)
+        except Exception:
+            pass
         options = self._canvas_display_state_from_canvas(canvas)
         if not options:
             return
