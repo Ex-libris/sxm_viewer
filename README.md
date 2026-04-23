@@ -34,8 +34,15 @@ SXM Viewer provides an integrated environment for:
 
 ## Quick start
 
-```bash
+```powershell
 git clone https://github.com/Ex-libris/sxm_viewer.git
 cd sxm_viewer
-python install.py
+conda create -n sxmviewer python=3.11
+conda activate sxmviewer
+cd .\scripts
+python -m pip install -r .\requirements.txt
+cd ..
 python -m sxm_viewer
+```
+
+See the full installation guide in the MkDocs site for the Windows installer helper and troubleshooting notes.

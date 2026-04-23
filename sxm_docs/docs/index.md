@@ -20,17 +20,18 @@
 
 ## Quick start
 
-```bash
-# 1. Clone and install
+```powershell
 git clone https://github.com/Ex-libris/sxm_viewer.git
 cd sxm_viewer
-python install.py
-
-# 2. Launch
+conda create -n sxmviewer python=3.11
+conda activate sxmviewer
+cd .\scripts
+python -m pip install -r .\requirements.txt
+cd ..
 python -m sxm_viewer
 ```
 
-See [Installation](getting-started/installation.md) for full details, including the Windows `.bat` launcher and how to select a specific Python interpreter.
+If you prefer the project-managed installer instead of Conda, see [Installation](getting-started/installation.md). That page also explains the Windows launcher scripts and the supported Python versions.
 
 ---
 
