@@ -307,6 +307,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             except Exception:
                 continue
         self._normalize_recent_session_history(persist=True)
+        last_collection_dir = self.config.get("last_collection_dir")
+        try:
+            self._last_collection_dir = Path(last_collection_dir) if last_collection_dir else Path(self.last_dir)
+        except Exception:
+            self._last_collection_dir = Path(self.last_dir)
         config_changed = False
         if "session_recovery_enabled" not in self.config:
             self.config["session_recovery_enabled"] = True
@@ -3806,6 +3811,15 @@ QLabel:hover {{
         save_config(self.config)
         self._refresh_recent_dirs_menu()
 
+    def _record_collection_dir(self, folder: Path):
+        try:
+            folder_path = Path(folder)
+        except Exception:
+            return
+        self._last_collection_dir = folder_path
+        self.config["last_collection_dir"] = str(folder_path)
+        save_config(self.config)
+
     def _clear_recent_dirs(self):
         self.recent_dirs = []
         self.config["recent_dirs"] = []
@@ -5430,7 +5444,7 @@ QLabel:hover {{
             QtWidgets.QMessageBox.information(
                 self,
                 "Collections",
-                "Select one or more thumbnails first, then add or drag them into the collection tray.",
+                "Select one or more thumbnails first, then add them to the current collection target.",
             )
             return
         channel_idx = int(self.channel_dropdown.currentIndex() or 0)

@@ -153,6 +153,25 @@ class CollectionController:
     def __init__(self, viewer):
         self.viewer = viewer
 
+    def _collection_dialog_start_dir(self):
+        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if current:
+            try:
+                current_path = Path(current)
+                if current_path.exists():
+                    return current_path.parent
+                if current_path.parent:
+                    return current_path.parent
+            except Exception:
+                pass
+        last_collection_dir = getattr(self.viewer, "_last_collection_dir", None)
+        if last_collection_dir:
+            try:
+                return Path(last_collection_dir)
+            except Exception:
+                pass
+        return Path(getattr(self.viewer, "last_dir", "."))
+
     # ------------------------------------------------------------------
     def show_help(self):
         QtWidgets.QMessageBox.information(
@@ -352,7 +371,7 @@ class CollectionController:
     def load_collection(self, collection_path=None):
         path = collection_path
         if path is None:
-            start = Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json"
+            start = self._collection_dialog_start_dir() / "analysis_collection.sxmcoll.json"
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self.viewer,
                 "Open collection",
@@ -375,13 +394,15 @@ class CollectionController:
                 "This file is not an SXM collection. Use Load Session for normal session files.",
             )
             return
+        try:
+            self.viewer._record_collection_dir(collection_path.parent)
+        except Exception:
+            pass
         self._load_payload_into_viewer(payload, collection_path)
 
     def choose_current_collection(self):
         """Pick or create the collection file that future add actions should append to."""
-        start = str(
-            getattr(self.viewer, "_collection_source", "") or Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json"
-        )
+        start = str(self._collection_dialog_start_dir() / "analysis_collection.sxmcoll.json")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.viewer,
             "Choose current collection",
@@ -404,6 +425,10 @@ class CollectionController:
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to use this collection: {exc}")
             return
+        try:
+            self.viewer._record_collection_dir(collection_path.parent)
+        except Exception:
+            pass
         self._remember_current_collection(collection_path, mode=mode)
         QtWidgets.QMessageBox.information(
             self.viewer,
@@ -550,6 +575,10 @@ class CollectionController:
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
+            try:
+                self.viewer._record_collection_dir(collection_path.parent)
+            except Exception:
+                pass
             self._remember_current_collection(collection_path, mode=mode)
             show_saved_cb = getattr(self.viewer, "_show_saved_path_toast", None)
             if callable(show_saved_cb):
@@ -580,7 +609,7 @@ class CollectionController:
                 mode = str(payload.get("default_mode") or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
                 log_status(f"Appending to current collection: {current}")
                 return str(current), mode
-        default_path = current_path or str(Path(getattr(self.viewer, "last_dir", ".")) / "analysis_collection.sxmcoll.json")
+        default_path = current_path or str(self._collection_dialog_start_dir() / "analysis_collection.sxmcoll.json")
         dlg = _CollectionTargetDialog(self.viewer, source_summary=source_summary, default_path=default_path)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return None, None
@@ -618,6 +647,10 @@ class CollectionController:
             self.viewer._collection_source = str(Path(collection_path))
         except Exception:
             self.viewer._collection_source = str(collection_path)
+        try:
+            self.viewer._record_collection_dir(Path(collection_path).parent)
+        except Exception:
+            pass
         self.viewer._current_collection_mode = str(mode or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
@@ -998,6 +1031,10 @@ class CollectionController:
         views_dir = data_dir / "views"
         viewer.last_dir = collection_path.parent
         try:
+            viewer._record_collection_dir(collection_path.parent)
+        except Exception:
+            pass
+        try:
             viewer.path_le.setText(f"[Collection] {collection_path}")
         except Exception:
             pass
@@ -1108,8 +1145,9 @@ class CollectionController:
             channel_idx = (first.get("meta") or {}).get("channel_index", first.get("channel_idx"))
             try:
                 if source_file and Path(str(source_file)).exists() and channel_idx is not None:
-                    built = self.viewer._build_single_channel_view(str(source_file), int(channel_idx))
-                    if built:
+                    bundle = self.viewer._build_single_channel_view(str(source_file), int(channel_idx))
+                    built = bundle.get("view") if isinstance(bundle, dict) else None
+                    if isinstance(built, dict):
                         if first.get("title"):
                             built["title"] = first.get("title")
                         if first.get("cmap"):
