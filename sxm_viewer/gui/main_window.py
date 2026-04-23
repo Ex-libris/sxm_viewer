@@ -192,6 +192,54 @@ class _CollectionTrayList(QtWidgets.QListWidget):
             pass
         super().dropEvent(event)
 
+    def _selected_entry_ids(self):
+        ids = []
+        for item in self.selectedItems():
+            try:
+                entry = item.data(QtCore.Qt.UserRole) or {}
+                item_id = entry.get("id")
+                if item_id is not None:
+                    ids.append(int(item_id))
+            except Exception:
+                continue
+        if ids:
+            return ids
+        item = self.currentItem()
+        if item is not None:
+            try:
+                entry = item.data(QtCore.Qt.UserRole) or {}
+                item_id = entry.get("id")
+                if item_id is not None:
+                    return [int(item_id)]
+            except Exception:
+                pass
+        return []
+
+    def _remove_selected_entries(self):
+        ids = self._selected_entry_ids()
+        if not ids:
+            return
+        try:
+            self.viewer.collection_controller.remove_collection_items(ids)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to remove item(s): {exc}")
+
+    def contextMenuEvent(self, event):
+        menu = QtWidgets.QMenu(self)
+        remove_act = menu.addAction("Remove from collection")
+        remove_act.setEnabled(bool(self._selected_entry_ids()))
+        remove_act.triggered.connect(self._remove_selected_entries)
+        menu.addSeparator()
+        refresh_act = menu.addAction("Refresh")
+        refresh_act.triggered.connect(self.viewer._refresh_collection_tray)
+        menu.exec_(event.globalPos())
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_Delete:
+            self._remove_selected_entries()
+            return
+        super().keyPressEvent(event)
+
 
 class _CollectionTrayWindow(QtWidgets.QDialog):
     """Floating collection tray window kept separate from the main viewer layout."""
@@ -2838,6 +2886,12 @@ QLabel:hover {{
                 pass
         try:
             if self.quick_crop_controller.undo_last_crop():
+                return
+        except Exception:
+            pass
+        try:
+            if self.collection_controller.undo_last_collection_action():
+                self._refresh_collection_tray()
                 return
         except Exception:
             pass
@@ -7347,6 +7401,14 @@ QLabel:hover {{
         add_selected_collection_act = QtWidgets.QAction("Add selected thumbnails to collection", collection_menu)
         add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
         collection_menu.addAction(add_selected_collection_act)
+        remove_selected_collection_act = QtWidgets.QAction("Remove selected thumbnails from collection", collection_menu)
+        remove_selected_collection_act.triggered.connect(
+            lambda: self.collection_controller.remove_thumbnail_entries(
+                [{"file_path": str(path), "channel_index": int(self.channel_dropdown.currentIndex() or 0)} for path in targets if path]
+            )
+        )
+        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)))
+        collection_menu.addAction(remove_selected_collection_act)
         choose_collection_act = QtWidgets.QAction("Choose current collection...", collection_menu)
         choose_collection_act.triggered.connect(self.on_choose_current_collection)
         collection_menu.addAction(choose_collection_act)

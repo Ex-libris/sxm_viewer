@@ -153,6 +153,60 @@ class CollectionController:
     def __init__(self, viewer):
         self.viewer = viewer
 
+    def _collection_undo_stack(self):
+        stack = getattr(self.viewer, "_collection_undo_stack", None)
+        if stack is None:
+            stack = []
+            self.viewer._collection_undo_stack = stack
+        return stack
+
+    def _clear_collection_undo_stack(self):
+        try:
+            self.viewer._collection_undo_stack = []
+        except Exception:
+            pass
+
+    def _push_collection_undo_state(self, collection_path: Path, payload: dict, *, description: str = ""):
+        try:
+            self._collection_undo_stack().append(
+                {
+                    "path": str(Path(collection_path)),
+                    "payload": copy.deepcopy(self.viewer.session_controller._jsonify(payload)),
+                    "description": str(description or ""),
+                }
+            )
+        except Exception:
+            pass
+
+    def undo_last_collection_action(self):
+        stack = self._collection_undo_stack()
+        if not stack:
+            return False
+        current_path = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current_path:
+            return False
+        entry = stack.pop()
+        entry_path = str(entry.get("path") or "").strip()
+        if entry_path and str(Path(entry_path)) != str(Path(current_path)):
+            stack.append(entry)
+            return False
+        payload = entry.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        collection_path = Path(entry_path or current_path)
+        try:
+            collection_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(collection_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+        except Exception:
+            stack.append(entry)
+            return False
+        try:
+            self._load_payload_into_viewer(payload, collection_path)
+        except Exception:
+            pass
+        return True
+
     def _collection_dialog_start_dir(self):
         current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
         if current:
@@ -368,6 +422,137 @@ class CollectionController:
                 ),
             )
 
+    def remove_collection_items(self, item_ids):
+        """Remove one or more items from the current collection file and refresh the workspace."""
+        current_path = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current_path:
+            QtWidgets.QMessageBox.information(self.viewer, "Collections", "No collection is currently selected.")
+            return False
+        ids = []
+        for raw in list(item_ids or []):
+            try:
+                ids.append(int(raw))
+            except Exception:
+                continue
+        ids = sorted(set(ids))
+        if not ids:
+            return False
+        collection_path = Path(current_path)
+        try:
+            payload = self._load_or_init_payload(collection_path, mode=str(getattr(self.viewer, "_current_collection_mode", "linked") or "linked"))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to open current collection: {exc}")
+            return False
+        items = list(payload.get("items") or [])
+        kept = [item for item in items if int(item.get("id", -1)) not in ids]
+        removed = len(items) - len(kept)
+        if removed <= 0:
+            QtWidgets.QMessageBox.information(self.viewer, "Collections", "The selected item was not found in the current collection.")
+            return False
+        if QtWidgets.QMessageBox.question(
+            self.viewer,
+            "Remove from collection",
+            f"Remove {removed} item(s) from this collection?\n\nThis updates the collection file on disk.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        ) != QtWidgets.QMessageBox.Yes:
+            return False
+        self._push_collection_undo_state(collection_path, payload, description="remove_items")
+        payload["items"] = kept
+        payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        try:
+            collection_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(collection_path, "w", encoding="utf-8") as fh:
+                json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
+            try:
+                self.viewer._record_collection_dir(collection_path.parent)
+            except Exception:
+                pass
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to update collection: {exc}")
+            return False
+        try:
+            self._load_payload_into_viewer(payload, collection_path)
+        except Exception:
+            pass
+        return True
+
+    def remove_thumbnail_entries(self, entries):
+        """Remove thumbnail/file entries from the current collection."""
+        current_path = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current_path:
+            QtWidgets.QMessageBox.information(self.viewer, "Collections", "No collection is currently selected.")
+            return False
+        collection_path = Path(current_path)
+        try:
+            payload = self._load_or_init_payload(collection_path, mode=str(getattr(self.viewer, "_current_collection_mode", "linked") or "linked"))
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to open current collection: {exc}")
+            return False
+        requests = []
+        for entry in list(entries or []):
+            if not isinstance(entry, dict):
+                continue
+            file_path = str(entry.get("file_path") or "").strip()
+            channel_idx = entry.get("channel_index")
+            if not file_path or channel_idx is None:
+                continue
+            try:
+                channel_idx = int(channel_idx)
+            except Exception:
+                continue
+            requests.append((str(Path(file_path)), int(channel_idx)))
+        if not requests:
+            return False
+        items = list(payload.get("items") or [])
+        remaining = list(items)
+        removed = 0
+        for file_path, channel_idx in requests:
+            for idx in range(len(remaining) - 1, -1, -1):
+                item = remaining[idx] or {}
+                snapshot = dict(item.get("snapshot") or {})
+                first = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+                meta = dict(first.get("meta") or {})
+                item_source = str(item.get("source_file") or meta.get("file_path") or meta.get("path") or first.get("path") or "")
+                try:
+                    item_channel = int(item.get("channel_index", meta.get("channel_index", first.get("channel_idx", -1))) or -1)
+                except Exception:
+                    item_channel = -1
+                if str(Path(item_source)) == file_path and int(item_channel) == int(channel_idx):
+                    remaining.pop(idx)
+                    removed += 1
+                    break
+        if removed <= 0:
+            QtWidgets.QMessageBox.information(self.viewer, "Collections", "The selected thumbnail(s) were not found in the current collection.")
+            return False
+        if QtWidgets.QMessageBox.question(
+            self.viewer,
+            "Remove from collection",
+            f"Remove {removed} thumbnail item(s) from this collection?\n\nThis updates the collection file on disk.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        ) != QtWidgets.QMessageBox.Yes:
+            return False
+        self._push_collection_undo_state(collection_path, payload, description="remove_thumbnails")
+        payload["items"] = remaining
+        payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        try:
+            collection_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(collection_path, "w", encoding="utf-8") as fh:
+                json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
+            try:
+                self.viewer._record_collection_dir(collection_path.parent)
+            except Exception:
+                pass
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to update collection: {exc}")
+            return False
+        try:
+            self._load_payload_into_viewer(payload, collection_path)
+        except Exception:
+            pass
+        return True
+
     def load_collection(self, collection_path=None):
         path = collection_path
         if path is None:
@@ -398,6 +583,7 @@ class CollectionController:
             self.viewer._record_collection_dir(collection_path.parent)
         except Exception:
             pass
+        self._clear_collection_undo_stack()
         self._load_payload_into_viewer(payload, collection_path)
 
     def choose_current_collection(self):
@@ -429,6 +615,7 @@ class CollectionController:
             self.viewer._record_collection_dir(collection_path.parent)
         except Exception:
             pass
+        self._clear_collection_undo_stack()
         self._remember_current_collection(collection_path, mode=mode)
         QtWidgets.QMessageBox.information(
             self.viewer,
@@ -440,6 +627,7 @@ class CollectionController:
         """Forget the current default collection target for this app session."""
         self.viewer._collection_source = None
         self.viewer._current_collection_mode = None
+        self._clear_collection_undo_stack()
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
             try:
@@ -514,6 +702,39 @@ class CollectionController:
                 )
             if item:
                 self._save_items([item], source_summary=f"Add this view to a collection.\nItem: {item['label']}")
+        elif action == "collection_remove":
+            if view is None:
+                return
+            source_file = str(self._view_source_path(view) or "").strip()
+            if not source_file:
+                return
+            try:
+                channel_idx = int((view.get("meta") or {}).get("channel_index", view.get("channel_idx", 0)) or 0)
+            except Exception:
+                channel_idx = 0
+            current_path = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+            if not current_path:
+                QtWidgets.QMessageBox.information(self.viewer, "Collections", "No collection is currently selected.")
+                return
+            try:
+                payload = self._load_or_init_payload(Path(current_path), mode=str(getattr(self.viewer, "_current_collection_mode", "linked") or "linked"))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to open current collection: {exc}")
+                return
+            matches = []
+            for item in list(payload.get("items") or []):
+                snapshot = dict(item.get("snapshot") or {})
+                first = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+                meta = dict(first.get("meta") or {})
+                item_source = str(item.get("source_file") or meta.get("file_path") or meta.get("path") or first.get("path") or "")
+                try:
+                    item_channel = int(item.get("channel_index", meta.get("channel_index", first.get("channel_idx", -1))) or -1)
+                except Exception:
+                    item_channel = -1
+                if str(Path(item_source)) == str(Path(source_file)) and int(item_channel) == int(channel_idx):
+                    matches.append(int(item.get("id", -1)))
+            if matches:
+                self.remove_collection_items(matches)
         elif action == "collection_help":
             self.show_help()
 
@@ -569,6 +790,7 @@ class CollectionController:
                     "Nothing could be added to the collection from the current selection.",
                 )
                 return
+            self._push_collection_undo_state(collection_path, payload, description="add_items")
             payload.setdefault("items", []).extend(appended)
             payload["next_item_id"] = next_id
             payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
