@@ -96,8 +96,8 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         browse_btn.clicked.connect(self._on_browse)
         path_layout.addWidget(browse_btn, 0, 2)
         hint = QtWidgets.QLabel(
-            "If the file already exists, the selected items will be appended to it. "
-            "New files are created with the extension <code>.sxmcoll.json</code>.",
+            "If the file already exists, the selected items will be appended to it in place. "
+            "The collection file is not overwritten. New files are created with the extension <code>.sxmcoll.json</code>.",
             path_group,
         )
         hint.setWordWrap(True)
@@ -279,9 +279,10 @@ class CollectionController:
             except Exception:
                 continue
             try:
-                view = self.viewer._build_single_channel_view(file_path, channel_idx)
+                bundle = self.viewer._build_single_channel_view(file_path, channel_idx)
             except Exception:
-                view = None
+                bundle = None
+            view = bundle.get("view") if isinstance(bundle, dict) else None
             if not isinstance(view, dict):
                 continue
             built_items.append(
@@ -299,7 +300,8 @@ class CollectionController:
                 built_items,
                 source_summary=(
                     f"Add {len(built_items)} thumbnail selection(s) to the current collection.\n"
-                    "These are stored as fresh collection copies without popup-only overlay state."
+                    "These are stored as fresh collection copies without popup-only overlay state.\n"
+                    "If a current collection is selected, the items are appended to it."
                 ),
             )
 
@@ -320,9 +322,10 @@ class CollectionController:
             channel_idx = payload.get("channel_index")
             if file_path and channel_idx is not None:
                 try:
-                    view = self.viewer._build_single_channel_view(file_path, int(channel_idx))
+                    bundle = self.viewer._build_single_channel_view(file_path, int(channel_idx))
                 except Exception:
-                    view = None
+                    bundle = None
+                view = bundle.get("view") if isinstance(bundle, dict) else None
         if not isinstance(view, dict):
             QtWidgets.QMessageBox.information(
                 self.viewer,
@@ -405,7 +408,7 @@ class CollectionController:
         QtWidgets.QMessageBox.information(
             self.viewer,
             "Collections",
-            f"Current collection set to:\n{collection_path}\n\nNew Add to Collection actions will append there by default.",
+            f"Current collection set to:\n{collection_path}\n\nNew Add to Collection actions will append to this file in place; it will not be rewritten from scratch.",
         )
 
     def clear_current_collection(self):

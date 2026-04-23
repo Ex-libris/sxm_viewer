@@ -7326,6 +7326,28 @@ QLabel:hover {{
             menu.addAction(clear_specs_act)
 
         menu.addSeparator()
+        collection_menu = menu.addMenu("Collections")
+        show_tray_act = QtWidgets.QAction("Show collection tray", collection_menu)
+        show_tray_act.triggered.connect(self.on_show_collection_tray)
+        collection_menu.addAction(show_tray_act)
+        add_selected_collection_act = QtWidgets.QAction("Add selected thumbnails to collection", collection_menu)
+        add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
+        collection_menu.addAction(add_selected_collection_act)
+        choose_collection_act = QtWidgets.QAction("Choose current collection...", collection_menu)
+        choose_collection_act.triggered.connect(self.on_choose_current_collection)
+        collection_menu.addAction(choose_collection_act)
+        open_collection_act = QtWidgets.QAction("Open collection...", collection_menu)
+        open_collection_act.triggered.connect(self.on_open_collection)
+        collection_menu.addAction(open_collection_act)
+        clear_target_act = QtWidgets.QAction("Clear current collection target", collection_menu)
+        clear_target_act.triggered.connect(self.on_clear_current_collection)
+        collection_menu.addAction(clear_target_act)
+        if not getattr(self, "_collection_source", None):
+            add_selected_collection_act.setToolTip(
+                "Choose or open a collection first, or use this action to create one when prompted."
+            )
+
+        menu.addSeparator()
         drift_act = QtWidgets.QAction("Drift-correct and export...", menu)
         drift_act.triggered.connect(lambda _, paths=list(targets): self._on_drift_correct(paths))
         menu.addAction(drift_act)
