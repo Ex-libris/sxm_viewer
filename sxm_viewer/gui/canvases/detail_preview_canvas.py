@@ -1284,6 +1284,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _redraw(self):
         # Preserve current zoom/limits per view before clearing
         current_limits = {}
+        current_base_limits = {}
         preserve_zoom = not getattr(self, "_suspend_zoom_restore", False)
         profile_state = None
         try:
@@ -1294,11 +1295,14 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 for ax, v in list(self._ax_view_map.items()):
                     try:
-                        current_limits[self._outline_key(v)] = (ax.get_xlim(), ax.get_ylim())
+                        key = self._outline_key(v)
+                        current_limits[key] = (ax.get_xlim(), ax.get_ylim())
+                        current_base_limits[key] = self._zoom_reset_limits.get(ax, (ax.get_xlim(), ax.get_ylim()))
                     except Exception:
                         continue
             except Exception:
                 current_limits = {}
+                current_base_limits = {}
         else:
             self._suspend_zoom_restore = False
 
@@ -1437,7 +1441,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 ax.set_yticks([])
             # Restore previous zoom if available
             if preserve_zoom:
-                prev_lim = current_limits.get(self._outline_key(v))
+                key = self._outline_key(v)
+                prev_lim = current_limits.get(key)
                 if prev_lim:
                     try:
                         ax.set_xlim(prev_lim[0])
@@ -1451,7 +1456,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     pass
             self._draw_image_size_overlay(ax, v)
             if ax not in self._zoom_reset_limits:
-                self._zoom_reset_limits[ax] = (ax.get_xlim(), ax.get_ylim())
+                key = self._outline_key(v)
+                base_lim = current_base_limits.get(key)
+                self._zoom_reset_limits[ax] = base_lim if base_lim else (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
             self._draw_molecules(ax)
             if ax is self.main_ax:
@@ -6796,11 +6803,14 @@ class MultiPreviewCanvas(FigureCanvas):
             popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
 
         collection_add_act = None
+        collection_remove_act = None
         collection_help_act = None
         if callable(self._collection_menu_callback) and view is not None:
             collection_menu = menu.addMenu("Collection")
             collection_add_act = collection_menu.addAction("Add This View to Collection...")
             collection_add_act.setToolTip("Save this view into a curated cross-folder collection.")
+            collection_remove_act = collection_menu.addAction("Remove This View from Collection")
+            collection_remove_act.setToolTip("Remove the matching item from the current collection file.")
             if callable(self._collection_help_callback):
                 collection_menu.addSeparator()
                 collection_help_act = collection_menu.addAction("How Collections Work")
@@ -7021,6 +7031,11 @@ class MultiPreviewCanvas(FigureCanvas):
         elif collection_add_act and chosen == collection_add_act:
             try:
                 self._collection_menu_callback("collection_add", view, self)
+            except Exception:
+                pass
+        elif collection_remove_act and chosen == collection_remove_act:
+            try:
+                self._collection_menu_callback("collection_remove", view, self)
             except Exception:
                 pass
         elif collection_help_act and chosen == collection_help_act:

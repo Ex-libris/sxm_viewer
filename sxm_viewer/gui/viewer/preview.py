@@ -33,6 +33,7 @@ from ..._shared import (
     matplotlib,
 )
 from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
+from ...data.io import parse_header
 from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging, header_indicates_constant
 from ...data.io import normalize_unit_and_data
 from ...data.spectroscopy import is_matrix_file_entry
@@ -524,6 +525,12 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     header_path = Path(header_path_str)
     file_key = str(header_path)
     header, fds = viewer.headers.get(file_key, (None, None))
+    if header is None or fds is None:
+        try:
+            header, fds = parse_header(header_path)
+            viewer.headers[file_key] = (header, fds)
+        except Exception:
+            header, fds = None, None
     if header is None or fds is None or channel_idx < 0 or channel_idx >= len(fds):
         return None
     fd = fds[channel_idx]
