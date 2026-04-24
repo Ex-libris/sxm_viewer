@@ -7354,10 +7354,14 @@ class MultiPreviewCanvas(FigureCanvas):
             self._zoom_reset_limits[ax] = (xlim, ylim)
         x0 = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) * 0.5
         y0 = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) * 0.5
-        xr = abs(xlim[1] - xlim[0]) * scale
-        yr = abs(ylim[1] - ylim[0]) * scale
-        new_xlim = (x0 - xr * 0.5, x0 + xr * 0.5)
-        new_ylim = (y0 - yr * 0.5, y0 + yr * 0.5)
+        new_xlim = (
+            x0 - (x0 - xlim[0]) * scale,
+            x0 + (xlim[1] - x0) * scale,
+        )
+        new_ylim = (
+            y0 - (y0 - ylim[0]) * scale,
+            y0 + (ylim[1] - y0) * scale,
+        )
         base_xlim, base_ylim = self._zoom_reset_limits.get(ax, (xlim, ylim))
         new_xlim = self._clamp_limits(new_xlim, base_xlim)
         new_ylim = self._clamp_limits(new_ylim, base_ylim)
