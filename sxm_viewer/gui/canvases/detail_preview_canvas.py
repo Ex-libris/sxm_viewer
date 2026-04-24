@@ -313,7 +313,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
         self._show_molecule_shadow = True
         self.show_molecules = True
-        self.mpl_connect('scroll_event', self._on_scroll_zoom)
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
@@ -330,7 +329,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._pan_start_lim = None
         self._pan_last_ts = 0.0
         self._pan_throttle_ms = 16
-        self.mpl_connect('scroll_event', self._on_scroll_zoom)
+        self._scroll_zoom_cid = self.mpl_connect('scroll_event', self._on_scroll_zoom)
 
     def set_show_title(self, show: bool):
         """Toggle rendering of title/date overlays in views."""
@@ -7320,6 +7319,20 @@ class MultiPreviewCanvas(FigureCanvas):
         """Mouse wheel zoom centered at cursor."""
         ax = getattr(event, 'inaxes', None)
         if ax is None:
+            return
+        if (
+            getattr(self, "_pan_active", False)
+            or getattr(self, "_dragging", None) is not None
+            or getattr(self, "_saved_profile_drag", None) is not None
+            or getattr(self, "_profile_marker_drag_idx", None) is not None
+            or getattr(self, "_angle_dragging", None) is not None
+            or getattr(self, "_molecule_drag_idx", None) is not None
+            or getattr(self, "_molecule_gizmo_drag", None) is not None
+            or getattr(self, "_scale_bar_drag_start", None) is not None
+            or getattr(self, "_fixed_crop_template_drag", None) is not None
+            or getattr(self, "_crop_start", None) is not None
+            or getattr(self, "_outline_start", None) is not None
+        ):
             return
         try:
             delta = 0
