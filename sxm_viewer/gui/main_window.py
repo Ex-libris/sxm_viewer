@@ -466,7 +466,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         if self.profile_label_mode not in {"length", "full", "hidden"}:
             self.profile_label_mode = "length"
         self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
-        self.molecule_palette = str(self.config.get("molecule_palette", "cpk") or "cpk").lower()
+        molecule_style = self.config.get("molecule_default_style") if isinstance(self.config.get("molecule_default_style"), dict) else {}
+        self.molecule_palette = str(
+            self.config.get("molecule_palette", molecule_style.get("palette", "avogadro")) or "avogadro"
+        ).lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
         self.quick_crop_aspect_mode = str(self.config.get("quick_crop_aspect_mode", "free") or "free").strip().lower()
@@ -2441,7 +2444,7 @@ QLabel:hover {{
         return count
 
     def _on_molecule_palette_changed(self, palette: str):
-        palette = (palette or "cpk").lower()
+        palette = (palette or "avogadro").lower()
         self.molecule_palette = palette
         try:
             self.config["molecule_palette"] = palette
@@ -4415,7 +4418,7 @@ QLabel:hover {{
 
         palette_menu = menu.addMenu("Palette")
         palette_group = QtWidgets.QActionGroup(palette_menu)
-        current_palette = str(getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        current_palette = str(getattr(self, "molecule_palette", "avogadro") or "avogadro").lower()
         for palette in available_atom_palettes():
             label = {"cpk": "CPK", "pymol": "PyMOL", "jmol": "Jmol"}.get(palette, palette.capitalize())
             act = palette_menu.addAction(label)

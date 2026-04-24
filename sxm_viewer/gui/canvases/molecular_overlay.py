@@ -467,6 +467,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self._show_shadow_option = bool((self.overlay_settings or {}).get("show_shadows_available", True))
         self._show_hydrogen_option = bool((self.overlay_settings or {}).get("show_hydrogens_available", True))
         self._show_palette_option = bool((self.overlay_settings or {}).get("palette_available", True))
+        self._save_default_callback = (self.overlay_settings or {}).get("save_default_callback")
         self.setWindowTitle("Molecule Appearance & Transform")
         self.setWindowFlags(QtCore.Qt.Tool)
         
@@ -518,7 +519,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
             self.combo_palette = QtWidgets.QComboBox()
             for pal in available_atom_palettes():
                 self.combo_palette.addItem(pal.title(), pal)
-            current_palette = str((self.overlay_settings or {}).get("palette", "pymol") or "pymol").lower()
+            current_palette = str((self.overlay_settings or {}).get("palette", "avogadro") or "avogadro").lower()
             current_idx = max(0, self.combo_palette.findData(current_palette))
             self.combo_palette.setCurrentIndex(current_idx)
             self.combo_palette.currentTextChanged.connect(self._on_change)
@@ -549,6 +550,10 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.btn_reset_colors.clicked.connect(self._reset_colors)
         form_disp.addRow(self.btn_atom_color, self.btn_bond_color)
         form_disp.addRow(self.btn_reset_colors)
+        if callable(self._save_default_callback):
+            self.btn_save_default = QtWidgets.QPushButton("Save as default for new molecules")
+            self.btn_save_default.clicked.connect(self._save_as_default)
+            form_disp.addRow(self.btn_save_default)
         layout.addWidget(grp_disp)
 
         # Rotation
@@ -619,13 +624,48 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.radius_scale = self.spin_radius_scale.value()
         if self.overlay_settings is not None:
             if self.combo_palette is not None:
-                self.overlay_settings["palette"] = str(self.combo_palette.currentData() or "pymol").lower()
+                self.overlay_settings["palette"] = str(self.combo_palette.currentData() or "avogadro").lower()
             if self.chk_show_shadows is not None:
                 self.overlay_settings["show_shadows"] = bool(self.chk_show_shadows.isChecked())
             if self.chk_show_hydrogens is not None:
                 self.overlay_settings["show_hydrogens"] = bool(self.chk_show_hydrogens.isChecked())
         if self.callback:
             self.callback()
+
+    def _current_default_style(self):
+        style = {
+            "display_mode": self.molecule.display_mode,
+            "render_style": normalize_molecule_render_style(self.molecule.render_style),
+            "bond_style": str(self.molecule.bond_style or "default").lower(),
+            "radius_mode": str(self.molecule.radius_mode or "covalent").lower(),
+            "radius_scale": float(self.molecule.radius_scale),
+            "atom_color_override": self.molecule.atom_color_override,
+            "bond_color_override": self.molecule.bond_color_override,
+            "bond_color_mode": self.molecule.bond_color_mode,
+            "atom_color_map": dict(self.molecule.atom_color_map or {}),
+        }
+        if self.overlay_settings is not None:
+            if self.combo_palette is not None:
+                style["palette"] = str(self.combo_palette.currentData() or self.overlay_settings.get("palette", "avogadro")).lower()
+            else:
+                style["palette"] = str(self.overlay_settings.get("palette", "avogadro") or "avogadro").lower()
+            style["show_shadows"] = bool(self.overlay_settings.get("show_shadows", True))
+            style["show_hydrogens"] = bool(self.overlay_settings.get("show_hydrogens", True))
+        return style
+
+    def _save_as_default(self):
+        self._on_change()
+        if not callable(self._save_default_callback):
+            return
+        ok = False
+        try:
+            ok = bool(self._save_default_callback(self._current_default_style()))
+        except Exception:
+            ok = False
+        if ok:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Default molecule style saved", self, self.rect(), 1800)
+        else:
+            QtWidgets.QMessageBox.warning(self, "Molecule defaults", "Unable to save the default molecule style.")
 
     def _pick_atom_color(self):
         color = QtWidgets.QColorDialog.getColor(

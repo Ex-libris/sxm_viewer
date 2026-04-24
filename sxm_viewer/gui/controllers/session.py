@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
+from ...data.io import parse_header
 from ..viewer import measurement as viewer_measurement
 
 
@@ -288,6 +289,7 @@ class SessionController:
                 "op": data.get("op"),
                 "label": data.get("label"),
                 "channel_idx": data.get("channel_idx"),
+                "lock_channel": data.get("lock_channel", True),
                 "extent_raw": data.get("extent_raw"),
                 "header": data.get("header"),
                 "fds": data.get("fds"),
@@ -632,12 +634,18 @@ class SessionController:
                     "header": header,
                     "fds": fds,
                     "channel_idx": entry.get("channel_idx"),
+                    "lock_channel": entry.get("lock_channel", True),
                     "source": entry.get("source"),
                     "extent_raw": entry.get("extent_raw"),
                     "label": entry.get("label"),
                     "op": entry.get("op"),
                 }
-                viewer.headers[str(key)] = (header, fds)
+                self._hydrate_collection_processed_view(str(key))
+                restored = viewer._processed_views.get(str(key), {})
+                viewer.headers[str(key)] = (
+                    restored.get("header", header),
+                    restored.get("fds", fds),
+                )
             except Exception:
                 continue
         session_files = []
@@ -1605,6 +1613,67 @@ class SessionController:
         except Exception:
             return None
 
+    def _hydrate_collection_processed_view(self, key: str):
+        """Backfill collection processed entries with all source channels when available."""
+        viewer = self.viewer
+        data = (getattr(viewer, "_processed_views", {}) or {}).get(str(key))
+        if not isinstance(data, dict) or str(data.get("op") or "") != "collection":
+            return False
+        source = str(data.get("source") or "").strip()
+        if not source:
+            return False
+        try:
+            source_path = Path(source)
+        except Exception:
+            return False
+        if not source_path.exists():
+            return False
+        try:
+            header, fds = viewer.headers.get(source, (None, None))
+            if header is None or fds is None:
+                header, fds = parse_header(source_path)
+        except Exception:
+            return False
+        if not fds:
+            return False
+        existing = data.get("arr_by_channel") or {}
+        arr_by_channel = {}
+        for idx, fd in enumerate(fds):
+            try:
+                arr_by_channel[int(idx)] = np.array(
+                    viewer._get_channel_array(source, idx, header, fd),
+                    copy=True,
+                )
+            except Exception:
+                continue
+        if not arr_by_channel:
+            arr_by_channel = dict(existing)
+        if not arr_by_channel:
+            return False
+        try:
+            sample = arr_by_channel.get(int(data.get("channel_idx") or 0))
+        except Exception:
+            sample = None
+        if sample is None:
+            try:
+                sample = next(iter(arr_by_channel.values()))
+            except Exception:
+                sample = None
+        header_new = dict(header or {})
+        if sample is not None:
+            try:
+                sample = np.asarray(sample)
+                header_new["xPixel"] = int(sample.shape[1])
+                header_new["yPixel"] = int(sample.shape[0])
+            except Exception:
+                pass
+        data["arr_by_channel"] = arr_by_channel
+        data["header"] = header_new
+        data["fds"] = [dict(fd or {}) for fd in fds]
+        data["lock_channel"] = False
+        viewer.headers[str(key)] = (header_new, data["fds"])
+        return True
+
     def _restore_processed_views_payload(self, processed_payload: dict, processed_dir: Path):
         viewer = self.viewer
         viewer._processed_views = {}
@@ -1622,11 +1691,17 @@ class SessionController:
                     "header": header,
                     "fds": fds,
                     "channel_idx": entry.get("channel_idx"),
+                    "lock_channel": entry.get("lock_channel", True),
                     "source": entry.get("source"),
                     "label": entry.get("label"),
                     "op": entry.get("op"),
                 }
-                viewer.headers[str(key)] = (header, fds)
+                self._hydrate_collection_processed_view(str(key))
+                restored = viewer._processed_views.get(str(key), {})
+                viewer.headers[str(key)] = (
+                    restored.get("header", header),
+                    restored.get("fds", fds),
+                )
             except Exception:
                 continue
 
