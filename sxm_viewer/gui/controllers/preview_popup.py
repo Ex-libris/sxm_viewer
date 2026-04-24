@@ -474,6 +474,13 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         try:
             layout.activate()
             if force:
+                try:
+                    if dlg.isMaximized() or dlg.isFullScreen():
+                        canvas.updateGeometry()
+                        canvas.draw_idle()
+                        return
+                except Exception:
+                    pass
                 dlg.adjustSize()
                 dlg.setMinimumSize(0, 0)
                 _last_square_target["w"] = -1
@@ -789,6 +796,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             if event.type() == QtCore.QEvent.Wheel:
                 try:
                     if event.modifiers() & QtCore.Qt.ControlModifier:
+                        if dlg.isMaximized() or dlg.isFullScreen():
+                            return False
                         _schedule_resize(force=True)
                 except Exception:
                     pass
