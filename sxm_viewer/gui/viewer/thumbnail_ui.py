@@ -55,7 +55,7 @@ def _thumbnail_channel_for_key(viewer, file_key, default_channel_idx):
     try:
         processed = getattr(viewer, "_processed_views", {}) or {}
         payload = processed.get(key)
-        if payload and "channel_idx" in payload:
+        if payload and "channel_idx" in payload and bool(payload.get("lock_channel", True)):
             return int(payload.get("channel_idx"))
     except Exception:
         pass

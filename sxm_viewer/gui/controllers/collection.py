@@ -1342,6 +1342,13 @@ class CollectionController:
 
     def _setup_collection_channel_dropdown(self):
         viewer = self.viewer
+        session = getattr(viewer, "session_controller", None)
+        if session is not None:
+            try:
+                session._restore_channel_dropdown_from_headers()
+                return
+            except Exception:
+                pass
         try:
             viewer.channel_dropdown.blockSignals(True)
             viewer.channel_dropdown.clear()
@@ -1415,6 +1422,22 @@ class CollectionController:
         fd = {}
         if source_fds and 0 <= source_channel_idx < len(source_fds):
             fd = dict(source_fds[source_channel_idx] or {})
+        arr_by_channel = {}
+        fds_new = []
+        header_new = dict(source_header)
+        try:
+            if path and Path(str(path)).exists() and source_fds:
+                for idx, source_fd in enumerate(source_fds):
+                    try:
+                        raw_arr = viewer._get_channel_array(str(path), idx, source_header, source_fd)
+                        arr_by_channel[int(idx)] = np.array(raw_arr, copy=True)
+                        fds_new.append(dict(source_fd or {}))
+                    except Exception:
+                        fds_new.append(dict(source_fd or {}))
+                arr_by_channel = {idx: val for idx, val in arr_by_channel.items() if val is not None}
+        except Exception:
+            arr_by_channel = {}
+            fds_new = []
         meta = view.get("meta") or {}
         caption = (
             self._snapshot_channel_name(view)
@@ -1424,22 +1447,35 @@ class CollectionController:
             or str(view.get("title") or "").strip()
             or "Collection item"
         )
-        fd["Caption"] = caption
-        fd["FileName"] = str(fd.get("FileName") or Path(str(path)).name or "collection_item")
-        header_new = dict(source_header)
-        header_new["xPixel"] = int(arr.shape[1])
-        header_new["yPixel"] = int(arr.shape[0])
+        if arr_by_channel:
+            sample_arr = arr_by_channel.get(source_channel_idx)
+            if sample_arr is None:
+                try:
+                    sample_arr = next(iter(arr_by_channel.values()))
+                except Exception:
+                    sample_arr = arr
+            header_new["xPixel"] = int(np.asarray(sample_arr).shape[1])
+            header_new["yPixel"] = int(np.asarray(sample_arr).shape[0])
+        else:
+            fd["Caption"] = caption
+            fd["FileName"] = str(fd.get("FileName") or Path(str(path)).name or "collection_item")
+            fds_new = [fd]
+            arr_by_channel = {0: np.array(arr, copy=True)}
+            header_new["xPixel"] = int(arr.shape[1])
+            header_new["yPixel"] = int(arr.shape[0])
+            source_channel_idx = 0
         key = viewer._make_processed_key(str(path), op="collection", channel_idx=0)
         viewer._processed_views[key] = {
-            "arr_by_channel": {0: np.array(arr, copy=True)},
+            "arr_by_channel": arr_by_channel,
             "header": header_new,
-            "fds": [fd],
-            "channel_idx": 0,
+            "fds": fds_new,
+            "channel_idx": int(source_channel_idx),
+            "lock_channel": False,
             "source": str(path),
             "label": "[collection]",
             "op": "collection",
         }
-        viewer.headers[key] = (header_new, [fd])
+        viewer.headers[key] = (header_new, fds_new)
         viewer.files.append(Path(key))
         try:
             viewer._set_processed_insert_after(key, after_key="__virtual_copy_start__")
