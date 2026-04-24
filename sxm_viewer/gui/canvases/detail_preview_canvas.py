@@ -5544,6 +5544,79 @@ class MultiPreviewCanvas(FigureCanvas):
                 return True
         return self._overlay_index_near(x, y, thresh=15.0) is not None
 
+    def _angle_hit_test(self, event, *, thresh: float = 12.0):
+        if event is None or event.inaxes is not self.main_ax:
+            return False
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return False
+        for frame in self._angle_frames or []:
+            pts = frame.get("pts")
+            if not pts:
+                continue
+            vx, vy, ax, ay, bx, by = pts
+            for hx, hy in ((vx, vy), (ax, ay), (bx, by)):
+                if self._pt_distance_pixels(x, y, hx, hy) <= thresh:
+                    return True
+        return False
+
+    def _molecule_overlay_hit_test(self, event, *, thresh: float = 14.0):
+        if (
+            event is None
+            or not self.show_molecules
+            or not self.molecules
+            or event.inaxes is None
+            or event.xdata is None
+            or event.ydata is None
+            or getattr(event, "x", None) is None
+            or getattr(event, "y", None) is None
+        ):
+            return False
+        try:
+            ev_px = np.array([float(event.x), float(event.y)], dtype=float)
+            for mol in reversed(list(self.molecules)):
+                coords = mol.get_transformed_coordinates()
+                if len(coords) == 0:
+                    continue
+                if not getattr(self, "_show_hydrogens", True):
+                    mask = [str(el).strip().upper() != "H" for el in mol.elements]
+                    if not any(mask):
+                        continue
+                    coords = coords[np.array(mask)]
+                pts_px = event.inaxes.transData.transform(coords[:, :2])
+                dists = np.hypot(pts_px[:, 0] - ev_px[0], pts_px[:, 1] - ev_px[1])
+                if dists.size and float(np.nanmin(dists)) <= float(thresh):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _interactive_overlay_hit_test(self, event):
+        if event is None:
+            return False
+        if self.scale_bar_enabled:
+            for sb in self._scale_bar_artists:
+                try:
+                    if sb.contains(event)[0]:
+                        return True
+                except Exception:
+                    continue
+        if self._molecule_gizmo_hit_test(event) is not None:
+            return True
+        ax = getattr(event, "inaxes", None)
+        view = self._ax_view_map.get(ax) if ax is not None else None
+        if self._fixed_crop_transform_mode and view is not None:
+            try:
+                if self._fixed_crop_template_handle_hit(event, view, ax) is not None:
+                    return True
+            except Exception:
+                pass
+        if self._profile_hit_test(event):
+            return True
+        if self._angle_hit_test(event):
+            return True
+        return self._molecule_overlay_hit_test(event)
+
     def _profile_animation_artists(self):
         artists = [
             self._profile_line,
@@ -5882,9 +5955,6 @@ class MultiPreviewCanvas(FigureCanvas):
                     hit["mode"] = "rotate"
                 if self._begin_fixed_crop_template_drag(hit, event, view, ax):
                     return
-            # Keep edit mode deterministic: left-click outside handles should not
-            # start pan/quick-crop/profile actions while transform editing is on.
-            return
 
         if self._check_molecule_hit(event):
             return
@@ -5986,14 +6056,22 @@ class MultiPreviewCanvas(FigureCanvas):
             else:
                 print("[Outline] Alt detected but coordinates are None; ignoring.")
             return
-        # Pan start: only in browse-like mode, left button, zoomed view
-        if event.button in (1, 2) and not want_rect and view is not None and not self.profile_enabled and not self.angle_enabled:
+        overlay_hit = self._interactive_overlay_hit_test(event)
+        # Pan start: left/middle drag on the image background when zoomed.
+        # Overlay tools only reserve their handles/bodies, so missed clicks still pan.
+        if event.button in (1, 2) and not want_rect and view is not None and not overlay_hit:
             if event.xdata is not None and event.ydata is not None and self._is_zoomed(ax):
                 self._pan_active = True
                 self._pan_ax = ax
                 self._pan_start = (event.xdata, event.ydata)
                 self._pan_start_lim = (ax.get_xlim(), ax.get_ylim())
                 return
+        if self._fixed_crop_transform_mode and event.button == 1 and view is not None:
+            return
+        if (self.profile_enabled or self.angle_enabled) and ax is self.main_ax:
+            if event.button == 3:
+                self._show_context_menu(event, view)
+            return
         if want_rect and view is not None:
             self._crop_start = (event.xdata, event.ydata)
             self._crop_ax = ax
@@ -6037,12 +6115,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 and not want_square
             ):
                 return
-        if self.profile_enabled and ax is self.main_ax:
+        if self.profile_enabled and ax is self.main_ax and overlay_hit:
             # avoid starting thumbnail drag/other actions while measuring profiles
             if event.button == 3:
                 self._show_context_menu(event, view)
             return
-        if self.angle_enabled and ax is self.main_ax:
+        if self.angle_enabled and ax is self.main_ax and overlay_hit:
             if event.button == 3:
                 self._show_context_menu(event, view)
             return
@@ -6177,7 +6255,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._profile_hit_test(event):
             return False
         
-        # Simple hit test: check distance to any atom in any molecule
+        # Hit test in screen pixels so molecule editing does not steal large
+        # background regions when the scan is zoomed or uses physical units.
         # Iterate in reverse to pick top-most
         for idx, mol in reversed(list(enumerate(self.molecules))):
             coords = mol.get_transformed_coordinates()
@@ -6187,17 +6266,18 @@ class MultiPreviewCanvas(FigureCanvas):
                 if not any(mask):
                     continue
                 coords = coords[np.array(mask)]
-            
-            # Map event data coords to display coords is hard without transform
-            # We'll just check data distance. 
-            # Assuming atoms are roughly 0.1-0.3 nm radius visually
-            dx = coords[:, 0] - event.xdata
-            dy = coords[:, 1] - event.ydata
-            dist_sq = dx*dx + dy*dy
-            min_dist = np.min(dist_sq)
-            
-            # Threshold: 0.5 nm radius click tolerance
-            if min_dist < 0.25: 
+
+            try:
+                atom_px = event.inaxes.transData.transform(coords[:, :2])
+                event_px = np.array([float(event.x), float(event.y)], dtype=float)
+                dist_px = np.hypot(atom_px[:, 0] - event_px[0], atom_px[:, 1] - event_px[1])
+                hit = bool(dist_px.size and float(np.nanmin(dist_px)) <= 14.0)
+            except Exception:
+                dx = coords[:, 0] - event.xdata
+                dy = coords[:, 1] - event.ydata
+                hit = bool(np.min(dx * dx + dy * dy) < 0.25)
+
+            if hit:
                 self._active_molecule_idx = idx
                 self._wake_molecule_gizmo(2200, redraw=False)
                 if event.button == 1 or event.button == 2:
