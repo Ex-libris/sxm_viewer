@@ -26,6 +26,7 @@ from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets
+from ...config import load_config, save_config
 from .molecular_overlay import (
     Molecule,
     MoleculePropertiesDialog,
@@ -70,6 +71,21 @@ except Exception:  # pragma: no cover - optional dependency
 
 _FIXED_CROP_HISTORY_LIMIT = 96
 _UNDO_HISTORY_LIMIT = 24
+_MOLECULE_FILE_EXTS = {".xyz", ".pdb", ".mol"}
+_DEFAULT_MOLECULE_STYLE = {
+    "display_mode": "Bonds Only",
+    "render_style": "licorice",
+    "bond_style": "thin",
+    "radius_mode": "vdw",
+    "radius_scale": 1.0,
+    "palette": "avogadro",
+    "show_shadows": False,
+    "show_hydrogens": False,
+    "atom_color_override": None,
+    "bond_color_override": None,
+    "bond_color_mode": "default",
+    "atom_color_map": {},
+}
 
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
@@ -86,6 +102,7 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             self.setMinimumSize(0, 0)
             self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            self.setAcceptDrops(True)
         except Exception:
             pass
         self._compact_size_hints = False
@@ -257,7 +274,8 @@ class MultiPreviewCanvas(FigureCanvas):
             ('#7c4dff', '#f4511e'),
             ('#00897b', '#fdd835'),
         ]
-        self._show_hydrogens = True
+        default_style = self._load_molecule_default_style()
+        self._show_hydrogens = bool(default_style.get("show_hydrogens", False))
         self._default_bond_color = (0.9, 0.9, 0.9)
         self._bond_color_mode = 'default'  # default | single | by_atoms
         self._recent_molecule_paths = []
@@ -311,14 +329,14 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_gizmo_timer = QtCore.QTimer(self)
         self._molecule_gizmo_timer.setSingleShot(True)
         self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
-        self._show_molecule_shadow = True
+        self._show_molecule_shadow = bool(default_style.get("show_shadows", False))
         self.show_molecules = True
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
         self._profile_animation_enabled = False
         # Molecule palette
-        self.molecule_palette = "pymol"
+        self.molecule_palette = str(default_style.get("palette", "avogadro") or "avogadro").lower()
         self._molecule_palette_cb = None
         self._zoom_reset_limits = {}
         # Pan/zoom state
@@ -3297,6 +3315,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     except Exception:
                         pass
                     return
+                if key == QtCore.Qt.Key_M:
+                    self._load_molecule_dialog()
+                    return
             if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_Z:
                 if self.handle_undo_request():
                     return
@@ -6148,6 +6169,97 @@ class MultiPreviewCanvas(FigureCanvas):
         if path:
             self.add_molecule(path)
 
+    def _load_molecule_default_style(self):
+        try:
+            cfg = load_config()
+            stored = cfg.get("molecule_default_style")
+        except Exception:
+            stored = None
+        style = dict(_DEFAULT_MOLECULE_STYLE)
+        if isinstance(stored, dict):
+            style.update({str(k): v for k, v in stored.items()})
+        style["render_style"] = normalize_molecule_render_style(style.get("render_style", "licorice"))
+        style["display_mode"] = str(style.get("display_mode") or "Bonds Only")
+        style["bond_style"] = str(style.get("bond_style") or "thin").lower()
+        style["radius_mode"] = str(style.get("radius_mode") or "vdw").lower()
+        try:
+            style["radius_scale"] = float(style.get("radius_scale", 1.0))
+        except Exception:
+            style["radius_scale"] = 1.0
+        style["palette"] = str(style.get("palette") or "avogadro").lower()
+        style["show_shadows"] = bool(style.get("show_shadows", False))
+        style["show_hydrogens"] = bool(style.get("show_hydrogens", False))
+        return style
+
+    def _molecule_style_from_molecule(self, mol):
+        style = dict(_DEFAULT_MOLECULE_STYLE)
+        if mol is not None:
+            style.update(
+                {
+                    "display_mode": getattr(mol, "display_mode", style["display_mode"]),
+                    "render_style": normalize_molecule_render_style(getattr(mol, "render_style", style["render_style"])),
+                    "bond_style": str(getattr(mol, "bond_style", style["bond_style"]) or style["bond_style"]).lower(),
+                    "radius_mode": str(getattr(mol, "radius_mode", style["radius_mode"]) or style["radius_mode"]).lower(),
+                    "radius_scale": float(getattr(mol, "radius_scale", style["radius_scale"]) or style["radius_scale"]),
+                    "atom_color_override": getattr(mol, "atom_color_override", None),
+                    "bond_color_override": getattr(mol, "bond_color_override", None),
+                    "bond_color_mode": getattr(mol, "bond_color_mode", "default"),
+                    "atom_color_map": dict(getattr(mol, "atom_color_map", {}) or {}),
+                }
+            )
+        style["palette"] = str(getattr(self, "molecule_palette", style["palette"]) or style["palette"]).lower()
+        style["show_shadows"] = bool(getattr(self, "_show_molecule_shadow", style["show_shadows"]))
+        style["show_hydrogens"] = bool(getattr(self, "_show_hydrogens", style["show_hydrogens"]))
+        return style
+
+    def _save_molecule_default_style(self, style=None):
+        style = dict(style or {})
+        if not style:
+            return False
+        normalized = dict(_DEFAULT_MOLECULE_STYLE)
+        normalized.update(style)
+        normalized["render_style"] = normalize_molecule_render_style(normalized.get("render_style", "licorice"))
+        normalized["bond_style"] = str(normalized.get("bond_style") or "thin").lower()
+        normalized["radius_mode"] = str(normalized.get("radius_mode") or "vdw").lower()
+        normalized["palette"] = str(normalized.get("palette") or "avogadro").lower()
+        normalized["show_shadows"] = bool(normalized.get("show_shadows", False))
+        normalized["show_hydrogens"] = bool(normalized.get("show_hydrogens", False))
+        try:
+            normalized["radius_scale"] = float(normalized.get("radius_scale", 1.0))
+        except Exception:
+            normalized["radius_scale"] = 1.0
+        try:
+            cfg = load_config()
+            cfg["molecule_default_style"] = normalized
+            cfg["molecule_palette"] = normalized["palette"]
+            save_config(cfg)
+        except Exception:
+            return False
+        self._show_molecule_shadow = normalized["show_shadows"]
+        self._show_hydrogens = normalized["show_hydrogens"]
+        self.set_molecule_palette(normalized["palette"], notify=True)
+        return True
+
+    def _apply_molecule_default_style(self, mol):
+        if mol is None:
+            return
+        style = self._load_molecule_default_style()
+        mol.display_mode = style.get("display_mode", "Bonds Only")
+        mol.render_style = normalize_molecule_render_style(style.get("render_style", "licorice"))
+        mol.bond_style = str(style.get("bond_style", "thin") or "thin").lower()
+        mol.radius_mode = str(style.get("radius_mode", "vdw") or "vdw").lower()
+        try:
+            mol.radius_scale = float(style.get("radius_scale", 1.0))
+        except Exception:
+            mol.radius_scale = 1.0
+        mol.atom_color_override = style.get("atom_color_override")
+        mol.bond_color_override = style.get("bond_color_override")
+        mol.bond_color_mode = style.get("bond_color_mode", "default")
+        mol.atom_color_map = dict(style.get("atom_color_map") or {})
+        self._show_molecule_shadow = bool(style.get("show_shadows", False))
+        self._show_hydrogens = bool(style.get("show_hydrogens", False))
+        self.molecule_palette = str(style.get("palette", "avogadro") or "avogadro").lower()
+
     def add_molecule(self, path):
         try:
             # Be robust to numpy arrays or non-string inputs
@@ -6159,12 +6271,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 path = str(path)
             self._push_molecule_snapshot()
             mol = Molecule(path)
+            self._apply_molecule_default_style(mol)
             # Center in current view if possible
             if self.main_ax:
                 xlim = self.main_ax.get_xlim()
                 ylim = self.main_ax.get_ylim()
                 mol.offset = np.array([(xlim[0]+xlim[1])/2, (ylim[0]+ylim[1])/2, 0.0])
             self.molecules.append(mol)
+            self._active_molecule_idx = len(self.molecules) - 1
             # Track recent paths (MRU up to 8)
             try:
                 norm = str(Path(path).resolve())
@@ -6439,9 +6553,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._pan_last_ts = 0.0
 
     def set_molecule_palette(self, palette: str, notify: bool = True):
-        palette = (palette or "cpk").lower()
+        palette = (palette or "avogadro").lower()
         if palette not in available_atom_palettes():
-            palette = "cpk"
+            palette = "avogadro"
         if palette == getattr(self, "molecule_palette", None):
             return
         self.molecule_palette = palette
@@ -6509,7 +6623,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
         # Palette submenu
         pal_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogHelpButton), "Atom palette")
-        current_pal = (getattr(self, "molecule_palette", "cpk") or "cpk").lower()
+        current_pal = (getattr(self, "molecule_palette", "avogadro") or "avogadro").lower()
         palette_actions = {}
         for pal in available_atom_palettes():
             act = pal_menu.addAction(pal.title())
@@ -6527,17 +6641,18 @@ class MultiPreviewCanvas(FigureCanvas):
         action = menu.exec_(event.guiEvent.globalPos())
         if action == props_act:
             overlay_settings = {
-                "palette": getattr(self, "molecule_palette", "pymol"),
+                "palette": getattr(self, "molecule_palette", "avogadro"),
                 "show_shadows": bool(self._show_molecule_shadow),
                 "show_hydrogens": bool(getattr(self, "_show_hydrogens", True)),
                 "show_shadows_available": True,
                 "show_hydrogens_available": True,
                 "palette_available": True,
+                "save_default_callback": lambda style, c=self: c._save_molecule_default_style(style),
             }
             def _apply():
                 self._show_molecule_shadow = bool(overlay_settings.get("show_shadows", True))
                 self._show_hydrogens = bool(overlay_settings.get("show_hydrogens", True))
-                self.set_molecule_palette(overlay_settings.get("palette", "pymol"), notify=False)
+                self.set_molecule_palette(overlay_settings.get("palette", "avogadro"), notify=False)
                 self._redraw()
             dlg = MoleculePropertiesDialog(mol, self, callback=_apply, overlay_settings=overlay_settings)
             dlg.show()
@@ -8516,6 +8631,51 @@ class MultiPreviewCanvas(FigureCanvas):
     def mouseReleaseEvent(self, event):
         self._drag_candidate = None
         super().mouseReleaseEvent(event)
+
+    def _molecule_paths_from_mime(self, mime):
+        paths = []
+        if mime is None or not mime.hasUrls():
+            return paths
+        for url in mime.urls():
+            try:
+                if not url.isLocalFile():
+                    continue
+                path = Path(url.toLocalFile())
+            except Exception:
+                continue
+            if path.suffix.lower() in _MOLECULE_FILE_EXTS and path.exists():
+                paths.append(path)
+        return paths
+
+    def dragEnterEvent(self, event):
+        try:
+            if self._molecule_paths_from_mime(event.mimeData()):
+                event.acceptProposedAction()
+                return
+        except Exception:
+            pass
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        try:
+            if self._molecule_paths_from_mime(event.mimeData()):
+                event.acceptProposedAction()
+                return
+        except Exception:
+            pass
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        try:
+            paths = self._molecule_paths_from_mime(event.mimeData())
+            if paths:
+                for path in paths:
+                    self.add_molecule(str(path))
+                event.acceptProposedAction()
+                return
+        except Exception:
+            pass
+        super().dropEvent(event)
 
     def _on_motion_value(self, event):
         if self._fixed_crop_transform_mode:

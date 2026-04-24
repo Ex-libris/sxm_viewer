@@ -327,7 +327,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             if canvas.scale_bar_enabled:
                 canvas._connect_scale_bar_events()
             canvas._relative_axes_override = rel_override
-            canvas.molecule_palette = (getattr(owner, "molecule_palette", "cpk") or "cpk").lower()
+            canvas.molecule_palette = (getattr(owner, "molecule_palette", "avogadro") or "avogadro").lower()
             if frame_fill_initial:
                 canvas._frame_fill_prev_state = {
                     "show_ticks": bool(getattr(canvas, "_show_ticks", True)),
@@ -379,7 +379,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
             canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
             canvas._relative_axes_override = rel_override
-            canvas.molecule_palette = (getattr(owner, "molecule_palette", "cpk") or "cpk").lower()
+            canvas.molecule_palette = (getattr(owner, "molecule_palette", "avogadro") or "avogadro").lower()
             canvas.scale_bar_enabled = bool(owner.scale_bar_cb.isChecked())
             if canvas.scale_bar_enabled:
                 canvas._connect_scale_bar_events()
@@ -615,6 +615,9 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
         canvas.set_molecule_palette_callback(owner._on_molecule_palette_changed)
+        if hasattr(canvas, "set_recent_molecule_callback"):
+            canvas._recent_molecule_paths = list(getattr(owner, "recent_molecules", []) or [])
+            canvas.set_recent_molecule_callback(owner._on_recent_molecules_updated)
         owner._popup_canvases.append(canvas)
     except Exception:
         pass
