@@ -6458,6 +6458,7 @@ QLabel:hover {{
                 nv["arr"] = np.array(base, copy=True) if base is not None else nv.get("arr")
                 nv.pop("filter_steps", None)
                 nv.pop("filter_label", None)
+                nv.pop("clim", None)  # drop stale clim from filtered data
             else:
                 nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
                 nv["filter_steps"] = copy.deepcopy(steps)
