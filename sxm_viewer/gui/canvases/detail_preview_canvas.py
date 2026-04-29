@@ -287,7 +287,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._angle_blit_active = False
         self.angle_callback = None
         self.scale_bar_enabled = False
-        self._scale_bar_pos = (0.94, 0.06)  # default lower right (axes coords)
+        self._scale_bar_pos = (0.88, 0.06)  # default lower right (axes coords)
         self._scale_bar_artists = []
         self._scale_bar_cids = []
         self._scale_bar_drag_start = None
