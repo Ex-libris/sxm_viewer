@@ -143,6 +143,33 @@ def log_filter_image(img, epsilon=1e-3):
     return np.log10(arr + effective_eps)
 
 
+def histogram_equalize_image(img):
+    """
+    Apply histogram equalization for maximum contrast.
+
+    Maps pixel intensities so the output histogram is approximately
+    flat (uniform), spreading all intensity levels evenly across
+    the available range.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image.
+
+    Returns
+    -------
+    ndarray
+        Equalized image in [0, 1] range.
+    """
+    arr = np.asarray(img, dtype=float)
+    valid = arr[~np.isnan(arr)]
+    if len(valid) < 2:
+        return arr
+    sorted_valid = np.sort(valid)
+    out = np.interp(arr, sorted_valid, np.linspace(0, 1, len(sorted_valid)))
+    return out
+
+
 FILTER_DEFINITIONS = {
     'flatten': {'label': 'Flatten (row/col median)', 'needs_gaussian': False},
     'tilt': {'label': 'Tilt correction (plane)', 'needs_gaussian': False},
@@ -160,6 +187,10 @@ FILTER_DEFINITIONS = {
         'label': 'Logarithmic (dynamic range)',
         'needs_gaussian': False,
         'default_epsilon': 1e-3,
+    },
+    'histeq': {
+        'label': 'Histogram equalization',
+        'needs_gaussian': False,
     },
 }
 
@@ -186,6 +217,7 @@ __all__ = [
     "highpass_filter",
     "laplacian_filter_image",
     "log_filter_image",
+    "histogram_equalize_image",
     "FILTER_DEFINITIONS",
     "_gaussian_available",
     "_filter_signature",

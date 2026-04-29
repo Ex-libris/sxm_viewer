@@ -53,6 +53,7 @@ from ..processing.filters import (
     highpass_filter,
     laplacian_filter_image,
     log_filter_image,
+    histogram_equalize_image,
     FILTER_DEFINITIONS,
     _gaussian_available,
     _filter_signature,
@@ -6744,8 +6745,10 @@ QLabel:hover {{
                 absolute = params.get('absolute', FILTER_DEFINITIONS.get('laplacian', {}).get('default_absolute', True))
                 return laplacian_filter_image(arr, sigma=sigma, neighbors=neighbors, absolute=absolute)
             if key == 'log':
-                epsilon = params.get('epsilon', FILTER_DEFINITIONS.get('log', {}).get('default_epsilon', 1e-12))
+                epsilon = params.get('epsilon', FILTER_DEFINITIONS.get('log', {}).get('default_epsilon', 1e-3))
                 return log_filter_image(arr, epsilon=epsilon)
+            if key == 'histeq':
+                return histogram_equalize_image(arr)
         except Exception:
             pass
         return arr
