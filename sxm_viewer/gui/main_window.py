@@ -8575,6 +8575,18 @@ QLabel:hover {{
         if changed:
             self._invalidate_thumbnail_cache(path_keys)
             self._invalidate_filtered_cache(path_keys)
+            # Clear stored clim overrides for affected files so that
+            # _resolve_preview_clim falls back to _auto_preview_clim
+            # instead of returning a clim that was computed for the
+            # now-removed filter.
+            clim_map = getattr(self, "per_file_channel_clim", None) or {}
+            for clim_key in list(clim_map.keys()):
+                try:
+                    file_key = str(clim_key[0]) if isinstance(clim_key, tuple) else ""
+                except Exception:
+                    continue
+                if file_key in path_keys:
+                    clim_map.pop(clim_key, None)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview and str(self.last_preview[0]) in path_keys:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
