@@ -1,7 +1,8 @@
 """Image filtering helpers used throughout the viewer.
 
 Provides: flatten (row/col median), tilt (plane subtraction),
-2nd-order plane, Gaussian low/high-pass, Laplacian edge detection,
+2nd-order plane, line-by-line flatten (per-line median/mean/poly),
+Gaussian low/high-pass, Laplacian edge detection,
 logarithmic dynamic-range compression, histogram equalisation,
 and CLAHE (Contrast Limited Adaptive Histogram Equalization).
 """
@@ -41,6 +42,77 @@ def subtract_2nd_order_plane(img):
     C, _, _, _ = np.linalg.lstsq(A, arr.ravel(), rcond=None)
     plane = (C[0]*x**2 + C[1]*y**2 + C[2]*x*y + C[3]*x + C[4]*y + C[5])
     return arr - plane
+
+
+def line_flatten_image(img, axis='row', method='median'):
+    """
+    Line-by-line background removal for SPM stripe artifacts.
+
+    Subtracts a per-line statistic or polynomial fit to remove the
+    DC offset, tilt, or curvature that varies from one scan line to
+    the next.  This is the standard fix for 1/f-noise "sawtooth"
+    artifacts in STM/AFM images.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input 2-D image.
+    axis : str
+        'row' — process horizontal scan lines (default for STM).
+        'col' — process vertical columns.
+        'both' — process rows then columns.
+    method : str
+        'median' — subtract per-line median (robust, default).
+        'mean'   — subtract per-line arithmetic mean.
+        'poly1'  — subtract per-line 1st-order polynomial fit.
+        'poly2'  — subtract per-line 2nd-order polynomial fit.
+
+    Returns
+    -------
+    ndarray
+        Flattened image with the same shape as input.
+    """
+    arr = np.asarray(img, dtype=float).copy()
+    methods = ('median', 'mean', 'poly1', 'poly2')
+
+    def _process_one_axis(data, ax):
+        out = data.copy()
+        n = data.shape[ax]
+        x = np.arange(data.shape[1 - ax], dtype=float)
+        for i in range(n):
+            line = (out[i, :] if ax == 0 else out[:, i])
+            valid = line[~np.isnan(line)]
+            if len(valid) == 0:
+                continue
+            m = str(method).lower()
+            if m == 'median':
+                offset = np.nanmedian(line)
+            elif m == 'mean':
+                offset = np.nanmean(line)
+            elif m in ('poly1', 'poly2'):
+                mask = ~np.isnan(line)
+                if mask.sum() < (2 if m == 'poly1' else 3):
+                    offset = np.nanmedian(line)
+                else:
+                    deg = 1 if m == 'poly1' else 2
+                    coeffs = np.polyfit(x[mask], line[mask], deg)
+                    offset = np.polyval(coeffs, x)
+                    offset[~mask] = 0
+            else:
+                raise ValueError(f"Unknown method: {m!r}, expected one of {methods}")
+            if ax == 0:
+                out[i, :] = line - offset
+            else:
+                out[:, i] = line - offset
+        return out
+
+    axis = str(axis).lower()
+    if axis in ('row', 'both'):
+        arr = _process_one_axis(arr, 0)
+    if axis in ('col', 'both'):
+        arr = _process_one_axis(arr, 1)
+    return arr
+
 
 try:
     from scipy.ndimage import gaussian_filter as _scipy_gaussian
@@ -240,6 +312,12 @@ FILTER_DEFINITIONS = {
     'flatten': {'label': 'Flatten (row/col median)', 'needs_gaussian': False},
     'tilt': {'label': 'Tilt correction (plane)', 'needs_gaussian': False},
     'plane2': {'label': 'Global plane fit (2nd order)', 'needs_gaussian': False},
+    'line_flatten': {
+        'label': 'Line-by-line flatten',
+        'needs_gaussian': False,
+        'default_axis': 'row',
+        'default_method': 'median',
+    },
     'highpass': {'label': 'High-pass (Gaussian)', 'needs_gaussian': True, 'default_sigma': 2.0},
     'lowpass': {'label': 'Low-pass (Gaussian)', 'needs_gaussian': True, 'default_sigma': 2.0},
     'laplacian': {
@@ -285,6 +363,7 @@ __all__ = [
     "flatten_remove_median",
     "subtract_best_fit_plane",
     "subtract_2nd_order_plane",
+    "line_flatten_image",
     "gaussian_filter_image",
     "highpass_filter",
     "laplacian_filter_image",

@@ -49,6 +49,7 @@ from ..processing.filters import (
     flatten_remove_median,
     subtract_best_fit_plane,
     subtract_2nd_order_plane,
+    line_flatten_image,
     gaussian_filter_image,
     highpass_filter,
     laplacian_filter_image,
@@ -6754,6 +6755,10 @@ QLabel:hover {{
                 clip_limit = params.get('clip_limit', FILTER_DEFINITIONS.get('clahe', {}).get('default_clip_limit', 0.03))
                 tile_size = params.get('tile_size', FILTER_DEFINITIONS.get('clahe', {}).get('default_tile_size', 8))
                 return clahe_filter_image(arr, clip_limit=clip_limit, tile_size=tile_size)
+            if key == 'line_flatten':
+                axis = params.get('axis', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_axis', 'row'))
+                method = params.get('method', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_method', 'median'))
+                return line_flatten_image(arr, axis=axis, method=method)
         except Exception:
             pass
         return arr

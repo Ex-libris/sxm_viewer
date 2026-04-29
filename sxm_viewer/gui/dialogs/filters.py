@@ -227,6 +227,18 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.axis_label = QtWidgets.QLabel("Axis")
         form.addRow(self.axis_label, self.axis_combo)
 
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.addItems(["median", "mean", "poly1", "poly2"])
+        method_default = str(self._initial_params.get(
+            "method",
+            FILTER_DEFINITIONS.get(self.filter_key, {}).get("default_method", "median"),
+        ))
+        idx = self.method_combo.findText(method_default)
+        if idx >= 0:
+            self.method_combo.setCurrentIndex(idx)
+        self.method_label = QtWidgets.QLabel("Method")
+        form.addRow(self.method_label, self.method_combo)
+
         self.sigma_spin = QtWidgets.QDoubleSpinBox()
         self.sigma_spin.setDecimals(2)
         self.sigma_spin.setRange(0.05, 50.0)
@@ -323,6 +335,7 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.epsilon_spin.valueChanged.connect(self._schedule_preview_update)
         self.clip_limit_spin.valueChanged.connect(self._schedule_preview_update)
         self.tile_size_combo.currentIndexChanged.connect(self._schedule_preview_update)
+        self.method_combo.currentIndexChanged.connect(self._schedule_preview_update)
 
         self._on_filter_selection_changed()
         self._schedule_preview_update()
@@ -333,7 +346,7 @@ class SingleFilterDialog(QtWidgets.QDialog):
 
     def _on_filter_selection_changed(self):
         key = self.filter_key
-        self._set_param_row_visible(self.axis_label, self.axis_combo, key == "flatten")
+        self._set_param_row_visible(self.axis_label, self.axis_combo, key in ("flatten", "line_flatten"))
         self._set_param_row_visible(self.sigma_label, self.sigma_spin, key in ("highpass", "lowpass"))
         show_lap = key == "laplacian"
         self._set_param_row_visible(self.lap_sigma_label, self.lap_sigma_spin, show_lap)
@@ -343,6 +356,8 @@ class SingleFilterDialog(QtWidgets.QDialog):
         show_clahe = key == "clahe"
         self._set_param_row_visible(self.clip_limit_label, self.clip_limit_spin, show_clahe)
         self._set_param_row_visible(self.tile_size_label, self.tile_size_combo, show_clahe)
+        show_line_flatten = key == "line_flatten"
+        self._set_param_row_visible(self.method_label, self.method_combo, show_line_flatten)
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
@@ -366,6 +381,9 @@ class SingleFilterDialog(QtWidgets.QDialog):
         elif self.filter_key == "clahe":
             params["clip_limit"] = float(self.clip_limit_spin.value())
             params["tile_size"] = int(self.tile_size_combo.currentData() or 8)
+        elif self.filter_key == "line_flatten":
+            params["axis"] = self.axis_combo.currentText()
+            params["method"] = self.method_combo.currentText()
         return {"key": self.filter_key, "params": params}
 
     def current_step_label(self):
@@ -381,6 +399,11 @@ class SingleFilterDialog(QtWidgets.QDialog):
             )
         if step["key"] == "flatten" and params.get("axis"):
             return f"{label} ({params['axis']})"
+        if step["key"] == "line_flatten":
+            return (
+                f"{label} ({params.get('axis', 'row')}, "
+                f"{params.get('method', 'median')})"
+            )
         if step["key"] == "log" and params.get("epsilon") is not None:
             return f"{label} (epsilon={float(params['epsilon']):.2e})"
         if step["key"] == "clahe":
