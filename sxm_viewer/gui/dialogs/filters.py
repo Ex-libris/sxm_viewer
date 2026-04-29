@@ -261,7 +261,7 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.epsilon_spin.setRange(1e-5, 1e-1)
         self.epsilon_spin.setSingleStep(1e-4)
         self.epsilon_spin.setValue(float(self._initial_params.get("epsilon", FILTER_DEFINITIONS.get("log", {}).get("default_epsilon", 1e-3))))
-        self.epsilon_label = QtWidgets.QLabel("Log compression")
+        self.epsilon_label = QtWidgets.QLabel("Log compression (lower = stronger)")
         form.addRow(self.epsilon_label, self.epsilon_spin)
 
         body.addWidget(controls, 1)

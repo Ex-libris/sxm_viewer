@@ -140,7 +140,7 @@ def log_filter_image(img, epsilon=1e-3):
     arr = arr - arr_min
     data_range = np.nanmax(arr) - np.nanmin(arr)
     effective_eps = max(1e-12, float(epsilon) * float(data_range))
-    return np.log10(np.maximum(arr, effective_eps) + effective_eps)
+    return np.log10(arr + effective_eps)
 
 
 FILTER_DEFINITIONS = {
