@@ -110,6 +110,31 @@ def laplacian_filter_image(img, sigma=0.0, neighbors=8, absolute=True):
         out = np.abs(out)
     return out
 
+
+def log_filter_image(img, epsilon=1e-12):
+    """
+    Apply log10 transform to compress dynamic range.
+
+    Shifts data to positive (subtracts the minimum), then applies
+    log10 with a small epsilon floor to avoid log(0).
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image.
+    epsilon : float
+        Small value added before log to avoid log(0).
+
+    Returns
+    -------
+    ndarray
+        Log10-transformed image.
+    """
+    arr = np.asarray(img, dtype=float)
+    arr = arr - np.nanmin(arr)
+    return np.log10(np.maximum(arr, epsilon) + epsilon)
+
+
 FILTER_DEFINITIONS = {
     'flatten': {'label': 'Flatten (row/col median)', 'needs_gaussian': False},
     'tilt': {'label': 'Tilt correction (plane)', 'needs_gaussian': False},
@@ -122,6 +147,11 @@ FILTER_DEFINITIONS = {
         'default_sigma': 0.6,
         'default_neighbors': 8,
         'default_absolute': True,
+    },
+    'log': {
+        'label': 'Logarithmic (dynamic range)',
+        'needs_gaussian': False,
+        'default_epsilon': 1e-12,
     },
 }
 
@@ -147,6 +177,7 @@ __all__ = [
     "gaussian_filter_image",
     "highpass_filter",
     "laplacian_filter_image",
+    "log_filter_image",
     "FILTER_DEFINITIONS",
     "_gaussian_available",
     "_filter_signature",

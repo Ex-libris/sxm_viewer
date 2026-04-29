@@ -52,6 +52,7 @@ from ..processing.filters import (
     gaussian_filter_image,
     highpass_filter,
     laplacian_filter_image,
+    log_filter_image,
     FILTER_DEFINITIONS,
     _gaussian_available,
     _filter_signature,
@@ -6742,6 +6743,9 @@ QLabel:hover {{
                 neighbors = params.get('neighbors', FILTER_DEFINITIONS.get('laplacian', {}).get('default_neighbors', 8))
                 absolute = params.get('absolute', FILTER_DEFINITIONS.get('laplacian', {}).get('default_absolute', True))
                 return laplacian_filter_image(arr, sigma=sigma, neighbors=neighbors, absolute=absolute)
+            if key == 'log':
+                epsilon = params.get('epsilon', FILTER_DEFINITIONS.get('log', {}).get('default_epsilon', 1e-12))
+                return log_filter_image(arr, epsilon=epsilon)
         except Exception:
             pass
         return arr
