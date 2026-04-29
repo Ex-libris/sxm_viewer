@@ -7,7 +7,7 @@ from typing import Iterable, List
 # Expose Nanonis provider
 from .nanonis import prepare_nanonis_folder, prepare_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds  # noqa: F401
 from .omicronscala import prepare_scala_folder, prepare_scala_files  # noqa: F401
-from .rhksm4 import prepare_sm4_folder, prepare_sm4_files  # noqa: F401
+from .rhksm4 import prepare_sm4_folder, prepare_sm4_files, parse_rhksm4_spectroscopy  # noqa: F401
 
 
 def convert_nanonis(folder: Path | str) -> List[Path]:
@@ -55,4 +55,5 @@ __all__: Iterable[str] = [
     "prepare_scala_files",
     "prepare_sm4_folder",
     "prepare_sm4_files",
+    "parse_rhksm4_spectroscopy",
 ]

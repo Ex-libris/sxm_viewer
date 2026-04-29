@@ -91,6 +91,7 @@ from ...providers import (
     convert_omicronscala_files,
     convert_rhksm4,
     convert_rhksm4_files,
+    parse_rhksm4_spectroscopy,
     parse_nanonis_spectroscopy,
     parse_nanonis_3ds,
 )
@@ -1149,6 +1150,11 @@ def _parse_spectro_file_payload(filepath: Path, mtime: float):
     elif ext == ".3ds":
         try:
             spec_list = parse_nanonis_3ds(filepath)
+        except Exception:
+            spec_list = None
+    elif ext == ".sm4":
+        try:
+            spec_list = parse_rhksm4_spectroscopy(filepath)
         except Exception:
             spec_list = None
     if spec_list is None and ext not in (".3ds",):
