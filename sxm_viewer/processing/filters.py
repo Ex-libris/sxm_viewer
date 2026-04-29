@@ -1,4 +1,10 @@
-"""Image filtering helpers used throughout the viewer."""
+"""Image filtering helpers used throughout the viewer.
+
+Provides: flatten (row/col median), tilt (plane subtraction),
+2nd-order plane, Gaussian low/high-pass, Laplacian edge detection,
+logarithmic dynamic-range compression, histogram equalisation,
+and CLAHE (Contrast Limited Adaptive Histogram Equalization).
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -45,6 +51,12 @@ except Exception:
         _GAUSS_BACKEND = 'cv2'
     except Exception:
         _GAUSS_BACKEND = None
+
+try:
+    from skimage.exposure import equalize_adapthist as _sk_equalize_adapthist
+    _SKIMAGE_AVAILABLE = True
+except Exception:
+    _SKIMAGE_AVAILABLE = False
 
 def gaussian_filter_image(img, sigma):
     """Gaussian blur using scipy/cv2 fallback."""
@@ -143,6 +155,60 @@ def log_filter_image(img, epsilon=1e-3):
     return np.log10(arr + effective_eps)
 
 
+def clahe_filter_image(img, clip_limit=0.03, tile_size=8):
+    """
+    Apply Contrast Limited Adaptive Histogram Equalization (CLAHE).
+
+    Enhances local contrast by equalizing the histogram in small tiles
+    and blending the results using bilinear interpolation.  The
+    ``clip_limit`` controls how much contrast amplification is allowed
+    (lower values reduce noise amplification).  ``tile_size`` sets the
+    size of each local tile in pixels.
+
+    Requires scikit-image.  Falls back to returning the input image
+    unchanged when the library is not installed.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input floating-point image.
+    clip_limit : float
+        Clipping limit for contrast limiting (0.001 - 0.5).
+        Default 0.03.
+    tile_size : int
+        Size of the local tile grid.  Common values: 4, 8, 16, 32.
+        Default 8.
+
+    Returns
+    -------
+    ndarray
+        CLAHE-equalized image with same shape and value range as input.
+    """
+    arr = np.asarray(img, dtype=float)
+    if not _SKIMAGE_AVAILABLE:
+        raise RuntimeError(
+            "CLAHE filter requires scikit-image (pip install scikit-image)"
+        )
+    # Normalise to [0,1] for skimage
+    valid = arr[~np.isnan(arr)]
+    if len(valid) < 2:
+        return arr
+    lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+    rng = hi - lo
+    if rng <= 0:
+        return arr
+    norm = (arr - lo) / rng
+    # Apply CLAHE
+    clip_limit = max(0.001, min(0.5, float(clip_limit)))
+    tile_size = int(tile_size)
+    if tile_size < 2:
+        tile_size = 8
+    equalized = _sk_equalize_adapthist(
+        norm, kernel_size=int(tile_size), clip_limit=clip_limit, nbins=256
+    )
+    return equalized * rng + lo
+
+
 def histogram_equalize_image(img):
     """
     Apply histogram equalization for maximum contrast.
@@ -192,6 +258,12 @@ FILTER_DEFINITIONS = {
         'label': 'Histogram equalization',
         'needs_gaussian': False,
     },
+    'clahe': {
+        'label': 'CLAHE (adaptive equalization)',
+        'needs_gaussian': False,
+        'default_clip_limit': 0.03,
+        'default_tile_size': 8,
+    },
 }
 
 def _gaussian_available():
@@ -218,6 +290,7 @@ __all__ = [
     "laplacian_filter_image",
     "log_filter_image",
     "histogram_equalize_image",
+    "clahe_filter_image",
     "FILTER_DEFINITIONS",
     "_gaussian_available",
     "_filter_signature",

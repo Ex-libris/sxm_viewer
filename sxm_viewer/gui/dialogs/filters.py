@@ -264,6 +264,25 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.epsilon_label = QtWidgets.QLabel("Log compression (lower = stronger)")
         form.addRow(self.epsilon_label, self.epsilon_spin)
 
+        self.clip_limit_spin = QtWidgets.QDoubleSpinBox()
+        self.clip_limit_spin.setDecimals(3)
+        self.clip_limit_spin.setRange(0.001, 0.5)
+        self.clip_limit_spin.setSingleStep(0.01)
+        self.clip_limit_spin.setValue(float(self._initial_params.get("clip_limit", FILTER_DEFINITIONS.get("clahe", {}).get("default_clip_limit", 0.03))))
+        self.clip_limit_label = QtWidgets.QLabel("CLAHE clip limit")
+        form.addRow(self.clip_limit_label, self.clip_limit_spin)
+
+        self.tile_size_combo = QtWidgets.QComboBox()
+        self.tile_size_combo.addItem("4", 4)
+        self.tile_size_combo.addItem("8", 8)
+        self.tile_size_combo.addItem("16", 16)
+        self.tile_size_combo.addItem("32", 32)
+        tile_default = int(self._initial_params.get("tile_size", FILTER_DEFINITIONS.get("clahe", {}).get("default_tile_size", 8)))
+        tile_index = max(0, [4, 8, 16, 32].index(tile_default) if tile_default in [4, 8, 16, 32] else 1)
+        self.tile_size_combo.setCurrentIndex(tile_index)
+        self.tile_size_label = QtWidgets.QLabel("CLAHE tile size")
+        form.addRow(self.tile_size_label, self.tile_size_combo)
+
         body.addWidget(controls, 1)
 
         if self._show_dialog_preview:
@@ -302,6 +321,8 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_neighbors_combo.currentIndexChanged.connect(self._schedule_preview_update)
         self.lap_abs_cb.toggled.connect(self._schedule_preview_update)
         self.epsilon_spin.valueChanged.connect(self._schedule_preview_update)
+        self.clip_limit_spin.valueChanged.connect(self._schedule_preview_update)
+        self.tile_size_combo.currentIndexChanged.connect(self._schedule_preview_update)
 
         self._on_filter_selection_changed()
         self._schedule_preview_update()
@@ -319,6 +340,9 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self._set_param_row_visible(self.lap_neighbors_label, self.lap_neighbors_combo, show_lap)
         self._set_param_row_visible(self.lap_abs_label, self.lap_abs_cb, show_lap)
         self._set_param_row_visible(self.epsilon_label, self.epsilon_spin, key == "log")
+        show_clahe = key == "clahe"
+        self._set_param_row_visible(self.clip_limit_label, self.clip_limit_spin, show_clahe)
+        self._set_param_row_visible(self.tile_size_label, self.tile_size_combo, show_clahe)
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
@@ -339,6 +363,9 @@ class SingleFilterDialog(QtWidgets.QDialog):
             params["absolute"] = bool(self.lap_abs_cb.isChecked())
         elif self.filter_key == "log":
             params["epsilon"] = float(self.epsilon_spin.value())
+        elif self.filter_key == "clahe":
+            params["clip_limit"] = float(self.clip_limit_spin.value())
+            params["tile_size"] = int(self.tile_size_combo.currentData() or 8)
         return {"key": self.filter_key, "params": params}
 
     def current_step_label(self):
@@ -356,6 +383,11 @@ class SingleFilterDialog(QtWidgets.QDialog):
             return f"{label} ({params['axis']})"
         if step["key"] == "log" and params.get("epsilon") is not None:
             return f"{label} (epsilon={float(params['epsilon']):.2e})"
+        if step["key"] == "clahe":
+            return (
+                f"{label} (clip={float(params.get('clip_limit', 0.03)):.3f}, "
+                f"tile={int(params.get('tile_size', 8))})"
+            )
         return label
 
     def _update_preview(self):

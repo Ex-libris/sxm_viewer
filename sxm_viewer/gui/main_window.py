@@ -54,6 +54,7 @@ from ..processing.filters import (
     laplacian_filter_image,
     log_filter_image,
     histogram_equalize_image,
+    clahe_filter_image,
     FILTER_DEFINITIONS,
     _gaussian_available,
     _filter_signature,
@@ -6749,6 +6750,10 @@ QLabel:hover {{
                 return log_filter_image(arr, epsilon=epsilon)
             if key == 'histeq':
                 return histogram_equalize_image(arr)
+            if key == 'clahe':
+                clip_limit = params.get('clip_limit', FILTER_DEFINITIONS.get('clahe', {}).get('default_clip_limit', 0.03))
+                tile_size = params.get('tile_size', FILTER_DEFINITIONS.get('clahe', {}).get('default_tile_size', 8))
+                return clahe_filter_image(arr, clip_limit=clip_limit, tile_size=tile_size)
         except Exception:
             pass
         return arr
