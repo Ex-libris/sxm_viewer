@@ -2367,7 +2367,7 @@ class MultiPreviewCanvas(FigureCanvas):
         sb_bar_col = sb_settings.get('bar_color') or default_color
         font_family = sb_settings.get('font_family', 'sans-serif')
         sb = AnchoredSizeBar(ax.transData, size, label, 
-                             loc='center',  # Anchor point on the artist itself
+                             loc='lower right',  # right edge at anchor, extends leftward
                              pad=0.4, borderpad=0, sep=3, 
                              frameon=False, 
                              size_vertical=width*0.004*font_scale,
