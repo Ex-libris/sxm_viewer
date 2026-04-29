@@ -942,11 +942,19 @@ def on_preview_cmap_changed(viewer, idx):
     cmap_name = viewer.preview_cmap_combo.currentText()
     if viewer.last_preview:
         try:
-            viewer._set_thumbnail_entry_cmap([viewer.last_preview[0]], cmap_name)
+            viewer._set_thumbnail_entry_cmap([viewer.last_preview[0]], cmap_name, skip_preview_redraw=True)
         except Exception:
             pass
         try:
             viewer._set_combo_text_silent(getattr(viewer, "preview_cmap_combo", None), cmap_name)
+        except Exception:
+            pass
+        # Update the colormap on already-drawn images without rebuilding
+        # the entire canvas (which would trigger tight_layout drift).
+        try:
+            cb = getattr(viewer.preview_canvas, "set_cmap_for_current_views", None)
+            if callable(cb):
+                cb(cmap_name)
         except Exception:
             pass
         return
