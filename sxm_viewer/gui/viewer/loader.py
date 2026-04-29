@@ -84,7 +84,16 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
+from ...providers import (
+    convert_nanonis,
+    convert_nanonis_files,
+    convert_omicronscala,
+    convert_omicronscala_files,
+    convert_rhksm4,
+    convert_rhksm4_files,
+    parse_nanonis_spectroscopy,
+    parse_nanonis_3ds,
+)
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
@@ -616,7 +625,21 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
             txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
             log_status(f"Converted {len(converted)} Nanonis scan(s)")
     else:
-            log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+        log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if getattr(viewer, "convert_omicronscala_enabled", True):
+        converted = convert_omicronscala(folder)
+        if converted:
+            txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} SCALA scan(s)")
+    else:
+        log_status("Skipping SCALA .par conversion (disabled in config)")
+    if getattr(viewer, "convert_rhksm4_enabled", True):
+        converted = convert_rhksm4(folder)
+        if converted:
+            txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} RHK SM4 scan(s)")
+    else:
+        log_status("Skipping RHK .sm4 conversion (disabled in config)")
     return txts
 
 
@@ -640,7 +663,7 @@ def classify_dropped_paths(viewer, paths):
         if suffix in {".dat", ".3ds"}:
             spectro_paths.append(path)
             continue
-        if suffix == ".sxm":
+        if suffix in {".sxm", ".par", ".sm4"}:
             image_paths.append(path)
             continue
         if suffix == ".txt":
@@ -662,6 +685,8 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
     """Return header files for an explicit file drop without scanning the folder."""
     collected: list[Path] = []
     sxm_paths = []
+    par_paths = []
+    sm4_paths = []
     seen = set()
     for raw in paths or []:
         path = Path(raw)
@@ -678,6 +703,10 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
             collected.append(path)
         elif path.suffix.lower() == ".sxm":
             sxm_paths.append(path)
+        elif path.suffix.lower() == ".par":
+            par_paths.append(path)
+        elif path.suffix.lower() == ".sm4":
+            sm4_paths.append(path)
     if sxm_paths:
         if getattr(viewer, "convert_nanonis_enabled", True):
             converted = convert_nanonis_files(sxm_paths)
@@ -685,6 +714,20 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
                 collected.extend(converted)
         else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if par_paths:
+        if getattr(viewer, "convert_omicronscala_enabled", True):
+            converted = convert_omicronscala_files(par_paths)
+            if converted:
+                collected.extend(converted)
+        else:
+            log_status("Skipping SCALA .par conversion (disabled in config)")
+    if sm4_paths:
+        if getattr(viewer, "convert_rhksm4_enabled", True):
+            converted = convert_rhksm4_files(sm4_paths)
+            if converted:
+                collected.extend(converted)
+        else:
+            log_status("Skipping RHK .sm4 conversion (disabled in config)")
     return sorted(collected, key=lambda p: str(p).lower())
 
 

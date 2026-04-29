@@ -15,6 +15,12 @@
 - GUI: `python -m sxm_viewer`
 - Provider API: `sxm_viewer.providers` (`convert_nanonis`, `parse_nanonis_spectroscopy`)
 
+## Supported image inputs
+- Omicron/Anfatec `.txt` headers + channel grids (native)
+- Nanonis `.sxm` (converted to `.txt` cache on load)
+- Omicron SCALA `.par` (converted to `.txt` cache on load)
+- RHK `.sm4` (converted to `.txt` cache on load)
+
 ## Notes for contributors
 - Do not edit files under `sxm_viewer/providers/nanonis/vendor/`; they mirror upstream.
 - Keep GUI code free of provider internals; providers should not import GUI/Qt.
