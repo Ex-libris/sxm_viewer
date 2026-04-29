@@ -1304,15 +1304,6 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             if getattr(self, "views", None):
                 self._apply_tight_layout_safe(pad=0.25)
-                # Freeze the exact pixel-perfect bboxes produced by the resize
-                # pass so subsequent _redraw() calls can skip tight_layout
-                # drift entirely.
-                try:
-                    self._frozen_ax_bboxes = [
-                        ax.get_position() for ax in self.fig.axes
-                    ]
-                except Exception:
-                    self._frozen_ax_bboxes = None
                 self.draw_idle()
         except Exception:
             pass
@@ -1544,6 +1535,14 @@ class MultiPreviewCanvas(FigureCanvas):
                             pass
                 except Exception:
                     pass
+        # Freeze bboxes after a full render so overlays (scale bar, colorbar,
+        # …) are accounted for and stay inside the plot.
+        try:
+            self._frozen_ax_bboxes = [
+                ax.get_position() for ax in self.fig.axes
+            ]
+        except Exception:
+            self._frozen_ax_bboxes = None
         profile_restored = False
         if isinstance(profile_state, dict):
             try:
