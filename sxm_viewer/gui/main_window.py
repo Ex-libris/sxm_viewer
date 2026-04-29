@@ -1435,12 +1435,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
-        self.preview_canvas.set_double_click_callback(
-            lambda v=None: self._spawn_preview_popup(
-                [self._copy_view_for_popup(v)] if v else [],
-                title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
-            )
-        )
+        # Double-click popup disabled — opens redundant windows when preview is already visible
+        # self.preview_canvas.set_double_click_callback(
+        #     lambda v=None: self._spawn_preview_popup(
+        #         [self._copy_view_for_popup(v)] if v else [],
+        #         title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
+        #     )
+        # )
         self.preview_canvas.set_filter_menu_callback(
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
@@ -5287,7 +5288,7 @@ QLabel:hover {{
             self._schedule_thumbnail_render_state_refresh(changed_paths)
         return changed
 
-    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None):
+    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None, skip_preview_redraw=False):
         targets = [str(Path(p)) for p in list(paths or []) if p]
         if not targets:
             return 0
@@ -5334,7 +5335,7 @@ QLabel:hover {{
             except Exception:
                 pass
             try:
-                if self.last_preview:
+                if not skip_preview_redraw and self.last_preview:
                     preview_key, preview_idx = self.last_preview
                     if str(preview_key) in targets:
                         self.show_file_channel(preview_key, preview_idx, use_local_cmap=True)

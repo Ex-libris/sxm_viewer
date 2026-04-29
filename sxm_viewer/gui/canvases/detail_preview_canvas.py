@@ -263,6 +263,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._spectra_points = {}
         self._spectra_click_cb = None
         self._zoom_reset_limits = {}
+        self._frozen_ax_bboxes = None  # cached bboxes after window resize
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by) for the active frame
         self._angle_frames = []
@@ -632,6 +633,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("view_layout")
         self._view_layout = layout
+        self._frozen_ax_bboxes = None
         self._redraw()
         self._notify_views_callback()
 
@@ -688,6 +690,29 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_double_click_callback(self, cb):
         """Register a callback to pop out the clicked view on double-click."""
         self._double_click_callback = cb
+
+    def set_cmap_for_current_views(self, cmap_name: str):
+        """Update colormap on all currently displayed images without a full redraw.
+
+        This avoids triggering ``tight_layout`` (which can drift on repeated
+        calls) and preserves zoom / profile / molecule state.
+        """
+        if not cmap_name or not self.fig or not self.fig.axes:
+            return
+        changed = False
+        for ax in self.fig.axes:
+            for child in ax.get_children():
+                if hasattr(child, "get_cmap") and hasattr(child, "set_cmap"):
+                    try:
+                        child.set_cmap(cmap_name)
+                        changed = True
+                    except Exception:
+                        pass
+        if changed:
+            try:
+                self.draw_idle()
+            except Exception:
+                pass
 
     def set_filter_menu_callback(self, cb):
         """Provide a callback to populate filter actions on the context menu."""
@@ -1278,8 +1303,16 @@ class MultiPreviewCanvas(FigureCanvas):
     def _reflow_after_resize(self):
         try:
             if getattr(self, "views", None):
-                scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
-                self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+                self._apply_tight_layout_safe(pad=0.25)
+                # Freeze the exact pixel-perfect bboxes produced by the resize
+                # pass so subsequent _redraw() calls can skip tight_layout
+                # drift entirely.
+                try:
+                    self._frozen_ax_bboxes = [
+                        ax.get_position() for ax in self.fig.axes
+                    ]
+                except Exception:
+                    self._frozen_ax_bboxes = None
                 self.draw_idle()
         except Exception:
             pass
@@ -1496,6 +1529,21 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_tight_layout_safe(pad=0.25)
         self._apply_view_theme()
         self._apply_view_font_scale()
+        # Clamp every axis to the bbox frozen after the last window resize.
+        # This guarantees the layout stays pixel-identical no matter how many
+        # times _redraw() is called (colormap change, display toggles, …).
+        if self._frozen_ax_bboxes is not None:
+            if len(self._frozen_ax_bboxes) != len(self.fig.axes):
+                self._frozen_ax_bboxes = None
+            else:
+                try:
+                    for ax, bbox in zip(self.fig.axes, self._frozen_ax_bboxes):
+                        try:
+                            ax.set_position(bbox)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         profile_restored = False
         if isinstance(profile_state, dict):
             try:
