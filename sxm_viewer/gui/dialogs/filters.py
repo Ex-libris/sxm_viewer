@@ -255,6 +255,15 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_abs_cb.setChecked(bool(self._initial_params.get("absolute", FILTER_DEFINITIONS.get("laplacian", {}).get("default_absolute", True))))
         self.lap_abs_label = QtWidgets.QLabel("Laplace output")
         form.addRow(self.lap_abs_label, self.lap_abs_cb)
+
+        self.epsilon_spin = QtWidgets.QDoubleSpinBox()
+        self.epsilon_spin.setDecimals(5)
+        self.epsilon_spin.setRange(1e-5, 1e-1)
+        self.epsilon_spin.setSingleStep(1e-4)
+        self.epsilon_spin.setValue(float(self._initial_params.get("epsilon", FILTER_DEFINITIONS.get("log", {}).get("default_epsilon", 1e-3))))
+        self.epsilon_label = QtWidgets.QLabel("Log compression")
+        form.addRow(self.epsilon_label, self.epsilon_spin)
+
         body.addWidget(controls, 1)
 
         if self._show_dialog_preview:
@@ -292,6 +301,7 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_sigma_spin.valueChanged.connect(self._schedule_preview_update)
         self.lap_neighbors_combo.currentIndexChanged.connect(self._schedule_preview_update)
         self.lap_abs_cb.toggled.connect(self._schedule_preview_update)
+        self.epsilon_spin.valueChanged.connect(self._schedule_preview_update)
 
         self._on_filter_selection_changed()
         self._schedule_preview_update()
@@ -308,6 +318,7 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self._set_param_row_visible(self.lap_sigma_label, self.lap_sigma_spin, show_lap)
         self._set_param_row_visible(self.lap_neighbors_label, self.lap_neighbors_combo, show_lap)
         self._set_param_row_visible(self.lap_abs_label, self.lap_abs_cb, show_lap)
+        self._set_param_row_visible(self.epsilon_label, self.epsilon_spin, key == "log")
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
@@ -326,6 +337,8 @@ class SingleFilterDialog(QtWidgets.QDialog):
             params["sigma"] = float(self.lap_sigma_spin.value())
             params["neighbors"] = int(self.lap_neighbors_combo.currentData() or 8)
             params["absolute"] = bool(self.lap_abs_cb.isChecked())
+        elif self.filter_key == "log":
+            params["epsilon"] = float(self.epsilon_spin.value())
         return {"key": self.filter_key, "params": params}
 
     def current_step_label(self):
@@ -341,6 +354,8 @@ class SingleFilterDialog(QtWidgets.QDialog):
             )
         if step["key"] == "flatten" and params.get("axis"):
             return f"{label} ({params['axis']})"
+        if step["key"] == "log" and params.get("epsilon") is not None:
+            return f"{label} (epsilon={float(params['epsilon']):.2e})"
         return label
 
     def _update_preview(self):

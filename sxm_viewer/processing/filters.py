@@ -111,19 +111,24 @@ def laplacian_filter_image(img, sigma=0.0, neighbors=8, absolute=True):
     return out
 
 
-def log_filter_image(img, epsilon=1e-12):
+def log_filter_image(img, epsilon=1e-3):
     """
     Apply log10 transform to compress dynamic range.
 
     Shifts data to positive (subtracts the minimum), then applies
-    log10 with a small epsilon floor to avoid log(0).
+    log10 with an epsilon floor relative to the data range to avoid
+    log(0).  The ``epsilon`` parameter is interpreted as a **fraction**
+    of ``max - min``, with an absolute floor of 1e-12.
 
     Parameters
     ----------
     img : ndarray
         Input image.
     epsilon : float
-        Small value added before log to avoid log(0).
+        Fraction of the data range added as offset before log10.
+        Default 1e-3 (0.1% of range) gives meaningful contrast for
+        SPM signals that span several orders of magnitude.
+        Use smaller values (e.g. 1e-5) for stronger compression.
 
     Returns
     -------
@@ -131,8 +136,11 @@ def log_filter_image(img, epsilon=1e-12):
         Log10-transformed image.
     """
     arr = np.asarray(img, dtype=float)
-    arr = arr - np.nanmin(arr)
-    return np.log10(np.maximum(arr, epsilon) + epsilon)
+    arr_min = np.nanmin(arr)
+    arr = arr - arr_min
+    data_range = np.nanmax(arr) - np.nanmin(arr)
+    effective_eps = max(1e-12, float(epsilon) * float(data_range))
+    return np.log10(np.maximum(arr, effective_eps) + effective_eps)
 
 
 FILTER_DEFINITIONS = {
@@ -151,7 +159,7 @@ FILTER_DEFINITIONS = {
     'log': {
         'label': 'Logarithmic (dynamic range)',
         'needs_gaussian': False,
-        'default_epsilon': 1e-12,
+        'default_epsilon': 1e-3,
     },
 }
 
