@@ -1435,12 +1435,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
         self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
-        self.preview_canvas.set_double_click_callback(
-            lambda v=None: self._spawn_preview_popup(
-                [self._copy_view_for_popup(v)] if v else [],
-                title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
-            )
-        )
+        # Double-click popup disabled — opens redundant windows when preview is already visible
+        # self.preview_canvas.set_double_click_callback(
+        #     lambda v=None: self._spawn_preview_popup(
+        #         [self._copy_view_for_popup(v)] if v else [],
+        #         title=self._friendly_view_title(v, default="Preview copy") if v else "Preview copy",
+        #     )
+        # )
         self.preview_canvas.set_filter_menu_callback(
             lambda menu, view, c=self.preview_canvas: self._populate_canvas_filter_menu(menu, c, view)
         )
@@ -5132,6 +5133,7 @@ QLabel:hover {{
         views = list(getattr(canvas, "views", None) or [])
         if not views:
             return 0
+        allow_new_keys = bool(getattr(canvas, "_allow_cmap_sync_new_keys", False))
         changed = {}
         for view in views:
             try:
@@ -5143,9 +5145,18 @@ QLabel:hover {{
             if not file_key or not cmap_name:
                 continue
             key = (file_key, channel_idx)
-            if self.per_file_channel_cmap.get(key) != cmap_name:
+            current_cmap = self.per_file_channel_cmap.get(key)
+            if current_cmap is None and not allow_new_keys:
+                # Avoid creating new per-file cmap overrides during generic
+                # canvas/view callbacks (selection, display toggles, etc.).
+                continue
+            if current_cmap != cmap_name:
                 self.per_file_channel_cmap[key] = cmap_name
                 changed[key] = cmap_name
+        try:
+            setattr(canvas, "_allow_cmap_sync_new_keys", False)
+        except Exception:
+            pass
         if not changed:
             return 0
         changed_paths = {file_key for (file_key, _idx) in changed.keys()}
@@ -5287,7 +5298,7 @@ QLabel:hover {{
             self._schedule_thumbnail_render_state_refresh(changed_paths)
         return changed
 
-    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None):
+    def _set_thumbnail_entry_cmap(self, paths, cmap_name=None, skip_preview_redraw=False):
         targets = [str(Path(p)) for p in list(paths or []) if p]
         if not targets:
             return 0
@@ -5334,7 +5345,7 @@ QLabel:hover {{
             except Exception:
                 pass
             try:
-                if self.last_preview:
+                if not skip_preview_redraw and self.last_preview:
                     preview_key, preview_idx = self.last_preview
                     if str(preview_key) in targets:
                         self.show_file_channel(preview_key, preview_idx, use_local_cmap=True)
