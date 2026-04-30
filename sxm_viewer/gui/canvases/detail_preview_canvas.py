@@ -700,6 +700,16 @@ class MultiPreviewCanvas(FigureCanvas):
         if not cmap_name or not self.fig or not self.fig.axes:
             return
         changed = False
+        cmap_name = str(cmap_name)
+        # Keep the model in sync with artist recoloring so later callbacks
+        # (_sync_view_cmaps_from_canvas) do not write stale cmap values back.
+        for view in list(getattr(self, "views", None) or []):
+            try:
+                if str(view.get("cmap") or "") != cmap_name:
+                    view["cmap"] = cmap_name
+                    changed = True
+            except Exception:
+                continue
         for ax in self.fig.axes:
             for child in ax.get_children():
                 if hasattr(child, "get_cmap") and hasattr(child, "set_cmap"):
