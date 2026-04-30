@@ -6645,6 +6645,12 @@ class MultiPreviewCanvas(FigureCanvas):
         for current_view in targets:
             current_view["cmap"] = cmap_name
             changed = True
+        # Mark cmap sync as explicit user intent so the owner can persist
+        # a new per-file override key from this action.
+        try:
+            self._allow_cmap_sync_new_keys = True
+        except Exception:
+            pass
         self._redraw()
         if notify:
             self._notify_views_callback()

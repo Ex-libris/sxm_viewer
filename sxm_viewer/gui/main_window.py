@@ -5133,6 +5133,7 @@ QLabel:hover {{
         views = list(getattr(canvas, "views", None) or [])
         if not views:
             return 0
+        allow_new_keys = bool(getattr(canvas, "_allow_cmap_sync_new_keys", False))
         changed = {}
         for view in views:
             try:
@@ -5144,9 +5145,18 @@ QLabel:hover {{
             if not file_key or not cmap_name:
                 continue
             key = (file_key, channel_idx)
-            if self.per_file_channel_cmap.get(key) != cmap_name:
+            current_cmap = self.per_file_channel_cmap.get(key)
+            if current_cmap is None and not allow_new_keys:
+                # Avoid creating new per-file cmap overrides during generic
+                # canvas/view callbacks (selection, display toggles, etc.).
+                continue
+            if current_cmap != cmap_name:
                 self.per_file_channel_cmap[key] = cmap_name
                 changed[key] = cmap_name
+        try:
+            setattr(canvas, "_allow_cmap_sync_new_keys", False)
+        except Exception:
+            pass
         if not changed:
             return 0
         changed_paths = {file_key for (file_key, _idx) in changed.keys()}
