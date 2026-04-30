@@ -49,9 +49,13 @@ from ..processing.filters import (
     flatten_remove_median,
     subtract_best_fit_plane,
     subtract_2nd_order_plane,
+    line_flatten_image,
     gaussian_filter_image,
     highpass_filter,
     laplacian_filter_image,
+    log_filter_image,
+    histogram_equalize_image,
+    clahe_filter_image,
     FILTER_DEFINITIONS,
     _gaussian_available,
     _filter_signature,
@@ -6458,6 +6462,7 @@ QLabel:hover {{
                 nv["arr"] = np.array(base, copy=True) if base is not None else nv.get("arr")
                 nv.pop("filter_steps", None)
                 nv.pop("filter_label", None)
+                nv.pop("clim", None)  # drop stale clim from filtered data
             else:
                 nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
                 nv["filter_steps"] = copy.deepcopy(steps)
@@ -6741,6 +6746,19 @@ QLabel:hover {{
                 neighbors = params.get('neighbors', FILTER_DEFINITIONS.get('laplacian', {}).get('default_neighbors', 8))
                 absolute = params.get('absolute', FILTER_DEFINITIONS.get('laplacian', {}).get('default_absolute', True))
                 return laplacian_filter_image(arr, sigma=sigma, neighbors=neighbors, absolute=absolute)
+            if key == 'log':
+                epsilon = params.get('epsilon', FILTER_DEFINITIONS.get('log', {}).get('default_epsilon', 1e-3))
+                return log_filter_image(arr, epsilon=epsilon)
+            if key == 'histeq':
+                return histogram_equalize_image(arr)
+            if key == 'clahe':
+                clip_limit = params.get('clip_limit', FILTER_DEFINITIONS.get('clahe', {}).get('default_clip_limit', 0.03))
+                tile_size = params.get('tile_size', FILTER_DEFINITIONS.get('clahe', {}).get('default_tile_size', 8))
+                return clahe_filter_image(arr, clip_limit=clip_limit, tile_size=tile_size)
+            if key == 'line_flatten':
+                axis = params.get('axis', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_axis', 'row'))
+                method = params.get('method', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_method', 'median'))
+                return line_flatten_image(arr, axis=axis, method=method)
         except Exception:
             pass
         return arr
@@ -8575,6 +8593,18 @@ QLabel:hover {{
         if changed:
             self._invalidate_thumbnail_cache(path_keys)
             self._invalidate_filtered_cache(path_keys)
+            # Clear stored clim overrides for affected files so that
+            # _resolve_preview_clim falls back to _auto_preview_clim
+            # instead of returning a clim that was computed for the
+            # now-removed filter.
+            clim_map = getattr(self, "per_file_channel_clim", None) or {}
+            for clim_key in list(clim_map.keys()):
+                try:
+                    file_key = str(clim_key[0]) if isinstance(clim_key, tuple) else ""
+                except Exception:
+                    continue
+                if file_key in path_keys:
+                    clim_map.pop(clim_key, None)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             if self.last_preview and str(self.last_preview[0]) in path_keys:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])

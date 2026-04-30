@@ -3,6 +3,7 @@ matplotlib>=3.8.2,<4.0
 PyQt5>=5.15.11,<5.16
 scipy>=1.11.4,<2.0
 opencv-python>=4.8.1.78,<5.0
+scikit-image>=0.24.0,<1.0
 pywin32>=306; platform_system == "Windows"
 # For loading .env automatically in the launcher
 python-dotenv==1.0.1

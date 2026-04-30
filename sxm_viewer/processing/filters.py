@@ -1,4 +1,11 @@
-"""Image filtering helpers used throughout the viewer."""
+"""Image filtering helpers used throughout the viewer.
+
+Provides: flatten (row/col median), tilt (plane subtraction),
+2nd-order plane, line-by-line flatten (per-line median/mean/poly),
+Gaussian low/high-pass, Laplacian edge detection,
+logarithmic dynamic-range compression, histogram equalisation,
+and CLAHE (Contrast Limited Adaptive Histogram Equalization).
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -36,6 +43,77 @@ def subtract_2nd_order_plane(img):
     plane = (C[0]*x**2 + C[1]*y**2 + C[2]*x*y + C[3]*x + C[4]*y + C[5])
     return arr - plane
 
+
+def line_flatten_image(img, axis='row', method='median'):
+    """
+    Line-by-line background removal for SPM stripe artifacts.
+
+    Subtracts a per-line statistic or polynomial fit to remove the
+    DC offset, tilt, or curvature that varies from one scan line to
+    the next.  This is the standard fix for 1/f-noise "sawtooth"
+    artifacts in STM/AFM images.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input 2-D image.
+    axis : str
+        'row' — process horizontal scan lines (default for STM).
+        'col' — process vertical columns.
+        'both' — process rows then columns.
+    method : str
+        'median' — subtract per-line median (robust, default).
+        'mean'   — subtract per-line arithmetic mean.
+        'poly1'  — subtract per-line 1st-order polynomial fit.
+        'poly2'  — subtract per-line 2nd-order polynomial fit.
+
+    Returns
+    -------
+    ndarray
+        Flattened image with the same shape as input.
+    """
+    arr = np.asarray(img, dtype=float).copy()
+    methods = ('median', 'mean', 'poly1', 'poly2')
+
+    def _process_one_axis(data, ax):
+        out = data.copy()
+        n = data.shape[ax]
+        x = np.arange(data.shape[1 - ax], dtype=float)
+        for i in range(n):
+            line = (out[i, :] if ax == 0 else out[:, i])
+            valid = line[~np.isnan(line)]
+            if len(valid) == 0:
+                continue
+            m = str(method).lower()
+            if m == 'median':
+                offset = np.nanmedian(line)
+            elif m == 'mean':
+                offset = np.nanmean(line)
+            elif m in ('poly1', 'poly2'):
+                mask = ~np.isnan(line)
+                if mask.sum() < (2 if m == 'poly1' else 3):
+                    offset = np.nanmedian(line)
+                else:
+                    deg = 1 if m == 'poly1' else 2
+                    coeffs = np.polyfit(x[mask], line[mask], deg)
+                    offset = np.polyval(coeffs, x)
+                    offset[~mask] = 0
+            else:
+                raise ValueError(f"Unknown method: {m!r}, expected one of {methods}")
+            if ax == 0:
+                out[i, :] = line - offset
+            else:
+                out[:, i] = line - offset
+        return out
+
+    axis = str(axis).lower()
+    if axis in ('row', 'both'):
+        arr = _process_one_axis(arr, 0)
+    if axis in ('col', 'both'):
+        arr = _process_one_axis(arr, 1)
+    return arr
+
+
 try:
     from scipy.ndimage import gaussian_filter as _scipy_gaussian
     _GAUSS_BACKEND = 'scipy'
@@ -45,6 +123,12 @@ except Exception:
         _GAUSS_BACKEND = 'cv2'
     except Exception:
         _GAUSS_BACKEND = None
+
+try:
+    from skimage.exposure import equalize_adapthist as _sk_equalize_adapthist
+    _SKIMAGE_AVAILABLE = True
+except Exception:
+    _SKIMAGE_AVAILABLE = False
 
 def gaussian_filter_image(img, sigma):
     """Gaussian blur using scipy/cv2 fallback."""
@@ -110,10 +194,130 @@ def laplacian_filter_image(img, sigma=0.0, neighbors=8, absolute=True):
         out = np.abs(out)
     return out
 
+
+def log_filter_image(img, epsilon=1e-3):
+    """
+    Apply log10 transform to compress dynamic range.
+
+    Shifts data to positive (subtracts the minimum), then applies
+    log10 with an epsilon floor relative to the data range to avoid
+    log(0).  The ``epsilon`` parameter is interpreted as a **fraction**
+    of ``max - min``, with an absolute floor of 1e-12.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image.
+    epsilon : float
+        Fraction of the data range added as offset before log10.
+        Default 1e-3 (0.1% of range) gives meaningful contrast for
+        SPM signals that span several orders of magnitude.
+        Use smaller values (e.g. 1e-5) for stronger compression.
+
+    Returns
+    -------
+    ndarray
+        Log10-transformed image.
+    """
+    arr = np.asarray(img, dtype=float)
+    arr_min = np.nanmin(arr)
+    arr = arr - arr_min
+    data_range = np.nanmax(arr) - np.nanmin(arr)
+    effective_eps = max(1e-12, float(epsilon) * float(data_range))
+    return np.log10(arr + effective_eps)
+
+
+def clahe_filter_image(img, clip_limit=0.03, tile_size=8):
+    """
+    Apply Contrast Limited Adaptive Histogram Equalization (CLAHE).
+
+    Enhances local contrast by equalizing the histogram in small tiles
+    and blending the results using bilinear interpolation.  The
+    ``clip_limit`` controls how much contrast amplification is allowed
+    (lower values reduce noise amplification).  ``tile_size`` sets the
+    size of each local tile in pixels.
+
+    Requires scikit-image.  Falls back to returning the input image
+    unchanged when the library is not installed.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input floating-point image.
+    clip_limit : float
+        Clipping limit for contrast limiting (0.001 - 0.5).
+        Default 0.03.
+    tile_size : int
+        Size of the local tile grid.  Common values: 4, 8, 16, 32.
+        Default 8.
+
+    Returns
+    -------
+    ndarray
+        CLAHE-equalized image with same shape and value range as input.
+    """
+    arr = np.asarray(img, dtype=float)
+    if not _SKIMAGE_AVAILABLE:
+        raise RuntimeError(
+            "CLAHE filter requires scikit-image (pip install scikit-image)"
+        )
+    # Normalise to [0,1] for skimage
+    valid = arr[~np.isnan(arr)]
+    if len(valid) < 2:
+        return arr
+    lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+    rng = hi - lo
+    if rng <= 0:
+        return arr
+    norm = (arr - lo) / rng
+    # Apply CLAHE
+    clip_limit = max(0.001, min(0.5, float(clip_limit)))
+    tile_size = int(tile_size)
+    if tile_size < 2:
+        tile_size = 8
+    equalized = _sk_equalize_adapthist(
+        norm, kernel_size=int(tile_size), clip_limit=clip_limit, nbins=256
+    )
+    return equalized * rng + lo
+
+
+def histogram_equalize_image(img):
+    """
+    Apply histogram equalization for maximum contrast.
+
+    Maps pixel intensities so the output histogram is approximately
+    flat (uniform), spreading all intensity levels evenly across
+    the available range.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image.
+
+    Returns
+    -------
+    ndarray
+        Equalized image in [0, 1] range.
+    """
+    arr = np.asarray(img, dtype=float)
+    valid = arr[~np.isnan(arr)]
+    if len(valid) < 2:
+        return arr
+    sorted_valid = np.sort(valid)
+    out = np.interp(arr, sorted_valid, np.linspace(0, 1, len(sorted_valid)))
+    return out
+
+
 FILTER_DEFINITIONS = {
     'flatten': {'label': 'Flatten (row/col median)', 'needs_gaussian': False},
     'tilt': {'label': 'Tilt correction (plane)', 'needs_gaussian': False},
     'plane2': {'label': 'Global plane fit (2nd order)', 'needs_gaussian': False},
+    'line_flatten': {
+        'label': 'Line-by-line flatten',
+        'needs_gaussian': False,
+        'default_axis': 'row',
+        'default_method': 'median',
+    },
     'highpass': {'label': 'High-pass (Gaussian)', 'needs_gaussian': True, 'default_sigma': 2.0},
     'lowpass': {'label': 'Low-pass (Gaussian)', 'needs_gaussian': True, 'default_sigma': 2.0},
     'laplacian': {
@@ -122,6 +326,21 @@ FILTER_DEFINITIONS = {
         'default_sigma': 0.6,
         'default_neighbors': 8,
         'default_absolute': True,
+    },
+    'log': {
+        'label': 'Logarithmic (dynamic range)',
+        'needs_gaussian': False,
+        'default_epsilon': 1e-3,
+    },
+    'histeq': {
+        'label': 'Histogram equalization',
+        'needs_gaussian': False,
+    },
+    'clahe': {
+        'label': 'CLAHE (adaptive equalization)',
+        'needs_gaussian': False,
+        'default_clip_limit': 0.03,
+        'default_tile_size': 8,
     },
 }
 
@@ -144,9 +363,13 @@ __all__ = [
     "flatten_remove_median",
     "subtract_best_fit_plane",
     "subtract_2nd_order_plane",
+    "line_flatten_image",
     "gaussian_filter_image",
     "highpass_filter",
     "laplacian_filter_image",
+    "log_filter_image",
+    "histogram_equalize_image",
+    "clahe_filter_image",
     "FILTER_DEFINITIONS",
     "_gaussian_available",
     "_filter_signature",

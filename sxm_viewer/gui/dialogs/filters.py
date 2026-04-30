@@ -227,6 +227,18 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.axis_label = QtWidgets.QLabel("Axis")
         form.addRow(self.axis_label, self.axis_combo)
 
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.addItems(["median", "mean", "poly1", "poly2"])
+        method_default = str(self._initial_params.get(
+            "method",
+            FILTER_DEFINITIONS.get(self.filter_key, {}).get("default_method", "median"),
+        ))
+        idx = self.method_combo.findText(method_default)
+        if idx >= 0:
+            self.method_combo.setCurrentIndex(idx)
+        self.method_label = QtWidgets.QLabel("Method")
+        form.addRow(self.method_label, self.method_combo)
+
         self.sigma_spin = QtWidgets.QDoubleSpinBox()
         self.sigma_spin.setDecimals(2)
         self.sigma_spin.setRange(0.05, 50.0)
@@ -255,6 +267,34 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_abs_cb.setChecked(bool(self._initial_params.get("absolute", FILTER_DEFINITIONS.get("laplacian", {}).get("default_absolute", True))))
         self.lap_abs_label = QtWidgets.QLabel("Laplace output")
         form.addRow(self.lap_abs_label, self.lap_abs_cb)
+
+        self.epsilon_spin = QtWidgets.QDoubleSpinBox()
+        self.epsilon_spin.setDecimals(5)
+        self.epsilon_spin.setRange(1e-5, 1e-1)
+        self.epsilon_spin.setSingleStep(1e-4)
+        self.epsilon_spin.setValue(float(self._initial_params.get("epsilon", FILTER_DEFINITIONS.get("log", {}).get("default_epsilon", 1e-3))))
+        self.epsilon_label = QtWidgets.QLabel("Log compression (lower = stronger)")
+        form.addRow(self.epsilon_label, self.epsilon_spin)
+
+        self.clip_limit_spin = QtWidgets.QDoubleSpinBox()
+        self.clip_limit_spin.setDecimals(3)
+        self.clip_limit_spin.setRange(0.001, 0.5)
+        self.clip_limit_spin.setSingleStep(0.01)
+        self.clip_limit_spin.setValue(float(self._initial_params.get("clip_limit", FILTER_DEFINITIONS.get("clahe", {}).get("default_clip_limit", 0.03))))
+        self.clip_limit_label = QtWidgets.QLabel("CLAHE clip limit")
+        form.addRow(self.clip_limit_label, self.clip_limit_spin)
+
+        self.tile_size_combo = QtWidgets.QComboBox()
+        self.tile_size_combo.addItem("4", 4)
+        self.tile_size_combo.addItem("8", 8)
+        self.tile_size_combo.addItem("16", 16)
+        self.tile_size_combo.addItem("32", 32)
+        tile_default = int(self._initial_params.get("tile_size", FILTER_DEFINITIONS.get("clahe", {}).get("default_tile_size", 8)))
+        tile_index = max(0, [4, 8, 16, 32].index(tile_default) if tile_default in [4, 8, 16, 32] else 1)
+        self.tile_size_combo.setCurrentIndex(tile_index)
+        self.tile_size_label = QtWidgets.QLabel("CLAHE tile size")
+        form.addRow(self.tile_size_label, self.tile_size_combo)
+
         body.addWidget(controls, 1)
 
         if self._show_dialog_preview:
@@ -292,6 +332,10 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.lap_sigma_spin.valueChanged.connect(self._schedule_preview_update)
         self.lap_neighbors_combo.currentIndexChanged.connect(self._schedule_preview_update)
         self.lap_abs_cb.toggled.connect(self._schedule_preview_update)
+        self.epsilon_spin.valueChanged.connect(self._schedule_preview_update)
+        self.clip_limit_spin.valueChanged.connect(self._schedule_preview_update)
+        self.tile_size_combo.currentIndexChanged.connect(self._schedule_preview_update)
+        self.method_combo.currentIndexChanged.connect(self._schedule_preview_update)
 
         self._on_filter_selection_changed()
         self._schedule_preview_update()
@@ -302,12 +346,18 @@ class SingleFilterDialog(QtWidgets.QDialog):
 
     def _on_filter_selection_changed(self):
         key = self.filter_key
-        self._set_param_row_visible(self.axis_label, self.axis_combo, key == "flatten")
+        self._set_param_row_visible(self.axis_label, self.axis_combo, key in ("flatten", "line_flatten"))
         self._set_param_row_visible(self.sigma_label, self.sigma_spin, key in ("highpass", "lowpass"))
         show_lap = key == "laplacian"
         self._set_param_row_visible(self.lap_sigma_label, self.lap_sigma_spin, show_lap)
         self._set_param_row_visible(self.lap_neighbors_label, self.lap_neighbors_combo, show_lap)
         self._set_param_row_visible(self.lap_abs_label, self.lap_abs_cb, show_lap)
+        self._set_param_row_visible(self.epsilon_label, self.epsilon_spin, key == "log")
+        show_clahe = key == "clahe"
+        self._set_param_row_visible(self.clip_limit_label, self.clip_limit_spin, show_clahe)
+        self._set_param_row_visible(self.tile_size_label, self.tile_size_combo, show_clahe)
+        show_line_flatten = key == "line_flatten"
+        self._set_param_row_visible(self.method_label, self.method_combo, show_line_flatten)
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
@@ -326,6 +376,14 @@ class SingleFilterDialog(QtWidgets.QDialog):
             params["sigma"] = float(self.lap_sigma_spin.value())
             params["neighbors"] = int(self.lap_neighbors_combo.currentData() or 8)
             params["absolute"] = bool(self.lap_abs_cb.isChecked())
+        elif self.filter_key == "log":
+            params["epsilon"] = float(self.epsilon_spin.value())
+        elif self.filter_key == "clahe":
+            params["clip_limit"] = float(self.clip_limit_spin.value())
+            params["tile_size"] = int(self.tile_size_combo.currentData() or 8)
+        elif self.filter_key == "line_flatten":
+            params["axis"] = self.axis_combo.currentText()
+            params["method"] = self.method_combo.currentText()
         return {"key": self.filter_key, "params": params}
 
     def current_step_label(self):
@@ -341,6 +399,18 @@ class SingleFilterDialog(QtWidgets.QDialog):
             )
         if step["key"] == "flatten" and params.get("axis"):
             return f"{label} ({params['axis']})"
+        if step["key"] == "line_flatten":
+            return (
+                f"{label} ({params.get('axis', 'row')}, "
+                f"{params.get('method', 'median')})"
+            )
+        if step["key"] == "log" and params.get("epsilon") is not None:
+            return f"{label} (epsilon={float(params['epsilon']):.2e})"
+        if step["key"] == "clahe":
+            return (
+                f"{label} (clip={float(params.get('clip_limit', 0.03)):.3f}, "
+                f"tile={int(params.get('tile_size', 8))})"
+            )
         return label
 
     def _update_preview(self):
