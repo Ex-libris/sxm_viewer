@@ -41,23 +41,30 @@ def _sample_channel_values_for_tagging(file_key, header, fd, sample_count=CH_SAM
     except Exception:
         ypix = xpix
     expected = xpix * ypix
-    dtype = _detect_dtype_for_file(bin_path, expected)
-    if dtype is None:
-        dtype = np.float32
+    if bin_path.suffix.lower() == ".npy":
+        try:
+            mem = np.load(bin_path, mmap_mode='r', allow_pickle=False)
+        except Exception:
+            return None
+    else:
+        dtype = _detect_dtype_for_file(bin_path, expected)
+        if dtype is None:
+            dtype = np.float32
+        try:
+            mem = np.memmap(bin_path, dtype=np.dtype(dtype), mode='r')
+        except Exception:
+            return None
     try:
-        mem = np.memmap(bin_path, dtype=np.dtype(dtype), mode='r')
-    except Exception:
-        return None
-    try:
-        total = int(mem.size)
+        flat = mem.reshape(-1)
+        total = int(flat.size)
         if total <= 0:
             return None
         count = max(1, min(sample_count, total))
         if total <= count:
-            samples = np.asarray(mem[:total], dtype=float)
+            samples = np.asarray(flat[:total], dtype=float)
         else:
             idx = np.linspace(0, total - 1, count, dtype=np.int64)
-            samples = np.asarray(mem[idx], dtype=float)
+            samples = np.asarray(flat[idx], dtype=float)
     finally:
         try:
             del mem

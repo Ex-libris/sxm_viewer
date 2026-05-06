@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - python <3.5 not supported, safeguard o
 
 
 NANONIS_CACHE_DIRNAME = ".sxmviewer_nanonis"
-NANONIS_CACHE_VERSION = 2
+NANONIS_CACHE_VERSION = 3
 _NANONIS_READ = None
 _IMPORT_ERROR = None
 
@@ -231,15 +231,14 @@ def _extract_scan_channels(scan, cache_dir: Path) -> List[ChannelExport]:
                 continue
             if needs_calibration:
                 arr = arr * scale + offset
+            # Store converted channels as native float32 arrays to avoid the
+            # expensive ASCII round-trip on subsequent viewer loads.
+            arr = np.asarray(arr, dtype=np.float32)
             safe_channel = _safe_token(name)
             suffix = "fwd" if dir_key == "forward" else "bwd"
-            data_name = f"{scan.basename}_{safe_channel}_{suffix}.dat"
+            data_name = f"{scan.basename}_{safe_channel}_{suffix}.npy"
             data_path = cache_dir / data_name
-            try:
-                with open(data_path, "w", encoding="utf-8", newline="\n") as fh:
-                    np.savetxt(fh, arr, fmt="%.9e")
-            except UnicodeEncodeError:
-                np.savetxt(data_path, arr, fmt="%.9e")
+            np.save(data_path, arr, allow_pickle=False)
             caption_dir = "Forward" if dir_key == "forward" else "Backward"
             caption = _pretty_caption(name, caption_dir)
             exports.append(

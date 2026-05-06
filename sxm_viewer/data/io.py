@@ -151,19 +151,25 @@ def read_channel_file(
     """
     Read a channel file as a 2D NumPy array.
 
-    The SXM controller stores data either as ASCII grids (tab separated) or as
-    binary little-endian floats.  We try a lightweight cascade:
+    The SXM controller stores data either as ASCII grids (tab separated),
+    NumPy cache files, or binary little-endian floats.  We try a lightweight
+    cascade:
 
-    1. Attempt to load via ``np.loadtxt`` (handles ASCII tables quickly).
-    2. Fallback to ``np.fromfile`` assuming ``float32`` then ``float64``.
-    3. Parse whitespace-delimited tokens manually as a last resort.
+    1. Load ``.npy`` cache files directly when present.
+    2. Attempt to load via ``np.loadtxt`` (handles ASCII tables quickly).
+    3. Fallback to ``np.fromfile`` assuming ``float32`` then ``float64``.
+    4. Parse whitespace-delimited tokens manually as a last resort.
 
     The viewer expects values scaled/offset in the same way as the controller,
     so we apply both parameters regardless of the data type.
     """
     target_count = int(xpix) * int(ypix)
     path = Path(path)
-    arr = _load_ascii_grid(path, target_count)
+    arr = None
+    if path.suffix.lower() == ".npy":
+        arr = _load_numpy_grid(path)
+    if arr is None:
+        arr = _load_ascii_grid(path, target_count)
     if arr is None:
         arr = _load_binary_with_inference(path, target_count)
     if arr is None:
@@ -306,6 +312,20 @@ def _load_ascii_grid(path: Path, count: int) -> Optional[np.ndarray]:
     if data.size == 0:
         return None
     return data.reshape(-1)
+
+
+def _load_numpy_grid(path: Path) -> Optional[np.ndarray]:
+    try:
+        data = np.load(path, allow_pickle=False)
+    except Exception:
+        return None
+    try:
+        arr = np.asarray(data, dtype=float)
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    return arr.reshape(-1)
 
 
 def _load_binary_grid(path: Path, count: int, dtype) -> Optional[np.ndarray]:
