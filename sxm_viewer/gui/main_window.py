@@ -60,7 +60,7 @@ from ..processing.filters import (
     _gaussian_available,
     _filter_signature,
 )
-from ..processing.detection import _find_topography_channel, _sample_channel_values_for_tagging
+from ..processing.detection import _find_topography_channel
 from ..utils.units import (
     _NUMERIC_RE,
     _UNIT_DISPLAY_CHOICES,
@@ -114,6 +114,7 @@ from .system_open import add_source_file_menu
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
+AUTO_TAG_CACHE_VERSION = 1
 VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
 
@@ -4474,6 +4475,46 @@ QLabel:hover {{
             prange = float(np.nanmax(arr) - np.nanmin(arr))
             return {'tag': 'constant-current', 'rng_nm': prange, 'median_nm': median}
 
+    def _auto_tag_cache_signature(self, file_key: str, topo_idx: int, fd: dict) -> dict:
+        try:
+            header_mtime = float(Path(file_key).stat().st_mtime)
+        except Exception:
+            header_mtime = 0.0
+        file_name = str(fd.get("FileName") or "")
+        data_path = Path(file_key).parent / file_name if file_name else None
+        try:
+            data_mtime = float(data_path.stat().st_mtime) if data_path is not None else 0.0
+        except Exception:
+            data_mtime = 0.0
+        return {
+            "version": AUTO_TAG_CACHE_VERSION,
+            "header_mtime": header_mtime,
+            "data_mtime": data_mtime,
+            "topo_idx": int(topo_idx),
+            "file_name": file_name,
+        }
+
+    def _auto_tag_cache_matches(self, info: dict, signature: dict) -> bool:
+        if not isinstance(info, dict):
+            return False
+        cached = info.get("cache")
+        if not isinstance(cached, dict):
+            return False
+        if int(cached.get("version", -1)) != int(signature.get("version", -2)):
+            return False
+        if str(cached.get("file_name") or "") != str(signature.get("file_name") or ""):
+            return False
+        if int(cached.get("topo_idx", -1)) != int(signature.get("topo_idx", -2)):
+            return False
+        try:
+            if abs(float(cached.get("header_mtime", 0.0)) - float(signature.get("header_mtime", 0.0))) > 1e-6:
+                return False
+            if abs(float(cached.get("data_mtime", 0.0)) - float(signature.get("data_mtime", 0.0))) > 1e-6:
+                return False
+        except Exception:
+            return False
+        return True
+
     def _auto_preview_clim(self, arr, *, relative_zero: bool = False):
         """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
         try:
@@ -4849,6 +4890,7 @@ QLabel:hover {{
 
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
+        changed = False
         for p in self.files:
             key = str(p)
             tag_info = self.tags.get(key, {})
@@ -4865,6 +4907,9 @@ QLabel:hover {{
                 continue
 
             fd = fds[topo_idx]
+            signature = self._auto_tag_cache_signature(key, topo_idx, fd)
+            if self._auto_tag_cache_matches(tag_info, signature):
+                continue
             try:
                 raw_arr = self._get_channel_array(key, topo_idx, hdr, fd)
             except Exception:
@@ -4873,14 +4918,21 @@ QLabel:hover {{
             tag_info = self._classify_topography_values(arr_nm)
             if not tag_info:
                 continue
-            info = {'tag': tag_info['tag'], 'auto': True, 'rng_nm': tag_info.get('rng_nm')}
+            info = {
+                'tag': tag_info['tag'],
+                'auto': True,
+                'rng_nm': tag_info.get('rng_nm'),
+                'cache': signature,
+            }
             if tag_info['tag'] == 'constant-height':
                 info['abs_z_pm'] = tag_info.get('abs_pm')
             self.tags[key] = info
+            changed = True
 
         # persist tags after the initial auto pass
-        self.config['tags'] = self.tags
-        save_config(self.config)
+        if changed:
+            self.config['tags'] = self.tags
+            save_config(self.config)
 
     # ---------- thumbnails population with badge overlay ----------
     def clear_thumbs(self):
