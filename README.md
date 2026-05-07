@@ -1,4 +1,4 @@
-## 2026-05-07 UPDATES (talking with Kelvin's group)
+### 2026-05-07 UPDATES (talking with Kelvin's group)
 Nanonis support has been updated with a focus on faster scan loading and reloads:
 
 - converted `.sxm` channel caches now use binary NumPy `.npy` files instead of ASCII text exports
