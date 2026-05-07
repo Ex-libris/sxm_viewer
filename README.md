@@ -1,8 +1,17 @@
+## 2026-05-07 UPDATES (talking with Kelvin's group)
+Nanonis support has been updated with a focus on faster scan loading and reloads:
+
+- converted `.sxm` channel caches now use binary NumPy `.npy` files instead of ASCII text exports
+- this reduces conversion I/O overhead and speeds up subsequent channel reads
+- automatic CH/CC tag detection now reuses cached results when the header and topography source have not changed
+- warm folder reloads therefore avoid unnecessary topography re-reads when auto-tagging is enabled
+
 # SXM Viewer
 
 SXM Viewer is a Python-based desktop application for scientific SPM (Scanning Probe Microscopy) data analysis and visualization, designed for Anfatec/Omicron systems. But also Nanonis. Maybe in the future Matrix. We will see.
 
 ---
+
 
 ## Documentation
 
