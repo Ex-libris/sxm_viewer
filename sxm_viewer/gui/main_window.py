@@ -1007,7 +1007,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
 
-        tag_h = QtWidgets.QHBoxLayout()
+        tag_h = QtWidgets.QGridLayout()
+        tag_h.setContentsMargins(0, 0, 0, 0)
+        tag_h.setHorizontalSpacing(6)
+        tag_h.setVerticalSpacing(4)
         self.tag_ch_btn = QtWidgets.QPushButton("Tag as CH")
         self.tag_cc_btn = QtWidgets.QPushButton("Tag as CC")
         self.untag_btn = QtWidgets.QPushButton("Untag")
@@ -1017,8 +1020,16 @@ class SXMGridViewer(QtWidgets.QWidget):
         
         # Purge config button
         self.purge_config_btn = QtWidgets.QPushButton('Purge config')
-        tag_h.addWidget(self.purge_config_btn)
-        tag_h.addWidget(self.tag_ch_btn); tag_h.addWidget(self.tag_cc_btn); tag_h.addWidget(self.untag_btn); tag_h.addWidget(self.auto_tag_cb)
+        for btn in (self.purge_config_btn, self.tag_ch_btn, self.tag_cc_btn, self.untag_btn):
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        tag_h.addWidget(self.purge_config_btn, 0, 0)
+        tag_h.addWidget(self.tag_ch_btn, 0, 1)
+        tag_h.addWidget(self.tag_cc_btn, 0, 2)
+        tag_h.addWidget(self.untag_btn, 1, 0)
+        tag_h.addWidget(self.auto_tag_cb, 1, 1, 1, 2)
+        tag_h.setColumnStretch(0, 1)
+        tag_h.setColumnStretch(1, 1)
+        tag_h.setColumnStretch(2, 1)
         left_v.addLayout(tag_h)
 
         # NOTE:

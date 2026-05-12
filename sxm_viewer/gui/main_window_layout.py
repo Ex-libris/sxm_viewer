@@ -98,6 +98,11 @@ def create_lower_controls(viewer):
         mode = viewer.MODE_BROWSE
     viewer._apply_mode(mode, remember=False)
     viewer._apply_lower_control_theme()
+    try:
+        frame.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        frame.setMinimumHeight(frame.sizeHint().height())
+    except Exception:
+        pass
     return frame
 
 
