@@ -168,7 +168,17 @@ def _spectro_relative_key(base_folder: Path | None, filepath: Path) -> str:
 def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict]:
     records = []
     seen = set()
-    valid_exts = {".dat", ".3ds"}
+    valid_exts = {".dat", ".txt", ".3ds"}
+
+    def _is_image_header_txt(path: Path) -> bool:
+        if path.suffix.lower() != ".txt":
+            return False
+        try:
+            _header, fds = parse_header(path)
+        except Exception:
+            return False
+        return bool(fds) and any(str(fd.get("FileName") or "").strip() for fd in fds)
+
     if files:
         for f in files:
             if not f:
@@ -179,6 +189,8 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
                 continue
             suffix = p.suffix.lower()
             if suffix not in valid_exts:
+                continue
+            if suffix == ".txt" and _is_image_header_txt(p):
                 continue
             norm_key = _normalize_spectro_path_key(p)
             if norm_key in seen:
@@ -218,6 +230,8 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
                 if suffix not in valid_exts:
                     continue
                 full_path = Path(entry.path)
+                if suffix == ".txt" and _is_image_header_txt(full_path):
+                    continue
                 norm_key = _normalize_spectro_path_key(full_path)
                 if norm_key in seen:
                     continue
@@ -242,7 +256,7 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
     except Exception:
         try:
             fallback_files = []
-            for pat in ("*.dat", "*.DAT", "*.3ds", "*.3DS"):
+            for pat in ("*.dat", "*.DAT", "*.txt", "*.TXT", "*.3ds", "*.3DS"):
                 fallback_files.extend(folder_path.glob(pat))
             return _discover_spectro_file_records(folder_path, fallback_files)
         except Exception:
@@ -1102,6 +1116,8 @@ def _parse_spectro_file_payload(filepath: Path, mtime: float):
         try:
             spec_list = parse_nanonis_spectroscopy(filepath)
         except Exception:
+            spec_list = None
+        if not spec_list:
             spec_list = None
     elif ext == ".3ds":
         try:

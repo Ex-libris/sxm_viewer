@@ -263,7 +263,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._spectra_points = {}
         self._spectra_click_cb = None
         self._zoom_reset_limits = {}
-        self._frozen_ax_bboxes = None  # cached bboxes after window resize
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by) for the active frame
         self._angle_frames = []
@@ -633,7 +632,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("view_layout")
         self._view_layout = layout
-        self._frozen_ax_bboxes = None
         self._redraw()
         self._notify_views_callback()
 
@@ -1313,7 +1311,8 @@ class MultiPreviewCanvas(FigureCanvas):
     def _reflow_after_resize(self):
         try:
             if getattr(self, "views", None):
-                self._apply_tight_layout_safe(pad=0.25)
+                scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+                self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
                 self.draw_idle()
         except Exception:
             pass
@@ -1533,7 +1532,7 @@ class MultiPreviewCanvas(FigureCanvas):
         # Clamp every axis to the bbox frozen after the last window resize.
         # This guarantees the layout stays pixel-identical no matter how many
         # times _redraw() is called (colormap change, display toggles, …).
-        if self._frozen_ax_bboxes is not None:
+        if False and self._frozen_ax_bboxes is not None:
             if len(self._frozen_ax_bboxes) != len(self.fig.axes):
                 self._frozen_ax_bboxes = None
             else:
