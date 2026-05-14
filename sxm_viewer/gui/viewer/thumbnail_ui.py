@@ -208,11 +208,58 @@ def _spectro_display_channel(viewer, spec):
     available = set(_spectro_available_channels(spec))
     if override and override in available:
         return override
+    preferred = str(spec.get("channel_name") or "").strip()
+    if preferred and preferred in available:
+        return preferred
     default = getattr(viewer, "spectro_miniature_default_channel", "")
     if default and default in available:
         return default
     channels = _spectro_available_channels(spec)
     return channels[0] if channels else ""
+
+
+def _spectro_identity_key(spec):
+    path = str(spec.get("path") or "")
+    matrix_index = spec.get("matrix_index")
+    if matrix_index is not None:
+        return f"{path}#idx:{matrix_index}"
+    x_val = spec.get("x")
+    y_val = spec.get("y")
+    if x_val is not None or y_val is not None:
+        try:
+            return f"{path}#pos:{round(float(x_val), 6)}:{round(float(y_val), 6)}"
+        except Exception:
+            return f"{path}#pos:{x_val}:{y_val}"
+    order_idx = spec.get("order_idx")
+    if order_idx is not None:
+        return f"{path}#order:{order_idx}"
+    return path
+
+
+def _spectro_values_for_channel(spec, channel_name):
+    channel_name = str(channel_name or "").strip()
+    channels_map = spec.get("channels") or {}
+    if channel_name and channel_name in channels_map:
+        try:
+            return np.asarray(channels_map[channel_name], dtype=float)
+        except Exception:
+            pass
+    data_pair = spec.get("data")
+    preferred = str(spec.get("channel_name") or "").strip()
+    if channel_name and preferred and channel_name == preferred and isinstance(data_pair, (list, tuple)) and len(data_pair) >= 2:
+        try:
+            return np.asarray(data_pair[1], dtype=float)
+        except Exception:
+            pass
+    if channels_map:
+        for name, values in channels_map.items():
+            if str(name).strip().lower() == "bias":
+                continue
+            try:
+                return np.asarray(values, dtype=float)
+            except Exception:
+                continue
+    return np.asarray([], dtype=float)
 
 
 def _spectro_entry_time(viewer, spec):
@@ -344,13 +391,21 @@ def _set_thumbnail_selection_by_order(viewer, ordered_keys, start_key, end_key, 
 
 def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=None):
     """Render a compact spectral preview for spectroscopy-only thumbnail cards."""
+    if not (spec.get("channels") or {}) and hasattr(viewer, "hydrate_spectro_entry"):
+        try:
+            viewer.hydrate_spectro_entry(spec)
+        except Exception:
+            pass
+    effective_channel = str(channel_name or "").strip()
+    if not effective_channel:
+        effective_channel = _spectro_display_channel(viewer, spec)
     try:
         cache_key = (
-            str(spec.get("path") or ""),
+            _spectro_identity_key(spec),
             spec.get("file_mtime") or spec.get("time") or "",
             int(width),
             int(height),
-            str(channel_name or ""),
+            effective_channel,
             str(getattr(viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)),
         )
         pix_cache = getattr(viewer, "_spectro_miniature_cache", None)
@@ -359,11 +414,6 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
     except Exception:
         cache_key = None
         pix_cache = None
-    if not (spec.get("channels") or {}) and hasattr(viewer, "hydrate_spectro_entry"):
-        try:
-            viewer.hydrate_spectro_entry(spec)
-        except Exception:
-            pass
     pix = QtGui.QPixmap(max(32, int(width)), max(32, int(height)))
     pix.fill(QtGui.QColor("#0d1220"))
     painter = QtGui.QPainter(pix)
@@ -376,13 +426,18 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
 
         channels_map = spec.get("channels") or {}
         channel_keys = _spectro_available_channels(spec)
-        if channel_name and channel_name in channels_map:
-            channel_keys = [channel_name]
+        if effective_channel and effective_channel in channels_map:
+            channel_keys = [effective_channel]
         elif channel_keys:
-            channel_name = _spectro_display_channel(viewer, spec)
-            if channel_name in channels_map:
-                channel_keys = [channel_name]
-        channels = [(name, channels_map[name]) for name in channel_keys if name in channels_map]
+            if effective_channel in channels_map:
+                channel_keys = [effective_channel]
+        channels = []
+        if effective_channel:
+            selected_values = _spectro_values_for_channel(spec, effective_channel)
+            if selected_values.size:
+                channels = [(effective_channel, selected_values)]
+        if not channels:
+            channels = [(name, channels_map[name]) for name in channel_keys if name in channels_map]
         if not channels:
             painter.setPen(QtGui.QPen(QtGui.QColor(220, 220, 220), 1.0))
             painter.drawText(rect, QtCore.Qt.AlignCenter, "No channels")
@@ -479,8 +534,8 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
             painter.drawPolyline(QtGui.QPolygonF(pts))
 
         footer = axis_label or "Axis"
-        if channel_keys:
-            footer = f"{footer} · {channel_keys[0]}"
+        if channels:
+            footer = f"{footer} · {channels[0][0]}"
         if axis_unit:
             footer = f"{footer} ({axis_unit})"
         painter.setPen(QtGui.QPen(QtGui.QColor(210, 210, 210, 180), 1.0))
