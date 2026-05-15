@@ -262,6 +262,36 @@ def _spectro_values_for_channel(spec, channel_name):
     return np.asarray([], dtype=float)
 
 
+def _pick_spectro_thumbnail_spec(viewer, specs):
+    specs = [spec for spec in list(specs or []) if isinstance(spec, dict)]
+    if not specs:
+        return None
+    if len(specs) == 1:
+        return specs[0]
+    preferred = _spectro_display_channel(viewer, specs[0])
+    best_spec = specs[0]
+    best_score = None
+    for spec in specs:
+        channel_name = preferred or _spectro_display_channel(viewer, spec)
+        values = _spectro_values_for_channel(spec, channel_name)
+        score = None
+        try:
+            arr = np.asarray(values, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size >= 2:
+                span = float(np.nanmax(arr) - np.nanmin(arr))
+                variation = float(np.nanstd(arr))
+                score = (span, variation, arr.size)
+        except Exception:
+            score = None
+        if score is None:
+            continue
+        if best_score is None or score > best_score:
+            best_score = score
+            best_spec = spec
+    return best_spec
+
+
 def _spectro_entry_time(viewer, spec):
     try:
         ts = spec.get("display_time")
@@ -507,7 +537,7 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
             y_min, y_max = -1.0, 1.0
         if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max == y_min:
             y_min, y_max = -1.0, 1.0
-        pad_y = 0.08 * max(1e-9, (y_max - y_min))
+        pad_y = 0.08 * (y_max - y_min)
         y_min -= pad_y
         y_max += pad_y
 
@@ -654,15 +684,19 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 "fds": fds,
             })
         spectro_entries = []
-        seen_paths = set()
+        grouped_specs = OrderedDict()
         for spec in list(getattr(viewer, "spectros", []) or []):
             try:
                 key = str(Path(spec.get("path", "")).resolve()).lower()
             except Exception:
                 key = str(spec.get("path", "")).lower()
-            if not key or key in seen_paths:
+            if not key:
                 continue
-            seen_paths.add(key)
+            grouped_specs.setdefault(key, []).append(spec)
+        for grouped in grouped_specs.values():
+            spec = _pick_spectro_thumbnail_spec(viewer, grouped)
+            if not spec:
+                continue
             spectro_entries.append({
                 "kind": "spectro",
                 "key": str(spec.get("path", "")),
