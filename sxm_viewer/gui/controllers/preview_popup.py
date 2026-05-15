@@ -613,7 +613,9 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     if hasattr(owner, "quick_crop_controller"):
         owner.quick_crop_controller.register_popup(seq, dlg)
     canvas.enable_fixed_crop_quick_mode(owner.quick_crop_mode)
-    canvas.show_fixed_crop_template(bool(owner.show_crop_template_overlay))
+    # Popups manage crop-template editing locally via their own quick-menu actions.
+    # The main-window "Crop template" toggle is preview-only and should not bleed into pop-outs.
+    canvas.show_fixed_crop_template(False)
     canvas.show_fixed_crop_history(owner.show_crop_history_overlay)
     try:
         canvas.set_molecule_palette_callback(owner._on_molecule_palette_changed)
