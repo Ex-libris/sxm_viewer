@@ -4730,9 +4730,24 @@ QLabel:hover {{
             return str(value)
 
         lines = ["Spectroscopy details", ""]
-        for key in ("path", "source", "time", "file_mtime", "image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
+        for key in ("path", "source", "time", "file_mtime", "image_key", "primary_image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
             if key in spec:
                 lines.append(f"{key}: {_fmt(spec.get(key))}")
+        assignment_summary = str(spec.get("assignment_summary") or "").strip()
+        assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+        assignment_reason = str(spec.get("assignment_reason_label") or spec.get("assignment_reason") or "").strip()
+        if assignment_summary or assignment_conf or assignment_reason:
+            lines.append("")
+            lines.append("Assignment:")
+            if assignment_conf:
+                lines.append(f"  confidence: {assignment_conf}")
+            if assignment_reason:
+                lines.append(f"  reason: {assignment_reason}")
+            if assignment_summary:
+                lines.append(f"  summary: {assignment_summary}")
+            shared_keys = spec.get("shared_image_keys") or []
+            if shared_keys:
+                lines.append(f"  shared_image_keys: {_fmt(shared_keys)}")
         channels = spec.get("channels") or {}
         if channels:
             lines.append("")
@@ -7949,8 +7964,8 @@ QLabel:hover {{
             pass
         self._update_matrix_summary_banner()
 
-    def _choose_image_for_spec(self, spec, images, image_extents):
-        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)
+    def _choose_image_for_spec(self, spec, images, image_extents, *, with_details=False):
+        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents, with_details=with_details)
 
     def _extent_center(self, extent):
         return spectro_controller._extent_center(self, extent)
@@ -8322,6 +8337,13 @@ QLabel:hover {{
                     stack_summary = str(spec.get("xy_stack_summary") or "").strip()
                     if stack_summary:
                         tooltip = f"{tooltip}\n{stack_summary}"
+                    assignment_summary = str(spec.get("assignment_summary") or "").strip()
+                    assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+                    if assignment_summary:
+                        if assignment_conf:
+                            tooltip = f"{tooltip}\nAssignment: {assignment_summary} ({assignment_conf})"
+                        else:
+                            tooltip = f"{tooltip}\nAssignment: {assignment_summary}"
                 QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
                 return True
         QtWidgets.QToolTip.hideText()

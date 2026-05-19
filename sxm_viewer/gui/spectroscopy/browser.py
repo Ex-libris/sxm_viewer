@@ -45,12 +45,12 @@ def _update_spectro_stats_label(viewer, stats=None):
         f"Thumbnail markers {'On' if thumb_markers else 'Off'} | "
         f"Preview {'On' if preview_markers else 'Off'} | "
         f"Miniatures {'On' if miniatures else 'Off'} | "
-        f"Assignment {'Shared repeats' if shared_repeats else 'Nearest image'}"
+        f"Assignment {'Shared repeats' if shared_repeats else 'Single image'}"
     )
     assignment_tip = (
-        "Assignment mode: shared repeats. Spectra inside several near-identical overlapping scans appear on all of those repeat images."
+        "Assignment mode: shared repeats. Each spectrum first picks one primary image using spatial containment, acquisition order, and filename hints; spectra inside overlapping repeat scans are then shown on those repeats too."
         if shared_repeats
-        else "Assignment mode: nearest image. Each spectrum is attached to one best-matching image only."
+        else "Assignment mode: single image. Each spectrum is attached to one primary image using spatial containment first, then acquisition order, then weaker filename hints."
     )
     if getattr(viewer, '_spectros_loading', False):
         viewer.spectro_stats_label.setText(f"Spectroscopy loading...\n{mode_text}")
@@ -158,6 +158,19 @@ def _filter_spectro_browser(viewer):
             continue
         item = QListWidgetItem(label)
         item.setData(QtCore.Qt.UserRole, s)
+        assignment_summary = str(s.get("assignment_summary") or "").strip()
+        assignment_conf = str(s.get("assignment_confidence") or "").strip()
+        tip_lines = [Path(s.get('path', '')).name]
+        if pos:
+            tip_lines.append(f"Position: {pos} nm")
+        if stack:
+            tip_lines.append(str(s.get("xy_stack_summary") or stack))
+        if assignment_summary:
+            if assignment_conf:
+                tip_lines.append(f"Assignment: {assignment_summary} ({assignment_conf} confidence)")
+            else:
+                tip_lines.append(f"Assignment: {assignment_summary}")
+        item.setToolTip("\n".join(line for line in tip_lines if line))
         viewer.spectro_list.addItem(item)
 
 
@@ -177,6 +190,12 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         summary = str(spec.get("xy_stack_summary") or "").strip()
         if summary:
             lines.append(summary)
+        assignment_summary = str(spec.get("assignment_summary") or "").strip()
+        assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+        if assignment_summary:
+            if assignment_conf:
+                lines.append(f"Assignment: {assignment_conf} confidence")
+            lines.append(assignment_summary)
         viewer.spectro_preview_lbl.setText("\n".join(lines))
     except Exception:
         viewer.spectro_preview_lbl.setText(Path(spec.get('path','')).name)

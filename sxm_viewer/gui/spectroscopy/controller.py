@@ -148,6 +148,27 @@ def _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, *, s
     specs_for_image.append(spec)
 
 
+def _assignment_payload(reason, confidence, summary, *, image_key=None):
+    reason_labels = {
+        "preset_image_key": "Preset image reference",
+        "xy_inside_extent_causal_time": "Inside image bounds + acquisition order",
+        "xy_inside_extent": "Inside image bounds",
+        "causal_time": "Acquisition order",
+        "name_hint": "Filename/session hint",
+        "xy_nearest_extent": "Nearest plausible image footprint",
+        "closest_time_fallback": "Closest-time fallback",
+        "first_image_fallback": "First-image fallback",
+        "unknown": "Unknown",
+    }
+    return {
+        "assignment_reason": str(reason or ""),
+        "assignment_reason_label": str(reason_labels.get(str(reason or ""), str(reason or "").replace("_", " ").strip())),
+        "assignment_confidence": str(confidence or ""),
+        "assignment_summary": str(summary or ""),
+        "assignment_image_key": str(image_key or ""),
+    }
+
+
 def _assign_spectros_to_images(viewer):
     """Assign spectroscopy entries to images using time and spatial sanity (prefer in-extent matches)."""
     viewer.spectros_by_image = defaultdict(list)
@@ -184,37 +205,82 @@ def _assign_spectros_to_images(viewer):
 
     for spec in specs:
         primary_match = None
+        assignment_meta = None
         preset_key = spec.get('image_key')
         if preset_key:
             mapped = image_paths_lower.get(str(preset_key).lower())
             if mapped:
                 primary_match = image_by_key.get(mapped)
+                assignment_meta = _assignment_payload(
+                    "preset_image_key",
+                    "high",
+                    "Assigned from an existing image reference already stored on this spectrum.",
+                    image_key=mapped,
+                )
             else:
                 if spec.get('source') == 'nanonis_3ds':
                     debug_nanonis["total"] += 1
                     debug_nanonis["missing"] += 1
-        match = primary_match or viewer._choose_image_for_spec(spec, images, image_extents)
+        match = primary_match
+        if match is None:
+            match, assignment_meta = viewer._choose_image_for_spec(spec, images, image_extents, with_details=True)
         if not match and images:
             # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
             st = _spec_time_for_assignment(spec)
             if st is not None:
                 try:
                     match = min(images, key=lambda img: abs((img.get('time') or datetime.min) - st))
+                    assignment_meta = _assignment_payload(
+                        "closest_time_fallback",
+                        "low",
+                        "Fallback assignment to the closest image in time because stronger spatial or filename cues were unavailable.",
+                        image_key=str(match.get("path") or ""),
+                    )
                 except Exception:
                     match = images[0]
+                    assignment_meta = _assignment_payload(
+                        "first_image_fallback",
+                        "low",
+                        "Fallback assignment to the first available image because the time-based fallback failed.",
+                        image_key=str(match.get("path") or ""),
+                    )
             else:
                 match = images[0]
+                assignment_meta = _assignment_payload(
+                    "first_image_fallback",
+                    "low",
+                    "Fallback assignment to the first available image because this spectrum had no usable assignment time.",
+                    image_key=str(match.get("path") or ""),
+                )
         if not match and images:
             match = images[0]
+            assignment_meta = _assignment_payload(
+                "first_image_fallback",
+                "low",
+                "Fallback assignment to the first available image because no stronger match was found.",
+                image_key=str(match.get("path") or ""),
+            )
         if not match:
             continue
         image_key = str(match['path'])
+        assignment_meta = assignment_meta or _assignment_payload(
+            "unknown",
+            "low",
+            "Assigned without recorded provenance.",
+            image_key=image_key,
+        )
+        spec.update(assignment_meta)
         target_keys = [image_key]
         if share_repeat_scans:
             target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
         spec["primary_image_key"] = image_key
         spec["shared_image_keys"] = list(target_keys)
         spec["shared_repeat_assignment"] = len(target_keys) > 1
+        if spec["shared_repeat_assignment"]:
+            spec["assignment_summary"] = (
+                f"{spec.get('assignment_summary') or 'Assigned to one primary image.'} "
+                "Also shown on overlapping repeat scans."
+            ).strip()
         _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, shared_keys=target_keys)
         for shared_key in target_keys:
             if str(shared_key) == image_key:
@@ -232,6 +298,12 @@ def _assign_spectros_to_images(viewer):
             target_keys = [image_key]
             if share_repeat_scans:
                 target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
+            spec.update(_assignment_payload(
+                "first_image_fallback",
+                "low",
+                "Fallback assignment to the first available image because no spectra could be matched normally.",
+                image_key=image_key,
+            ))
             spec["primary_image_key"] = image_key
             spec["shared_image_keys"] = list(target_keys)
             spec["shared_repeat_assignment"] = len(target_keys) > 1
@@ -532,8 +604,15 @@ def _annotate_xy_stacks(viewer):
                 spec.update(ann)
 
 
-def _choose_image_for_spec(viewer, spec, images, image_extents):
+def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=False):
     """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
+    def _result(match, reason, confidence, summary):
+        image_key = str(match.get("path") or "") if match else ""
+        details = _assignment_payload(reason, confidence, summary, image_key=image_key)
+        if with_details:
+            return match, details
+        return match
+
     st = _spec_time_for_assignment(spec)
     sx = spec.get('x'); sy = spec.get('y')
     if _is_dat_spec(spec):
@@ -547,12 +626,27 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             if candidates:
                 timed_match = _image_before_spec_time(candidates, st)
                 if timed_match is not None:
-                    return timed_match
-                return candidates[0]
+                    return _result(
+                        timed_match,
+                        "xy_inside_extent_causal_time",
+                        "high",
+                        "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
+                    )
+                return _result(
+                    candidates[0],
+                    "xy_inside_extent",
+                    "high",
+                    "Assigned to an image whose field of view contains the spectrum position.",
+                )
         # Next, prefer time ordering for .dat when coordinates don't match extents.
         time_match = _image_before_spec_time(images, st)
         if time_match is not None:
-            return time_match
+            return _result(
+                time_match,
+                "causal_time",
+                "medium",
+                "Assigned to the latest image acquired at or before the spectrum time.",
+            )
         hint_match = None
         hint_score = -1
         try:
@@ -561,9 +655,19 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             # Backward compatibility if viewer overrides without new arg
             hint_match = viewer._match_spec_to_image_by_hint(spec, images)
         if hint_match is not None and hint_score is not None and hint_score >= 60:
-            return hint_match
+            return _result(
+                hint_match,
+                "name_hint",
+                "medium",
+                "Assigned by a strong filename/session naming hint after spatial and time checks were inconclusive.",
+            )
         if hint_match is not None:
-            return hint_match
+            return _result(
+                hint_match,
+                "name_hint",
+                "low",
+                "Assigned by a weak filename/session naming hint because stronger cues were unavailable.",
+            )
     candidates = []
     # First pass: images whose extents contain the point (with a small margin)
     if sx is not None and sy is not None:
@@ -574,8 +678,18 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
         if candidates:
             timed_match = _image_before_spec_time(candidates, st)
             if timed_match is not None:
-                return timed_match
-            return candidates[0]
+                return _result(
+                    timed_match,
+                    "xy_inside_extent_causal_time",
+                    "high",
+                    "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
+                )
+            return _result(
+                candidates[0],
+                "xy_inside_extent",
+                "high",
+                "Assigned to an image whose field of view contains the spectrum position.",
+            )
     # Second pass: closest by space (even if slightly outside), then by time
     if sx is not None and sy is not None:
         scored = []
@@ -595,7 +709,12 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             # ensure distance is not absurdly large compared to image span
             ext = image_extents.get(str(best['path']))
             if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=1.0):
-                return best
+                return _result(
+                    best,
+                    "xy_nearest_extent",
+                    "medium",
+                    "Assigned to the nearest plausible image footprint because the spectrum fell outside all image bounds.",
+                )
     # Fallback: time-ordered + name hints
     if st:
         try:
@@ -607,8 +726,23 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
         except Exception:
             match = None
         if match:
-            return match
-    return viewer._match_spec_to_image_by_hint(spec, images)
+            return _result(
+                match,
+                "causal_time",
+                "medium",
+                "Assigned to the latest image acquired at or before the spectrum time.",
+            )
+    hint_match = viewer._match_spec_to_image_by_hint(spec, images)
+    if hint_match is not None:
+        return _result(
+            hint_match,
+            "name_hint",
+            "low",
+            "Assigned by filename/session naming similarity because spatial and time cues were unavailable.",
+        )
+    if with_details:
+        return None, None
+    return None
 
 
 def _image_before_spec_time(images, spec_time):
