@@ -66,9 +66,15 @@ def _site_tree_label(site_specs):
     display = str(first.get("site_display") or "Site").strip()
     trace_count = int(first.get("site_trace_count") or len(site_specs) or 0)
     channel_count = int(first.get("site_channel_count") or 0)
+    low_conf_count = sum(
+        1 for spec in list(site_specs or [])
+        if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+    )
     extras = [f"{trace_count} trace" + ("" if trace_count == 1 else "s")]
     if channel_count:
         extras.append(f"{channel_count} ch")
+    if low_conf_count:
+        extras.append(f"low conf {low_conf_count}")
     if first.get("site_has_z_stack"):
         extras.append("Z-stack")
     elif int(first.get("xy_stack_count") or 0) > 1:
@@ -171,6 +177,33 @@ def _open_browser_item(viewer, item):
             viewer._open_spectro_summary_for_file(image_key, quiet=True)
 
 
+def _browser_iter_items(root_item):
+    if root_item is None:
+        return
+    yield root_item
+    for idx in range(root_item.childCount()):
+        child = root_item.child(idx)
+        yield from _browser_iter_items(child)
+
+
+def _select_first_browser_match(viewer, predicate=None):
+    tree = getattr(viewer, "spectro_list", None)
+    if tree is None:
+        return False
+    for top_idx in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(top_idx)
+        for candidate in _browser_iter_items(item):
+            payload = candidate.data(0, QtCore.Qt.UserRole)
+            if not isinstance(payload, dict):
+                continue
+            if predicate is not None and not predicate(payload):
+                continue
+            tree.setCurrentItem(candidate)
+            tree.scrollToItem(candidate)
+            return True
+    return False
+
+
 def _browser_payload_specs(payload):
     if not isinstance(payload, dict):
         return []
@@ -227,6 +260,10 @@ def _update_spectro_stats_label(viewer, stats=None):
         return
     total = len(getattr(viewer, "spectros", []) or [])
     single_count = sum(1 for s in getattr(viewer, "spectros", []) if s.get("matrix_index") is None)
+    low_conf_count = sum(
+        1 for s in (getattr(viewer, "spectros", []) or [])
+        if str(s.get("assignment_confidence") or "").strip().lower() == "low"
+    )
     xy_stack_count = len({
         str(s.get("xy_stack_key"))
         for s in (getattr(viewer, "spectros", []) or [])
@@ -245,11 +282,12 @@ def _update_spectro_stats_label(viewer, stats=None):
     elif matrix_count == 0:
         matrix_desc = ""
     viewer.spectro_stats_label.setText(
-        f"Spectra {total} | Sites {site_count} | Single {single_count} | XY stacks {xy_stack_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
+        f"Spectra {total} | Sites {site_count} | Single {single_count} | Low conf {low_conf_count} | XY stacks {xy_stack_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
     )
     viewer.spectro_stats_label.setToolTip(
         f"Loaded spectroscopy entries: {total}. Single traces: {single_count}. "
         f"Image-relative sites: {site_count}. "
+        f"Low-confidence assignments: {low_conf_count}. "
         f"Same-XY stacks: {xy_stack_count}. "
         f"Matrix datasets: {matrix_count}{matrix_desc}. "
         "Thumbnail markers draw clickable points on image thumbnails. "
@@ -556,4 +594,5 @@ __all__ = [
     "_on_spectro_browser_selection",
     "_on_spectro_browser_activate",
     "_on_spectro_browser_context_menu",
+    "_select_first_browser_match",
 ]

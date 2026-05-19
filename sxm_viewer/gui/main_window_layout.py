@@ -156,6 +156,10 @@ def build_spectro_context_page(viewer):
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
     viewer.show_spectra_cb = None
+    viewer.open_current_site_btn = _configure_compact_control(QtWidgets.QPushButton("Current site"))
+    viewer.open_current_site_btn.setToolTip("Open the site summary for the currently highlighted or selected spectroscopy point")
+    viewer.review_low_conf_btn = _configure_compact_control(QtWidgets.QPushButton("Review low conf"))
+    viewer.review_low_conf_btn.setToolTip("Open the spectroscopy browser focused on low-confidence image assignments")
     viewer.clear_spec_selection_btn = _configure_compact_control(QtWidgets.QPushButton("Clear selection"))
     viewer.clear_spec_selection_btn.setToolTip("Clear the multi-selection of spectroscopy points")
     viewer.grid_as_matrix_cb = None
@@ -167,9 +171,11 @@ def build_spectro_context_page(viewer):
     viewer.spec_selection_label.setFont(font_small)
     viewer.spec_selection_label.setMinimumWidth(0)
     viewer.spec_selection_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    viewer.spectro_mode_hint_label = QtWidgets.QLabel("Display options live in the top toolbar `Spectroscopy` button.")
+    viewer.spectro_mode_hint_label = QtWidgets.QLabel("Toolbar `Spectroscopy` controls markers and miniatures. Use `Current site` and `Review low conf` to inspect linked spectra.")
     viewer.spectro_mode_hint_label.setFont(font_small)
     layout.addWidget(viewer.spectro_mode_hint_label)
+    layout.addWidget(viewer.open_current_site_btn)
+    layout.addWidget(viewer.review_low_conf_btn)
     layout.addWidget(viewer.clear_spec_selection_btn)
     layout.addWidget(viewer.spec_selection_label)
     layout.addStretch(1)

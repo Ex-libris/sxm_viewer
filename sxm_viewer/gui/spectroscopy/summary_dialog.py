@@ -370,9 +370,15 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         display = str(first.get("site_display") or "Site").strip()
         trace_count = len(specs)
         channel_count = int(first.get("site_channel_count") or 0)
+        low_conf_count = sum(
+            1 for spec in list(specs or [])
+            if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+        )
         extras = [f"{trace_count} trace" + ("" if trace_count == 1 else "s")]
         if channel_count:
             extras.append(f"{channel_count} ch")
+        if low_conf_count:
+            extras.append(f"low conf {low_conf_count}")
         if first.get("site_has_z_stack"):
             extras.append("Z-stack")
         elif int(first.get("xy_stack_count") or 0) > 1:

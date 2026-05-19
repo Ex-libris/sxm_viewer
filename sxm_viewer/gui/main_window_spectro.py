@@ -193,5 +193,9 @@ def on_spectro_browser_context_menu(viewer, pos):
     return spectro_browser._on_spectro_browser_context_menu(viewer, pos)
 
 
+def select_first_spectro_browser_match(viewer, predicate=None):
+    return spectro_browser._select_first_browser_match(viewer, predicate=predicate)
+
+
 def update_spectro_stats_label(viewer, stats=None):
     return spectro_browser._update_spectro_stats_label(viewer, stats=stats)
