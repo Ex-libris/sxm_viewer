@@ -168,7 +168,17 @@ def _spectro_relative_key(base_folder: Path | None, filepath: Path) -> str:
 def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict]:
     records = []
     seen = set()
-    valid_exts = {".dat", ".3ds"}
+    valid_exts = {".dat", ".txt", ".3ds"}
+
+    def _is_image_header_txt(path: Path) -> bool:
+        if path.suffix.lower() != ".txt":
+            return False
+        try:
+            _header, fds = parse_header(path)
+        except Exception:
+            return False
+        return bool(fds) and any(str(fd.get("FileName") or "").strip() for fd in fds)
+
     if files:
         for f in files:
             if not f:
@@ -179,6 +189,8 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
                 continue
             suffix = p.suffix.lower()
             if suffix not in valid_exts:
+                continue
+            if suffix == ".txt" and _is_image_header_txt(p):
                 continue
             norm_key = _normalize_spectro_path_key(p)
             if norm_key in seen:
@@ -218,6 +230,8 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
                 if suffix not in valid_exts:
                     continue
                 full_path = Path(entry.path)
+                if suffix == ".txt" and _is_image_header_txt(full_path):
+                    continue
                 norm_key = _normalize_spectro_path_key(full_path)
                 if norm_key in seen:
                     continue
@@ -242,7 +256,7 @@ def _discover_spectro_file_records(folder_path: Path | None, files) -> list[dict
     except Exception:
         try:
             fallback_files = []
-            for pat in ("*.dat", "*.DAT", "*.3ds", "*.3DS"):
+            for pat in ("*.dat", "*.DAT", "*.txt", "*.TXT", "*.3ds", "*.3DS"):
                 fallback_files.extend(folder_path.glob(pat))
             return _discover_spectro_file_records(folder_path, fallback_files)
         except Exception:
@@ -1103,6 +1117,8 @@ def _parse_spectro_file_payload(filepath: Path, mtime: float):
             spec_list = parse_nanonis_spectroscopy(filepath)
         except Exception:
             spec_list = None
+        if not spec_list:
+            spec_list = None
     elif ext == ".3ds":
         try:
             spec_list = parse_nanonis_3ds(filepath)
@@ -1579,6 +1595,45 @@ def _scan_spectros(
         )
         return info
 
+    def _spec_within_extent_local(sx, sy, extent, margin_frac=0.02):
+        try:
+            x0, x1, y1, y0 = extent
+            xmin, xmax = sorted((float(x0), float(x1)))
+            ymin, ymax = sorted((float(y0), float(y1)))
+            mx = (xmax - xmin) * float(margin_frac)
+            my = (ymax - ymin) * float(margin_frac)
+            xmin -= mx
+            xmax += mx
+            ymin -= my
+            ymax += my
+            return xmin <= float(sx) <= xmax and ymin <= float(sy) <= ymax
+        except Exception:
+            return False
+
+    def _image_before_reference(candidates, ref_epoch):
+        if not candidates:
+            return None
+        if ref_epoch is None:
+            return candidates[0]
+        last_before = None
+        for item in candidates:
+            epoch = item.get("epoch")
+            if epoch is None:
+                continue
+            if epoch <= ref_epoch:
+                last_before = item
+            else:
+                break
+        if last_before is not None:
+            return last_before
+        try:
+            return min(
+                candidates,
+                key=lambda item: abs(float(item.get("epoch")) - float(ref_epoch)) if item.get("epoch") is not None else float("inf"),
+            )
+        except Exception:
+            return candidates[0]
+
     def _assign_matrix_reference(spec_list, headers, ref_mtime: float, image_paths=None, image_meta=None):
         """Attach a single reference image_key to all spectra in a matrix dataset.
         We only anchor to actual loaded images (thumbnails). If none exist, we skip anchoring.
@@ -1592,7 +1647,7 @@ def _scan_spectros(
                     p = str(img.get("path"))
                     if not p or "commands" in p.lower():
                         continue
-                    candidates.append((p, img.get("time")))
+                    candidates.append({"path": p, "time": img.get("time")})
         except Exception:
             candidates = []
         if not candidates:
@@ -1600,12 +1655,12 @@ def _scan_spectros(
                 if image_paths:
                     for p in image_paths:
                         if p and "commands" not in str(p).lower():
-                            candidates.append((str(p), None))
+                            candidates.append({"path": str(p), "time": None})
             except Exception:
                 candidates = []
         if not candidates:
             return None
-        valid_paths_lower = {p.lower(): p for p, _ in candidates}
+        valid_paths_lower = {str(item["path"]).lower(): str(item["path"]) for item in candidates}
         ref_epoch = None
         try:
             st = spec_list[0].get("time")
@@ -1615,27 +1670,64 @@ def _scan_spectros(
             ref_epoch = None
         if ref_epoch is None:
             ref_epoch = ref_mtime if ref_mtime is not None else None
-        best_key = None
-        best_delta = None
-        # Prefer loaded images (using image_meta time if available, else file mtime)
-        for pth, tval in candidates:
-            delta = None
+        enriched = []
+        for item in candidates:
+            pth = str(item.get("path") or "")
+            if not pth:
+                continue
+            epoch = None
+            tval = item.get("time")
             try:
                 if isinstance(tval, datetime):
-                    delta = abs(tval.timestamp() - ref_epoch) if ref_epoch is not None else None
-                if delta is None:
-                    ht = Path(pth).stat().st_mtime
-                    delta = abs(ht - ref_epoch) if ref_epoch is not None else None
+                    epoch = float(tval.timestamp())
+                elif tval is not None:
+                    epoch = float(tval)
             except Exception:
-                delta = None
-            if delta is None:
+                epoch = None
+            if epoch is None:
+                try:
+                    epoch = float(Path(pth).stat().st_mtime)
+                except Exception:
+                    epoch = None
+            try:
+                header, _fds = headers.get(str(pth), (None, None))
+                extent = viewer._header_extent(header or {}) if header is not None else None
+            except Exception:
+                extent = None
+            enriched.append({"path": pth, "epoch": epoch, "extent": extent})
+        enriched.sort(key=lambda item: item.get("epoch") if item.get("epoch") is not None else float("-inf"))
+
+        best_key = None
+        xy_specs = []
+        for spec in spec_list:
+            try:
+                xy_specs.append((float(spec.get("x")), float(spec.get("y"))))
+            except Exception:
                 continue
-            if best_delta is None or delta < best_delta:
-                best_delta = delta
-                best_key = pth
-        # Final fallback: first candidate
+        if xy_specs:
+            scored = []
+            for item in enriched:
+                extent = item.get("extent")
+                if not extent:
+                    continue
+                hits = 0
+                for sx, sy in xy_specs:
+                    if _spec_within_extent_local(sx, sy, extent, margin_frac=0.02):
+                        hits += 1
+                if hits > 0:
+                    scored.append((hits, item))
+            if scored:
+                max_hits = max(score for score, _item in scored)
+                spatial_candidates = [item for score, item in scored if score == max_hits]
+                chosen = _image_before_reference(spatial_candidates, ref_epoch)
+                if chosen is not None:
+                    best_key = chosen.get("path")
         if not best_key:
-            best_key = candidates[0][0]
+            chosen = _image_before_reference(enriched, ref_epoch)
+            if chosen is not None:
+                best_key = chosen.get("path")
+        if not best_key and enriched:
+            best_key = enriched[0]["path"]
         if best_key:
             key_norm = best_key
             if key_norm.lower() in valid_paths_lower:

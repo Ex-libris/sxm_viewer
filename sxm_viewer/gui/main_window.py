@@ -10363,13 +10363,12 @@ QLabel:hover {{
     def on_show_crop_template_overlay_toggled(self, checked: bool):
         self.show_crop_template_overlay = bool(checked)
         self.config['show_crop_template_overlay'] = self.show_crop_template_overlay; save_config(self.config)
-        canvases = [getattr(self, 'preview_canvas', None)] + list(getattr(self, '_popup_canvases', []))
-        for canv in canvases:
-            if canv:
-                try:
-                    canv.show_fixed_crop_template(self.show_crop_template_overlay)
-                except Exception:
-                    continue
+        canv = getattr(self, 'preview_canvas', None)
+        if canv:
+            try:
+                canv.show_fixed_crop_template(self.show_crop_template_overlay)
+            except Exception:
+                pass
         act = getattr(self, 'crop_template_act', None)
         if act is not None:
             act.blockSignals(True)

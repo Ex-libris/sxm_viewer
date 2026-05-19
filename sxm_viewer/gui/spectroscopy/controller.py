@@ -545,8 +545,9 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
                 if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
                     candidates.append(img)
             if candidates:
-                if st:
-                    candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - st))
+                timed_match = _image_before_spec_time(candidates, st)
+                if timed_match is not None:
+                    return timed_match
                 return candidates[0]
         # Next, prefer time ordering for .dat when coordinates don't match extents.
         time_match = _image_before_spec_time(images, st)
@@ -571,8 +572,9 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
                 candidates.append(img)
         if candidates:
-            if st:
-                candidates.sort(key=lambda img: abs((img.get('time') or datetime.min) - st))
+            timed_match = _image_before_spec_time(candidates, st)
+            if timed_match is not None:
+                return timed_match
             return candidates[0]
     # Second pass: closest by space (even if slightly outside), then by time
     if sx is not None and sy is not None:

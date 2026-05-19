@@ -263,7 +263,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._spectra_points = {}
         self._spectra_click_cb = None
         self._zoom_reset_limits = {}
-        self._frozen_ax_bboxes = None  # cached bboxes after window resize
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by) for the active frame
         self._angle_frames = []
@@ -633,7 +632,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("view_layout")
         self._view_layout = layout
-        self._frozen_ax_bboxes = None
         self._redraw()
         self._notify_views_callback()
 
@@ -873,6 +871,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 (QtCore.Qt.Key_Return, self._on_apply_fixed_crop_shortcut),
                 (QtCore.Qt.Key_Enter, self._on_apply_fixed_crop_shortcut),
                 (QtCore.Qt.Key_Escape, self._on_cancel_fixed_crop_shortcut),
+                (QtCore.Qt.Key_Delete, self._on_clear_fixed_crop_shortcut),
+                (QtCore.Qt.Key_Backspace, self._on_clear_fixed_crop_shortcut),
             ]
             for seq, handler in shortcuts:
                 shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(seq), self)
@@ -894,6 +894,15 @@ class MultiPreviewCanvas(FigureCanvas):
         if not self._fixed_crop_transform_mode:
             return
         self.enable_fixed_crop_transform_mode(False)
+
+    def _on_clear_fixed_crop_shortcut(self):
+        if (
+            self._fixed_crop_template is None
+            and self._fixed_crop_template_bounds is None
+            and self._fixed_crop_template_manual_dims is None
+        ):
+            return
+        self.clear_fixed_crop_template(hide=True, clear_history=False)
 
     def _clear_shortcut_hint_artist(self):
         art = getattr(self, "_shortcut_hint_artist", None)
@@ -1313,7 +1322,8 @@ class MultiPreviewCanvas(FigureCanvas):
     def _reflow_after_resize(self):
         try:
             if getattr(self, "views", None):
-                self._apply_tight_layout_safe(pad=0.25)
+                scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+                self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
                 self.draw_idle()
         except Exception:
             pass
@@ -1533,7 +1543,7 @@ class MultiPreviewCanvas(FigureCanvas):
         # Clamp every axis to the bbox frozen after the last window resize.
         # This guarantees the layout stays pixel-identical no matter how many
         # times _redraw() is called (colormap change, display toggles, …).
-        if self._frozen_ax_bboxes is not None:
+        if False and self._frozen_ax_bboxes is not None:
             if len(self._frozen_ax_bboxes) != len(self.fig.axes):
                 self._frozen_ax_bboxes = None
             else:
@@ -3343,6 +3353,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 if key == QtCore.Qt.Key_Escape:
                     self._on_cancel_fixed_crop_shortcut()
                     return
+            if not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+                if key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                    if (
+                        self._fixed_crop_template is not None
+                        or self._fixed_crop_template_bounds is not None
+                        or self._fixed_crop_template_manual_dims is not None
+                    ):
+                        self._on_clear_fixed_crop_shortcut()
+                        return
             if mods & QtCore.Qt.ControlModifier:
                 if key == QtCore.Qt.Key_C:
                     self._copy_displayed("png")
@@ -6852,7 +6871,9 @@ class MultiPreviewCanvas(FigureCanvas):
         edit_crop_frame_act.setChecked(bool(self._fixed_crop_transform_mode))
         apply_crop_frame_act = quick_menu.addAction("Apply crop template  (Enter)")
         apply_crop_frame_act.setEnabled(bool(self._fixed_crop_template_visible and self._fixed_crop_template))
-        exit_crop_frame_act = quick_menu.addAction("Exit template editor")
+        remove_crop_frame_act = quick_menu.addAction("Remove crop template  (Delete)")
+        remove_crop_frame_act.setEnabled(bool(self._fixed_crop_template or self._fixed_crop_template_bounds or self._fixed_crop_template_manual_dims))
+        exit_crop_frame_act = quick_menu.addAction("Exit template editor  (Esc)")
         exit_crop_frame_act.setEnabled(bool(self._fixed_crop_transform_mode))
         quick_menu.addSeparator()
         clear_overlays_act = quick_menu.addAction("Clear profile/angle overlays")
@@ -7200,6 +7221,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.enable_fixed_crop_transform_mode(edit_crop_frame_act.isChecked())
         elif chosen == apply_crop_frame_act:
             self._on_apply_fixed_crop_shortcut()
+        elif chosen == remove_crop_frame_act:
+            self.clear_fixed_crop_template(hide=True, clear_history=False)
         elif chosen == exit_crop_frame_act:
             self.enable_fixed_crop_transform_mode(False)
         elif chosen == clear_overlays_act:
@@ -9027,6 +9050,39 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._fixed_crop_template_visible:
             self._ensure_fixed_crop_template_for_transform()
         self._redraw()
+
+    def clear_fixed_crop_template(self, *, hide: bool = True, clear_history: bool = False):
+        had_template = bool(
+            self._fixed_crop_template is not None
+            or self._fixed_crop_template_bounds is not None
+            or self._fixed_crop_template_pixel_bounds is not None
+            or self._fixed_crop_template_manual_dims is not None
+            or self._fixed_crop_template_visible
+            or self._fixed_crop_transform_mode
+        )
+        if clear_history and self._fixed_crop_history:
+            self._fixed_crop_history.clear()
+            self._fixed_crop_sequence = 1
+            self._fixed_crop_history_highlight_seq = None
+            self._emit_fixed_crop_history_update()
+            self._cleanup_highlight_artists()
+        self._fixed_crop_template = None
+        self._fixed_crop_template_bounds = None
+        self._fixed_crop_template_pixel_bounds = None
+        self._fixed_crop_template_view_key = None
+        self._fixed_crop_template_manual_dims = None
+        self._fixed_crop_template_drag = None
+        self._fixed_crop_drag_last_ts = 0.0
+        if hide:
+            self._fixed_crop_transform_mode = False
+            self._fixed_crop_template_visible = False
+            self._set_fixed_crop_cursor(mode=None, dragging=False)
+        self._clear_fixed_crop_overlay_artists()
+        if not had_template and not clear_history:
+            return False
+        self._notify_views_callback()
+        self._redraw()
+        return True
 
     def show_fixed_crop_history(self, visible: bool):
         visible = bool(visible)
