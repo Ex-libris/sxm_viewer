@@ -88,7 +88,7 @@ from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_s
 from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
-_SPECTRO_MANIFEST_VERSION = 3
+_SPECTRO_MANIFEST_VERSION = 4
 _SPECTRO_CACHE_MTIME_TOLERANCE = 2.0
 _SPECTRO_MANIFEST_FILE = "manifest_v2.json"
 _SPECTRO_METADATA_ARRAY_KEYS = {
@@ -120,11 +120,27 @@ _SPECTRO_METADATA_KEYS = {
     "grid_col",
     "channel_name",
     "channel_code",
+    "assignment_override_image_key",
     "image_key",
     "image_path",
     "primary_image_key",
     "shared_image_keys",
     "shared_repeat_assignment",
+    "site_key",
+    "site_image_key",
+    "site_display",
+    "site_summary",
+    "site_member_count",
+    "site_trace_count",
+    "site_channel_count",
+    "site_channels",
+    "site_has_matrix",
+    "site_has_z_stack",
+    "site_z_label",
+    "site_z_min_nm",
+    "site_z_max_nm",
+    "site_x_nm",
+    "site_y_nm",
     "xy_stack_count",
     "xy_stack_display",
     "xy_stack_key",
@@ -530,12 +546,28 @@ def _merge_payload_into_spec(target, payload):
     if target is payload:
         return target
     preserved = {
+        "assignment_override_image_key": target.get("assignment_override_image_key"),
         "image_key": target.get("image_key"),
         "image_path": target.get("image_path"),
         "primary_image_key": target.get("primary_image_key"),
         "shared_image_keys": target.get("shared_image_keys"),
         "shared_repeat_assignment": target.get("shared_repeat_assignment"),
         "display_time": target.get("display_time"),
+        "site_key": target.get("site_key"),
+        "site_image_key": target.get("site_image_key"),
+        "site_display": target.get("site_display"),
+        "site_summary": target.get("site_summary"),
+        "site_member_count": target.get("site_member_count"),
+        "site_trace_count": target.get("site_trace_count"),
+        "site_channel_count": target.get("site_channel_count"),
+        "site_channels": target.get("site_channels"),
+        "site_has_matrix": target.get("site_has_matrix"),
+        "site_has_z_stack": target.get("site_has_z_stack"),
+        "site_z_label": target.get("site_z_label"),
+        "site_z_min_nm": target.get("site_z_min_nm"),
+        "site_z_max_nm": target.get("site_z_max_nm"),
+        "site_x_nm": target.get("site_x_nm"),
+        "site_y_nm": target.get("site_y_nm"),
         "xy_stack_summary": target.get("xy_stack_summary"),
         "xy_stack_display": target.get("xy_stack_display"),
         "xy_stack_count": target.get("xy_stack_count"),

@@ -79,7 +79,7 @@ def _marker_path(symbol: str, center: QtCore.QPointF, size: float) -> QtGui.QPai
     return path
 
 
-def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False, pulse=1.0):
+def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False, pulse=1.0, low_conf=False):
     center = QtCore.QPointF(x, y)
     path = _marker_path(symbol, center, size)
     stroke_color = QtGui.QColor(base_color)
@@ -93,6 +93,13 @@ def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False
     painter.setBrush(QtGui.QBrush(fill_color))
     painter.setPen(pen)
     painter.drawPath(path)
+    if low_conf:
+        warn_pen = QtGui.QPen(QtGui.QColor(255, 210, 96, 220), max(1.5, size * 0.28))
+        warn_pen.setStyle(QtCore.Qt.DashLine)
+        warn_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(warn_pen)
+        painter.drawEllipse(center, size * 1.55, size * 1.55)
     if highlight:
         glow_scale = 2.15 + 0.65 * pulse
         halo_size = size * glow_scale
@@ -392,6 +399,7 @@ def _render_spectroscopy_overlays(
                 highlight = False
             is_matrix_spec = is_matrix_file_entry(spec)
             base_color = color_matrix if is_matrix_spec else color_single
+            low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
             rect = _draw_marker_symbol(
                 painter,
                 x,
@@ -401,6 +409,7 @@ def _render_spectroscopy_overlays(
                 base_color,
                 highlight=highlight,
                 pulse=pulse if highlight else 1.0,
+                low_conf=low_conf,
             )
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
         for badge in badge_defs:

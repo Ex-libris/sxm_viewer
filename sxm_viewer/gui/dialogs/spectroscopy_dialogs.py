@@ -367,6 +367,31 @@ def _style_kwargs(style_state: dict | None = None) -> dict:
         "underline": bool(style_state.get("underline", False)),
     }
 
+
+def _spectro_assignment_text(spec: dict | None) -> str:
+    if not spec:
+        return ""
+    summary = str(spec.get("assignment_summary") or "").strip()
+    confidence = str(spec.get("assignment_confidence") or "").strip()
+    if not summary:
+        return ""
+    if confidence:
+        return f"Assignment: {summary} ({confidence} confidence)"
+    return f"Assignment: {summary}"
+
+
+def _spectro_site_text(spec: dict | None) -> str:
+    if not spec:
+        return ""
+    summary = str(spec.get("site_summary") or "").strip()
+    if summary:
+        return f"Site: {summary}"
+    display = str(spec.get("site_display") or "").strip()
+    if display:
+        return f"Site: {display}"
+    return ""
+
+
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
     SCIENCE_PALETTE = [
@@ -463,6 +488,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             f"Position: {spec.get('x','?')}/{spec.get('y','?')} nm\n"
             f"Time: {spec.get('time')}"
         )
+        assignment_txt = _spectro_assignment_text(spec)
+        site_txt = _spectro_site_text(spec)
+        if site_txt:
+            meta_txt = f"{meta_txt}\n{site_txt}"
+        if assignment_txt:
+            meta_txt = f"{meta_txt}\n{assignment_txt}"
         self.meta_label = QtWidgets.QLabel(meta_txt)
         self.meta_label.setWordWrap(True)
         self.meta_label.setObjectName("spectroMetaLabel")

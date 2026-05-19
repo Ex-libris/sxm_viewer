@@ -101,10 +101,8 @@ def open_spectro_summary_for_file(viewer, file_key, show_mode="single", quiet=Fa
             QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this file.")
         return
 
-    # Use the modern SpectroscopyCompareDialog (table view) instead of the old summary
-    from .detail_panels import SpectroscopyCompareDialog
-    dlg = SpectroscopyCompareDialog(entries, parent=viewer)
-    dlg.setWindowTitle(f"Spectroscopy: {Path(file_key).name}")
+    header, fds = viewer.headers.get(str(file_key), (None, None))
+    dlg = viewer.SpectroSummaryDialog(viewer, file_key, header, fds, entries, show_mode=show_mode)
     try:
         dlg.setWindowModality(QtCore.Qt.NonModal)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -113,6 +111,50 @@ def open_spectro_summary_for_file(viewer, file_key, show_mode="single", quiet=Fa
         pass
     dlg.show()
     if hasattr(viewer, '_popup_refs'):
+        viewer._popup_refs.append(dlg)
+        try:
+            dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
+        except Exception:
+            pass
+    controller = getattr(viewer, "quick_crop_controller", None)
+    if controller:
+        try:
+            dlg.finished.connect(lambda _=None, c=controller: c.update_popup_actions())
+        except Exception:
+            pass
+        controller.update_popup_actions()
+
+
+def open_spectro_summary_for_site(viewer, spec, file_key="", quiet=False):
+    if spec is None:
+        return
+    image_key = str(file_key or spec.get("image_key") or spec.get("primary_image_key") or "")
+    site_key = str(spec.get("site_key") or "").strip()
+    if not image_key or not site_key:
+        return open_spectro_summary_for_file(viewer, image_key, quiet=quiet)
+    site = (getattr(viewer, "spectro_site_index", {}) or {}).get(site_key)
+    entries = list(site.get("members") or []) if isinstance(site, dict) else []
+    if not entries:
+        entries = [
+            entry for entry in list((getattr(viewer, "spectros_by_image", {}) or {}).get(image_key, []) or [])
+            if str(entry.get("site_key") or "").strip() == site_key
+        ]
+    if not entries:
+        if not quiet:
+            QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this site.")
+        return
+    header, fds = viewer.headers.get(str(image_key), (None, None))
+    dlg = viewer.SpectroSummaryDialog(viewer, image_key, header, fds, entries, show_mode="matrix" if all(e.get("matrix_index") is not None for e in entries) else "single")
+    try:
+        site_title = str(spec.get("site_display") or spec.get("site_summary") or "Site").splitlines()[0].strip()
+        dlg.setWindowTitle(f"Spectroscopy site: {site_title}")
+        dlg.setWindowModality(QtCore.Qt.NonModal)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.move(viewer._next_popup_pos())
+    except Exception:
+        pass
+    dlg.show()
+    if hasattr(viewer, "_popup_refs"):
         viewer._popup_refs.append(dlg)
         try:
             dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
@@ -141,6 +183,18 @@ def filter_spectro_browser(viewer):
 
 def on_spectro_browser_selection(viewer, current, _prev):
     return spectro_browser._on_spectro_browser_selection(viewer, current, _prev)
+
+
+def on_spectro_browser_activate(viewer, item, column=0):
+    return spectro_browser._on_spectro_browser_activate(viewer, item, column)
+
+
+def on_spectro_browser_context_menu(viewer, pos):
+    return spectro_browser._on_spectro_browser_context_menu(viewer, pos)
+
+
+def select_first_spectro_browser_match(viewer, predicate=None):
+    return spectro_browser._select_first_browser_match(viewer, predicate=predicate)
 
 
 def update_spectro_stats_label(viewer, stats=None):

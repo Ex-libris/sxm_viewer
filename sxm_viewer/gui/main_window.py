@@ -586,6 +586,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.matrix_spectros = []
         self.files_with_matrix = set()
         self.spectros_by_image = defaultdict(list)
+        self.spectro_sites_by_image = defaultdict(list)
+        self.spectro_site_index = {}
         self._spectros_loaded = False
         self._spectros_loading = False
         self._spectros_pending = False
@@ -1680,6 +1682,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.grid_as_matrix_cb.toggled.connect(self.on_spectro_grid_as_matrix_toggled)
         if getattr(self, "force_single_cb", None) is not None:
             self.force_single_cb.toggled.connect(self.on_spectro_force_single_toggled)
+        if getattr(self, "open_current_site_btn", None) is not None:
+            self.open_current_site_btn.clicked.connect(self.on_open_current_spectro_site)
+        if getattr(self, "review_low_conf_btn", None) is not None:
+            self.review_low_conf_btn.clicked.connect(self.on_review_low_conf_spectros)
         self.clear_spec_selection_btn.clicked.connect(self.on_clear_spec_selection)
         self.tag_ch_btn.clicked.connect(lambda: self.on_manual_tag('constant-height'))
         self.tag_cc_btn.clicked.connect(lambda: self.on_manual_tag('constant-current'))
@@ -2175,6 +2181,11 @@ QLabel:hover {{
             self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_summary_for_file(self, file_key, show_mode=show_mode, quiet=quiet)
 
+    def _open_spectro_summary_for_site(self, spec, file_key="", quiet=False):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        return main_window_spectro.open_spectro_summary_for_site(self, spec, file_key=file_key, quiet=quiet)
+
     def _open_matrix_explorer_for_file(self, file_key):
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
@@ -2540,6 +2551,12 @@ QLabel:hover {{
 
     def _on_spectro_browser_selection(self, current, _prev):
         return main_window_spectro.on_spectro_browser_selection(self, current, _prev)
+
+    def _on_spectro_browser_activate(self, item, column=0):
+        return main_window_spectro.on_spectro_browser_activate(self, item, column)
+
+    def _on_spectro_browser_context_menu(self, pos):
+        return main_window_spectro.on_spectro_browser_context_menu(self, pos)
 
     def _shortcuts_html(self):
         color = "#f0f4ff" if getattr(self, 'dark_mode', False) else "#203050"
@@ -4645,6 +4662,8 @@ QLabel:hover {{
         self.spectros = []
         self.matrix_spectros = []
         self.spectros_by_image = defaultdict(list)
+        self.spectro_sites_by_image = defaultdict(list)
+        self.spectro_site_index = {}
         self.files_with_matrix = set()
         self._spectros_loaded = False
         self._spectros_pending = False
@@ -4730,9 +4749,36 @@ QLabel:hover {{
             return str(value)
 
         lines = ["Spectroscopy details", ""]
-        for key in ("path", "source", "time", "file_mtime", "image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
+        for key in ("path", "source", "time", "file_mtime", "image_key", "primary_image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
             if key in spec:
                 lines.append(f"{key}: {_fmt(spec.get(key))}")
+        site_summary = str(spec.get("site_summary") or "").strip()
+        site_display = str(spec.get("site_display") or "").strip()
+        site_key = str(spec.get("site_key") or "").strip()
+        if site_summary or site_display or site_key:
+            lines.append("")
+            lines.append("Site:")
+            if site_display:
+                lines.append(f"  display: {site_display}")
+            if site_key:
+                lines.append(f"  key: {site_key}")
+            if site_summary:
+                lines.append(f"  summary: {site_summary}")
+        assignment_summary = str(spec.get("assignment_summary") or "").strip()
+        assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+        assignment_reason = str(spec.get("assignment_reason_label") or spec.get("assignment_reason") or "").strip()
+        if assignment_summary or assignment_conf or assignment_reason:
+            lines.append("")
+            lines.append("Assignment:")
+            if assignment_conf:
+                lines.append(f"  confidence: {assignment_conf}")
+            if assignment_reason:
+                lines.append(f"  reason: {assignment_reason}")
+            if assignment_summary:
+                lines.append(f"  summary: {assignment_summary}")
+            shared_keys = spec.get("shared_image_keys") or []
+            if shared_keys:
+                lines.append(f"  shared_image_keys: {_fmt(shared_keys)}")
         channels = spec.get("channels") or {}
         if channels:
             lines.append("")
@@ -7949,8 +7995,248 @@ QLabel:hover {{
             pass
         self._update_matrix_summary_banner()
 
-    def _choose_image_for_spec(self, spec, images, image_extents):
-        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents)
+    def _current_spectro_assignment_target_image_key(self):
+        candidates = []
+        try:
+            if self.last_preview:
+                candidates.append(str(self.last_preview[0]))
+        except Exception:
+            pass
+        try:
+            selected = str(getattr(self, "selected_file_for_thumbs", "") or "").strip()
+            if selected:
+                candidates.append(selected)
+        except Exception:
+            pass
+        image_keys = {
+            str(img.get("path"))
+            for img in list(getattr(self, "image_meta", []) or [])
+            if img and img.get("path")
+        }
+        for key in candidates:
+            if key and key in image_keys:
+                return key
+        return ""
+
+    def _spectro_override_signature(self, spec):
+        if not spec:
+            return None
+        path = str(spec.get("path") or "")
+        if path:
+            try:
+                path = str(Path(path))
+            except Exception:
+                pass
+            if os.name == "nt":
+                path = path.lower()
+        matrix_index = spec.get("matrix_index")
+        try:
+            x_val = round(float(spec.get("x")), 6) if spec.get("x") is not None else None
+        except Exception:
+            x_val = spec.get("x")
+        try:
+            y_val = round(float(spec.get("y")), 6) if spec.get("y") is not None else None
+        except Exception:
+            y_val = spec.get("y")
+        channel_name = str(spec.get("channel_name") or "").strip()
+        source = str(spec.get("source") or "").strip()
+        order_idx = spec.get("order_idx")
+        return (path, matrix_index, x_val, y_val, channel_name, source, order_idx)
+
+    def _resolve_spectro_override_targets(self, specs):
+        originals = list(getattr(self, "spectros", []) or [])
+        if not originals:
+            return []
+        original_ids = {id(spec) for spec in originals}
+        by_signature = defaultdict(list)
+        for original in originals:
+            signature = self._spectro_override_signature(original)
+            if signature is not None:
+                by_signature[signature].append(original)
+        resolved = []
+        seen_ids = set()
+        for spec in list(specs or []):
+            candidates = []
+            if id(spec) in original_ids:
+                candidates = [spec]
+            else:
+                signature = self._spectro_override_signature(spec)
+                candidates = list(by_signature.get(signature) or [])
+            for candidate in candidates:
+                candidate_id = id(candidate)
+                if candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate_id)
+                resolved.append(candidate)
+        return resolved
+
+    def _refresh_spectro_assignment_overrides(self, *, focus_specs=None):
+        self._assign_spectros_to_images()
+        self.matrix_spectros = [spec for spec in self.spectros if spec.get("matrix_index") is not None]
+        self._update_spectro_stats_label()
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        try:
+            if self.last_preview:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        except Exception:
+            pass
+        try:
+            if getattr(self, "spectro_dock", None):
+                self._filter_spectro_browser()
+        except Exception:
+            pass
+        focus_entries = self._resolve_spectro_override_targets(focus_specs or [])
+        if focus_entries:
+            try:
+                self._highlight_spectrum_entry(focus_entries[0])
+            except Exception:
+                pass
+
+    def _apply_spectro_assignment_override(self, specs, image_key=""):
+        targets = self._resolve_spectro_override_targets(specs)
+        if not targets:
+            return
+        image_key = str(image_key or self._current_spectro_assignment_target_image_key() or "").strip()
+        if not image_key:
+            QtWidgets.QMessageBox.information(self, "Spectroscopy", "Open or select an image first, then assign the spectroscopy to it.")
+            return
+        changed = 0
+        for spec in targets:
+            if str(spec.get("assignment_override_image_key") or "") == image_key:
+                continue
+            spec["assignment_override_image_key"] = image_key
+            changed += 1
+        if changed <= 0:
+            return
+        log_status(f"[Spectro] Manual assignment override: {changed} spectrum/s -> {Path(image_key).name}")
+        self._refresh_spectro_assignment_overrides(focus_specs=targets)
+
+    def _clear_spectro_assignment_override(self, specs):
+        targets = self._resolve_spectro_override_targets(specs)
+        if not targets:
+            return
+        changed = 0
+        for spec in targets:
+            if spec.pop("assignment_override_image_key", None) not in (None, ""):
+                changed += 1
+        if changed <= 0:
+            return
+        log_status(f"[Spectro] Cleared manual assignment override on {changed} spectrum/s")
+        self._refresh_spectro_assignment_overrides(focus_specs=targets)
+
+    def _current_spectro_focus_spec(self):
+        for candidate in (
+            getattr(self, "_highlighted_spec", None),
+            getattr(self, "_last_clicked_spec", None),
+        ):
+            if candidate is not None:
+                return candidate
+        current_item = getattr(getattr(self, "spectro_list", None), "currentItem", lambda: None)()
+        if current_item is not None:
+            try:
+                payload = current_item.data(0, QtCore.Qt.UserRole)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                kind = str(payload.get("kind") or "")
+                if kind in {"site", "spec"}:
+                    spec = payload.get("spec")
+                    if spec is not None:
+                        return spec
+        selected = list(getattr(self, "_multi_spec_selection", []) or [])
+        if selected:
+            return selected[0]
+        return None
+
+    def _spec_matches_image_key(self, spec, image_key):
+        image_key = str(image_key or "").strip()
+        if not image_key or not spec:
+            return False
+        primary_key = str(spec.get("image_key") or spec.get("primary_image_key") or "").strip()
+        if primary_key == image_key:
+            return True
+        shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
+        return image_key in shared_keys
+
+    def _set_spectro_browser_filters(self, *, current_image_only=None, low_conf_only=None, z_stacks_only=None, matrix_only=None):
+        for attr, value in (
+            ("spectro_filter_current_image_cb", current_image_only),
+            ("spectro_filter_low_conf_cb", low_conf_only),
+            ("spectro_filter_z_stack_cb", z_stacks_only),
+            ("spectro_filter_matrix_cb", matrix_only),
+        ):
+            widget = getattr(self, attr, None)
+            if widget is None or value is None:
+                continue
+            try:
+                widget.blockSignals(True)
+                widget.setChecked(bool(value))
+                widget.blockSignals(False)
+            except Exception:
+                pass
+
+    def on_open_current_spectro_site(self):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        spec = self._current_spectro_focus_spec()
+        if spec is not None:
+            image_key = str(spec.get("image_key") or spec.get("primary_image_key") or self._current_spectro_assignment_target_image_key() or "")
+            self._open_spectro_summary_for_site(spec, file_key=image_key, quiet=True)
+            try:
+                self._highlight_spectrum_entry(spec)
+            except Exception:
+                pass
+            return
+        image_key = self._current_spectro_assignment_target_image_key()
+        if image_key:
+            self._open_spectro_summary_for_file(image_key, quiet=True)
+            return
+        QtWidgets.QMessageBox.information(self, "Spectroscopy", "Highlight a spectroscopy marker or open an image with assigned spectroscopy first.")
+
+    def on_review_low_conf_spectros(self, current_image_only=False):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        entries = list(getattr(self, "spectros", []) or [])
+        if current_image_only:
+            image_key = self._current_spectro_assignment_target_image_key()
+            entries = [spec for spec in entries if self._spec_matches_image_key(spec, image_key)]
+        low_entries = [
+            spec for spec in entries
+            if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+        ]
+        if not low_entries:
+            scope = " for the current image" if current_image_only else ""
+            QtWidgets.QMessageBox.information(self, "Spectroscopy", f"No low-confidence spectroscopy assignments were found{scope}.")
+            return
+        self.open_spectro_browser(list(getattr(self, "spectros", []) or []))
+        self._set_spectro_browser_filters(
+            current_image_only=bool(current_image_only),
+            low_conf_only=True,
+        )
+        search = getattr(self, "spectro_search", None)
+        if search is not None:
+            try:
+                search.blockSignals(True)
+                search.clear()
+                search.blockSignals(False)
+            except Exception:
+                pass
+        self._filter_spectro_browser()
+        try:
+            main_window_spectro.select_first_spectro_browser_match(
+                self,
+                predicate=lambda payload: str(payload.get("kind") or "") in {"site", "spec"},
+            )
+        except Exception:
+            pass
+        scope_label = "current image" if current_image_only else "folder"
+        log_status(f"[Spectro] Reviewing {len(low_entries)} low-confidence assignment(s) in the {scope_label}")
+
+    def _choose_image_for_spec(self, spec, images, image_extents, *, with_details=False):
+        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents, with_details=with_details)
 
     def _extent_center(self, extent):
         return spectro_controller._extent_center(self, extent)
@@ -8276,6 +8562,15 @@ QLabel:hover {{
         if hit_info.get('label') == 'badge':
             self._open_spectro_summary_for_file(file_key)
             return True
+        if hit_info.get('label') == 'stack-badge':
+            spec = hit_info.get('spec') or {}
+            if spec:
+                self._open_spectro_summary_for_site(spec, file_key=file_key, quiet=True)
+                try:
+                    self._highlight_spectrum_entry(spec)
+                except Exception:
+                    pass
+                return True
         mods = QtCore.Qt.NoModifier
         if event is not None:
             try:
@@ -8307,7 +8602,22 @@ QLabel:hover {{
             rect = info.get('rect')
             if rect and rect.contains(x, y):
                 if info.get('label') == 'badge':
-                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), "Spectroscopy summary")
+                    file_key = str(label_widget.property("file_path") or "")
+                    entries = list((getattr(self, "spectros_by_image", {}) or {}).get(file_key, []) or [])
+                    site_count = len(list((getattr(self, "spectro_sites_by_image", {}) or {}).get(file_key, []) or []))
+                    single_count = sum(1 for entry in entries if entry.get("matrix_index") is None)
+                    matrix_count = sum(1 for entry in entries if entry.get("matrix_index") is not None)
+                    text = (
+                        f"Spectroscopy summary\n"
+                        f"{len(entries)} spectra | {site_count} site" + ("" if site_count == 1 else "s") + "\n"
+                        f"Single {single_count} | Matrix {matrix_count}"
+                    )
+                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), text)
+                    return True
+                if info.get('label') == 'stack-badge':
+                    spec = info.get('spec') or {}
+                    site_summary = str(spec.get("site_summary") or spec.get("xy_stack_summary") or "Site summary").strip()
+                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), site_summary)
                     return True
                 spec = info.get('spec') or {}
                 tooltip = info.get('tooltip')
@@ -8322,6 +8632,16 @@ QLabel:hover {{
                     stack_summary = str(spec.get("xy_stack_summary") or "").strip()
                     if stack_summary:
                         tooltip = f"{tooltip}\n{stack_summary}"
+                    site_display = str(spec.get("site_display") or "").strip()
+                    if site_display:
+                        tooltip = f"{tooltip}\nSite: {site_display}"
+                    assignment_summary = str(spec.get("assignment_summary") or "").strip()
+                    assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+                    if assignment_summary:
+                        if assignment_conf:
+                            tooltip = f"{tooltip}\nAssignment: {assignment_summary} ({assignment_conf})"
+                        else:
+                            tooltip = f"{tooltip}\nAssignment: {assignment_summary}"
                 QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
                 return True
         QtWidgets.QToolTip.hideText()
@@ -8586,9 +8906,24 @@ QLabel:hover {{
         open_act = QtWidgets.QAction("Open spectroscopy", menu)
         open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
         menu.addAction(open_act)
+        site_act = QtWidgets.QAction("Open site summary", menu)
+        site_act.triggered.connect(lambda: self._open_spectro_summary_for_site(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or ""), quiet=True))
+        menu.addAction(site_act)
+        compare_site_act = QtWidgets.QAction("Compare this site", menu)
+        compare_site_act.triggered.connect(lambda: self.spectro_compare_controller.open_site_popup(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or "")))
+        menu.addAction(compare_site_act)
         details_act = QtWidgets.QAction("Show metadata in Details", menu)
         details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
         menu.addAction(details_act)
+        current_image_key = self._current_spectro_assignment_target_image_key()
+        if current_image_key:
+            assign_act = QtWidgets.QAction(f"Assign to current image ({Path(current_image_key).name})", menu)
+            assign_act.triggered.connect(lambda: self._apply_spectro_assignment_override([spec], current_image_key))
+            menu.addAction(assign_act)
+        clear_assign_act = QtWidgets.QAction("Clear manual assignment", menu)
+        clear_assign_act.setEnabled(bool(str(spec.get("assignment_override_image_key") or "").strip()))
+        clear_assign_act.triggered.connect(lambda: self._clear_spectro_assignment_override([spec]))
+        menu.addAction(clear_assign_act)
         add_source_file_menu(menu, spec.get("path"), self)
 
         channels = list((spec.get("channels") or {}).keys())

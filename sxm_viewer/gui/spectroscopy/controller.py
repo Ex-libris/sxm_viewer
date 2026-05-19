@@ -148,6 +148,28 @@ def _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, *, s
     specs_for_image.append(spec)
 
 
+def _assignment_payload(reason, confidence, summary, *, image_key=None):
+    reason_labels = {
+        "manual_override": "Manual override",
+        "preset_image_key": "Preset image reference",
+        "xy_inside_extent_causal_time": "Inside image bounds + acquisition order",
+        "xy_inside_extent": "Inside image bounds",
+        "causal_time": "Acquisition order",
+        "name_hint": "Filename/session hint",
+        "xy_nearest_extent": "Nearest plausible image footprint",
+        "closest_time_fallback": "Closest-time fallback",
+        "first_image_fallback": "First-image fallback",
+        "unknown": "Unknown",
+    }
+    return {
+        "assignment_reason": str(reason or ""),
+        "assignment_reason_label": str(reason_labels.get(str(reason or ""), str(reason or "").replace("_", " ").strip())),
+        "assignment_confidence": str(confidence or ""),
+        "assignment_summary": str(summary or ""),
+        "assignment_image_key": str(image_key or ""),
+    }
+
+
 def _assign_spectros_to_images(viewer):
     """Assign spectroscopy entries to images using time and spatial sanity (prefer in-extent matches)."""
     viewer.spectros_by_image = defaultdict(list)
@@ -184,37 +206,93 @@ def _assign_spectros_to_images(viewer):
 
     for spec in specs:
         primary_match = None
+        assignment_meta = None
+        override_key = spec.get("assignment_override_image_key")
+        if override_key:
+            mapped = image_paths_lower.get(str(override_key).lower())
+            if mapped:
+                primary_match = image_by_key.get(mapped)
+                assignment_meta = _assignment_payload(
+                    "manual_override",
+                    "high",
+                    "Assigned to an image selected manually by the user.",
+                    image_key=mapped,
+                )
         preset_key = spec.get('image_key')
-        if preset_key:
+        if primary_match is None and preset_key:
             mapped = image_paths_lower.get(str(preset_key).lower())
             if mapped:
                 primary_match = image_by_key.get(mapped)
+                assignment_meta = _assignment_payload(
+                    "preset_image_key",
+                    "high",
+                    "Assigned from an existing image reference already stored on this spectrum.",
+                    image_key=mapped,
+                )
             else:
                 if spec.get('source') == 'nanonis_3ds':
                     debug_nanonis["total"] += 1
                     debug_nanonis["missing"] += 1
-        match = primary_match or viewer._choose_image_for_spec(spec, images, image_extents)
+        match = primary_match
+        if match is None:
+            match, assignment_meta = viewer._choose_image_for_spec(spec, images, image_extents, with_details=True)
         if not match and images:
             # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
             st = _spec_time_for_assignment(spec)
             if st is not None:
                 try:
                     match = min(images, key=lambda img: abs((img.get('time') or datetime.min) - st))
+                    assignment_meta = _assignment_payload(
+                        "closest_time_fallback",
+                        "low",
+                        "Fallback assignment to the closest image in time because stronger spatial or filename cues were unavailable.",
+                        image_key=str(match.get("path") or ""),
+                    )
                 except Exception:
                     match = images[0]
+                    assignment_meta = _assignment_payload(
+                        "first_image_fallback",
+                        "low",
+                        "Fallback assignment to the first available image because the time-based fallback failed.",
+                        image_key=str(match.get("path") or ""),
+                    )
             else:
                 match = images[0]
+                assignment_meta = _assignment_payload(
+                    "first_image_fallback",
+                    "low",
+                    "Fallback assignment to the first available image because this spectrum had no usable assignment time.",
+                    image_key=str(match.get("path") or ""),
+                )
         if not match and images:
             match = images[0]
+            assignment_meta = _assignment_payload(
+                "first_image_fallback",
+                "low",
+                "Fallback assignment to the first available image because no stronger match was found.",
+                image_key=str(match.get("path") or ""),
+            )
         if not match:
             continue
         image_key = str(match['path'])
+        assignment_meta = assignment_meta or _assignment_payload(
+            "unknown",
+            "low",
+            "Assigned without recorded provenance.",
+            image_key=image_key,
+        )
+        spec.update(assignment_meta)
         target_keys = [image_key]
         if share_repeat_scans:
             target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
         spec["primary_image_key"] = image_key
         spec["shared_image_keys"] = list(target_keys)
         spec["shared_repeat_assignment"] = len(target_keys) > 1
+        if spec["shared_repeat_assignment"]:
+            spec["assignment_summary"] = (
+                f"{spec.get('assignment_summary') or 'Assigned to one primary image.'} "
+                "Also shown on overlapping repeat scans."
+            ).strip()
         _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, shared_keys=target_keys)
         for shared_key in target_keys:
             if str(shared_key) == image_key:
@@ -232,6 +310,12 @@ def _assign_spectros_to_images(viewer):
             target_keys = [image_key]
             if share_repeat_scans:
                 target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
+            spec.update(_assignment_payload(
+                "first_image_fallback",
+                "low",
+                "Fallback assignment to the first available image because no spectra could be matched normally.",
+                image_key=image_key,
+            ))
             spec["primary_image_key"] = image_key
             spec["shared_image_keys"] = list(target_keys)
             spec["shared_repeat_assignment"] = len(target_keys) > 1
@@ -443,6 +527,182 @@ def _extract_spec_z_level(spec):
     return None, None, None
 
 
+def _clear_site_annotations(spec):
+    for key in (
+        "site_key",
+        "site_image_key",
+        "site_display",
+        "site_summary",
+        "site_member_count",
+        "site_trace_count",
+        "site_channel_count",
+        "site_channels",
+        "site_has_matrix",
+        "site_has_z_stack",
+        "site_z_label",
+        "site_z_min_nm",
+        "site_z_max_nm",
+        "site_x_nm",
+        "site_y_nm",
+    ):
+        spec.pop(key, None)
+
+
+def _site_sort_tuple(site):
+    try:
+        return (
+            float(site.get("y_nm")) if site.get("y_nm") is not None else float("inf"),
+            float(site.get("x_nm")) if site.get("x_nm") is not None else float("inf"),
+            str(site.get("display") or ""),
+        )
+    except Exception:
+        return (float("inf"), float("inf"), str(site.get("display") or ""))
+
+
+def _site_key_for_spec(spec, *, image_key, xy_tol_nm=0.05):
+    image_key = str(image_key or "")
+    try:
+        sx = float(spec.get("x"))
+        sy = float(spec.get("y"))
+        qx = int(round(sx / xy_tol_nm))
+        qy = int(round(sy / xy_tol_nm))
+        return f"{image_key}::xy:{qx}:{qy}", sx, sy
+    except Exception:
+        pass
+    if is_matrix_file_entry(spec):
+        row = spec.get("grid_row")
+        col = spec.get("grid_col")
+        if row is not None and col is not None:
+            return f"{image_key}::grid:{row}:{col}", None, None
+    identity = _spec_identity_key(spec) or f"{image_key}::spec:{id(spec)}"
+    return f"{image_key}::spec:{identity}", None, None
+
+
+def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
+    member_count = len(members)
+    channels = []
+    channel_seen = set()
+    has_matrix = False
+    has_z_stack = False
+    z_values = []
+    z_label = None
+    for spec in members:
+        has_matrix = has_matrix or bool(spec.get("matrix_index") is not None or is_matrix_file_entry(spec))
+        has_z_stack = has_z_stack or bool(spec.get("xy_stack_z_varies"))
+        for name in list((spec.get("channels") or {}).keys()) + list(spec.get("available_channels") or []):
+            name = str(name or "").strip()
+            if not name or name in channel_seen:
+                continue
+            channel_seen.add(name)
+            channels.append(name)
+        level, label, _unit = _extract_spec_z_level(spec)
+        if level is not None:
+            z_values.append(float(level))
+            if z_label is None and label:
+                z_label = str(label)
+    channel_count = len(channels)
+    if x_nm is not None and y_nm is not None:
+        display = f"XY {x_nm:.1f} / {y_nm:.1f} nm"
+    elif has_matrix and member_count == 1:
+        spec0 = members[0]
+        display = f"Matrix site {spec0.get('grid_row', '?')}/{spec0.get('grid_col', '?')}"
+    else:
+        display = f"Site {site_key.split('::')[-1]}"
+    parts = [f"{member_count} " + ("spectrum" if member_count == 1 else "spectra")]
+    if channel_count:
+        parts.append(f"{channel_count} channel" + ("" if channel_count == 1 else "s"))
+    if has_matrix:
+        parts.append("matrix-backed")
+    if has_z_stack and z_values:
+        z_min = min(z_values)
+        z_max = max(z_values)
+        parts.append(f"{z_label or 'Z'} {z_min:.3f} to {z_max:.3f} nm")
+    elif has_z_stack:
+        parts.append("varying Z")
+    summary = f"{display}\n" + " | ".join(parts)
+    payload = {
+        "site_key": site_key,
+        "site_image_key": str(image_key or ""),
+        "site_display": display,
+        "site_summary": summary,
+        "site_member_count": member_count,
+        "site_trace_count": member_count,
+        "site_channel_count": channel_count,
+        "site_channels": list(channels),
+        "site_has_matrix": bool(has_matrix),
+        "site_has_z_stack": bool(has_z_stack),
+        "site_z_label": str(z_label or ""),
+        "site_z_min_nm": min(z_values) if z_values else None,
+        "site_z_max_nm": max(z_values) if z_values else None,
+        "site_x_nm": x_nm,
+        "site_y_nm": y_nm,
+    }
+    return payload
+
+
+def _build_spectro_sites(viewer):
+    originals = list(getattr(viewer, "spectros", []) or [])
+    entries_by_image = getattr(viewer, "spectros_by_image", {}) or {}
+    if not originals and not entries_by_image:
+        viewer.spectro_sites_by_image = defaultdict(list)
+        viewer.spectro_site_index = {}
+        return
+    for spec in originals:
+        _clear_site_annotations(spec)
+    groups_by_image = OrderedDict()
+    primary_site_payloads = {}
+    site_index = {}
+    for image_key, entries in list(entries_by_image.items()):
+        image_key = str(image_key or "")
+        groups = OrderedDict()
+        for spec in list(entries or []):
+            _clear_site_annotations(spec)
+            site_key, sx, sy = _site_key_for_spec(spec, image_key=image_key)
+            group = groups.setdefault(site_key, {"members": [], "x_nm": sx, "y_nm": sy})
+            if group.get("x_nm") is None and sx is not None:
+                group["x_nm"] = sx
+            if group.get("y_nm") is None and sy is not None:
+                group["y_nm"] = sy
+            group["members"].append(spec)
+        sites = []
+        for site_key, group in groups.items():
+            payload = _derive_site_payload(site_key, image_key, group["members"], group.get("x_nm"), group.get("y_nm"))
+            site = {
+                "key": site_key,
+                "image_key": image_key,
+                "display": payload["site_display"],
+                "summary": payload["site_summary"],
+                "members": list(group["members"]),
+                "x_nm": payload["site_x_nm"],
+                "y_nm": payload["site_y_nm"],
+                "channels": list(payload["site_channels"]),
+                "channel_count": payload["site_channel_count"],
+                "trace_count": payload["site_trace_count"],
+                "has_matrix": payload["site_has_matrix"],
+                "has_z_stack": payload["site_has_z_stack"],
+                "z_label": payload["site_z_label"],
+                "z_min_nm": payload["site_z_min_nm"],
+                "z_max_nm": payload["site_z_max_nm"],
+            }
+            sites.append(site)
+            site_index[site_key] = site
+            for spec in group["members"]:
+                spec.update(payload)
+                if str(spec.get("primary_image_key") or spec.get("image_key") or "") == image_key:
+                    identity = _spec_identity_key(spec)
+                    if identity:
+                        primary_site_payloads[identity] = dict(payload)
+        sites.sort(key=_site_sort_tuple)
+        groups_by_image[image_key] = sites
+    for spec in originals:
+        identity = _spec_identity_key(spec)
+        payload = primary_site_payloads.get(identity)
+        if payload:
+            spec.update(payload)
+    viewer.spectro_sites_by_image = defaultdict(list, groups_by_image)
+    viewer.spectro_site_index = site_index
+
+
 def _annotate_xy_stacks(viewer):
     originals = list(getattr(viewer, "spectros", []) or [])
     if not originals:
@@ -530,10 +790,18 @@ def _annotate_xy_stacks(viewer):
             ann = annotations.get(identity)
             if ann:
                 spec.update(ann)
+    _build_spectro_sites(viewer)
 
 
-def _choose_image_for_spec(viewer, spec, images, image_extents):
+def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=False):
     """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
+    def _result(match, reason, confidence, summary):
+        image_key = str(match.get("path") or "") if match else ""
+        details = _assignment_payload(reason, confidence, summary, image_key=image_key)
+        if with_details:
+            return match, details
+        return match
+
     st = _spec_time_for_assignment(spec)
     sx = spec.get('x'); sy = spec.get('y')
     if _is_dat_spec(spec):
@@ -547,12 +815,27 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             if candidates:
                 timed_match = _image_before_spec_time(candidates, st)
                 if timed_match is not None:
-                    return timed_match
-                return candidates[0]
+                    return _result(
+                        timed_match,
+                        "xy_inside_extent_causal_time",
+                        "high",
+                        "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
+                    )
+                return _result(
+                    candidates[0],
+                    "xy_inside_extent",
+                    "high",
+                    "Assigned to an image whose field of view contains the spectrum position.",
+                )
         # Next, prefer time ordering for .dat when coordinates don't match extents.
         time_match = _image_before_spec_time(images, st)
         if time_match is not None:
-            return time_match
+            return _result(
+                time_match,
+                "causal_time",
+                "medium",
+                "Assigned to the latest image acquired at or before the spectrum time.",
+            )
         hint_match = None
         hint_score = -1
         try:
@@ -561,9 +844,19 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             # Backward compatibility if viewer overrides without new arg
             hint_match = viewer._match_spec_to_image_by_hint(spec, images)
         if hint_match is not None and hint_score is not None and hint_score >= 60:
-            return hint_match
+            return _result(
+                hint_match,
+                "name_hint",
+                "medium",
+                "Assigned by a strong filename/session naming hint after spatial and time checks were inconclusive.",
+            )
         if hint_match is not None:
-            return hint_match
+            return _result(
+                hint_match,
+                "name_hint",
+                "low",
+                "Assigned by a weak filename/session naming hint because stronger cues were unavailable.",
+            )
     candidates = []
     # First pass: images whose extents contain the point (with a small margin)
     if sx is not None and sy is not None:
@@ -574,8 +867,18 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
         if candidates:
             timed_match = _image_before_spec_time(candidates, st)
             if timed_match is not None:
-                return timed_match
-            return candidates[0]
+                return _result(
+                    timed_match,
+                    "xy_inside_extent_causal_time",
+                    "high",
+                    "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
+                )
+            return _result(
+                candidates[0],
+                "xy_inside_extent",
+                "high",
+                "Assigned to an image whose field of view contains the spectrum position.",
+            )
     # Second pass: closest by space (even if slightly outside), then by time
     if sx is not None and sy is not None:
         scored = []
@@ -595,7 +898,12 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
             # ensure distance is not absurdly large compared to image span
             ext = image_extents.get(str(best['path']))
             if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=1.0):
-                return best
+                return _result(
+                    best,
+                    "xy_nearest_extent",
+                    "medium",
+                    "Assigned to the nearest plausible image footprint because the spectrum fell outside all image bounds.",
+                )
     # Fallback: time-ordered + name hints
     if st:
         try:
@@ -607,8 +915,23 @@ def _choose_image_for_spec(viewer, spec, images, image_extents):
         except Exception:
             match = None
         if match:
-            return match
-    return viewer._match_spec_to_image_by_hint(spec, images)
+            return _result(
+                match,
+                "causal_time",
+                "medium",
+                "Assigned to the latest image acquired at or before the spectrum time.",
+            )
+    hint_match = viewer._match_spec_to_image_by_hint(spec, images)
+    if hint_match is not None:
+        return _result(
+            hint_match,
+            "name_hint",
+            "low",
+            "Assigned by filename/session naming similarity because spatial and time cues were unavailable.",
+        )
+    if with_details:
+        return None, None
+    return None
 
 
 def _image_before_spec_time(images, spec_time):
