@@ -159,7 +159,23 @@ class SpectroCompareController:
         if not viewer._spectros_loaded:
             viewer.ensure_spectros_loaded(refresh=False)
         title = self._stack_popup_title(spec, len(specs))
-        return spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+        dlg = spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+        self._configure_compare_popup(dlg, spec, specs)
+        return dlg
+
+    def open_site_popup(self, spec, file_key=""):
+        viewer = self.viewer
+        specs = self.site_specs_for_popup(spec, file_key=file_key)
+        if len(specs) < 2:
+            if viewer._is_matrix_spec(spec) and file_key:
+                return viewer._open_matrix_explorer_for_file(file_key)
+            return self.open_single_popup(spec)
+        if not viewer._spectros_loaded:
+            viewer.ensure_spectros_loaded(refresh=False)
+        title = self._site_popup_title(spec, len(specs))
+        dlg = spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+        self._configure_compare_popup(dlg, spec, specs)
+        return dlg
 
     def open_multi_popup(self):
         viewer = self.viewer
@@ -200,6 +216,32 @@ class SpectroCompareController:
         members.sort(key=self._stack_sort_key)
         return members
 
+    def site_specs_for_popup(self, spec, file_key=""):
+        if not spec:
+            return []
+        site_key = str(spec.get("site_key") or "").strip()
+        if not site_key:
+            return self.stack_specs_for_popup(spec, file_key=file_key)
+        viewer = self.viewer
+        site_index = getattr(viewer, "spectro_site_index", {}) or {}
+        site = site_index.get(site_key)
+        members = list(site.get("members") or []) if isinstance(site, dict) else []
+        if not members:
+            bucket = list((getattr(viewer, "spectros_by_image", {}) or {}).get(str(file_key or spec.get("image_key") or ""), []) or [])
+            members = [entry for entry in bucket if str(entry.get("site_key") or "").strip() == site_key]
+        deduped = []
+        seen = set()
+        for entry in members:
+            ident = self.spec_identity_key(entry) or str(Path(str(entry.get("path") or "")))
+            if ident in seen:
+                continue
+            seen.add(ident)
+            deduped.append(entry)
+        if not deduped:
+            return [spec]
+        deduped.sort(key=self._stack_sort_key)
+        return deduped
+
     def _stack_popup_title(self, spec, count):
         display = str(spec.get("xy_stack_display") or "").strip() or f"x{count}"
         x_val = spec.get("x")
@@ -212,6 +254,53 @@ class SpectroCompareController:
         except Exception:
             position = ""
         return f"Spectroscopy stack: {display}{position}"
+
+    def _site_popup_title(self, spec, count):
+        display = str(spec.get("site_display") or "").strip()
+        if not display:
+            x_val = spec.get("x")
+            y_val = spec.get("y")
+            try:
+                if x_val is not None and y_val is not None:
+                    display = f"XY {float(x_val):.1f} / {float(y_val):.1f} nm"
+            except Exception:
+                display = ""
+        if display:
+            return f"Spectroscopy site: {display} ({count} traces)"
+        return f"Spectroscopy site ({count} traces)"
+
+    def _configure_compare_popup(self, dlg, seed_spec, specs):
+        if dlg is None:
+            return
+        preferred_channel = str((seed_spec or {}).get("channel_name") or "").strip()
+        try:
+            if preferred_channel and hasattr(dlg, "channel_combo"):
+                idx = dlg.channel_combo.findText(preferred_channel)
+                if idx >= 0 and dlg.channel_combo.currentIndex() != idx:
+                    dlg.channel_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        has_z_stack = any(bool(spec.get("site_has_z_stack") or spec.get("xy_stack_z_varies")) for spec in list(specs or []))
+        if not has_z_stack:
+            return
+        try:
+            if hasattr(dlg, "position_inset_cb") and not dlg.position_inset_cb.isChecked():
+                dlg.position_inset_cb.setChecked(True)
+        except Exception:
+            pass
+        try:
+            if hasattr(dlg, "waterfall_cb") and not dlg.waterfall_cb.isChecked():
+                dlg.waterfall_cb.setChecked(True)
+        except Exception:
+            pass
+        try:
+            if hasattr(dlg, "offset_spin") and hasattr(dlg, "_estimate_channel_scale") and hasattr(dlg, "channel_combo"):
+                channel = dlg.channel_combo.currentText()
+                scale = float(dlg._estimate_channel_scale(channel))
+                if math.isfinite(scale) and scale > 0 and abs(float(dlg.offset_spin.value())) <= 1e-18:
+                    dlg.offset_spin.setValue(scale * 0.35)
+        except Exception:
+            pass
 
     @staticmethod
     def _stack_sort_key(spec):

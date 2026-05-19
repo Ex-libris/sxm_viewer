@@ -150,6 +150,7 @@ def _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, *, s
 
 def _assignment_payload(reason, confidence, summary, *, image_key=None):
     reason_labels = {
+        "manual_override": "Manual override",
         "preset_image_key": "Preset image reference",
         "xy_inside_extent_causal_time": "Inside image bounds + acquisition order",
         "xy_inside_extent": "Inside image bounds",
@@ -206,8 +207,19 @@ def _assign_spectros_to_images(viewer):
     for spec in specs:
         primary_match = None
         assignment_meta = None
+        override_key = spec.get("assignment_override_image_key")
+        if override_key:
+            mapped = image_paths_lower.get(str(override_key).lower())
+            if mapped:
+                primary_match = image_by_key.get(mapped)
+                assignment_meta = _assignment_payload(
+                    "manual_override",
+                    "high",
+                    "Assigned to an image selected manually by the user.",
+                    image_key=mapped,
+                )
         preset_key = spec.get('image_key')
-        if preset_key:
+        if primary_match is None and preset_key:
             mapped = image_paths_lower.get(str(preset_key).lower())
             if mapped:
                 primary_match = image_by_key.get(mapped)
@@ -515,6 +527,182 @@ def _extract_spec_z_level(spec):
     return None, None, None
 
 
+def _clear_site_annotations(spec):
+    for key in (
+        "site_key",
+        "site_image_key",
+        "site_display",
+        "site_summary",
+        "site_member_count",
+        "site_trace_count",
+        "site_channel_count",
+        "site_channels",
+        "site_has_matrix",
+        "site_has_z_stack",
+        "site_z_label",
+        "site_z_min_nm",
+        "site_z_max_nm",
+        "site_x_nm",
+        "site_y_nm",
+    ):
+        spec.pop(key, None)
+
+
+def _site_sort_tuple(site):
+    try:
+        return (
+            float(site.get("y_nm")) if site.get("y_nm") is not None else float("inf"),
+            float(site.get("x_nm")) if site.get("x_nm") is not None else float("inf"),
+            str(site.get("display") or ""),
+        )
+    except Exception:
+        return (float("inf"), float("inf"), str(site.get("display") or ""))
+
+
+def _site_key_for_spec(spec, *, image_key, xy_tol_nm=0.05):
+    image_key = str(image_key or "")
+    try:
+        sx = float(spec.get("x"))
+        sy = float(spec.get("y"))
+        qx = int(round(sx / xy_tol_nm))
+        qy = int(round(sy / xy_tol_nm))
+        return f"{image_key}::xy:{qx}:{qy}", sx, sy
+    except Exception:
+        pass
+    if is_matrix_file_entry(spec):
+        row = spec.get("grid_row")
+        col = spec.get("grid_col")
+        if row is not None and col is not None:
+            return f"{image_key}::grid:{row}:{col}", None, None
+    identity = _spec_identity_key(spec) or f"{image_key}::spec:{id(spec)}"
+    return f"{image_key}::spec:{identity}", None, None
+
+
+def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
+    member_count = len(members)
+    channels = []
+    channel_seen = set()
+    has_matrix = False
+    has_z_stack = False
+    z_values = []
+    z_label = None
+    for spec in members:
+        has_matrix = has_matrix or bool(spec.get("matrix_index") is not None or is_matrix_file_entry(spec))
+        has_z_stack = has_z_stack or bool(spec.get("xy_stack_z_varies"))
+        for name in list((spec.get("channels") or {}).keys()) + list(spec.get("available_channels") or []):
+            name = str(name or "").strip()
+            if not name or name in channel_seen:
+                continue
+            channel_seen.add(name)
+            channels.append(name)
+        level, label, _unit = _extract_spec_z_level(spec)
+        if level is not None:
+            z_values.append(float(level))
+            if z_label is None and label:
+                z_label = str(label)
+    channel_count = len(channels)
+    if x_nm is not None and y_nm is not None:
+        display = f"XY {x_nm:.1f} / {y_nm:.1f} nm"
+    elif has_matrix and member_count == 1:
+        spec0 = members[0]
+        display = f"Matrix site {spec0.get('grid_row', '?')}/{spec0.get('grid_col', '?')}"
+    else:
+        display = f"Site {site_key.split('::')[-1]}"
+    parts = [f"{member_count} " + ("spectrum" if member_count == 1 else "spectra")]
+    if channel_count:
+        parts.append(f"{channel_count} channel" + ("" if channel_count == 1 else "s"))
+    if has_matrix:
+        parts.append("matrix-backed")
+    if has_z_stack and z_values:
+        z_min = min(z_values)
+        z_max = max(z_values)
+        parts.append(f"{z_label or 'Z'} {z_min:.3f} to {z_max:.3f} nm")
+    elif has_z_stack:
+        parts.append("varying Z")
+    summary = f"{display}\n" + " | ".join(parts)
+    payload = {
+        "site_key": site_key,
+        "site_image_key": str(image_key or ""),
+        "site_display": display,
+        "site_summary": summary,
+        "site_member_count": member_count,
+        "site_trace_count": member_count,
+        "site_channel_count": channel_count,
+        "site_channels": list(channels),
+        "site_has_matrix": bool(has_matrix),
+        "site_has_z_stack": bool(has_z_stack),
+        "site_z_label": str(z_label or ""),
+        "site_z_min_nm": min(z_values) if z_values else None,
+        "site_z_max_nm": max(z_values) if z_values else None,
+        "site_x_nm": x_nm,
+        "site_y_nm": y_nm,
+    }
+    return payload
+
+
+def _build_spectro_sites(viewer):
+    originals = list(getattr(viewer, "spectros", []) or [])
+    entries_by_image = getattr(viewer, "spectros_by_image", {}) or {}
+    if not originals and not entries_by_image:
+        viewer.spectro_sites_by_image = defaultdict(list)
+        viewer.spectro_site_index = {}
+        return
+    for spec in originals:
+        _clear_site_annotations(spec)
+    groups_by_image = OrderedDict()
+    primary_site_payloads = {}
+    site_index = {}
+    for image_key, entries in list(entries_by_image.items()):
+        image_key = str(image_key or "")
+        groups = OrderedDict()
+        for spec in list(entries or []):
+            _clear_site_annotations(spec)
+            site_key, sx, sy = _site_key_for_spec(spec, image_key=image_key)
+            group = groups.setdefault(site_key, {"members": [], "x_nm": sx, "y_nm": sy})
+            if group.get("x_nm") is None and sx is not None:
+                group["x_nm"] = sx
+            if group.get("y_nm") is None and sy is not None:
+                group["y_nm"] = sy
+            group["members"].append(spec)
+        sites = []
+        for site_key, group in groups.items():
+            payload = _derive_site_payload(site_key, image_key, group["members"], group.get("x_nm"), group.get("y_nm"))
+            site = {
+                "key": site_key,
+                "image_key": image_key,
+                "display": payload["site_display"],
+                "summary": payload["site_summary"],
+                "members": list(group["members"]),
+                "x_nm": payload["site_x_nm"],
+                "y_nm": payload["site_y_nm"],
+                "channels": list(payload["site_channels"]),
+                "channel_count": payload["site_channel_count"],
+                "trace_count": payload["site_trace_count"],
+                "has_matrix": payload["site_has_matrix"],
+                "has_z_stack": payload["site_has_z_stack"],
+                "z_label": payload["site_z_label"],
+                "z_min_nm": payload["site_z_min_nm"],
+                "z_max_nm": payload["site_z_max_nm"],
+            }
+            sites.append(site)
+            site_index[site_key] = site
+            for spec in group["members"]:
+                spec.update(payload)
+                if str(spec.get("primary_image_key") or spec.get("image_key") or "") == image_key:
+                    identity = _spec_identity_key(spec)
+                    if identity:
+                        primary_site_payloads[identity] = dict(payload)
+        sites.sort(key=_site_sort_tuple)
+        groups_by_image[image_key] = sites
+    for spec in originals:
+        identity = _spec_identity_key(spec)
+        payload = primary_site_payloads.get(identity)
+        if payload:
+            spec.update(payload)
+    viewer.spectro_sites_by_image = defaultdict(list, groups_by_image)
+    viewer.spectro_site_index = site_index
+
+
 def _annotate_xy_stacks(viewer):
     originals = list(getattr(viewer, "spectros", []) or [])
     if not originals:
@@ -602,6 +790,7 @@ def _annotate_xy_stacks(viewer):
             ann = annotations.get(identity)
             if ann:
                 spec.update(ann)
+    _build_spectro_sites(viewer)
 
 
 def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=False):
