@@ -285,6 +285,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._recent_svg_molecule_paths = []
         self._recent_molecule_cb = None
         self._recent_svg_molecule_cb = None
+        self._last_svg_molecule_dir = ""
+        self._last_svg_molecule_dir_cb = None
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_background = None
@@ -6724,7 +6726,9 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _load_svg_molecule_dialog(self):
         start_dir = ""
-        if self._recent_svg_molecule_paths:
+        if self._last_svg_molecule_dir:
+            start_dir = str(self._last_svg_molecule_dir)
+        elif self._recent_svg_molecule_paths:
             start_dir = str(Path(self._recent_svg_molecule_paths[0]).parent)
         elif MultiPreviewCanvas._RECENT_SVG_MOLECULES:
             start_dir = str(Path(MultiPreviewCanvas._RECENT_SVG_MOLECULES[0]).parent)
@@ -6737,6 +6741,12 @@ class MultiPreviewCanvas(FigureCanvas):
             "XYZ Files (*.xyz);;ChemDraw XML (*.cdxml);;CML Files (*.cml);;All Files (*)",
         )
         if path:
+            try:
+                self._last_svg_molecule_dir = str(Path(path).resolve().parent)
+                if callable(self._last_svg_molecule_dir_cb):
+                    self._last_svg_molecule_dir_cb(self._last_svg_molecule_dir)
+            except Exception:
+                pass
             self.add_svg_molecule(path)
 
     def _load_molecule_default_style(self):
@@ -6899,12 +6909,15 @@ class MultiPreviewCanvas(FigureCanvas):
             self._active_svg_molecule_idx = len(self.svg_molecules) - 1
             try:
                 norm = str(Path(path).resolve())
+                self._last_svg_molecule_dir = str(Path(norm).parent)
                 for lst in (self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES):
                     if norm in lst:
                         lst.remove(norm)
                     lst.insert(0, norm)
                     if len(lst) > 8:
                         del lst[8:]
+                if callable(self._last_svg_molecule_dir_cb):
+                    self._last_svg_molecule_dir_cb(self._last_svg_molecule_dir)
                 if callable(self._recent_svg_molecule_cb):
                     self._recent_svg_molecule_cb(self.get_recent_svg_molecule_paths())
             except Exception:
@@ -6942,6 +6955,18 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_recent_svg_molecule_callback(self, cb):
         self._recent_svg_molecule_cb = cb
+
+    def set_last_svg_molecule_dir(self, path):
+        try:
+            self._last_svg_molecule_dir = str(Path(path).resolve()) if path else ""
+        except Exception:
+            self._last_svg_molecule_dir = str(path or "")
+
+    def get_last_svg_molecule_dir(self):
+        return str(getattr(self, "_last_svg_molecule_dir", "") or "")
+
+    def set_last_svg_molecule_dir_callback(self, cb):
+        self._last_svg_molecule_dir_cb = cb
 
     def _pick_color(self, initial_hex: str | None = None) -> str | None:
         """Show a QColorDialog and return a hex string or None."""
