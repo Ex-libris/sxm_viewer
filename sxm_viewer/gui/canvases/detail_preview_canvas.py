@@ -35,6 +35,7 @@ from .molecular_overlay import (
     available_atom_palettes,
     normalize_molecule_render_style,
 )
+from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SUFFIXES
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
@@ -72,6 +73,7 @@ except Exception:  # pragma: no cover - optional dependency
 _FIXED_CROP_HISTORY_LIMIT = 96
 _UNDO_HISTORY_LIMIT = 24
 _MOLECULE_FILE_EXTS = {".xyz", ".pdb", ".mol"}
+_SVG_MOLECULE_FILE_EXTS = set(_SUPPORTED_2D_STRUCTURE_SUFFIXES)
 _DEFAULT_MOLECULE_STYLE = {
     "display_mode": "Bonds Only",
     "render_style": "licorice",
@@ -89,6 +91,7 @@ _DEFAULT_MOLECULE_STYLE = {
 
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
+    _RECENT_SVG_MOLECULES = []
     _DRAG_VIEW_SNAPSHOTS = {}
     _DRAG_VIEW_SNAPSHOT_LIMIT = 32
 
@@ -279,7 +282,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._default_bond_color = (0.9, 0.9, 0.9)
         self._bond_color_mode = 'default'  # default | single | by_atoms
         self._recent_molecule_paths = []
+        self._recent_svg_molecule_paths = []
         self._recent_molecule_cb = None
+        self._recent_svg_molecule_cb = None
         self._angle_dragging = None
         self._angle_cids = []
         self._angle_background = None
@@ -331,6 +336,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._molecule_gizmo_timer.timeout.connect(self._on_molecule_gizmo_timeout)
         self._show_molecule_shadow = bool(default_style.get("show_shadows", False))
         self.show_molecules = True
+        self.svg_molecules = []
+        self._active_svg_molecule_idx = None
+        self._svg_molecule_drag = None
+        self._svg_molecule_artists = []
         self._profile_background = None
         self._active_profile_original_color = None
         self._profile_blit_active = False
@@ -478,26 +487,67 @@ class MultiPreviewCanvas(FigureCanvas):
         if preset not in {"focus", "analysis", "publication"}:
             return
         self.push_undo_state(f"preset:{preset}")
-        if preset == "focus":
-            self._show_ticks = False
-            self._show_colorbar = False
-            self._show_title = False
-            self._show_profile_overlays = False
-            self._show_angle_overlays = False
-        elif preset == "analysis":
-            self._show_ticks = True
-            self._show_colorbar = True
-            self._show_title = True
-            self._show_profile_overlays = True
-            self._show_angle_overlays = True
+        preset_state = {
+            "focus": {
+                "show_ticks": False,
+                "show_colorbar": False,
+                "show_title": False,
+                "show_profile_overlays": False,
+                "show_angle_overlays": False,
+                "show_acquisition_overlay": False,
+                "show_shortcut_hint": False,
+                "scale_bar_enabled": False,
+                "frame_fill_mode": True,
+                "colorbar_orientation": "vertical",
+            },
+            "analysis": {
+                "show_ticks": True,
+                "show_colorbar": True,
+                "show_title": True,
+                "show_profile_overlays": True,
+                "show_angle_overlays": True,
+                "show_acquisition_overlay": True,
+                "show_shortcut_hint": False,
+                "scale_bar_enabled": True,
+                "frame_fill_mode": False,
+                "colorbar_orientation": "vertical",
+            },
+            "publication": {
+                "show_ticks": False,
+                "show_colorbar": False,
+                "show_title": False,
+                "show_profile_overlays": False,
+                "show_angle_overlays": False,
+                "show_acquisition_overlay": False,
+                "show_shortcut_hint": False,
+                "scale_bar_enabled": True,
+                "frame_fill_mode": False,
+                "colorbar_orientation": "vertical",
+            },
+        }[preset]
+        self._show_ticks = bool(preset_state["show_ticks"])
+        self._show_colorbar = bool(preset_state["show_colorbar"])
+        self._show_title = bool(preset_state["show_title"])
+        self._show_profile_overlays = bool(preset_state["show_profile_overlays"])
+        self._show_angle_overlays = bool(preset_state["show_angle_overlays"])
+        self._show_acquisition_overlay = bool(preset_state["show_acquisition_overlay"])
+        self._show_shortcut_hint = bool(preset_state["show_shortcut_hint"])
+        self._colorbar_orientation = str(preset_state["colorbar_orientation"])
+        self.scale_bar_enabled = bool(preset_state["scale_bar_enabled"])
+        self._frame_fill_mode = bool(preset_state["frame_fill_mode"])
+        if self.scale_bar_enabled:
+            self._connect_scale_bar_events()
         else:
-            self._show_ticks = False
-            self._show_colorbar = True
-            self._show_title = True
-            self._show_profile_overlays = False
-            self._show_angle_overlays = False
+            self._disconnect_scale_bar_events()
+        if not self._show_shortcut_hint:
+            self._clear_shortcut_hint_artist()
+        if self._frame_fill_mode:
+            self._fit_to_canvas = False
+        else:
+            self._frame_fill_prev_state = None
         self._apply_profile_visibility()
         self._apply_angle_visibility()
+        self._refresh_scale_bars()
         self._redraw()
         self._notify_views_callback()
 
@@ -935,6 +985,20 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
         self._redraw()
 
+    def export_svg_molecule_state(self):
+        return [overlay.to_dict() for overlay in (self.svg_molecules or [])]
+
+    def import_svg_molecule_state(self, state):
+        self.svg_molecules = []
+        for entry in state or []:
+            try:
+                self.svg_molecules.append(SvgMoleculeOverlay.from_dict(entry))
+            except Exception:
+                continue
+        if self._active_svg_molecule_idx is not None and self._active_svg_molecule_idx >= len(self.svg_molecules):
+            self._active_svg_molecule_idx = None
+        self._redraw()
+
     def export_angle_state(self):
         frames = []
         for frame in self._angle_frames or []:
@@ -1122,6 +1186,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "angle_state": self._clone_undo_value(self.export_angle_state()),
             "angle_enabled": bool(self.angle_enabled),
             "molecule_state": self._clone_undo_value(self.export_molecule_state()),
+            "svg_molecule_state": self._clone_undo_value(self.export_svg_molecule_state()),
             "outline_state": self._clone_undo_value(self.export_outline_state()),
             "show_title": bool(self._show_title),
             "show_acquisition_overlay": bool(self._show_acquisition_overlay),
@@ -1214,6 +1279,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     self.molecules.append(Molecule.from_dict(entry))
                 except Exception:
                     continue
+            self.svg_molecules = []
+            for entry in state.get("svg_molecule_state", []) or []:
+                try:
+                    self.svg_molecules.append(SvgMoleculeOverlay.from_dict(entry))
+                except Exception:
+                    continue
+            if self._active_svg_molecule_idx is not None and self._active_svg_molecule_idx >= len(self.svg_molecules):
+                self._active_svg_molecule_idx = None
             self.import_outline_state(state.get("outline_state"))
 
             views = [self._clone_undo_view(v) for v in (state.get("views") or [])]
@@ -1378,6 +1451,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._scale_bar_artists = []
         self._colorbars = []
         self._molecule_artists = []
+        self._svg_molecule_artists = []
         self._spectra_points = {}
         for frame in self._angle_frames:
             frame['lines'] = []
@@ -1522,6 +1596,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._zoom_reset_limits[ax] = base_lim if base_lim else (ax.get_xlim(), ax.get_ylim())
             # Draw molecules on every view
             self._draw_molecules(ax)
+            self._draw_svg_molecules(ax)
             if ax is self.main_ax:
                 self._draw_molecule_gizmo(ax)
             self._draw_spectra(ax)
@@ -1882,6 +1957,404 @@ class MultiPreviewCanvas(FigureCanvas):
                 'line_underlay': lc_underlay,
                 'lines': lc
             })
+
+    def _svg_overlay_reference_view(self, ax=None):
+        if ax is not None:
+            view = self._ax_view_map.get(ax)
+            if view is not None:
+                return view
+        if self.main_ax is not None:
+            view = self._ax_view_map.get(self.main_ax)
+            if view is not None:
+                return view
+        views = list(self.views or [])
+        return views[0] if views else None
+
+    def _svg_overlay_angstrom_per_unit(self, view) -> tuple[float, float]:
+        if not isinstance(view, dict):
+            return 1.0, 1.0
+        axis_unit = str(view.get("axis_unit") or "").strip().lower()
+        if axis_unit in ("a", "å", "angstrom", "angstroms", "ångstrom", "ångstroms"):
+            return 1.0, 1.0
+        if axis_unit == "nm":
+            return 10.0, 10.0
+        if axis_unit == "pm":
+            return 0.01, 0.01
+        if axis_unit in ("um", "µm"):
+            return 10000.0, 10000.0
+        return 1.0, 1.0
+
+    def _svg_overlay_calibration_comment(self, view) -> str:
+        if not isinstance(view, dict):
+            return "calibration unavailable"
+        extent = view.get("extent")
+        arr = np.asarray(view.get("arr")) if view.get("arr") is not None else None
+        axis_unit = str(view.get("axis_unit") or "").strip()
+        if extent is None or arr is None or arr.ndim != 2:
+            return f"axis unit {axis_unit or 'unknown'}"
+        try:
+            x0, x1, y0, y1 = [float(v) for v in extent]
+            ax_scale, ay_scale = self._svg_overlay_angstrom_per_unit(view)
+            x_a_per_px = abs(x1 - x0) * ax_scale / max(1.0, float(arr.shape[1]))
+            y_a_per_px = abs(y1 - y0) * ay_scale / max(1.0, float(arr.shape[0]))
+            return f"{x_a_per_px:.4f} Å/px (x), {y_a_per_px:.4f} Å/px (y)"
+        except Exception:
+            return f"axis unit {axis_unit or 'unknown'}"
+
+    def _svg_overlay_bond_length_angstrom(self, overlay, bond, view) -> float:
+        try:
+            atom1 = overlay.atoms[int(bond.atom1)]
+            atom2 = overlay.atoms[int(bond.atom2)]
+        except Exception:
+            return 0.0
+        ax_scale, ay_scale = self._svg_overlay_angstrom_per_unit(view)
+        dx = (float(atom2.x) - float(atom1.x)) * ax_scale
+        dy = (float(atom2.y) - float(atom1.y)) * ay_scale
+        return float(math.hypot(dx, dy))
+
+    def _svg_overlay_length_color(self, overlay, length_angstrom: float, is_active: bool):
+        if not bool(getattr(overlay, "color_bonds_by_length", False)):
+            base = "#3bc2b4" if is_active else "#f6f7fb"
+            return matplotlib.colors.to_rgba(base, alpha=0.92)
+        ref = max(float(getattr(overlay, "reference_bond_length_angstrom", 1.54) or 1.54), 1e-6)
+        neutral = np.asarray(matplotlib.colors.to_rgb("#dff6ef" if is_active else "#ecf1f6"), dtype=float)
+        short = np.asarray(matplotlib.colors.to_rgb("#61d5c7"), dtype=float)
+        long = np.asarray(matplotlib.colors.to_rgb("#f4b16e"), dtype=float)
+        span = max(0.12, 0.18 * ref)
+        delta = float(np.clip((float(length_angstrom) - ref) / span, -1.0, 1.0))
+        target = short if delta < 0.0 else long
+        weight = min(0.92, abs(delta) ** 0.8)
+        rgb = (neutral * (1.0 - weight)) + (target * weight)
+        return (float(rgb[0]), float(rgb[1]), float(rgb[2]), 0.94 if is_active else 0.90)
+
+    def _svg_overlay_render_data(self, overlay, view, is_active: bool):
+        bond_segments = []
+        bond_colors = []
+        label_specs = []
+        for bond in overlay.bonds:
+            try:
+                atom1 = overlay.atoms[int(bond.atom1)]
+                atom2 = overlay.atoms[int(bond.atom2)]
+            except Exception:
+                continue
+            x1 = float(atom1.x)
+            y1 = float(atom1.y)
+            x2 = float(atom2.x)
+            y2 = float(atom2.y)
+            bond_segments.append([(x1, y1), (x2, y2)])
+            length_angstrom = self._svg_overlay_bond_length_angstrom(overlay, bond, view)
+            bond_rgba = self._svg_overlay_length_color(overlay, length_angstrom, is_active)
+            bond_colors.append(bond_rgba)
+            if bool(getattr(overlay, "show_bond_length_labels", True)):
+                mid_x = (x1 + x2) * 0.5
+                mid_y = (y1 + y2) * 0.5
+                dx = x2 - x1
+                dy = y2 - y1
+                norm = float(math.hypot(dx, dy))
+                if norm > 1e-9:
+                    offset = 0.03 * norm
+                    mid_x += (-dy / norm) * offset
+                    mid_y += (dx / norm) * offset
+                label_specs.append(
+                    {
+                        "pos": (mid_x, mid_y),
+                        "text": f"{length_angstrom:.2f} Å",
+                        "color": bond_rgba if bool(getattr(overlay, "color_bonds_by_length", False)) else (
+                            "#fff7d6" if is_active else "#f0f3f8"
+                        ),
+                    }
+                )
+        atom_positions = np.asarray([[atom.x, atom.y] for atom in overlay.atoms], dtype=float) if overlay.atoms else np.zeros((0, 2), dtype=float)
+        atom_label_specs = []
+        atom_label_color = "#8ef0dd" if is_active else "#f7fafc"
+        for atom in overlay.atoms:
+            if atom.label_visible or str(atom.element).strip().upper() != "C":
+                atom_label_specs.append(
+                    {
+                        "pos": (float(atom.x), float(atom.y)),
+                        "text": str(atom.element or "C"),
+                        "color": atom_label_color,
+                    }
+                )
+        return {
+            "bond_segments": bond_segments,
+            "bond_colors": bond_colors,
+            "label_specs": label_specs,
+            "atom_positions": atom_positions,
+            "atom_label_specs": atom_label_specs,
+            "bond_linewidth": 2.0 if is_active else 1.6,
+            "bond_stroke_width": 4.0 if is_active else 3.2,
+            "scatter_size": 44 if (overlay.edit_mode or is_active) else 26,
+            "scatter_facecolor": "#101215" if overlay.edit_mode else "#f7fafc",
+            "scatter_edgecolor": "#3bc2b4" if is_active else "#96a1b2",
+        }
+
+    def _svg_overlay_segment_distance_px(self, event, p0, p1) -> float | None:
+        ax = getattr(event, "inaxes", None)
+        if ax is None:
+            return None
+        try:
+            pts_px = ax.transData.transform(np.asarray([p0, p1], dtype=float))
+            seg = pts_px[1] - pts_px[0]
+            seg_len2 = float(np.dot(seg, seg))
+            if seg_len2 <= 1e-12:
+                return None
+            ev = np.array([float(event.x), float(event.y)], dtype=float)
+            t = float(np.clip(np.dot(ev - pts_px[0], seg) / seg_len2, 0.0, 1.0))
+            proj = pts_px[0] + (t * seg)
+            return float(np.hypot(*(ev - proj)))
+        except Exception:
+            return None
+
+    def _svg_overlay_hit(self, event):
+        if event is None or event.inaxes is None or not self.svg_molecules:
+            return None
+        try:
+            event_px = np.array([float(event.x), float(event.y)], dtype=float)
+        except Exception:
+            return None
+        best = None
+        best_metric = None
+        for overlay_idx, overlay in reversed(list(enumerate(self.svg_molecules))):
+            for atom_idx, atom in enumerate(overlay.atoms):
+                try:
+                    atom_px = event.inaxes.transData.transform((float(atom.x), float(atom.y)))
+                    dist = float(np.hypot(atom_px[0] - event_px[0], atom_px[1] - event_px[1]))
+                except Exception:
+                    continue
+                if dist <= 12.0 and (best_metric is None or dist < best_metric):
+                    best_metric = dist
+                    best = {"overlay_idx": overlay_idx, "atom_idx": atom_idx, "kind": "atom"}
+            for bond in overlay.bonds:
+                try:
+                    atom1 = overlay.atoms[int(bond.atom1)]
+                    atom2 = overlay.atoms[int(bond.atom2)]
+                except Exception:
+                    continue
+                dist = self._svg_overlay_segment_distance_px(
+                    event,
+                    (float(atom1.x), float(atom1.y)),
+                    (float(atom2.x), float(atom2.y)),
+                )
+                if dist is None:
+                    continue
+                if dist <= 8.0:
+                    score = dist + 20.0
+                    if best_metric is None or score < best_metric:
+                        best_metric = score
+                        best = {"overlay_idx": overlay_idx, "atom_idx": None, "kind": "bond"}
+        return best
+
+    def _svg_overlay_hit_test(self, event):
+        return self._svg_overlay_hit(event) is not None
+
+    def _draw_svg_molecules(self, ax):
+        if not self.svg_molecules:
+            return
+        view = self._svg_overlay_reference_view(ax)
+        active_idx = self._active_svg_molecule_idx
+        for overlay_idx, overlay in enumerate(self.svg_molecules):
+            is_active = overlay_idx == active_idx
+            render = self._svg_overlay_render_data(overlay, view, is_active)
+            line_collection = None
+            if render["bond_segments"]:
+                line_collection = LineCollection(
+                    render["bond_segments"],
+                    colors=render["bond_colors"],
+                    linewidths=render["bond_linewidth"],
+                    zorder=37,
+                )
+                line_collection.set_path_effects([
+                    PathEffects.Stroke(linewidth=render["bond_stroke_width"], foreground=(0.0, 0.0, 0.0, 0.55)),
+                    PathEffects.Normal(),
+                ])
+                ax.add_collection(line_collection)
+            labels = []
+            for spec in render["label_specs"]:
+                label = ax.text(
+                    float(spec["pos"][0]),
+                    float(spec["pos"][1]),
+                    str(spec["text"]),
+                    fontsize=7.2,
+                    color=spec["color"],
+                    ha="center",
+                    va="center",
+                    zorder=39,
+                )
+                label.set_path_effects([PathEffects.withStroke(linewidth=2.8, foreground=(0.0, 0.0, 0.0, 0.75))])
+                labels.append(label)
+            scatter = None
+            atom_labels = []
+            if render["atom_positions"].size:
+                scatter = ax.scatter(
+                    render["atom_positions"][:, 0],
+                    render["atom_positions"][:, 1],
+                    s=render["scatter_size"],
+                    facecolors=render["scatter_facecolor"],
+                    edgecolors=render["scatter_edgecolor"],
+                    linewidths=1.2,
+                    alpha=0.96,
+                    zorder=40,
+                )
+                for spec in render["atom_label_specs"]:
+                    txt = ax.text(
+                        float(spec["pos"][0]),
+                        float(spec["pos"][1]),
+                        str(spec["text"]),
+                        fontsize=8.2,
+                        color=spec["color"],
+                        ha="center",
+                        va="center",
+                        zorder=41,
+                    )
+                    txt.set_path_effects([PathEffects.withStroke(linewidth=2.6, foreground=(0.0, 0.0, 0.0, 0.82))])
+                    atom_labels.append(txt)
+            self._svg_molecule_artists.append(
+                {
+                    "overlay": overlay,
+                    "overlay_idx": overlay_idx,
+                    "ax": ax,
+                    "lines": line_collection,
+                    "labels": labels,
+                    "scatter": scatter,
+                    "atom_labels": atom_labels,
+                }
+            )
+
+    def _remove_svg_molecule_entry(self, entry):
+        for key in ("lines", "scatter"):
+            artist = entry.get(key)
+            if artist is None:
+                continue
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        for key in ("labels", "atom_labels"):
+            for artist in entry.get(key, []) or []:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+
+    def _sync_svg_text_artists(self, ax, artists, specs, *, fontsize, zorder, stroke_width, stroke_alpha=0.75):
+        artists = list(artists or [])
+        while len(artists) > len(specs):
+            artist = artists.pop()
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        while len(artists) < len(specs):
+            spec = specs[len(artists)]
+            txt = ax.text(
+                float(spec["pos"][0]),
+                float(spec["pos"][1]),
+                str(spec["text"]),
+                fontsize=fontsize,
+                color=spec["color"],
+                ha="center",
+                va="center",
+                zorder=zorder,
+            )
+            txt.set_path_effects([PathEffects.withStroke(linewidth=stroke_width, foreground=(0.0, 0.0, 0.0, stroke_alpha))])
+            artists.append(txt)
+        for artist, spec in zip(artists, specs):
+            try:
+                artist.set_position((float(spec["pos"][0]), float(spec["pos"][1])))
+                artist.set_text(str(spec["text"]))
+                artist.set_color(spec["color"])
+                artist.set_visible(True)
+            except Exception:
+                pass
+        return artists
+
+    def _refresh_svg_molecule_entry(self, entry):
+        overlay = entry.get("overlay")
+        ax = entry.get("ax")
+        if overlay is None or ax is None:
+            return False
+        try:
+            overlay_idx = int(entry.get("overlay_idx", self.svg_molecules.index(overlay)))
+        except Exception:
+            return False
+        if overlay_idx < 0 or overlay_idx >= len(self.svg_molecules) or self.svg_molecules[overlay_idx] is not overlay:
+            return False
+        is_active = overlay_idx == self._active_svg_molecule_idx
+        view = self._svg_overlay_reference_view(ax)
+        render = self._svg_overlay_render_data(overlay, view, is_active)
+        line_collection = entry.get("lines")
+        if render["bond_segments"]:
+            if line_collection is None:
+                line_collection = LineCollection([], zorder=37)
+                ax.add_collection(line_collection)
+                entry["lines"] = line_collection
+            line_collection.set_segments(render["bond_segments"])
+            line_collection.set_color(render["bond_colors"])
+            line_collection.set_linewidth(render["bond_linewidth"])
+            line_collection.set_path_effects([
+                PathEffects.Stroke(linewidth=render["bond_stroke_width"], foreground=(0.0, 0.0, 0.0, 0.55)),
+                PathEffects.Normal(),
+            ])
+            line_collection.set_visible(True)
+        elif line_collection is not None:
+            try:
+                line_collection.remove()
+            except Exception:
+                pass
+            entry["lines"] = None
+        entry["labels"] = self._sync_svg_text_artists(
+            ax,
+            entry.get("labels"),
+            render["label_specs"],
+            fontsize=7.2,
+            zorder=39,
+            stroke_width=2.8,
+        )
+        scatter = entry.get("scatter")
+        if render["atom_positions"].size:
+            if scatter is None:
+                scatter = ax.scatter([], [], zorder=40)
+                entry["scatter"] = scatter
+            scatter.set_offsets(render["atom_positions"])
+            scatter.set_sizes(np.full(len(render["atom_positions"]), float(render["scatter_size"]), dtype=float))
+            scatter.set_facecolors([render["scatter_facecolor"]])
+            scatter.set_edgecolors([render["scatter_edgecolor"]])
+            scatter.set_linewidths([1.2])
+            scatter.set_alpha(0.96)
+            scatter.set_visible(True)
+        elif scatter is not None:
+            try:
+                scatter.remove()
+            except Exception:
+                pass
+            entry["scatter"] = None
+        entry["atom_labels"] = self._sync_svg_text_artists(
+            ax,
+            entry.get("atom_labels"),
+            render["atom_label_specs"],
+            fontsize=8.2,
+            zorder=41,
+            stroke_width=2.6,
+            stroke_alpha=0.82,
+        )
+        return True
+
+    def _update_svg_molecule_artists(self):
+        expected = len(self.svg_molecules) * len(self._ax_view_map)
+        can_refresh = bool(self._svg_molecule_artists) and len(self._svg_molecule_artists) == expected
+        if can_refresh:
+            for entry in list(self._svg_molecule_artists or []):
+                if not self._refresh_svg_molecule_entry(entry):
+                    can_refresh = False
+                    break
+        if not can_refresh:
+            for entry in list(self._svg_molecule_artists or []):
+                self._remove_svg_molecule_entry(entry)
+            self._svg_molecule_artists = []
+            for ax in list(self._ax_view_map.keys()):
+                self._draw_svg_molecules(ax)
+        self.draw_idle()
 
     def _active_molecule_for_gizmo(self):
         if not self.molecules:
@@ -5711,6 +6184,8 @@ class MultiPreviewCanvas(FigureCanvas):
             return True
         if self._angle_hit_test(event):
             return True
+        if self._svg_overlay_hit_test(event):
+            return True
         return self._molecule_overlay_hit_test(event)
 
     def _profile_animation_artists(self):
@@ -6052,6 +6527,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 if self._begin_fixed_crop_template_drag(hit, event, view, ax):
                     return
 
+        if self._handle_svg_overlay_click(event):
+            return
         if self._check_molecule_hit(event):
             return
         # Double-click: pop out the clicked view if callback provided
@@ -6245,6 +6722,23 @@ class MultiPreviewCanvas(FigureCanvas):
         if path:
             self.add_molecule(path)
 
+    def _load_svg_molecule_dialog(self):
+        start_dir = ""
+        if self._recent_svg_molecule_paths:
+            start_dir = str(Path(self._recent_svg_molecule_paths[0]).parent)
+        elif MultiPreviewCanvas._RECENT_SVG_MOLECULES:
+            start_dir = str(Path(MultiPreviewCanvas._RECENT_SVG_MOLECULES[0]).parent)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load 2D Structure Overlay",
+            start_dir,
+            "2D Structure Files (*.svg *.mol *.sdf *.xyz *.cdxml *.cml);;"
+            "SVG Files (*.svg);;Mol/SDF Files (*.mol *.sdf);;"
+            "XYZ Files (*.xyz);;ChemDraw XML (*.cdxml);;CML Files (*.cml);;All Files (*)",
+        )
+        if path:
+            self.add_svg_molecule(path)
+
     def _load_molecule_default_style(self):
         try:
             cfg = load_config()
@@ -6377,6 +6871,54 @@ class MultiPreviewCanvas(FigureCanvas):
             print(f"Failed to load molecule: {e}")
             traceback.print_exc()
 
+    def add_svg_molecule(self, path, reference_bond_length_angstrom: float = 1.54):
+        try:
+            if isinstance(path, np.ndarray):
+                if path.size == 0:
+                    raise ValueError("Empty 2D structure path")
+                path = str(path.flatten()[0])
+            elif not isinstance(path, (str, Path)):
+                path = str(path)
+            overlay = SvgMoleculeOverlay.from_file(path, reference_bond_length_angstrom=reference_bond_length_angstrom)
+            view = self._svg_overlay_reference_view(self.main_ax)
+            center_x = 0.0
+            center_y = 0.0
+            if self.main_ax is not None:
+                xlim = self.main_ax.get_xlim()
+                ylim = self.main_ax.get_ylim()
+                center_x = (float(xlim[0]) + float(xlim[1])) * 0.5
+                center_y = (float(ylim[0]) + float(ylim[1])) * 0.5
+            scale_x, scale_y = self._svg_overlay_angstrom_per_unit(view)
+            scale_x = 1.0 / max(scale_x, 1e-12)
+            scale_y = 1.0 / max(scale_y, 1e-12)
+            for atom in overlay.atoms:
+                atom.x = float(center_x + (float(atom.x) * scale_x))
+                atom.y = float(center_y + (float(atom.y) * scale_y))
+            self.push_undo_state("svg_molecules")
+            self.svg_molecules.append(overlay)
+            self._active_svg_molecule_idx = len(self.svg_molecules) - 1
+            try:
+                norm = str(Path(path).resolve())
+                for lst in (self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES):
+                    if norm in lst:
+                        lst.remove(norm)
+                    lst.insert(0, norm)
+                    if len(lst) > 8:
+                        del lst[8:]
+                if callable(self._recent_svg_molecule_cb):
+                    self._recent_svg_molecule_cb(self.get_recent_svg_molecule_paths())
+            except Exception:
+                pass
+            self._redraw()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Load 2D Structure Overlay",
+                "Failed to load 2D structure.\n\n"
+                "Supported text formats: .svg, .mol, .sdf, .xyz, .cdxml, .cml\n"
+                f"\nDetails: {exc}",
+            )
+
     def get_recent_molecule_paths(self):
         """Return MRU list of molecule paths (combined local + global)."""
         recent_all = []
@@ -6386,9 +6928,20 @@ class MultiPreviewCanvas(FigureCanvas):
                     recent_all.append(p)
         return recent_all[:8]
 
+    def get_recent_svg_molecule_paths(self):
+        recent_all = []
+        for lst in (self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES):
+            for p in lst:
+                if p not in recent_all:
+                    recent_all.append(p)
+        return recent_all[:8]
+
     def set_recent_molecule_callback(self, cb):
         """Callback invoked when MRU list changes; cb(list[str])."""
         self._recent_molecule_cb = cb
+
+    def set_recent_svg_molecule_callback(self, cb):
+        self._recent_svg_molecule_cb = cb
 
     def _pick_color(self, initial_hex: str | None = None) -> str | None:
         """Show a QColorDialog and return a hex string or None."""
@@ -6410,6 +6963,15 @@ class MultiPreviewCanvas(FigureCanvas):
     def reset_molecules(self):
         """Public helper to clear all molecules with undo support."""
         self._clear_molecules()
+
+    def _clear_svg_molecules(self):
+        if not self.svg_molecules:
+            return
+        self.push_undo_state("svg_molecules")
+        self.svg_molecules = []
+        self._active_svg_molecule_idx = None
+        self._svg_molecule_artists = []
+        self._redraw()
 
     def _push_molecule_snapshot(self):
         """Save current molecule state for undo."""
@@ -6433,6 +6995,55 @@ class MultiPreviewCanvas(FigureCanvas):
             return True
         except Exception:
             return False
+
+    def _handle_svg_overlay_click(self, event):
+        hit = self._svg_overlay_hit(event)
+        if hit is None:
+            return False
+        overlay_idx = int(hit.get("overlay_idx", -1))
+        if overlay_idx < 0 or overlay_idx >= len(self.svg_molecules):
+            return False
+        overlay = self.svg_molecules[overlay_idx]
+        active_changed = overlay_idx != self._active_svg_molecule_idx
+        self._active_svg_molecule_idx = overlay_idx
+        if active_changed:
+            self._update_svg_molecule_artists()
+        if event.button == 3:
+            self._show_svg_molecule_menu(event, overlay)
+            return True
+        if event.button not in (1, 2):
+            return True
+        try:
+            start_x = float(event.xdata)
+            start_y = float(event.ydata)
+        except Exception:
+            return False
+        mods_qt = self._event_qt_modifiers(event)
+        mode = "translate"
+        if event.button == 2:
+            mode = "rotate"
+        elif bool(mods_qt & QtCore.Qt.ShiftModifier):
+            mode = "rotate"
+        drag_kind = "overlay"
+        atom_idx = hit.get("atom_idx")
+        if overlay.edit_mode and atom_idx is not None and event.button == 1:
+            drag_kind = "atom"
+            mode = "atom"
+        self.push_undo_state("svg_molecules")
+        self._svg_molecule_drag = {
+            "overlay_idx": overlay_idx,
+            "kind": drag_kind,
+            "mode": mode,
+            "atom_idx": atom_idx,
+            "start_data": (start_x, start_y),
+            "start_atom": (
+                float(overlay.atoms[int(atom_idx)].x),
+                float(overlay.atoms[int(atom_idx)].y),
+            ) if drag_kind == "atom" and atom_idx is not None else None,
+            "start_positions": [(float(atom.x), float(atom.y)) for atom in overlay.atoms],
+            "center": tuple(overlay.centroid().tolist()) if overlay.atoms else (start_x, start_y),
+        }
+        return True
 
     def _check_molecule_hit(self, event):
         # Angle editing has exclusive ownership of the canvas.
@@ -6521,6 +7132,52 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 self.draw_idle()
             return
+        svg_drag = getattr(self, "_svg_molecule_drag", None)
+        if svg_drag is not None:
+            if event.xdata is None or event.ydata is None:
+                return
+            overlay_idx = int(svg_drag.get("overlay_idx", -1))
+            if overlay_idx < 0 or overlay_idx >= len(self.svg_molecules):
+                self._svg_molecule_drag = None
+                return
+            overlay = self.svg_molecules[overlay_idx]
+            start_data = svg_drag.get("start_data") or (float(event.xdata), float(event.ydata))
+            kind = str(svg_drag.get("kind") or "overlay")
+            if kind == "atom":
+                atom_idx = svg_drag.get("atom_idx")
+                if atom_idx is None or int(atom_idx) >= len(overlay.atoms):
+                    return
+                start_atom = svg_drag.get("start_atom") or (overlay.atoms[int(atom_idx)].x, overlay.atoms[int(atom_idx)].y)
+                dx = float(event.xdata) - float(start_data[0])
+                dy = float(event.ydata) - float(start_data[1])
+                overlay.atoms[int(atom_idx)].x = float(start_atom[0] + dx)
+                overlay.atoms[int(atom_idx)].y = float(start_atom[1] + dy)
+            elif str(svg_drag.get("mode") or "translate") == "rotate":
+                center = np.asarray(svg_drag.get("center") or overlay.centroid(), dtype=float)
+                start_vec = np.array([float(start_data[0]) - center[0], float(start_data[1]) - center[1]], dtype=float)
+                cur_vec = np.array([float(event.xdata) - center[0], float(event.ydata) - center[1]], dtype=float)
+                if np.linalg.norm(start_vec) > 1e-9 and np.linalg.norm(cur_vec) > 1e-9:
+                    angle = math.degrees(math.atan2(cur_vec[1], cur_vec[0]) - math.atan2(start_vec[1], start_vec[0]))
+                    center = np.asarray(svg_drag.get("center") or overlay.centroid(), dtype=float)
+                    start_positions = svg_drag.get("start_positions") or []
+                    ang = math.radians(angle)
+                    c = math.cos(ang)
+                    s = math.sin(ang)
+                    rot = np.array([[c, -s], [s, c]], dtype=float)
+                    for atom, start_pos in zip(overlay.atoms, start_positions):
+                        vec = np.array([float(start_pos[0]), float(start_pos[1])], dtype=float) - center
+                        mapped = center + (rot @ vec)
+                        atom.x = float(mapped[0])
+                        atom.y = float(mapped[1])
+            else:
+                dx = float(event.xdata) - float(start_data[0])
+                dy = float(event.ydata) - float(start_data[1])
+                start_positions = svg_drag.get("start_positions") or []
+                for atom, start_pos in zip(overlay.atoms, start_positions):
+                    atom.x = float(start_pos[0] + dx)
+                    atom.y = float(start_pos[1] + dy)
+            self._update_svg_molecule_artists()
+            return
         gizmo_drag = getattr(self, "_molecule_gizmo_drag", None)
         if gizmo_drag is not None:
             idx = gizmo_drag.get("idx")
@@ -6605,6 +7262,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._update_molecule_gizmo_overlay()
 
     def _on_molecule_release(self, event):
+        if self._svg_molecule_drag is not None:
+            self._svg_molecule_drag = None
+            return
         if self._molecule_gizmo_drag is not None:
             self._molecule_gizmo_drag = None
             return
@@ -6770,6 +7430,361 @@ class MultiPreviewCanvas(FigureCanvas):
             self._push_molecule_snapshot()
             self._show_hydrogens = show_h_act.isChecked()
             self._redraw()
+
+    def _set_svg_reference_bond_length(self, overlay):
+        if overlay is None:
+            return
+        current = float(getattr(overlay, "reference_bond_length_angstrom", 1.54) or 1.54)
+        value, ok = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Reference bond length",
+            "Reference bond length (Å):",
+            current,
+            0.01,
+            1000.0,
+            3,
+        )
+        if not ok:
+            return
+        new_value = float(value)
+        if new_value <= 0.0 or abs(new_value - current) < 1e-9:
+            return
+        self.push_undo_state("svg_reference_bond")
+        overlay.scale_about_centroid(new_value / current)
+        overlay.reference_bond_length_angstrom = new_value
+        self._update_svg_molecule_artists()
+
+    def _export_svg_molecule_xyz(self, overlay):
+        if overlay is None or not overlay.atoms:
+            return
+        view = self._svg_overlay_reference_view(self.main_ax)
+        if view is None:
+            QtWidgets.QMessageBox.warning(self, "Export 2D Structure", "No calibrated image view is available.")
+            return
+        default_name = f"{overlay.name or 'structure_overlay'}.xyz"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export atom positions as XYZ",
+            default_name,
+            "XYZ Files (*.xyz)",
+        )
+        if not path:
+            return
+        xyz_path = Path(path)
+        csv_path = xyz_path.with_suffix(".csv")
+        ax_scale, ay_scale = self._svg_overlay_angstrom_per_unit(view)
+        comment = (
+            f"Calibration: {self._svg_overlay_calibration_comment(view)} | "
+            f"reference bond length {float(overlay.reference_bond_length_angstrom):.3f} Å"
+        )
+        xyz_lines = [str(len(overlay.atoms)), comment]
+        for atom in overlay.atoms:
+            x_a = float(atom.x) * ax_scale
+            y_a = float(atom.y) * ay_scale
+            xyz_lines.append(f"{str(atom.element or 'C'):2s} {x_a:.6f} {y_a:.6f} 0.000000")
+        csv_lines = ["atom1_index,atom2_index,bond_length_angstrom"]
+        for bond in overlay.bonds:
+            csv_lines.append(
+                f"{int(bond.atom1) + 1},{int(bond.atom2) + 1},{self._svg_overlay_bond_length_angstrom(overlay, bond, view):.6f}"
+            )
+        try:
+            xyz_path.write_text("\n".join(xyz_lines) + "\n", encoding="utf-8")
+            csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export 2D Structure", f"Unable to export overlay:\n{exc}")
+            return
+
+    def _svg_overlay_export_payload(self, overlay):
+        if overlay is None or not overlay.atoms:
+            return None
+        view = self._svg_overlay_reference_view(self.main_ax)
+        if view is None:
+            QtWidgets.QMessageBox.warning(self, "Export 2D Structure", "No calibrated image view is available.")
+            return None
+        ax_scale, ay_scale = self._svg_overlay_angstrom_per_unit(view)
+        comment = (
+            f"Calibration: {self._svg_overlay_calibration_comment(view)} | "
+            f"reference bond length {float(overlay.reference_bond_length_angstrom):.3f} Å"
+        )
+        atoms = []
+        for idx, atom in enumerate(overlay.atoms, start=1):
+            atoms.append(
+                {
+                    "index": idx,
+                    "element": str(atom.element or "C"),
+                    "x_angstrom": float(atom.x) * ax_scale,
+                    "y_angstrom": float(atom.y) * ay_scale,
+                    "z_angstrom": 0.0,
+                }
+            )
+        bonds = []
+        for bond in overlay.bonds:
+            bonds.append(
+                {
+                    "atom1_index": int(bond.atom1) + 1,
+                    "atom2_index": int(bond.atom2) + 1,
+                    "bond_order": max(1, int(getattr(bond, "order", 1) or 1)),
+                    "bond_length_angstrom": self._svg_overlay_bond_length_angstrom(overlay, bond, view),
+                }
+            )
+        return {
+            "comment": comment,
+            "atoms": atoms,
+            "bonds": bonds,
+        }
+
+    @staticmethod
+    def _svg_overlay_export_suffix(path: Path, selected_filter: str) -> str:
+        suffix = str(path.suffix or "").lower()
+        if suffix:
+            return suffix
+        selected_filter = str(selected_filter or "").lower()
+        if ".mol" in selected_filter:
+            return ".mol"
+        if ".sdf" in selected_filter:
+            return ".sdf"
+        if ".pdb" in selected_filter:
+            return ".pdb"
+        return ".xyz"
+
+    @staticmethod
+    def _svg_overlay_xyz_text(payload) -> str:
+        lines = [str(len(payload["atoms"])), str(payload["comment"])]
+        for atom in payload["atoms"]:
+            lines.append(
+                f"{str(atom['element'] or 'C'):2s} {float(atom['x_angstrom']):.6f} {float(atom['y_angstrom']):.6f} {float(atom['z_angstrom']):.6f}"
+            )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _svg_overlay_mol_text(overlay, payload, *, sdf: bool = False) -> str:
+        name = str(overlay.name or "SXM Viewer 2D Structure")[:80]
+        comment = str(payload["comment"] or "")[:80]
+        lines = [
+            name,
+            "  SXM Viewer 2D",
+            comment,
+            f"{len(payload['atoms']):>3}{len(payload['bonds']):>3}  0  0  0  0            999 V2000",
+        ]
+        for atom in payload["atoms"]:
+            lines.append(
+                f"{float(atom['x_angstrom']):>10.4f}{float(atom['y_angstrom']):>10.4f}{float(atom['z_angstrom']):>10.4f} "
+                f"{str(atom['element'] or 'C'):<3s} 0  0  0  0  0  0  0  0  0  0  0  0"
+            )
+        for bond in payload["bonds"]:
+            lines.append(
+                f"{int(bond['atom1_index']):>3}{int(bond['atom2_index']):>3}{int(bond['bond_order']):>3}  0  0  0  0"
+            )
+        lines.append("M  END")
+        if sdf:
+            lines.extend(
+                [
+                    ">  <SXM_VIEWER_COMMENT>",
+                    str(payload["comment"]),
+                    "",
+                    "$$$$",
+                ]
+            )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _svg_overlay_pdb_text(overlay, payload) -> str:
+        lines = [
+            f"HEADER    {str(overlay.name or '2D Structure')[:40]}",
+            f"REMARK   1 {payload['comment']}",
+        ]
+        for atom in payload["atoms"]:
+            serial = int(atom["index"])
+            element = str(atom["element"] or "C").strip().upper()[:2]
+            atom_name = element.rjust(2)
+            lines.append(
+                f"HETATM{serial:5d} {atom_name:<4s} LIG A   1    "
+                f"{float(atom['x_angstrom']):8.3f}{float(atom['y_angstrom']):8.3f}{float(atom['z_angstrom']):8.3f}"
+                f"  1.00  0.00          {element:>2s}"
+            )
+        conect = {}
+        for bond in payload["bonds"]:
+            i_val = int(bond["atom1_index"])
+            j_val = int(bond["atom2_index"])
+            conect.setdefault(i_val, []).append(j_val)
+            conect.setdefault(j_val, []).append(i_val)
+        for atom_idx in sorted(conect):
+            partners = "".join(f"{partner:5d}" for partner in sorted(set(conect[atom_idx])))
+            lines.append(f"CONECT{atom_idx:5d}{partners}")
+        lines.append("END")
+        return "\n".join(lines) + "\n"
+
+    def _write_svg_overlay_companion_tables(self, out_path: Path, payload):
+        base = out_path.with_suffix("")
+        atom_csv = base.with_name(f"{base.name}.atoms.csv")
+        bond_csv = base.with_name(f"{base.name}.bonds.csv")
+        atom_lines = ["atom_index,element,x_angstrom,y_angstrom,z_angstrom"]
+        for atom in payload["atoms"]:
+            atom_lines.append(
+                f"{int(atom['index'])},{atom['element']},{float(atom['x_angstrom']):.6f},{float(atom['y_angstrom']):.6f},{float(atom['z_angstrom']):.6f}"
+            )
+        bond_lines = ["atom1_index,atom2_index,bond_order,bond_length_angstrom"]
+        for bond in payload["bonds"]:
+            bond_lines.append(
+                f"{int(bond['atom1_index'])},{int(bond['atom2_index'])},{int(bond['bond_order'])},{float(bond['bond_length_angstrom']):.6f}"
+            )
+        atom_csv.write_text("\n".join(atom_lines) + "\n", encoding="utf-8")
+        bond_csv.write_text("\n".join(bond_lines) + "\n", encoding="utf-8")
+
+    def _export_svg_molecule_structure(self, overlay):
+        payload = self._svg_overlay_export_payload(overlay)
+        if payload is None:
+            return
+        default_name = f"{overlay.name or 'structure_overlay'}.xyz"
+        path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export edited 2D structure",
+            default_name,
+            "Structure Files (*.xyz *.mol *.sdf *.pdb);;XYZ Files (*.xyz);;Molfile (*.mol);;SDFile (*.sdf);;PDB Files (*.pdb)",
+        )
+        if not path:
+            return
+        out_path = Path(path)
+        suffix = self._svg_overlay_export_suffix(out_path, selected_filter)
+        if not out_path.suffix:
+            out_path = out_path.with_suffix(suffix)
+        suffix = str(out_path.suffix or "").lower()
+        if suffix == ".xyz":
+            text = self._svg_overlay_xyz_text(payload)
+        elif suffix == ".mol":
+            text = self._svg_overlay_mol_text(overlay, payload, sdf=False)
+        elif suffix == ".sdf":
+            text = self._svg_overlay_mol_text(overlay, payload, sdf=True)
+        elif suffix == ".pdb":
+            text = self._svg_overlay_pdb_text(overlay, payload)
+        else:
+            QtWidgets.QMessageBox.warning(self, "Export 2D Structure", f"Unsupported export format: {suffix or out_path.name}")
+            return
+        try:
+            out_path.write_text(text, encoding="utf-8")
+            self._write_svg_overlay_companion_tables(out_path, payload)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export 2D Structure", f"Unable to export overlay:\n{exc}")
+
+    def _export_svg_molecule_histogram(self, overlay):
+        payload = self._svg_overlay_export_payload(overlay)
+        if payload is None:
+            return
+        lengths = [float(entry["bond_length_angstrom"]) for entry in payload["bonds"]]
+        if not lengths:
+            QtWidgets.QMessageBox.warning(self, "Export bond histogram", "This 2D structure has no bonds to plot.")
+            return
+        default_name = f"{overlay.name or 'structure_overlay'}_bond_lengths.png"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export bond-length histogram",
+            default_name,
+            "PNG Files (*.png)",
+        )
+        if not path:
+            return
+        out_path = Path(path)
+        if not out_path.suffix:
+            out_path = out_path.with_suffix(".png")
+        fig = Figure(figsize=(5.2, 3.6), dpi=180)
+        ax = fig.add_subplot(111)
+        bins = min(16, max(6, int(round(math.sqrt(len(lengths))))))
+        ax.hist(lengths, bins=bins, color="#63d6c8", edgecolor="#101215", linewidth=0.8, alpha=0.88)
+        ref = float(getattr(overlay, "reference_bond_length_angstrom", 1.54) or 1.54)
+        ax.axvline(ref, color="#f4b16e", linewidth=1.5, linestyle="--", label=f"Reference {ref:.2f} Å")
+        ax.set_xlabel("Bond length (Å)")
+        ax.set_ylabel("Count")
+        ax.set_title(str(overlay.name or "2D Structure"))
+        ax.legend(frameon=False, loc="best")
+        fig.tight_layout()
+        try:
+            fig.savefig(out_path, format="png", bbox_inches="tight", pad_inches=0.04)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export bond histogram", f"Unable to save histogram:\n{exc}")
+
+    def _export_svg_molecule_canvas_png(self, overlay):
+        if overlay is None or self.fig is None:
+            return
+        default_name = f"{overlay.name or 'structure_overlay'}_annotated.png"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export current canvas as PNG",
+            default_name,
+            "PNG Files (*.png)",
+        )
+        if not path:
+            return
+        out_path = Path(path)
+        if not out_path.suffix:
+            out_path = out_path.with_suffix(".png")
+        try:
+            self.fig.savefig(out_path, format="png", dpi=300, bbox_inches="tight", pad_inches=0.03)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export current canvas as PNG", f"Unable to save image:\n{exc}")
+
+    def _show_svg_molecule_menu(self, event, overlay):
+        style = QtWidgets.QApplication.style()
+        icon = lambda std: style.standardIcon(std) if style else QtGui.QIcon()
+        menu = QtWidgets.QMenu(self)
+        edit_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogDetailedView), "Per-atom edit mode")
+        edit_act.setCheckable(True)
+        edit_act.setChecked(bool(getattr(overlay, "edit_mode", False)))
+        ref_act = menu.addAction(icon(QtWidgets.QStyle.SP_DialogApplyButton), "Set reference bond length...")
+        show_lengths_act = menu.addAction(icon(QtWidgets.QStyle.SP_DialogYesButton), "Show bond length labels")
+        show_lengths_act.setCheckable(True)
+        show_lengths_act.setChecked(bool(getattr(overlay, "show_bond_length_labels", True)))
+        color_lengths_act = menu.addAction(icon(QtWidgets.QStyle.SP_DriveDVDIcon), "Color bonds by length")
+        color_lengths_act.setCheckable(True)
+        color_lengths_act.setChecked(bool(getattr(overlay, "color_bonds_by_length", False)))
+        export_menu = menu.addMenu(icon(QtWidgets.QStyle.SP_DialogSaveButton), "Export")
+        export_struct_act = export_menu.addAction("Edited structure...")
+        export_xyz_act = export_menu.addAction("XYZ only...")
+        export_hist_act = export_menu.addAction("Bond-length histogram...")
+        export_png_act = export_menu.addAction("Current canvas PNG...")
+        menu.addSeparator()
+        dup_act = menu.addAction(icon(QtWidgets.QStyle.SP_FileDialogNewFolder), "Duplicate")
+        del_act = menu.addAction(icon(QtWidgets.QStyle.SP_TrashIcon), "Delete")
+        clear_act = menu.addAction(icon(QtWidgets.QStyle.SP_DialogResetButton), "Clear 2D structures")
+        chosen = menu.exec_(event.guiEvent.globalPos())
+        if chosen is None:
+            return
+        if chosen == edit_act:
+            self.push_undo_state("svg_edit_mode")
+            overlay.edit_mode = edit_act.isChecked()
+            self._update_svg_molecule_artists()
+        elif chosen == ref_act:
+            self._set_svg_reference_bond_length(overlay)
+        elif chosen == show_lengths_act:
+            self.push_undo_state("svg_label_visibility")
+            overlay.show_bond_length_labels = bool(show_lengths_act.isChecked())
+            self._update_svg_molecule_artists()
+        elif chosen == color_lengths_act:
+            self.push_undo_state("svg_bond_colors")
+            overlay.color_bonds_by_length = bool(color_lengths_act.isChecked())
+            self._update_svg_molecule_artists()
+        elif chosen == export_struct_act:
+            self._export_svg_molecule_structure(overlay)
+        elif chosen == export_xyz_act:
+            self._export_svg_molecule_xyz(overlay)
+        elif chosen == export_hist_act:
+            self._export_svg_molecule_histogram(overlay)
+        elif chosen == export_png_act:
+            self._export_svg_molecule_canvas_png(overlay)
+        elif chosen == dup_act:
+            self.push_undo_state("svg_molecules")
+            clone = SvgMoleculeOverlay.from_dict(overlay.to_dict())
+            clone.translate(0.4, 0.4)
+            self.svg_molecules.append(clone)
+            self._active_svg_molecule_idx = len(self.svg_molecules) - 1
+            self._redraw()
+        elif chosen == del_act:
+            if overlay in self.svg_molecules:
+                self.push_undo_state("svg_molecules")
+                self.svg_molecules.remove(overlay)
+                self._active_svg_molecule_idx = None
+                self._redraw()
+        elif chosen == clear_act:
+            self._clear_svg_molecules()
 
     def _copy_view_to_clipboard(self, view):
         try:
@@ -7033,6 +8048,22 @@ class MultiPreviewCanvas(FigureCanvas):
                 act.setToolTip(p)
                 recent_actions[act] = p
         clear_mols_act = molecules_menu.addAction("Clear Molecules")
+        molecules_menu.addSeparator()
+        load_svg_mol_act = molecules_menu.addAction("Load 2D Structure...")
+        recent_svg_menu = None
+        recent_svg_actions = {}
+        recent_svg_all = []
+        for lst in (self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES):
+            for p in lst:
+                if p not in recent_svg_all:
+                    recent_svg_all.append(p)
+        if recent_svg_all:
+            recent_svg_menu = molecules_menu.addMenu("Load Recent 2D Structure")
+            for p in recent_svg_all[:8]:
+                act = recent_svg_menu.addAction(Path(p).name)
+                act.setToolTip(p)
+                recent_svg_actions[act] = p
+        clear_svg_mols_act = molecules_menu.addAction("Clear 2D Structures")
 
         cmap_menu = menu.addMenu("Colormap")
         popup_cmap_apply_all_act = None
@@ -7298,6 +8329,12 @@ class MultiPreviewCanvas(FigureCanvas):
             self.add_molecule(recent_actions[chosen])
         elif chosen == clear_mols_act:
             self._clear_molecules()
+        elif chosen == load_svg_mol_act:
+            self._load_svg_molecule_dialog()
+        elif recent_svg_menu and chosen in recent_svg_actions:
+            self.add_svg_molecule(recent_svg_actions[chosen])
+        elif chosen == clear_svg_mols_act:
+            self._clear_svg_molecules()
         elif chosen in cmap_actions:
             try:
                 self.apply_view_colormap(cmap_actions[chosen], target_view=view, notify=True)
@@ -8718,8 +9755,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._drag_candidate = None
         super().mouseReleaseEvent(event)
 
-    def _molecule_paths_from_mime(self, mime):
-        paths = []
+    def _structure_paths_from_mime(self, mime):
+        paths = {"3d": [], "2d": []}
         if mime is None or not mime.hasUrls():
             return paths
         for url in mime.urls():
@@ -8730,12 +9767,15 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 continue
             if path.suffix.lower() in _MOLECULE_FILE_EXTS and path.exists():
-                paths.append(path)
+                paths["3d"].append(path)
+            elif path.suffix.lower() in _SVG_MOLECULE_FILE_EXTS and path.exists():
+                paths["2d"].append(path)
         return paths
 
     def dragEnterEvent(self, event):
         try:
-            if self._molecule_paths_from_mime(event.mimeData()):
+            paths = self._structure_paths_from_mime(event.mimeData())
+            if paths.get("3d") or paths.get("2d"):
                 event.acceptProposedAction()
                 return
         except Exception:
@@ -8744,7 +9784,8 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def dragMoveEvent(self, event):
         try:
-            if self._molecule_paths_from_mime(event.mimeData()):
+            paths = self._structure_paths_from_mime(event.mimeData())
+            if paths.get("3d") or paths.get("2d"):
                 event.acceptProposedAction()
                 return
         except Exception:
@@ -8753,10 +9794,12 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def dropEvent(self, event):
         try:
-            paths = self._molecule_paths_from_mime(event.mimeData())
-            if paths:
-                for path in paths:
+            paths = self._structure_paths_from_mime(event.mimeData())
+            if paths.get("3d") or paths.get("2d"):
+                for path in paths.get("3d", []):
                     self.add_molecule(str(path))
+                for path in paths.get("2d", []):
+                    self.add_svg_molecule(str(path))
                 event.acceptProposedAction()
                 return
         except Exception:

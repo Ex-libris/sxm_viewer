@@ -476,6 +476,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.config.get("molecule_palette", molecule_style.get("palette", "avogadro")) or "avogadro"
         ).lower()
         self.recent_molecules = list(self.config.get("recent_molecules", []))
+        self.recent_svg_molecules = list(self.config.get("recent_svg_molecules", []))
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
         self.quick_crop_aspect_mode = str(self.config.get("quick_crop_aspect_mode", "free") or "free").strip().lower()
         if self.quick_crop_aspect_mode not in {"free", "keep", "square"}:
@@ -520,6 +521,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
         self.molecule_overlays = {}
+        self.svg_molecule_overlays = {}
         self._temp_reveal = set()
         self.spectro_dock = None
         self._spectro_browser_entries = []
@@ -1485,7 +1487,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            if getattr(self, "recent_svg_molecules", None):
+                self.preview_canvas._recent_svg_molecule_paths = list(self.recent_svg_molecules)
+                MultiPreviewCanvas._RECENT_SVG_MOLECULES = list(self.recent_svg_molecules)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_recent_molecule_callback(self._on_recent_molecules_updated)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_recent_svg_molecule_callback(self._on_recent_svg_molecules_updated)
         except Exception:
             pass
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
@@ -4393,6 +4405,20 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _on_recent_svg_molecules_updated(self, paths):
+        try:
+            recent = []
+            for p in paths or []:
+                if p and p not in recent:
+                    recent.append(p)
+                if len(recent) >= 8:
+                    break
+            self.recent_svg_molecules = recent
+            self.config["recent_svg_molecules"] = recent
+            save_config(self.config)
+        except Exception:
+            pass
+
     def _load_recent_molecule(self, path):
         if not self.preview_canvas or not path:
             return
@@ -4400,6 +4426,14 @@ QLabel:hover {{
             self.preview_canvas.add_molecule(path)
             self.on_show_molecules_toggled(True)
             self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
+        except Exception:
+            pass
+
+    def _load_recent_svg_molecule(self, path):
+        if not self.preview_canvas or not path:
+            return
+        try:
+            self.preview_canvas.add_svg_molecule(path)
         except Exception:
             pass
 
@@ -4413,6 +4447,14 @@ QLabel:hover {{
                 self.preview_canvas._clear_molecules()
             except Exception:
                 pass
+
+    def _clear_preview_svg_molecules(self):
+        if not self.preview_canvas:
+            return
+        try:
+            self.preview_canvas._clear_svg_molecules()
+        except Exception:
+            pass
 
     def _populate_browse_molecules_menu(self):
         menu = getattr(self, "browse_molecules_menu", None)
@@ -4449,6 +4491,25 @@ QLabel:hover {{
         clear_act = menu.addAction("Clear molecules")
         clear_act.setEnabled(bool(getattr(getattr(self, "preview_canvas", None), "molecules", []) or []))
         clear_act.triggered.connect(self._clear_preview_molecules)
+
+        menu.addSeparator()
+        load_svg_act = menu.addAction("Load 2D structure...")
+        load_svg_act.triggered.connect(lambda _checked=False: self.preview_canvas and self.preview_canvas._load_svg_molecule_dialog())
+        recent_svg = []
+        try:
+            if self.preview_canvas is not None:
+                recent_svg = list(self.preview_canvas.get_recent_svg_molecule_paths() or [])
+        except Exception:
+            recent_svg = list(getattr(self, "recent_svg_molecules", []) or [])
+        if recent_svg:
+            recent_svg_menu = menu.addMenu("Load recent 2D structure")
+            for path in recent_svg[:8]:
+                act = recent_svg_menu.addAction(Path(path).name)
+                act.setToolTip(str(path))
+                act.triggered.connect(lambda _checked=False, p=path: self._load_recent_svg_molecule(p))
+        clear_svg_act = menu.addAction("Clear 2D structures")
+        clear_svg_act.setEnabled(bool(getattr(getattr(self, "preview_canvas", None), "svg_molecules", []) or []))
+        clear_svg_act.triggered.connect(self._clear_preview_svg_molecules)
 
         palette_menu = menu.addMenu("Palette")
         palette_group = QtWidgets.QActionGroup(palette_menu)
@@ -4648,6 +4709,7 @@ QLabel:hover {{
         self.added_views = []
         self.extra_view_specs = []
         self.molecule_overlays = {}
+        self.svg_molecule_overlays = {}
         self.frame_entry_pixmaps = {}
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
@@ -6189,6 +6251,8 @@ QLabel:hover {{
         if new_key and new_key != prev_key:
             self._store_molecule_overlay(prev_key)
             self._load_molecule_overlay(new_key)
+            self._store_svg_molecule_overlay(prev_key)
+            self._load_svg_molecule_overlay(new_key)
         result = viewer_preview.show_file_channel(self, header_path_str, channel_idx, use_local_cmap=use_local_cmap)
         try:
             if new_key:
@@ -6225,6 +6289,34 @@ QLabel:hover {{
             state = []
         try:
             canvas.import_molecule_state(state)
+        except Exception:
+            pass
+
+    def _store_svg_molecule_overlay(self, file_key=None):
+        if not file_key:
+            return
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        try:
+            state = canvas.export_svg_molecule_state()
+        except Exception:
+            return
+        if state is None:
+            return
+        self.svg_molecule_overlays[str(file_key)] = state
+
+    def _load_svg_molecule_overlay(self, file_key=None):
+        if not file_key:
+            return
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        state = self.svg_molecule_overlays.get(str(file_key))
+        if state is None:
+            state = []
+        try:
+            canvas.import_svg_molecule_state(state)
         except Exception:
             pass
 

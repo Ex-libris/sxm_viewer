@@ -316,6 +316,10 @@ class SessionController:
             except Exception:
                 preview_state["molecules"] = None
             try:
+                preview_state["svg_molecules"] = preview.export_svg_molecule_state()
+            except Exception:
+                preview_state["svg_molecules"] = None
+            try:
                 preview_state["scale_bar_pos"] = list(getattr(preview, "_scale_bar_pos", (0.94, 0.06)))
                 preview_state["scale_bar_settings"] = dict(getattr(preview, "_scale_bar_settings", {}) or {})
             except Exception:
@@ -385,6 +389,7 @@ class SessionController:
             "extra_view_specs": getattr(viewer, "extra_view_specs", []),
             "tags": getattr(viewer, "tags", {}),
             "molecule_overlays": getattr(viewer, "molecule_overlays", {}),
+            "svg_molecule_overlays": getattr(viewer, "svg_molecule_overlays", {}),
             "thumb_multi_select": list(getattr(viewer, "thumb_multi_select", set()) or []),
             "selected_file_for_thumbs": getattr(viewer, "selected_file_for_thumbs", None),
             "last_preview": getattr(viewer, "last_preview", None),
@@ -663,6 +668,7 @@ class SessionController:
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
         viewer.tags = payload.get("tags") or {}
         viewer.molecule_overlays = payload.get("molecule_overlays") or {}
+        viewer.svg_molecule_overlays = payload.get("svg_molecule_overlays") or {}
         viewer.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
         viewer.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
         pending_preview = payload.get("last_preview")
@@ -720,6 +726,11 @@ class SessionController:
             except Exception:
                 pass
             try:
+                if preview_state.get("svg_molecules") and not viewer.svg_molecule_overlays:
+                    preview.import_svg_molecule_state(preview_state.get("svg_molecules"))
+            except Exception:
+                pass
+            try:
                 if preview_state.get("scale_bar_pos"):
                     preview._scale_bar_pos = tuple(preview_state.get("scale_bar_pos"))
                 if preview_state.get("scale_bar_settings"):
@@ -731,6 +742,13 @@ class SessionController:
                 key = str(viewer.last_preview[0])
                 if key not in viewer.molecule_overlays:
                     viewer.molecule_overlays[key] = preview_state.get("molecules")
+        except Exception:
+            pass
+        try:
+            if preview_state.get("svg_molecules") and viewer.last_preview:
+                key = str(viewer.last_preview[0])
+                if key not in viewer.svg_molecule_overlays:
+                    viewer.svg_molecule_overlays[key] = preview_state.get("svg_molecules")
         except Exception:
             pass
         preview_snapshot = payload.get("preview_canvas_snapshot")
@@ -1520,6 +1538,7 @@ class SessionController:
             "profile_dialog": self._safe_canvas_call(canvas, "export_profile_dialog_state"),
             "angle_state": self._safe_canvas_call(canvas, "export_angle_state"),
             "molecule_state": self._safe_canvas_call(canvas, "export_molecule_state"),
+            "svg_molecule_state": self._safe_canvas_call(canvas, "export_svg_molecule_state"),
             "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
             "views": [],
@@ -1724,6 +1743,7 @@ class SessionController:
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
         viewer.tags = payload.get("tags") or {}
         viewer.molecule_overlays = payload.get("molecule_overlays") or {}
+        viewer.svg_molecule_overlays = payload.get("svg_molecule_overlays") or {}
         viewer.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
         viewer.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
 
@@ -1819,6 +1839,12 @@ class SessionController:
             if molecules:
                 try:
                     canvas.import_molecule_state(molecules)
+                except Exception:
+                    pass
+            svg_molecules = snapshot.get("svg_molecule_state")
+            if svg_molecules:
+                try:
+                    canvas.import_svg_molecule_state(svg_molecules)
                 except Exception:
                     pass
             pipeline = snapshot.get("filter_pipeline")

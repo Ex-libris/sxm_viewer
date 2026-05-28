@@ -897,6 +897,7 @@ class CollectionController:
             or snapshot.get("profile_dialog")
             or snapshot.get("angle_state")
             or snapshot.get("molecule_state")
+            or snapshot.get("svg_molecule_state")
         )
 
     def _should_restore_item_as_popup(self, item: dict, snapshot: dict):
@@ -990,6 +991,7 @@ class CollectionController:
             ),
             "angle_state": session._safe_canvas_call(canvas, "export_angle_state") if include_state else None,
             "molecule_state": session._safe_canvas_call(canvas, "export_molecule_state") if include_state else None,
+            "svg_molecule_state": session._safe_canvas_call(canvas, "export_svg_molecule_state") if include_state else None,
             "scale_bar_pos": list(getattr(canvas, "_scale_bar_pos", (0.94, 0.06))),
             "scale_bar_settings": dict(getattr(canvas, "_scale_bar_settings", {}) or {}),
             "show_preview_spectra": bool(getattr(self.viewer, "show_preview_spectra", getattr(self.viewer, "show_spectra", True))),
@@ -1043,6 +1045,7 @@ class CollectionController:
             or snapshot.get("profile_dialog")
             or snapshot.get("angle_state")
             or snapshot.get("molecule_state")
+            or snapshot.get("svg_molecule_state")
         )
         for idx, view in enumerate(target_views):
             include_arrays = bool(
@@ -1293,6 +1296,9 @@ class CollectionController:
                     molecules = snapshot.get("molecule_state")
                     if molecules is not None:
                         viewer.molecule_overlays[str(key)] = molecules
+                    svg_molecules = snapshot.get("svg_molecule_state")
+                    if svg_molecules is not None:
+                        viewer.svg_molecule_overlays[str(key)] = svg_molecules
                     any_spectra = self._register_collection_spectra_for_key(str(key), snapshot) or any_spectra
                 loaded_keys.append(str(key))
             if restore_as_popup:
