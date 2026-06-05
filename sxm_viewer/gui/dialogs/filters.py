@@ -466,6 +466,7 @@ class CustomFilterDialog(QtWidgets.QDialog):
         self._preview_cmap_name = str(preview_cmap_name or "viridis")
         self._preview_clim = _normalize_filter_preview_clim(preview_clim)
         self._pipeline = []
+        self._draft_preview_enabled = False
         self.preview_label = None
         self._preview_timer = QtCore.QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -587,7 +588,8 @@ class CustomFilterDialog(QtWidgets.QDialog):
             label = FILTER_DEFINITIONS.get(key, {}).get("label", key)
             self.pipeline_list.addItem(f"{len(self._pipeline)}. {label}")
         self._on_filter_selection_changed()
-        self._schedule_preview_update()
+        self._draft_preview_enabled = False
+        self._queue_preview_update()
 
     def _set_param_row_visible(self, label_widget, field_widget, visible):
         label_widget.setVisible(bool(visible))
@@ -603,12 +605,16 @@ class CustomFilterDialog(QtWidgets.QDialog):
         self._set_param_row_visible(self.lap_abs_label, self.lap_abs_cb, show_lap)
         self._schedule_preview_update()
 
-    def _schedule_preview_update(self, *_args):
+    def _queue_preview_update(self):
         self._preview_timer.start()
+
+    def _schedule_preview_update(self, *_args):
+        self._draft_preview_enabled = True
+        self._queue_preview_update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._schedule_preview_update()
+        self._queue_preview_update()
 
     def _current_step(self):
         key = self.filter_combo.currentData()
@@ -628,7 +634,8 @@ class CustomFilterDialog(QtWidgets.QDialog):
         label = FILTER_DEFINITIONS.get(step['key'], {}).get('label', step['key'])
         self._pipeline.append(step)
         self.pipeline_list.addItem(f"{len(self._pipeline)}. {label}")
-        self._schedule_preview_update()
+        self._draft_preview_enabled = False
+        self._queue_preview_update()
 
     def _on_remove_step(self):
         row = self.pipeline_list.currentRow()
@@ -639,11 +646,16 @@ class CustomFilterDialog(QtWidgets.QDialog):
             for idx, step in enumerate(self._pipeline, 1):
                 label = FILTER_DEFINITIONS.get(step['key'], {}).get('label', step['key'])
                 self.pipeline_list.addItem(f"{idx}. {label}")
-            self._schedule_preview_update()
+            self._draft_preview_enabled = False
+            self._queue_preview_update()
 
     def _preview_steps(self):
         if self._pipeline:
-            return list(self._pipeline)
+            steps = list(self._pipeline)
+            current = self._current_step()
+            if self._draft_preview_enabled and current:
+                steps.append(current)
+            return steps
         current = self._current_step()
         return [current] if current else []
 
