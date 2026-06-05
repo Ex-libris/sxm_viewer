@@ -147,11 +147,25 @@ def open_histogram_dialog(owner, canvas):
             dlg.accept()
 
     def on_auto():
-        finite = state.get("finite")
-        if finite is None:
-            return
+        view = views[state.get("view_idx", 0)]
+        suggested = None
         try:
-            lo, hi = np.percentile(finite, [1, 99])
+            suggested = owner._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
+        except Exception:
+            suggested = None
+        if suggested is None:
+            finite = state.get("finite")
+            if finite is None:
+                return
+            try:
+                lo, hi = np.percentile(finite, [1, 99])
+            except Exception:
+                return
+        else:
+            lo, hi = suggested
+        try:
+            lo = float(lo)
+            hi = float(hi)
         except Exception:
             return
         _set_spin_values(float(lo), float(hi), block=True)
@@ -160,7 +174,15 @@ def open_histogram_dialog(owner, canvas):
 
     def on_reset():
         view = views[state.get("view_idx", 0)]
-        vmin, vmax, _ = owner._view_finite_values(view)
+        suggested = None
+        try:
+            suggested = owner._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
+        except Exception:
+            suggested = None
+        if suggested is not None:
+            vmin, vmax = suggested
+        else:
+            vmin, vmax, _ = owner._view_finite_values(view)
         if vmin is None:
             return
         _set_spin_values(vmin, vmax, block=True)

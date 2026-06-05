@@ -69,7 +69,7 @@ from ..utils.units import (
     _safe_float,
 )
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
-from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si
+from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, robust_limits
 from .minimap import FrameMiniMap
 from .detail_panels import (
     BatchExportSignals,
@@ -4626,20 +4626,13 @@ QLabel:hover {{
     def _auto_preview_clim(self, arr, *, relative_zero: bool = False):
         """Compute color limits ignoring a dominant flat stripe (e.g., aborted scans)."""
         try:
-            data = np.asarray(arr, dtype=float)
-            finite = data[np.isfinite(data)]
-            if finite.size == 0:
-                return None
-            hist, edges = np.histogram(finite, bins=256)
-            idx_max = int(np.argmax(hist))
-            frac = hist[idx_max] / float(finite.size)
-            if frac > 0.5:
-                lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
-                finite = finite[(finite < lo_edge) | (finite > hi_edge)]
+            vmin, vmax = robust_limits(arr, low_pct=1.0, high_pct=99.0)
+            if vmin is None or vmax is None:
+                _vmin, _vmax, finite = self._contrast_finite_values(arr)
                 if finite.size == 0:
-                    finite = data[np.isfinite(data)]
-            vmin = float(np.nanpercentile(finite, 1.0))
-            vmax = float(np.nanpercentile(finite, 99.0))
+                    return None
+                vmin = float(np.nanpercentile(finite, 1.0))
+                vmax = float(np.nanpercentile(finite, 99.0))
             if relative_zero:
                 vmin = 0.0
             if vmin == vmax:
@@ -7034,8 +7027,33 @@ QLabel:hover {{
     def _apply_filter_pipeline(self, arr, steps):
         result = np.asarray(arr, dtype=float)
         for step in steps:
-            result = self._run_filter_step(result, step)
+            result = self._run_filter_step_on_valid_region(result, step)
         return result
+
+    def _run_filter_step_on_valid_region(self, arr, step):
+        work = np.asarray(arr, dtype=float)
+        if work.ndim != 2:
+            return self._run_filter_step(work, step)
+        try:
+            region = detect_valid_scan_region(work)
+        except Exception:
+            region = None
+        if not region:
+            return self._run_filter_step(work, step)
+        r0, r1 = region
+        if r1 < r0:
+            return self._run_filter_step(work, step)
+        out = np.array(work, copy=True)
+        try:
+            filtered = self._run_filter_step(work[r0:r1 + 1, :], step)
+        except Exception:
+            filtered = self._run_filter_step(work, step)
+            return np.asarray(filtered, dtype=float)
+        try:
+            out[r0:r1 + 1, :] = np.asarray(filtered, dtype=float)
+        except Exception:
+            return np.asarray(filtered, dtype=float)
+        return out
 
     def _friendly_view_title(self, view, default="Preview"):
         if not view:
@@ -7977,17 +7995,69 @@ QLabel:hover {{
     def _on_preview_value(self, value, x, y, view):
         return viewer_preview._on_preview_value(self, value, x, y, view)
 
+    def _contrast_finite_values(self, arr):
+        try:
+            data = np.asarray(arr, dtype=float)
+        except Exception:
+            return None, None, np.array([], dtype=float)
+        if data.ndim == 2:
+            try:
+                region = detect_valid_scan_region(data)
+            except Exception:
+                region = None
+            if region:
+                r0, r1 = region
+                data = data[r0:r1 + 1, :]
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            return None, None, finite
+        try:
+            hist, edges = np.histogram(finite, bins=256)
+            idx_max = int(np.argmax(hist))
+            frac = hist[idx_max] / float(finite.size)
+            if frac > 0.5:
+                lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+                trimmed = finite[(finite < lo_edge) | (finite > hi_edge)]
+                if trimmed.size >= max(10, int(0.001 * finite.size)):
+                    finite = trimmed
+        except Exception:
+            pass
+        if finite.size == 0:
+            return None, None, finite
+        return float(np.nanmin(finite)), float(np.nanmax(finite)), finite
+
     def _view_finite_values(self, view):
         if not view:
             return None, None, None
         try:
-            arr = np.asarray(view.get("arr"))
+            arr = view.get("arr")
         except Exception:
             return None, None, None
-        finite = arr[np.isfinite(arr)]
+        vmin, vmax, finite = self._contrast_finite_values(arr)
         if finite.size == 0:
             return None, None, None
-        return float(finite.min()), float(finite.max()), finite
+        return vmin, vmax, finite
+
+    def _recommended_view_clim(self, view, *, pct_low=1.0, pct_high=99.0):
+        if not view:
+            return None
+        try:
+            arr = view.get("arr")
+        except Exception:
+            arr = None
+        if arr is None:
+            return None
+        relative_zero = bool(view.get("display_relative_zero", False))
+        try:
+            vmin, vmax = robust_limits(arr, low_pct=float(pct_low), high_pct=float(pct_high))
+        except Exception:
+            vmin = vmax = None
+        if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or float(vmax) <= float(vmin):
+            fallback = self._auto_preview_clim(arr, relative_zero=relative_zero)
+            return fallback
+        if relative_zero:
+            vmin = 0.0
+        return (float(vmin), float(vmax))
 
     def _apply_clim_to_view(self, canvas, view, lo, hi):
         if canvas is None or view is None:
@@ -8016,34 +8086,26 @@ QLabel:hover {{
 
     def _auto_contrast(self, canvas, pct_low=1.0, pct_high=99.0):
         view = self._resolve_canvas_contrast_target(canvas)
-        vmin, vmax, finite = self._view_finite_values(view)
-        if finite is None:
+        suggested = self._recommended_view_clim(view, pct_low=pct_low, pct_high=pct_high)
+        if suggested is None:
             return
         try:
             canvas.push_undo_state("auto_contrast")
         except Exception:
             pass
-        try:
-            lo, hi = np.percentile(finite, [pct_low, pct_high])
-        except Exception:
-            lo, hi = vmin, vmax
-        if view and bool(view.get("display_relative_zero", False)):
-            lo = 0.0
-            hi = max(float(hi), float(vmax or 0.0), 0.0)
+        lo, hi = suggested
         self._apply_clim_to_view(canvas, view, lo, hi)
 
     def _reset_contrast(self, canvas):
         view = self._resolve_canvas_contrast_target(canvas)
-        vmin, vmax, _ = self._view_finite_values(view)
-        if vmin is None:
+        suggested = self._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
+        if suggested is None:
             return
         try:
             canvas.push_undo_state("reset_contrast")
         except Exception:
             pass
-        if view and bool(view.get("display_relative_zero", False)):
-            vmin = 0.0
-        self._apply_clim_to_view(canvas, view, vmin, vmax)
+        self._apply_clim_to_view(canvas, view, suggested[0], suggested[1])
 
     def _open_histogram_dialog(self, canvas):
         open_histogram_dialog(self, canvas)
