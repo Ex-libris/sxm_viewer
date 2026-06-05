@@ -125,6 +125,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._overlay_shortcuts = []
         self.views = []
         self._ax_view_map = {}
+        self._active_view_ax = None
+        self._hover_view_ax = None
         self._relative_axes_override = None
         self._suspend_zoom_restore = False
         self._image_meta = {}
@@ -714,6 +716,79 @@ class MultiPreviewCanvas(FigureCanvas):
             if v is view:
                 return ax, self._image_meta.get(ax, {})
         return None, {}
+
+    def _set_active_view_ax(self, ax):
+        if ax in getattr(self, "_ax_view_map", {}):
+            self._active_view_ax = ax
+
+    def _set_hover_view_ax(self, ax):
+        if ax in getattr(self, "_ax_view_map", {}):
+            self._hover_view_ax = ax
+
+    def active_view_and_axes(self):
+        for ax in (
+            getattr(self, "_active_view_ax", None),
+            getattr(self, "_hover_view_ax", None),
+            self.main_ax,
+            next(iter(self._ax_view_map.keys()), None),
+        ):
+            if ax is None:
+                continue
+            view = self._ax_view_map.get(ax)
+            if view is not None:
+                return view, ax
+        return None, None
+
+    def active_view_index(self) -> int:
+        view, _ax = self.active_view_and_axes()
+        if view is None:
+            return 0
+        try:
+            return max(0, list(self.views or []).index(view))
+        except Exception:
+            return 0
+
+    def _filter_steps_for_view(self, view):
+        try:
+            steps = view.get("filter_steps") if isinstance(view, dict) else None
+        except Exception:
+            steps = None
+        normalized = []
+        for step in list(steps or []):
+            if not isinstance(step, dict):
+                continue
+            key = str(step.get("key") or "").strip()
+            if not key:
+                continue
+            normalized.append({"key": key, "params": dict(step.get("params") or {})})
+        return normalized
+
+    def _filter_summary_text(self, view, *, max_len: int = 72):
+        steps = self._filter_steps_for_view(view)
+        if not steps:
+            return ""
+        labels = []
+        for step in steps:
+            label = str(step.get("key") or "").replace("_", " ").strip()
+            if label:
+                labels.append(label.title())
+        if not labels:
+            return ""
+        summary = " -> ".join(labels)
+        if len(summary) > int(max_len):
+            summary = summary[: max(0, int(max_len) - 3)].rstrip() + "..."
+        return summary
+
+    def _compose_view_title(self, view):
+        if not isinstance(view, dict):
+            return ""
+        title = str(view.get("title", "") or "").strip()
+        summary = self._filter_summary_text(view, max_len=84)
+        if title and summary:
+            return f"{title}\nFilter: {summary}"
+        if summary:
+            return f"Filter: {summary}"
+        return title
 
     def clear_views(self):
         self.views = []
@@ -1444,6 +1519,8 @@ class MultiPreviewCanvas(FigureCanvas):
 
         self.fig.clf()
         self._ax_view_map = {}
+        self._active_view_ax = None
+        self._hover_view_ax = None
         self._image_meta = {}
         self._fixed_crop_overlay_artists = {}
         self._molecule_gizmo_axes = None
@@ -1561,7 +1638,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
                 self._colorbars.append(cbar)
-            title = v.get('title', '')
+            title = self._compose_view_title(v)
             if title and self._show_title:
                 ax.set_title(title, fontsize=9)
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
@@ -1612,6 +1689,10 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             try:
                 self._render_template_overlay(ax, v)
+            except Exception:
+                pass
+            try:
+                self._draw_filter_summary_overlay(ax, v)
             except Exception:
                 pass
         self._apply_tight_layout_safe(pad=0.25)
@@ -6501,6 +6582,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _on_base_click(self, event):
         if event is None or event.inaxes is None:
             return
+        self._set_active_view_ax(event.inaxes)
         if self._shortcut_hint_hit(event):
             self.set_show_shortcut_hint(False)
             return
@@ -7885,6 +7967,8 @@ class MultiPreviewCanvas(FigureCanvas):
     def _show_context_menu(self, event, view):
         if view is None:
             return
+        if event is not None and getattr(event, "inaxes", None) is not None:
+            self._set_active_view_ax(event.inaxes)
         menu = QtWidgets.QMenu(self)
         # theme-aware styling
         try:
@@ -8995,11 +9079,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._draw_outlines(ax, view)
             except Exception:
                 pass
-            title = view.get('title', '') or view.get('label', '')
+            title = self._compose_view_title(view) or view.get('label', '')
             if title and self._show_title:
                 ax.set_title(title, fontsize=9 * font_scale, color=text_color)
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, view)
+            self._draw_filter_summary_overlay(ax, view)
             self._draw_image_size_overlay(ax, view)
             for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
                 apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
@@ -9137,6 +9222,37 @@ class MultiPreviewCanvas(FigureCanvas):
                 "boxstyle": "round,pad=0.2",
             },
             zorder=21,
+        )
+        try:
+            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
+        except Exception:
+            pass
+
+    def _draw_filter_summary_overlay(self, ax, view):
+        if ax is None:
+            return
+        summary = self._filter_summary_text(view, max_len=88)
+        if not summary:
+            return
+        text_color = "#eef2f7" if getattr(self, "_detail_dark", False) else "#111827"
+        face_color = (0.08, 0.1, 0.14, 0.72) if getattr(self, "_detail_dark", False) else (1.0, 1.0, 1.0, 0.78)
+        edge_color = (0.85, 0.87, 0.9, 0.42) if getattr(self, "_detail_dark", False) else (0.1, 0.12, 0.16, 0.18)
+        text_artist = ax.text(
+            0.014,
+            0.988,
+            f"Filter: {summary}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8.2,
+            color=text_color,
+            zorder=28,
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "facecolor": face_color,
+                "edgecolor": edge_color,
+                "linewidth": 0.8,
+            },
         )
         try:
             apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
@@ -9832,6 +9948,8 @@ class MultiPreviewCanvas(FigureCanvas):
         super().dropEvent(event)
 
     def _on_motion_value(self, event):
+        if event is not None and getattr(event, "inaxes", None) in self._ax_view_map:
+            self._set_hover_view_ax(event.inaxes)
         if self._fixed_crop_transform_mode:
             ax = event.inaxes if event is not None else None
             view = self._ax_view_map.get(ax) if ax is not None else None

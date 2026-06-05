@@ -103,6 +103,7 @@ from .viewer import preview as viewer_preview
 from .viewer.state import ViewerState
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
+from .ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt, _bridge as _ppt_bridge
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import overlays as spectro_overlays
 from .spectroscopy import popups as spectro_popups
@@ -5118,13 +5119,16 @@ QLabel:hover {{
                 painter.drawText(6, 18, "CC")
             painter.end()
         if file_key in self.thumbnail_filters:
+            steps = self._thumbnail_filter_steps(file_key)
+            badge_text = self._filter_badge_text(steps)
             painter = QtGui.QPainter(pix)
             painter.setBrush(QtGui.QColor(160, 16, 239, 220))
             painter.setPen(QtGui.QPen(QtGui.QColor('black')))
-            painter.drawEllipse(pix.width() - 24, 6, 18, 18)
+            badge_w = 22 if len(badge_text) == 1 else 28
+            painter.drawEllipse(pix.width() - (badge_w + 6), 6, badge_w, 18)
             painter.setPen(QtGui.QColor('white'))
             painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
-            painter.drawText(QtCore.QRect(pix.width() - 24, 6, 18, 18), QtCore.Qt.AlignCenter, "F")
+            painter.drawText(QtCore.QRect(pix.width() - (badge_w + 6), 6, badge_w, 18), QtCore.Qt.AlignCenter, badge_text)
             painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
@@ -6666,6 +6670,78 @@ QLabel:hover {{
             return [steps]
         return [step for step in list(steps or []) if isinstance(step, dict)]
 
+    def _filter_pipeline_label_from_steps(self, steps, default="Custom"):
+        normalized = self._normalize_preview_filter_steps(steps)
+        if not normalized:
+            return ""
+        labels = []
+        for step in normalized:
+            key = str(step.get("key") or "").strip()
+            if not key:
+                continue
+            label = FILTER_DEFINITIONS.get(key, {}).get("label", key.replace("_", " ").title())
+            labels.append(str(label).strip())
+        if not labels:
+            return str(default or "Custom")
+        return " -> ".join(labels)
+
+    def _canvas_filter_steps(self, canvas, view=None):
+        target_view = view
+        if target_view is None and canvas is not None:
+            try:
+                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
+            except Exception:
+                target_view = None
+            if target_view is None:
+                target_view = next(iter(getattr(canvas, "views", []) or []), None)
+        steps = []
+        if isinstance(target_view, dict):
+            steps = self._normalize_preview_filter_steps(target_view.get("filter_steps"))
+        return [copy.deepcopy(step) for step in steps]
+
+    def _canvas_filter_label(self, canvas, view=None):
+        target_view = view
+        if target_view is None and canvas is not None:
+            try:
+                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
+            except Exception:
+                target_view = None
+            if target_view is None:
+                target_view = next(iter(getattr(canvas, "views", []) or []), None)
+        label = ""
+        if isinstance(target_view, dict):
+            label = str(target_view.get("filter_label") or "").strip()
+        if label:
+            return label
+        return self._filter_pipeline_label_from_steps(self._canvas_filter_steps(canvas, view=target_view))
+
+    def _thumbnail_filter_steps(self, file_key):
+        spec = (getattr(self, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
+        steps = self._normalize_preview_filter_steps(spec.get("steps"))
+        return [copy.deepcopy(step) for step in steps]
+
+    def _thumbnail_filter_label(self, file_key):
+        spec = (getattr(self, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
+        label = str(spec.get("label") or "").strip()
+        if label:
+            return label
+        return self._filter_pipeline_label_from_steps(spec.get("steps"))
+
+    def _filter_badge_text(self, steps):
+        count = len(self._normalize_preview_filter_steps(steps))
+        if count <= 1:
+            return "F"
+        return f"F{min(count, 9)}"
+
+    def _filter_pipeline_tooltip(self, label, steps):
+        summary = self._filter_pipeline_label_from_steps(steps)
+        count = len(self._normalize_preview_filter_steps(steps))
+        if not summary:
+            return ""
+        if label and label != summary:
+            return f"Filter pipeline ({count} step{'s' if count != 1 else ''}): {label}\n{summary}"
+        return f"Filter pipeline ({count} step{'s' if count != 1 else ''}): {summary}"
+
     def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
         if canvas is None:
             return
@@ -6673,6 +6749,8 @@ QLabel:hover {{
         if not base_views:
             return
         steps = self._normalize_preview_filter_steps(steps)
+        if steps and not str(label or "").strip():
+            label = self._filter_pipeline_label_from_steps(steps, default="Custom")
         if push_undo:
             try:
                 canvas.push_undo_state("filter")
@@ -6865,15 +6943,24 @@ QLabel:hover {{
         if menu is None or canvas is None:
             return
         filt_menu = menu.addMenu("Filters")
+        current_steps = self._canvas_filter_steps(canvas, view=view)
+        current_summary = self._filter_pipeline_label_from_steps(current_steps)
+        if current_summary:
+            status_act = QtWidgets.QAction(f"Current: {current_summary}", filt_menu)
+            status_act.setEnabled(False)
+            filt_menu.addAction(status_act)
+            filt_menu.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(self._filter_action_label(key), filt_menu)
+            prefix = "Add step: " if current_steps else ""
+            act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", filt_menu)
             if info.get("needs_gaussian") and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
             act.triggered.connect(lambda _, k=key: self._apply_filter_to_canvas(canvas, filter_key=k))
             filt_menu.addAction(act)
         filt_menu.addSeparator()
-        filt_menu.addAction("Custom pipeline...", lambda: self._open_custom_filter_for_canvas(canvas))
+        custom_label = "Edit custom pipeline..." if current_steps else "Custom pipeline..."
+        filt_menu.addAction(custom_label, lambda: self._open_custom_filter_for_canvas(canvas))
         filt_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
@@ -6899,8 +6986,9 @@ QLabel:hover {{
             self._restore_filter_views_on_canvas(canvas, original_views)
             if step is None:
                 return
-            steps = [step]
-            label = label or step_label
+            existing_steps = self._canvas_filter_steps(canvas)
+            steps = list(existing_steps) + [step]
+            label = label or self._filter_pipeline_label_from_steps(steps, default=step_label)
         self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
 
     def _open_custom_filter_for_canvas(self, canvas):
@@ -6909,8 +6997,17 @@ QLabel:hover {{
         original_views = self._clone_filter_source_views(canvas, canvas.views)
         base_arr = self._base_filter_image_from_views(original_views)
         preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
+        existing_steps = self._canvas_filter_steps(canvas)
+        existing_label = self._canvas_filter_label(canvas)
+        dialog_parent = None
+        try:
+            dialog_parent = canvas.window() if canvas is not None else None
+        except Exception:
+            dialog_parent = None
+        if dialog_parent is None:
+            dialog_parent = canvas or self
         dlg = CustomFilterDialog(
-            self,
+            dialog_parent,
             base_arr,
             self._run_filter_step,
             preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
@@ -6918,7 +7015,14 @@ QLabel:hover {{
             preview_cmap_name=preview_cmap_name,
             preview_clim=preview_clim,
             show_preview_thumbnail=False,
+            initial_pipeline=existing_steps,
+            initial_name=existing_label or "Custom",
         )
+        try:
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            pass
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             steps = dlg.pipeline_steps()
             label = dlg.pipeline_label()
@@ -7343,6 +7447,127 @@ QLabel:hover {{
 
     def on_export_xyz_files(self):
         return viewer_export.on_export_xyz_files(self)
+
+    def _thumbnail_channel_idx_for_file(self, file_key):
+        key = str(file_key)
+        label = (getattr(self, "_thumb_labels", {}) or {}).get(key)
+        if label is not None:
+            try:
+                channel_idx = label.property("channel_index")
+                if channel_idx is not None:
+                    return int(channel_idx)
+            except Exception:
+                pass
+        payload = (getattr(self, "_processed_views", {}) or {}).get(key) or {}
+        try:
+            channel_idx = payload.get("channel_idx")
+            if channel_idx is not None:
+                return int(channel_idx)
+        except Exception:
+            pass
+        try:
+            return int(self.channel_dropdown.currentIndex())
+        except Exception:
+            return 0
+
+    def _send_thumbnail_targets_to_powerpoint(self, paths, *, new_slide=True):
+        targets = [str(Path(p)) for p in list(paths or []) if p]
+        if not targets:
+            QtWidgets.QMessageBox.information(self, "PowerPoint", "No thumbnails selected.")
+            return
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            QtWidgets.QMessageBox.warning(self, "PowerPoint", "Preview canvas is unavailable.")
+            return
+        original_last = getattr(self, "last_preview", None)
+        original_views = None
+        try:
+            original_views = self._clone_filter_source_views(canvas, getattr(canvas, "views", None) or [])
+        except Exception:
+            original_views = list(getattr(canvas, "views", None) or [])
+        items = []
+        try:
+            for file_key in targets:
+                channel_idx = self._thumbnail_channel_idx_for_file(file_key)
+                self.show_file_channel(file_key, channel_idx, use_local_cmap=True)
+                QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                views = list(getattr(canvas, "views", None) or [])
+                if not views:
+                    continue
+                view = views[0]
+                label_text = canvas._resolve_powerpoint_label(view)
+                hide_titles = bool(label_text) and len(views) == 1
+                pixmap = canvas._render_displayed_pixmap(show_titles=not hide_titles)
+                if pixmap is None or pixmap.isNull():
+                    pixmap = canvas.get_overview_pixmap()
+                if pixmap is None or pixmap.isNull():
+                    continue
+                items.append((pixmap, label_text))
+        finally:
+            try:
+                if original_last:
+                    self.show_file_channel(original_last[0], original_last[1], use_local_cmap=True)
+                elif original_views is not None:
+                    canvas.set_views(original_views, preserve_profiles=True)
+            except Exception:
+                pass
+        if not items:
+            QtWidgets.QMessageBox.warning(self, "PowerPoint", "No image to send.")
+            return
+        try:
+            if new_slide or len(items) == 1:
+                slide_number = None
+                shape_name = ""
+                for pixmap, label_text in items:
+                    slide_number, shape_name = send_pixmap_to_ppt(
+                        pixmap,
+                        label=label_text,
+                        new_slide=True,
+                    )
+                if slide_number is not None:
+                    canvas._show_powerpoint_success(slide_number, shape_name)
+                return
+            presentation = _ppt_bridge._presentation()
+            slide = _ppt_bridge._resolve_slide(presentation, new_slide=False, slide_index=None)
+            slide_index = int(slide.SlideIndex)
+            slide_w = float(presentation.PageSetup.SlideWidth)
+            slide_h = float(presentation.PageSetup.SlideHeight)
+            count = len(items)
+            cols = int(math.ceil(math.sqrt(count)))
+            rows = int(math.ceil(count / max(cols, 1)))
+            outer_margin = 24.0
+            gutter = 16.0
+            caption_h = 28.0
+            cell_w = max(120.0, (slide_w - 2 * outer_margin - max(0, cols - 1) * gutter) / max(cols, 1))
+            cell_h = max(110.0, (slide_h - 2 * outer_margin - max(0, rows - 1) * gutter) / max(rows, 1))
+            image_h = max(80.0, cell_h - caption_h)
+            shape_name = ""
+            for idx, (pixmap, label_text) in enumerate(items):
+                row = idx // max(cols, 1)
+                col = idx % max(cols, 1)
+                left = outer_margin + col * (cell_w + gutter)
+                top = outer_margin + row * (cell_h + gutter)
+                _slide_number, shape_name = send_pixmap_to_ppt(
+                    pixmap,
+                    label=label_text,
+                    new_slide=False,
+                    slide_index=slide_index,
+                    left=left,
+                    top=top,
+                    width=cell_w,
+                    height=image_h,
+                )
+            canvas._show_powerpoint_success(slide_index, shape_name)
+        except ConnectionError:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "PowerPoint",
+                "PowerPoint is not running. Please open a presentation first.",
+            )
+        except EnvironmentError as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
 
     def on_adjust_image(self):
         if not self.last_preview or not hasattr(self, '_last_base_array'):
@@ -7776,8 +8001,21 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _resolve_canvas_contrast_target(self, canvas):
+        if canvas is None:
+            return None
+        try:
+            if hasattr(canvas, "active_view_and_axes"):
+                view, _ax = canvas.active_view_and_axes()
+                if view is not None:
+                    return view
+        except Exception:
+            pass
+        views = list(getattr(canvas, "views", None) or [])
+        return views[0] if views else None
+
     def _auto_contrast(self, canvas, pct_low=1.0, pct_high=99.0):
-        view = canvas.views[0] if canvas and getattr(canvas, "views", None) else None
+        view = self._resolve_canvas_contrast_target(canvas)
         vmin, vmax, finite = self._view_finite_values(view)
         if finite is None:
             return
@@ -7795,7 +8033,7 @@ QLabel:hover {{
         self._apply_clim_to_view(canvas, view, lo, hi)
 
     def _reset_contrast(self, canvas):
-        view = canvas.views[0] if canvas and getattr(canvas, "views", None) else None
+        view = self._resolve_canvas_contrast_target(canvas)
         vmin, vmax, _ = self._view_finite_values(view)
         if vmin is None:
             return
@@ -8867,15 +9105,24 @@ QLabel:hover {{
         # If user has a multi-selection, operate on all of them (plus the clicked one)
         targets = sorted(set(self.thumb_multi_select or []) | {fp})
         menu = QtWidgets.QMenu(self)
-        sub = menu.addMenu("Apply filter")
+        current_thumb_steps = self._thumbnail_filter_steps(fp)
+        current_thumb_summary = self._filter_pipeline_label_from_steps(current_thumb_steps)
+        sub = menu.addMenu("Filters")
+        if current_thumb_summary:
+            status_act = QtWidgets.QAction(f"Current: {current_thumb_summary}", menu)
+            status_act.setEnabled(False)
+            sub.addAction(status_act)
+            sub.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
-            act = QtWidgets.QAction(self._filter_action_label(key), menu)
+            prefix = "Add step: " if current_thumb_steps else ""
+            act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", menu)
             if info.get('needs_gaussian') and not _gaussian_available():
                 act.setEnabled(False)
                 act.setToolTip("Requires scipy or OpenCV.")
             act.triggered.connect(lambda _, k=key, paths=list(targets), focus=fp: self._apply_filter_to_paths(paths, k, focus_path=focus))
             sub.addAction(act)
-        custom_act = QtWidgets.QAction("Custom pipeline...", menu)
+        custom_label = "Edit custom pipeline..." if current_thumb_steps else "Custom pipeline..."
+        custom_act = QtWidgets.QAction(custom_label, menu)
         custom_act.triggered.connect(lambda _, paths=list(targets), focus=fp: self._open_custom_filter_dialog(paths, focus))
         sub.addAction(custom_act)
         clear_one = QtWidgets.QAction("Clear filter", menu)
@@ -8896,6 +9143,18 @@ QLabel:hover {{
         export_png_act = QtWidgets.QAction("Export PNGs...", menu)
         export_png_act.triggered.connect(self.on_export_pngs)
         menu.addAction(export_png_act)
+        ppt_supported, ppt_reason = powerpoint_support_status()
+        send_ppt_act = QtWidgets.QAction("Send selected to PowerPoint", menu)
+        send_ppt_act.triggered.connect(lambda _, paths=list(targets): self._send_thumbnail_targets_to_powerpoint(paths, new_slide=True))
+        send_current_slide_act = QtWidgets.QAction("Send selected to Current Slide", menu)
+        send_current_slide_act.triggered.connect(lambda _, paths=list(targets): self._send_thumbnail_targets_to_powerpoint(paths, new_slide=False))
+        if not ppt_supported:
+            send_ppt_act.setEnabled(False)
+            send_current_slide_act.setEnabled(False)
+            send_ppt_act.setToolTip(ppt_reason or "")
+            send_current_slide_act.setToolTip(ppt_reason or "")
+        menu.addAction(send_ppt_act)
+        menu.addAction(send_current_slide_act)
         export_xyz_act = QtWidgets.QAction("Export XYZ...", menu)
         export_xyz_act.triggered.connect(self.on_export_xyz_files)
         menu.addAction(export_xyz_act)
@@ -9089,10 +9348,12 @@ QLabel:hover {{
                 self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
             if step is None:
                 return
-            spec_steps = [step]
+            existing_steps = self._thumbnail_filter_steps(focus_path)
+            spec_steps = list(existing_steps) + [step]
+            spec_label = self._filter_pipeline_label_from_steps(spec_steps, default=spec_label)
         else:
             spec_steps = pipeline
-            spec_label = label or 'Custom'
+            spec_label = label or self._filter_pipeline_label_from_steps(spec_steps, default='Custom')
         path_keys = {str(Path(p)) for p in paths}
         for key in path_keys:
             steps_copy = [dict(step) for step in spec_steps]
@@ -9130,6 +9391,8 @@ QLabel:hover {{
 
     def _open_custom_filter_dialog(self, paths, focus_path):
         base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
+        existing_steps = self._thumbnail_filter_steps(focus_path)
+        existing_label = self._thumbnail_filter_label(focus_path)
         dlg = CustomFilterDialog(
             self,
             base_arr,
@@ -9138,6 +9401,8 @@ QLabel:hover {{
             preview_target_text=preview_target,
             preview_cmap_name=preview_cmap_name,
             preview_clim=preview_clim,
+            initial_pipeline=existing_steps,
+            initial_name=existing_label or "Custom",
         )
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             pipeline = dlg.pipeline_steps()

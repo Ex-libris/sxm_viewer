@@ -83,6 +83,23 @@ def _thumb_render_cache_key(data_key, cmap_name, clim):
     return (data_key, cmap_name, clim)
 
 
+def _thumbnail_tooltip(viewer, file_key):
+    try:
+        name = Path(str(file_key)).name
+    except Exception:
+        name = str(file_key)
+    tooltip = name
+    try:
+        label = viewer._thumbnail_filter_label(file_key)
+        steps = viewer._thumbnail_filter_steps(file_key)
+        details = viewer._filter_pipeline_tooltip(label, steps)
+    except Exception:
+        details = ""
+    if details:
+        tooltip = f"{tooltip}\n{details}"
+    return tooltip
+
+
 def _ensure_thumb_click_timer(viewer):
     timer = getattr(viewer, "_thumb_click_timer", None)
     if timer is not None:
@@ -733,6 +750,8 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
                     lbl.setProperty("drag_start", None)
                     lbl.setProperty("dragging", False)
+                    thumb_tooltip = _thumbnail_tooltip(viewer, key)
+                    lbl.setToolTip(thumb_tooltip)
                     placeholder = QtGui.QPixmap(thumb_w, thumb_h)
                     placeholder.fill(QtGui.QColor('#0b0b12'))
                     lbl.setPixmap(placeholder)
@@ -749,6 +768,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     vbox.addWidget(lbl)
                     cap = QtWidgets.QLabel(Path(t).name); cap.setAlignment(QtCore.Qt.AlignCenter); cap.setMaximumHeight(18)
                     cap.setFont(QtGui.QFont("Segoe UI", 9)); vbox.addWidget(cap)
+                    cap.setToolTip(thumb_tooltip)
                     cap.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
                     cap.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
                     card_layout.addLayout(vbox)
@@ -871,6 +891,8 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         lbl.setProperty("thumb_dims", (thumb_w, thumb_h))
         lbl.setProperty("drag_start", None)
         lbl.setProperty("dragging", False)
+        thumb_tooltip = _thumbnail_tooltip(viewer, key)
+        lbl.setToolTip(thumb_tooltip)
         placeholder = QtGui.QPixmap(thumb_w, thumb_h)
         placeholder.fill(QtGui.QColor('#0b0b12'))
         lbl.setPixmap(placeholder)
@@ -887,6 +909,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         vbox.addWidget(lbl)
         cap = QtWidgets.QLabel(Path(t).name); cap.setAlignment(QtCore.Qt.AlignCenter); cap.setMaximumHeight(18)
         cap.setFont(QtGui.QFont("Segoe UI", 9)); vbox.addWidget(cap)
+        cap.setToolTip(thumb_tooltip)
         cap.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         cap.customContextMenuRequested.connect(lambda pos, lb=lbl: viewer._on_thumb_context_menu(lb, pos))
         card_layout.addLayout(vbox)

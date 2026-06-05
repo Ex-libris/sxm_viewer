@@ -452,6 +452,8 @@ class CustomFilterDialog(QtWidgets.QDialog):
         preview_cmap_name="viridis",
         preview_clim=None,
         show_preview_thumbnail=True,
+        initial_pipeline=None,
+        initial_name=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Custom filter pipeline")
@@ -530,7 +532,8 @@ class CustomFilterDialog(QtWidgets.QDialog):
         left_layout.addWidget(self.pipeline_list, 1)
         name_row = QtWidgets.QHBoxLayout()
         name_row.addWidget(QtWidgets.QLabel("Name prefix:"))
-        self.name_edit = QtWidgets.QLineEdit("Custom")
+        default_name = str(initial_name or "Custom").strip() or "Custom"
+        self.name_edit = QtWidgets.QLineEdit(default_name)
         name_row.addWidget(self.name_edit)
         left_layout.addLayout(name_row)
         body.addWidget(left_panel, 1)
@@ -573,6 +576,16 @@ class CustomFilterDialog(QtWidgets.QDialog):
         self.lap_sigma_spin.valueChanged.connect(self._schedule_preview_update)
         self.lap_neighbors_combo.currentIndexChanged.connect(self._schedule_preview_update)
         self.lap_abs_cb.toggled.connect(self._schedule_preview_update)
+        for step in list(initial_pipeline or []):
+            if not isinstance(step, dict):
+                continue
+            key = str(step.get("key") or "").strip()
+            if not key:
+                continue
+            normalized = {"key": key, "params": dict(step.get("params") or {})}
+            self._pipeline.append(normalized)
+            label = FILTER_DEFINITIONS.get(key, {}).get("label", key)
+            self.pipeline_list.addItem(f"{len(self._pipeline)}. {label}")
         self._on_filter_selection_changed()
         self._schedule_preview_update()
 

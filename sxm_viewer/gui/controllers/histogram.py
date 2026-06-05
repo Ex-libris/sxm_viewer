@@ -70,7 +70,13 @@ def open_histogram_dialog(owner, canvas):
     btn_row.addWidget(apply_btn)
     layout.addLayout(btn_row)
 
-    state = {"view_idx": 0, "lines": (None, None), "finite": None, "dragging": None, "undo_pushed": False}
+    default_idx = 0
+    try:
+        if hasattr(canvas, "active_view_index"):
+            default_idx = max(0, int(canvas.active_view_index()))
+    except Exception:
+        default_idx = 0
+    state = {"view_idx": default_idx, "lines": (None, None), "finite": None, "dragging": None, "undo_pushed": False}
 
     def load_view(idx: int):
         idx = max(0, min(idx, len(views) - 1))
@@ -211,6 +217,10 @@ def open_histogram_dialog(owner, canvas):
     reset_btn.clicked.connect(on_reset)
     if selector:
         selector.currentIndexChanged.connect(load_view)
+        try:
+            selector.setCurrentIndex(default_idx)
+        except Exception:
+            pass
 
     try:
         cid_press = canvas_hist.mpl_connect("button_press_event", _on_press)
@@ -219,6 +229,8 @@ def open_histogram_dialog(owner, canvas):
         fig.canvas.setProperty("hist_cids", (cid_press, cid_motion, cid_release))
     except Exception:
         pass
+
+    load_view(default_idx)
 
     profile_was_enabled = bool(getattr(canvas, "profile_enabled", False))
     profile_user_flag = bool(getattr(canvas, "_profile_user_enabled", profile_was_enabled))
