@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
-from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame
+from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame, safe_default_filename
 from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color
 
 
@@ -1400,7 +1400,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             return
         try:
             title = self._title or "view"
-            default = f"{title}.{fmt}"
+            default = safe_default_filename(title, fmt)
             label = "SVG Files (*.svg)" if fmt == "svg" else "PDF Files (*.pdf)"
             path, _ = QtWidgets.QFileDialog.getSaveFileName(None, "Save view", default, label)
             if not path:

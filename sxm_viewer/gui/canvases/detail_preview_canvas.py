@@ -36,6 +36,7 @@ from .molecular_overlay import (
     normalize_molecule_render_style,
 )
 from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SUFFIXES
+from .canvas_rendering import iso_export_filename
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
@@ -69,6 +70,20 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     cv2 = None
     _HAS_CV2 = False
+
+def _default_export_filename(view, ext):
+    """Derive a default export filename for a preview view from its structured metadata."""
+    meta = view.get("meta") or {}
+    return iso_export_filename(
+        ext,
+        file_name=str(meta.get("file_name") or ""),
+        channel=str(meta.get("channel") or ""),
+        date=str(meta.get("date") or ""),
+        time=str(meta.get("time") or ""),
+        file_path=str(meta.get("file_path") or view.get("path") or ""),
+        fallback_title=str(view.get("title") or "view"),
+    )
+
 
 _FIXED_CROP_HISTORY_LIMIT = 96
 _UNDO_HISTORY_LIMIT = 24
@@ -8531,8 +8546,7 @@ class MultiPreviewCanvas(FigureCanvas):
     def _save_view_to_file(self, view):
         try:
             tgt_view = view or (self.views[0] if self.views else {})
-            title = tgt_view.get('title') or 'view'
-            default = f"{title}.png"
+            default = _default_export_filename(tgt_view, "png")
             path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save view", default, "PNG Files (*.png)")
             if not path:
                 return
@@ -8597,8 +8611,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         try:
             tgt_view = view or (self.views[0] if self.views else {})
-            title = tgt_view.get('title') or 'view'
-            default = f"{title}.{fmt}"
+            default = _default_export_filename(tgt_view, fmt)
             label = "SVG Files (*.svg)" if fmt == "svg" else "PDF Files (*.pdf)"
             path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save view", default, label)
             if not path:
