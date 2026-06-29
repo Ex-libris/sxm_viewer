@@ -1,7 +1,173 @@
 """Matplotlib rendering helpers for canvas tiles."""
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from pathlib import Path
+
 from ..._shared import QtGui, colormaps, np
+
+
+# Date orderings the instrument header may use. An unambiguous date (e.g.
+# 6/25/2026) matches only one of these; an ambiguous one (e.g. 04/03/2026) is
+# disambiguated against the source file's modification time. The order below is
+# only the fallback used when no file mtime is available, so MM/DD/YYYY (the
+# observed Nanonis convention) precedes DD/MM/YYYY.
+_HEADER_DATE_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%d.%m.%Y",
+)
+_HEADER_TIME_FORMATS: tuple[str, ...] = ("%H:%M:%S", "%H:%M")
+
+
+def _sanitize_filename_token(text: str) -> str:
+    """
+    Collapse a label into a filesystem-safe filename fragment.
+
+    Args:
+        text (str): Arbitrary label text.
+
+    Returns:
+        token (str): The text with Windows-reserved characters and whitespace
+            replaced by underscores; empty input yields an empty string.
+    """
+    token: str = re.sub(r'[<>:"/\\|?*]+', '_', str(text or "")).strip()
+    token = re.sub(r'\s+', '_', token).strip('._')
+    token = re.sub(r'_+', '_', token)
+    return token
+
+
+def _parse_header_datetime(date: str, time: str, file_path: str = "") -> datetime | None:
+    """
+    Parse a header date/time pair into a datetime, disambiguating ambiguous orderings.
+
+    All known orderings are tried and the distinct interpretations collected.
+    When a date is ambiguous (e.g. 04/03/2026 could be April 3 or 3 April) the
+    interpretation closest to the source file's modification time is chosen, so
+    day/month are not silently swapped for users whose files use a different
+    convention. When no file mtime is available, format priority decides.
+
+    Args:
+        date (str): The header Date field (locale-dependent ordering).
+        time (str): The header Time field.
+        file_path (str): Path to the source file, used to resolve ambiguity via
+            its modification time; may be empty.
+
+    Returns:
+        parsed (datetime | None): The chosen datetime, or None if no known
+            format matched.
+    """
+    date = str(date or "").strip()
+    time = str(time or "").strip()
+    candidates: list[datetime] = []
+
+    def _collect(text: str, formats: tuple[str, ...]) -> None:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            if parsed not in candidates:
+                candidates.append(parsed)
+
+    if date and time:
+        combined_formats: tuple[str, ...] = tuple(
+            f"{date_fmt} {time_fmt}"
+            for date_fmt in _HEADER_DATE_FORMATS
+            for time_fmt in _HEADER_TIME_FORMATS
+        )
+        _collect(f"{date} {time}", combined_formats)
+    target: str = date or time
+    if not candidates and target:
+        _collect(target, (*_HEADER_DATE_FORMATS, *_HEADER_TIME_FORMATS))
+
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    reference: datetime | None = None
+    if file_path:
+        try:
+            reference = datetime.fromtimestamp(Path(file_path).stat().st_mtime)
+        except OSError:
+            reference = None
+    if reference is not None:
+        return min(candidates, key=lambda dt: abs((dt - reference).total_seconds()))
+    # No mtime to disambiguate with: keep the highest-priority interpretation.
+    return candidates[0]
+
+
+def safe_default_filename(title: str, ext: str) -> str:
+    """
+    Build a filesystem-safe default filename from a (possibly timestamped) title.
+
+    View/canvas titles embed the acquisition timestamp in HH:MM:SS form, whose
+    colons are invalid in Windows filenames; this collapses those and other
+    reserved characters so the save dialog pre-fills a valid name.
+
+    Args:
+        title (str): The view or canvas title to derive the filename from.
+        ext (str): The file extension to append, without a leading dot.
+
+    Returns:
+        filename (str): A sanitized "<stem>.<ext>" filename.
+    """
+    stem: str = _sanitize_filename_token(title) or "view"
+    return f"{stem}.{ext}"
+
+
+def iso_export_filename(
+    ext: str,
+    *,
+    file_name: str = "",
+    channel: str = "",
+    date: str = "",
+    time: str = "",
+    file_path: str = "",
+    fallback_title: str = "view",
+) -> str:
+    """
+    Build a sortable, filesystem-safe default export filename from structured metadata.
+
+    Combines the source file stem, channel/caption, and an ISO-ordered
+    acquisition timestamp (YYYY-MM-DD_HH-MM-SS). The header timestamp is parsed
+    and re-emitted in ISO order so the name is unambiguous and sorts
+    chronologically; if it cannot be parsed, the raw date/time is sanitized
+    instead so the result is still a valid filename.
+
+    Args:
+        ext (str): The file extension to append, without a leading dot.
+        file_name (str): The source file name (extension is dropped for the stem).
+        channel (str): The channel/caption label.
+        date (str): The header Date field.
+        time (str): The header Time field.
+        file_path (str): Path to the source file, used to disambiguate ambiguous
+            date orderings via its modification time; may be empty.
+        fallback_title (str): Title to derive the stem from when file_name is empty.
+
+    Returns:
+        filename (str): A sanitized "<stem>_<channel>_<timestamp>.<ext>" filename.
+    """
+    parts: list[str] = []
+    stem: str = _sanitize_filename_token(Path(str(file_name)).stem) if file_name else ""
+    if not stem:
+        stem = _sanitize_filename_token(fallback_title)
+    if stem:
+        parts.append(stem)
+    channel_token: str = _sanitize_filename_token(channel)
+    if channel_token:
+        parts.append(channel_token)
+    parsed: datetime | None = _parse_header_datetime(date, time, file_path)
+    if parsed is not None:
+        parts.append(parsed.strftime("%Y-%m-%d_%H-%M-%S"))
+    else:
+        raw_dt: str = _sanitize_filename_token(
+            " ".join(t for t in (str(date).strip(), str(time).strip()) if t)
+        )
+        if raw_dt:
+            parts.append(raw_dt)
+    name: str = "_".join(p for p in parts if p) or "view"
+    return f"{name}.{ext}"
 
 
 def _format_colorbar_value(value):
