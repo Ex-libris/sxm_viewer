@@ -9,6 +9,8 @@ so existing call sites are unchanged.
 """
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 
 from ...processing.filters import (
@@ -143,3 +145,80 @@ class FilterController:
         except Exception:
             pass
         return arr
+
+    # ---- view / pipeline-state helpers (no Qt; read viewer state via self.viewer) ----
+    def _clone_filter_source_views(self, canvas, views):
+        clone_view = getattr(canvas, "_clone_undo_view", None)
+        cloned = []
+        for view in list(views or []):
+            try:
+                if callable(clone_view):
+                    cloned.append(clone_view(view))
+                else:
+                    cloned.append(copy.deepcopy(view))
+            except Exception:
+                cloned.append(view)
+        return cloned
+
+    def _canvas_filter_steps(self, canvas, view=None):
+        target_view = view
+        if target_view is None and canvas is not None:
+            try:
+                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
+            except Exception:
+                target_view = None
+            if target_view is None:
+                target_view = next(iter(getattr(canvas, "views", []) or []), None)
+        steps = []
+        if isinstance(target_view, dict):
+            steps = self._normalize_preview_filter_steps(target_view.get("filter_steps"))
+        return [copy.deepcopy(step) for step in steps]
+
+    def _canvas_filter_label(self, canvas, view=None):
+        target_view = view
+        if target_view is None and canvas is not None:
+            try:
+                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
+            except Exception:
+                target_view = None
+            if target_view is None:
+                target_view = next(iter(getattr(canvas, "views", []) or []), None)
+        label = ""
+        if isinstance(target_view, dict):
+            label = str(target_view.get("filter_label") or "").strip()
+        if label:
+            return label
+        return self._filter_pipeline_label_from_steps(self._canvas_filter_steps(canvas, view=target_view))
+
+    def _thumbnail_filter_steps(self, file_key):
+        spec = (getattr(self.viewer, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
+        steps = self._normalize_preview_filter_steps(spec.get("steps"))
+        return [copy.deepcopy(step) for step in steps]
+
+    def _thumbnail_filter_label(self, file_key):
+        spec = (getattr(self.viewer, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
+        label = str(spec.get("label") or "").strip()
+        if label:
+            return label
+        return self._filter_pipeline_label_from_steps(spec.get("steps"))
+
+    def _base_filter_image_from_views(self, views):
+        try:
+            if views:
+                return views[0].get("_filter_base_arr") or views[0].get("arr")
+        except Exception:
+            return None
+        return None
+
+    def _normalize_filter_preview_clim(self, clim):
+        try:
+            if clim is None:
+                return None
+            lo, hi = clim
+            lo = float(lo)
+            hi = float(hi)
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return None
+            return (lo, hi)
+        except Exception:
+            return None
