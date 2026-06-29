@@ -61,7 +61,6 @@ from ..utils.units import (
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, robust_limits
 from .minimap import FrameMiniMap
 from .workers.batch_export import BatchExportSignals, BatchExportWorker
-from .dialogs.filters import CustomFilterDialog, SingleFilterDialog
 from .dialogs.image_adjust import ImageAdjustDialog, ImageAdjustPreviewPanel
 from .dialogs.matrix_fit import MatrixFitDialog, MatrixFitWorker
 from .dialogs.profile_dialog import ProfileDialog
@@ -6389,10 +6388,7 @@ QLabel:hover {{
         return cfg
 
     def _apply_filters_to_array(self, file_path, arr):
-        spec = self.thumbnail_filters.get(str(file_path))
-        if not spec:
-            return arr
-        return self._apply_filter_pipeline(arr, spec.get('steps', []))
+        return self.filter_controller._apply_filters_to_array(file_path, arr)
 
     def on_save_session(self):
         """Legacy hook delegating to SessionController for compatibility."""
@@ -6629,17 +6625,7 @@ QLabel:hover {{
         return self.filter_controller._filter_action_label(filter_key)
 
     def _clone_filter_source_views(self, canvas, views):
-        clone_view = getattr(canvas, "_clone_undo_view", None)
-        cloned = []
-        for view in list(views or []):
-            try:
-                if callable(clone_view):
-                    cloned.append(clone_view(view))
-                else:
-                    cloned.append(copy.deepcopy(view))
-            except Exception:
-                cloned.append(view)
-        return cloned
+        return self.filter_controller._clone_filter_source_views(canvas, views)
 
     def _normalize_preview_filter_steps(self, steps):
         return self.filter_controller._normalize_preview_filter_steps(steps)
@@ -6648,46 +6634,16 @@ QLabel:hover {{
         return self.filter_controller._filter_pipeline_label_from_steps(steps, default=default)
 
     def _canvas_filter_steps(self, canvas, view=None):
-        target_view = view
-        if target_view is None and canvas is not None:
-            try:
-                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
-            except Exception:
-                target_view = None
-            if target_view is None:
-                target_view = next(iter(getattr(canvas, "views", []) or []), None)
-        steps = []
-        if isinstance(target_view, dict):
-            steps = self._normalize_preview_filter_steps(target_view.get("filter_steps"))
-        return [copy.deepcopy(step) for step in steps]
+        return self.filter_controller._canvas_filter_steps(canvas, view=view)
 
     def _canvas_filter_label(self, canvas, view=None):
-        target_view = view
-        if target_view is None and canvas is not None:
-            try:
-                target_view = getattr(canvas, "active_view_and_axes", lambda: (None, None))()[0]
-            except Exception:
-                target_view = None
-            if target_view is None:
-                target_view = next(iter(getattr(canvas, "views", []) or []), None)
-        label = ""
-        if isinstance(target_view, dict):
-            label = str(target_view.get("filter_label") or "").strip()
-        if label:
-            return label
-        return self._filter_pipeline_label_from_steps(self._canvas_filter_steps(canvas, view=target_view))
+        return self.filter_controller._canvas_filter_label(canvas, view=view)
 
     def _thumbnail_filter_steps(self, file_key):
-        spec = (getattr(self, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
-        steps = self._normalize_preview_filter_steps(spec.get("steps"))
-        return [copy.deepcopy(step) for step in steps]
+        return self.filter_controller._thumbnail_filter_steps(file_key)
 
     def _thumbnail_filter_label(self, file_key):
-        spec = (getattr(self, "thumbnail_filters", {}) or {}).get(str(file_key)) or {}
-        label = str(spec.get("label") or "").strip()
-        if label:
-            return label
-        return self._filter_pipeline_label_from_steps(spec.get("steps"))
+        return self.filter_controller._thumbnail_filter_label(file_key)
 
     def _filter_badge_text(self, steps):
         return self.filter_controller._filter_badge_text(steps)
@@ -6696,155 +6652,28 @@ QLabel:hover {{
         return self.filter_controller._filter_pipeline_tooltip(label, steps)
 
     def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
-        if canvas is None:
-            return
-        base_views = source_views if source_views is not None else getattr(canvas, "views", None)
-        if not base_views:
-            return
-        steps = self._normalize_preview_filter_steps(steps)
-        if steps and not str(label or "").strip():
-            label = self._filter_pipeline_label_from_steps(steps, default="Custom")
-        if push_undo:
-            try:
-                canvas.push_undo_state("filter")
-            except Exception:
-                pass
-        new_views = []
-        for view in self._clone_filter_source_views(canvas, base_views):
-            nv = dict(view)
-            base = nv.get("_filter_base_arr")
-            if base is None:
-                try:
-                    base = np.array(nv.get("arr"), copy=True)
-                except Exception:
-                    base = nv.get("arr")
-                nv["_filter_base_arr"] = base
-            if not steps:
-                nv["arr"] = np.array(base, copy=True) if base is not None else nv.get("arr")
-                nv.pop("filter_steps", None)
-                nv.pop("filter_label", None)
-                nv.pop("clim", None)  # drop stale clim from filtered data
-            else:
-                nv["arr"] = self._apply_filter_pipeline(base, steps) if base is not None else nv.get("arr")
-                nv["filter_steps"] = copy.deepcopy(steps)
-                nv["filter_label"] = label
-                try:
-                    clim = self._auto_preview_clim(
-                        nv["arr"],
-                        relative_zero=bool(nv.get("display_relative_zero", False)),
-                    )
-                except Exception:
-                    clim = None
-                if clim is not None:
-                    nv["clim"] = clim
-                else:
-                    nv.pop("clim", None)
-            new_views.append(nv)
-        canvas.set_views(new_views, preserve_profiles=True)
+        return self.filter_controller._set_filter_pipeline_on_canvas(canvas, steps, label=label, source_views=source_views, push_undo=push_undo)
 
     def _build_canvas_filter_preview_callback(self, canvas, source_views):
-        def _preview(steps, label=None):
-            if steps is None:
-                self._restore_filter_views_on_canvas(canvas, source_views)
-                return
-            self._set_filter_pipeline_on_canvas(
-                canvas,
-                steps,
-                label=label,
-                source_views=source_views,
-                push_undo=False,
-            )
-        return _preview
+        return self.filter_controller._build_canvas_filter_preview_callback(canvas, source_views)
 
     def _restore_filter_views_on_canvas(self, canvas, source_views):
-        if canvas is None or not source_views:
-            return
-        canvas.set_views(self._clone_filter_source_views(canvas, source_views), preserve_profiles=True)
+        return self.filter_controller._restore_filter_views_on_canvas(canvas, source_views)
 
     def _base_filter_image_from_views(self, views):
-        try:
-            if views:
-                return views[0].get("_filter_base_arr") or views[0].get("arr")
-        except Exception:
-            return None
-        return None
+        return self.filter_controller._base_filter_image_from_views(views)
 
     def _load_filter_base_array_for_path(self, focus_path):
-        base_arr = None
-        if not focus_path:
-            return None
-        try:
-            focus_key = str(focus_path)
-            header, fds = self.headers.get(focus_key, (None, None))
-            if header and fds:
-                idx = None
-                if self.last_preview and str(self.last_preview[0]) == focus_key:
-                    idx = int(self.last_preview[1])
-                if idx is None:
-                    idx = 0
-                if 0 <= idx < len(fds):
-                    fd = fds[idx]
-                    arr = self._get_channel_array(focus_key, idx, header, fd)
-                    base_arr = normalize_unit_and_data(arr, fd.get("PhysUnit", ""))[1]
-        except Exception:
-            base_arr = None
-        return base_arr
+        return self.filter_controller._load_filter_base_array_for_path(focus_path)
 
     def _normalize_filter_preview_clim(self, clim):
-        try:
-            if clim is None:
-                return None
-            lo, hi = clim
-            lo = float(lo)
-            hi = float(hi)
-            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-                return None
-            return (lo, hi)
-        except Exception:
-            return None
+        return self.filter_controller._normalize_filter_preview_clim(clim)
 
     def _filter_preview_render_state(self, view=None):
-        cmap_name = None
-        clim = None
-        if isinstance(view, dict):
-            cmap_name = str(view.get("cmap") or "").strip() or None
-            clim = self._normalize_filter_preview_clim(view.get("clim"))
-        if not cmap_name:
-            try:
-                cmap_name = str(self.preview_cmap_combo.currentText() or "").strip() or None
-            except Exception:
-                cmap_name = None
-        if not cmap_name:
-            cmap_name = str(getattr(self, "preview_cmap", "viridis") or "viridis")
-        return cmap_name, clim
+        return self.filter_controller._filter_preview_render_state(view=view)
 
     def _filter_preview_context_for_path(self, focus_path):
-        preview_target = "selected image"
-        preview_callback = None
-        original_views = None
-        preview_cmap_name = None
-        preview_clim = None
-        base_arr = self._load_filter_base_array_for_path(focus_path)
-        try:
-            preview_target = Path(str(focus_path)).name if focus_path else preview_target
-        except Exception:
-            preview_target = str(focus_path or preview_target)
-        canvas = getattr(self, "preview_canvas", None)
-        if (
-            focus_path
-            and canvas is not None
-            and getattr(canvas, "views", None)
-            and self.last_preview
-            and str(self.last_preview[0]) == str(focus_path)
-        ):
-            original_views = self._clone_filter_source_views(canvas, canvas.views)
-            base_arr = self._base_filter_image_from_views(original_views)
-            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
-            preview_target = self._friendly_view_title(original_views[0] if original_views else None, preview_target)
-            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
-        if preview_cmap_name is None:
-            preview_cmap_name, preview_clim = self._filter_preview_render_state(None)
-        return base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim
+        return self.filter_controller._filter_preview_context_for_path(focus_path)
 
     def _single_filter_step_spec(
         self,
@@ -6857,132 +6686,25 @@ QLabel:hover {{
         preview_clim=None,
         show_preview_thumbnail=True,
     ):
-        if not filter_key:
-            return None, None
-        defaults = FILTER_DEFINITIONS.get(filter_key, {})
-        if filter_key in ("highpass", "lowpass"):
-            initial_params = self.config.get(f"{filter_key}_filter_params", {})
-        elif filter_key == "laplacian":
-            initial_params = self.config.get("laplacian_filter_params", {})
-        else:
-            initial_params = defaults
-        dlg = SingleFilterDialog(
-            parent=parent or self,
-            filter_key=filter_key,
+        return self.filter_controller._single_filter_step_spec(
+            filter_key,
+            parent=parent,
             base_image=base_image,
-            apply_step_func=self._run_filter_step,
             preview_callback=preview_callback,
-            initial_params=initial_params,
             preview_target_text=preview_target_text,
             preview_cmap_name=preview_cmap_name,
             preview_clim=preview_clim,
             show_preview_thumbnail=show_preview_thumbnail,
         )
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
-            return None, None
-        step = dlg.current_step()
-        label = dlg.current_step_label()
-        params = dict(step.get("params") or {})
-        if filter_key in ("highpass", "lowpass"):
-            self.config[f"{filter_key}_filter_params"] = params
-            save_config(self.config)
-        elif filter_key == "laplacian":
-            self.config["laplacian_filter_params"] = params
-            save_config(self.config)
-        return step, label
 
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
-        """Populate a context menu with quick filter actions for a preview canvas."""
-        if menu is None or canvas is None:
-            return
-        filt_menu = menu.addMenu("Filters")
-        current_steps = self._canvas_filter_steps(canvas, view=view)
-        current_summary = self._filter_pipeline_label_from_steps(current_steps)
-        if current_summary:
-            status_act = QtWidgets.QAction(f"Current: {current_summary}", filt_menu)
-            status_act.setEnabled(False)
-            filt_menu.addAction(status_act)
-            filt_menu.addSeparator()
-        for key, info in FILTER_DEFINITIONS.items():
-            prefix = "Add step: " if current_steps else ""
-            act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", filt_menu)
-            if info.get("needs_gaussian") and not _gaussian_available():
-                act.setEnabled(False)
-                act.setToolTip("Requires scipy or OpenCV.")
-            act.triggered.connect(lambda _, k=key: self._apply_filter_to_canvas(canvas, filter_key=k))
-            filt_menu.addAction(act)
-        filt_menu.addSeparator()
-        custom_label = "Edit custom pipeline..." if current_steps else "Custom pipeline..."
-        filt_menu.addAction(custom_label, lambda: self._open_custom_filter_for_canvas(canvas))
-        filt_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
+        return self.filter_controller._populate_canvas_filter_menu(menu, canvas, view=view)
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
-        """Apply a filter pipeline to the views of a popup/preview canvas."""
-        if not canvas or not getattr(canvas, "views", None):
-            return
-        steps = pipeline
-        if steps is None and filter_key:
-            original_views = self._clone_filter_source_views(canvas, canvas.views)
-            base_arr = self._base_filter_image_from_views(original_views)
-            preview_callback = self._build_canvas_filter_preview_callback(canvas, original_views)
-            preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
-            step, step_label = self._single_filter_step_spec(
-                filter_key,
-                parent=canvas,
-                base_image=base_arr,
-                preview_callback=preview_callback,
-                preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
-                preview_cmap_name=preview_cmap_name,
-                preview_clim=preview_clim,
-                show_preview_thumbnail=False,
-            )
-            self._restore_filter_views_on_canvas(canvas, original_views)
-            if step is None:
-                return
-            existing_steps = self._canvas_filter_steps(canvas)
-            steps = list(existing_steps) + [step]
-            label = label or self._filter_pipeline_label_from_steps(steps, default=step_label)
-        self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
+        return self.filter_controller._apply_filter_to_canvas(canvas, filter_key=filter_key, pipeline=pipeline, label=label)
 
     def _open_custom_filter_for_canvas(self, canvas):
-        if not canvas or not getattr(canvas, "views", None):
-            return
-        original_views = self._clone_filter_source_views(canvas, canvas.views)
-        base_arr = self._base_filter_image_from_views(original_views)
-        preview_cmap_name, preview_clim = self._filter_preview_render_state(original_views[0] if original_views else None)
-        existing_steps = self._canvas_filter_steps(canvas)
-        existing_label = self._canvas_filter_label(canvas)
-        dialog_parent = None
-        try:
-            dialog_parent = canvas.window() if canvas is not None else None
-        except Exception:
-            dialog_parent = None
-        if dialog_parent is None:
-            dialog_parent = canvas or self
-        dlg = CustomFilterDialog(
-            dialog_parent,
-            base_arr,
-            self._run_filter_step,
-            preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
-            preview_target_text=self._friendly_view_title(original_views[0] if original_views else None, "current image"),
-            preview_cmap_name=preview_cmap_name,
-            preview_clim=preview_clim,
-            show_preview_thumbnail=False,
-            initial_pipeline=existing_steps,
-            initial_name=existing_label or "Custom",
-        )
-        try:
-            dlg.raise_()
-            dlg.activateWindow()
-        except Exception:
-            pass
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            steps = dlg.pipeline_steps()
-            label = dlg.pipeline_label()
-            self._restore_filter_views_on_canvas(canvas, original_views)
-            self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
-            return
-        self._restore_filter_views_on_canvas(canvas, original_views)
+        return self.filter_controller._open_custom_filter_for_canvas(canvas)
 
     def _apply_filter_pipeline(self, arr, steps):
         return self.filter_controller._apply_filter_pipeline(arr, steps)
@@ -9284,96 +9006,13 @@ QLabel:hover {{
         menu.exec_(label_widget.mapToGlobal(pos))
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
-        if not paths:
-            return
-        if len(paths) > 12:
-            ret = QtWidgets.QMessageBox.question(self, "Filters", f"Apply filter to {len(paths)} images? This may use significant memory.",
-                                                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
-            if ret != QtWidgets.QMessageBox.Yes:
-                return
-        if filter_key and FILTER_DEFINITIONS.get(filter_key, {}).get('needs_gaussian') and not _gaussian_available():
-            QtWidgets.QMessageBox.warning(self, "Filters", "Gaussian filters require scipy or OpenCV.")
-            return
-        if pipeline is None:
-            base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
-            step, spec_label = self._single_filter_step_spec(
-                filter_key,
-                parent=self,
-                base_image=base_arr,
-                preview_callback=preview_callback,
-                preview_target_text=preview_target,
-                preview_cmap_name=preview_cmap_name,
-                preview_clim=preview_clim,
-            )
-            if original_views is not None:
-                self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
-            if step is None:
-                return
-            existing_steps = self._thumbnail_filter_steps(focus_path)
-            spec_steps = list(existing_steps) + [step]
-            spec_label = self._filter_pipeline_label_from_steps(spec_steps, default=spec_label)
-        else:
-            spec_steps = pipeline
-            spec_label = label or self._filter_pipeline_label_from_steps(spec_steps, default='Custom')
-        path_keys = {str(Path(p)) for p in paths}
-        for key in path_keys:
-            steps_copy = [dict(step) for step in spec_steps]
-            self.thumbnail_filters[key] = {'steps': steps_copy, 'label': spec_label}
-        self._invalidate_thumbnail_cache(path_keys)
-        self._invalidate_filtered_cache(path_keys)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview and str(self.last_preview[0]) in path_keys:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        return self.filter_controller._apply_filter_to_paths(paths, filter_key=filter_key, pipeline=pipeline, label=label, focus_path=focus_path)
 
     def _clear_filter_for_paths(self, paths):
-        changed = False
-        path_keys = {str(Path(p)) for p in paths}
-        for key in path_keys:
-            if self.thumbnail_filters.pop(key, None) is not None:
-                changed = True
-        if changed:
-            self._invalidate_thumbnail_cache(path_keys)
-            self._invalidate_filtered_cache(path_keys)
-            # Clear stored clim overrides for affected files so that
-            # _resolve_preview_clim falls back to _auto_preview_clim
-            # instead of returning a clim that was computed for the
-            # now-removed filter.
-            clim_map = getattr(self, "per_file_channel_clim", None) or {}
-            for clim_key in list(clim_map.keys()):
-                try:
-                    file_key = str(clim_key[0]) if isinstance(clim_key, tuple) else ""
-                except Exception:
-                    continue
-                if file_key in path_keys:
-                    clim_map.pop(clim_key, None)
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-            if self.last_preview and str(self.last_preview[0]) in path_keys:
-                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        return self.filter_controller._clear_filter_for_paths(paths)
 
     def _open_custom_filter_dialog(self, paths, focus_path):
-        base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
-        existing_steps = self._thumbnail_filter_steps(focus_path)
-        existing_label = self._thumbnail_filter_label(focus_path)
-        dlg = CustomFilterDialog(
-            self,
-            base_arr,
-            self._run_filter_step,
-            preview_callback=preview_callback,
-            preview_target_text=preview_target,
-            preview_cmap_name=preview_cmap_name,
-            preview_clim=preview_clim,
-            initial_pipeline=existing_steps,
-            initial_name=existing_label or "Custom",
-        )
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            pipeline = dlg.pipeline_steps()
-            if pipeline:
-                if original_views is not None:
-                    self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
-                self._apply_filter_to_paths(paths, pipeline=pipeline, label=dlg.pipeline_label())
-                return
-        if original_views is not None:
-            self._restore_filter_views_on_canvas(self.preview_canvas, original_views)
+        return self.filter_controller._open_custom_filter_dialog(paths, focus_path)
 
     def _toggle_thumb_multi_selection(self, file_path):
         return viewer_thumb_ui._toggle_thumb_multi_selection(self, file_path)
