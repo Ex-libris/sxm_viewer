@@ -33,7 +33,7 @@ from ..._shared import (
     matplotlib,
 )
 from ...data.spectroscopy import _matrix_base_name, find_last_image_for_spec
-from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog, MatrixSpectroViewer
+from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog, MatrixSpectroViewer
 from ..palettes import DEFAULT_COLOR_CYCLE
 
 

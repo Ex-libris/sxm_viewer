@@ -32,7 +32,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
-from ..detail_panels import ProfileDialog
+from ..dialogs.profile_dialog import ProfileDialog
 
 def _on_start_profile(viewer, force_enable=False):
     # toggle interactive line profile mode

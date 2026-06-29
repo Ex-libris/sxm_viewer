@@ -68,26 +68,20 @@ from ..utils.units import (
     _auto_display_unit,
     _safe_float,
 )
-from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, robust_limits
 from .minimap import FrameMiniMap
-from .detail_panels import (
-    BatchExportSignals,
-    BatchExportWorker,
-    CustomFilterDialog,
-    ImageAdjustDialog,
-    ImageAdjustPreviewPanel,
-    MatrixFitDialog,
-    MatrixFitWorker,
+from .workers.batch_export import BatchExportSignals, BatchExportWorker
+from .dialogs.filters import CustomFilterDialog, SingleFilterDialog
+from .dialogs.image_adjust import ImageAdjustDialog, ImageAdjustPreviewPanel
+from .dialogs.matrix_fit import MatrixFitDialog, MatrixFitWorker
+from .dialogs.profile_dialog import ProfileDialog
+from .dialogs.spectroscopy_dialogs import (
     MatrixSpectroViewer,
-    MultiPreviewCanvas,
-    ProfileDialog,
-    SafeFigureCanvas,
-    SingleFilterDialog,
     SpectroscopyCompareDialog,
     SpectroscopyPopup,
     _SpectroFitWorker,
 )
+from .canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
 from .spectroscopy.summary_dialog import SpectroSummaryDialog
 from .viewer import measurement as viewer_measurement
 from .viewer import thumbnails as viewer_thumbnails

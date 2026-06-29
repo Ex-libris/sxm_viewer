@@ -85,7 +85,7 @@ from ...processing.detection import (
     filedesc_indicates_current_or_topo,
 )
 from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
-from ..detail_panels import SpectroscopyPopup, SpectroscopyCompareDialog
+from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
 _SPECTRO_MANIFEST_VERSION = 4
