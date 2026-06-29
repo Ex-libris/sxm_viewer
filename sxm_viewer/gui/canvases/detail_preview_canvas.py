@@ -71,22 +71,9 @@ except Exception:  # pragma: no cover - optional dependency
     cv2 = None
     _HAS_CV2 = False
 
-def _default_export_filename(view: dict, ext: str) -> str:
-    """
-    Derive a default export filename for a preview view from its metadata.
-
-    Uses the structured file/channel/date/time fields carried in the view's
-    meta dict so the timestamp can be re-emitted in ISO order; falls back to the
-    view title when no metadata is present.
-
-    Args:
-        view (dict): The view dict (expects an optional "meta" sub-dict and "title").
-        ext (str): The file extension to append, without a leading dot.
-
-    Returns:
-        filename (str): A sanitized default filename.
-    """
-    meta: dict = view.get("meta") or {}
+def _default_export_filename(view, ext):
+    """Derive a default export filename for a preview view from its structured metadata."""
+    meta = view.get("meta") or {}
     return iso_export_filename(
         ext,
         file_name=str(meta.get("file_name") or ""),
