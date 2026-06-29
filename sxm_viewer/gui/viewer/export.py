@@ -73,7 +73,7 @@ from ...data.spectroscopy import (
     _mtime,
     _read_text,
 )
-from ..detail_panels import BatchExportSignals, BatchExportWorker
+from ..workers.batch_export import BatchExportSignals, BatchExportWorker
 from ...utils.units import _safe_float
 from ..wsxm_stp import save_wsxm_stp
 
