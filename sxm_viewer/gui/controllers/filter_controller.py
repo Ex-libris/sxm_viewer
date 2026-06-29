@@ -209,9 +209,15 @@ class FilterController:
         return self._filter_pipeline_label_from_steps(spec.get("steps"))
 
     def _base_filter_image_from_views(self, views):
+        # Use explicit None checks: `array or fallback` raises on a
+        # multi-element numpy array ("truth value is ambiguous"), which
+        # previously got swallowed and returned None for filtered views.
         try:
             if views:
-                return views[0].get("_filter_base_arr") or views[0].get("arr")
+                base = views[0].get("_filter_base_arr")
+                if base is None:
+                    base = views[0].get("arr")
+                return base
         except Exception:
             return None
         return None
