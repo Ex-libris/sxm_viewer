@@ -105,7 +105,7 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
         cached = viewer._thumb_data_cache.get(data_key)
     if cached is not None:
         return data_key, cached
-    _, arr_conv = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
+    unit_normalized, arr_conv = viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
     arr_use = np.asarray(arr_conv, dtype=float)
     try:
         base_extent = viewer._header_extent(header)
@@ -116,7 +116,7 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
     except Exception:
         pass
     try:
-        _, arr_use, _ = viewer._scale_unit_for_display(fd.get("PhysUnit", ""), arr_use)
+        _, arr_use, _ = viewer._scale_unit_for_display(unit_normalized, arr_use)
     except Exception:
         arr_use = np.asarray(arr_use, dtype=float)
     crop_info = None

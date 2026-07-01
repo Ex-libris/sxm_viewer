@@ -5434,10 +5434,89 @@ QLabel:hover {{
             self._invalidate_thumbnail_cache(paths=paths)
         except Exception:
             pass
+        updated = 0
+        try:
+            updated = self._refresh_thumbnail_pixmaps_for_paths(paths)
+        except Exception:
+            updated = 0
+        if updated:
+            try:
+                self._refresh_frame_map_pixmaps()
+            except Exception:
+                pass
+            return
         try:
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
         except Exception:
             pass
+
+    def _refresh_thumbnail_pixmaps_for_paths(self, paths):
+        path_set = {str(Path(p)) for p in list(paths or []) if p}
+        if not path_set:
+            return 0
+        labels = getattr(self, "_thumb_labels", {}) or {}
+        updated = 0
+        try:
+            default_cmap = self.thumb_cmap_combo.currentText()
+        except Exception:
+            default_cmap = None
+        if not default_cmap:
+            default_cmap = getattr(self, "thumb_cmap", "viridis")
+        for file_key in path_set:
+            label = labels.get(file_key)
+            if label is None:
+                continue
+            try:
+                thumb_dims = label.property("thumb_dims") or self._thumb_dimensions()
+                thumb_w, thumb_h = int(thumb_dims[0]), int(thumb_dims[1])
+                channel_idx = int(label.property("channel_index") or 0)
+            except Exception:
+                continue
+            if thumb_w <= 0 or thumb_h <= 0:
+                continue
+            cmap_name = self._thumbnail_cmap_override(file_key, channel_idx, default_cmap)
+            base_pix = viewer_thumb_ui._thumbnail_pixmap_for_file(
+                self, file_key, channel_idx, thumb_w, thumb_h, cmap_name
+            )
+            if base_pix is None:
+                try:
+                    self._thumb_loaded.discard(file_key)
+                    self._thumb_inflight.discard(file_key)
+                except Exception:
+                    pass
+                continue
+            pix = base_pix.copy()
+            header, fds = self.headers.get(str(file_key), (None, None))
+            crop_info = None
+            try:
+                if fds and 0 <= channel_idx < len(fds):
+                    fd = fds[channel_idx]
+                    data_key = self._thumbnail_data_key(file_key, channel_idx, fd, thumb_w, thumb_h)
+                    with self._thumb_data_lock:
+                        crop_info = self._thumb_crop_cache.get(data_key)
+            except Exception:
+                crop_info = None
+            try:
+                markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds, thumb_crop=crop_info)
+            except Exception:
+                markers = []
+            label.setPixmap(pix)
+            label.setProperty("spec_markers", markers)
+            try:
+                label.setProperty("thumb_crop", crop_info)
+            except Exception:
+                pass
+            try:
+                self._thumb_loaded.add(file_key)
+                self._thumb_inflight.discard(file_key)
+            except Exception:
+                pass
+            updated += 1
+        try:
+            self._request_visible_thumbs()
+        except Exception:
+            pass
+        return updated
 
     def _store_canvas_view_clims(self, canvas):
         views = list(getattr(canvas, "views", None) or [])
@@ -6225,6 +6304,47 @@ QLabel:hover {{
         controller = getattr(self, "thumbnail_controller", None)
         if controller:
             return controller.handle_thumbnail_double_clicked(header_path_str, channel_idx)
+
+    def _capture_thumbnail_scroll_state(self):
+        try:
+            scroll = getattr(self, "scroll", None)
+            if scroll is None:
+                return None
+            bar = scroll.verticalScrollBar()
+            if bar is None:
+                return None
+            return {
+                "value": int(bar.value()),
+                "maximum": int(bar.maximum()),
+                "ratio": float(bar.value()) / float(bar.maximum()) if int(bar.maximum()) > 0 else 0.0,
+            }
+        except Exception:
+            return None
+
+    def _restore_thumbnail_scroll_state(self, state, delayed=False):
+        if not state:
+            return
+
+        def _restore():
+            try:
+                scroll = getattr(self, "scroll", None)
+                if scroll is None:
+                    return
+                bar = scroll.verticalScrollBar()
+                if bar is None:
+                    return
+                old_max = int(state.get("maximum") or 0)
+                value = int(state.get("value") or 0)
+                if old_max > 0 and int(bar.maximum()) != old_max:
+                    value = int(round(float(state.get("ratio") or 0.0) * int(bar.maximum())))
+                bar.setValue(max(0, min(value, int(bar.maximum()))))
+            except Exception:
+                pass
+
+        _restore()
+        if delayed:
+            for delay in (0, 50, 150, 300):
+                QtCore.QTimer.singleShot(delay, _restore)
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
     # These functions supported the removed per-file inspector UI. The same "show channel"

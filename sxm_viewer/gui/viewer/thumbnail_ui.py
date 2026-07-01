@@ -602,6 +602,31 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
 
 
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
+    preserve_scroll_state = None
+    scroll_widget = getattr(viewer, "scroll", None)
+    try:
+        if getattr(viewer, "_thumb_labels", None) and hasattr(viewer, "_capture_thumbnail_scroll_state"):
+            preserve_scroll_state = viewer._capture_thumbnail_scroll_state()
+    except Exception:
+        preserve_scroll_state = None
+    try:
+        if preserve_scroll_state and scroll_widget is not None:
+            scroll_widget.setUpdatesEnabled(False)
+    except Exception:
+        pass
+
+    def _finish_populate():
+        try:
+            if preserve_scroll_state and hasattr(viewer, "_restore_thumbnail_scroll_state"):
+                viewer._restore_thumbnail_scroll_state(preserve_scroll_state, delayed=True)
+        except Exception:
+            pass
+        try:
+            if preserve_scroll_state and scroll_widget is not None:
+                scroll_widget.setUpdatesEnabled(True)
+        except Exception:
+            pass
+
     if getattr(viewer, "show_spectro_miniatures", False) and not getattr(viewer, "_spectros_loaded", False):
         try:
             viewer.ensure_spectros_loaded(refresh=False)
@@ -873,6 +898,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             except Exception:
                 pass
             viewer._refresh_frame_map_pixmaps()
+            _finish_populate()
             return
 
     for i, t in enumerate(files_iter):
@@ -971,6 +997,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     except Exception:
         pass
     viewer._refresh_frame_map_pixmaps()
+    _finish_populate()
 
 def on_thumb_sort_changed(viewer, idx):
     try:
