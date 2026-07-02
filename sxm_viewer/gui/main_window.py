@@ -7849,10 +7849,22 @@ QLabel:hover {{
             arr = view.get("arr")
         except Exception:
             return None, None, None
-        vmin, vmax, finite = self._contrast_finite_values(arr)
+        try:
+            data = np.asarray(arr, dtype=float)
+        except Exception:
+            return None, None, None
+        if data.ndim == 2:
+            try:
+                region = detect_valid_scan_region(data)
+            except Exception:
+                region = None
+            if region:
+                r0, r1 = region
+                data = data[r0:r1 + 1, :]
+        finite = data[np.isfinite(data)]
         if finite.size == 0:
             return None, None, None
-        return vmin, vmax, finite
+        return float(np.nanmin(finite)), float(np.nanmax(finite)), finite
 
     def _recommended_view_clim(self, view, *, pct_low=1.0, pct_high=99.0):
         if not view:
@@ -7914,14 +7926,14 @@ QLabel:hover {{
 
     def _reset_contrast(self, canvas):
         view = self._resolve_canvas_contrast_target(canvas)
-        suggested = self._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
-        if suggested is None:
+        vmin, vmax, _finite = self._view_finite_values(view)
+        if vmin is None or vmax is None:
             return
         try:
             canvas.push_undo_state("reset_contrast")
         except Exception:
             pass
-        self._apply_clim_to_view(canvas, view, suggested[0], suggested[1])
+        self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):
         open_histogram_dialog(self, canvas)

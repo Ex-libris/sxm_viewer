@@ -174,15 +174,10 @@ def open_histogram_dialog(owner, canvas):
 
     def on_reset():
         view = views[state.get("view_idx", 0)]
-        suggested = None
         try:
-            suggested = owner._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
+            vmin, vmax, _finite = owner._view_finite_values(view)
         except Exception:
-            suggested = None
-        if suggested is not None:
-            vmin, vmax = suggested
-        else:
-            vmin, vmax, _ = owner._view_finite_values(view)
+            vmin = vmax = None
         if vmin is None:
             return
         _set_spin_values(vmin, vmax, block=True)
