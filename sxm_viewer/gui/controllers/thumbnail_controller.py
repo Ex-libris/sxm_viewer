@@ -21,12 +21,16 @@ class ThumbnailController:
             use_local_cmap = bool((getattr(viewer, "per_file_channel_cmap", {}) or {}).get((str(header_path_str), int(channel_idx))))
         except Exception:
             use_local_cmap = False
-        viewer.show_file_channel(header_path_str, channel_idx, use_local_cmap=use_local_cmap)
         key = str(header_path_str)
         viewer.selected_file_for_thumbs = key
         viewer._refresh_thumb_selection_styles()
         viewer.current_inspector_header = key
         viewer.current_inspector_channel = int(channel_idx)
+        request_preview = getattr(viewer, "request_show_file_channel", None)
+        if callable(request_preview):
+            request_preview(header_path_str, channel_idx, use_local_cmap=use_local_cmap)
+        else:
+            viewer.show_file_channel(header_path_str, channel_idx, use_local_cmap=use_local_cmap)
 
     def handle_thumbnail_double_clicked(self, header_path_str, channel_idx):
         """Double-click thumbnail -> preview + popup."""

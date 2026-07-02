@@ -836,9 +836,13 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             pass
         self._zoom_reset_limits = {ax: (ax.get_xlim(), ax.get_ylim())}
-        self._apply_view_theme()
-        self._apply_view_font_scale()
-        self._update_highlight_artists()
+        try:
+            self._suppress_internal_draw_requests = True
+            self._apply_view_theme()
+            self._apply_view_font_scale()
+            self._update_highlight_artists()
+        finally:
+            self._suppress_internal_draw_requests = False
         use_idle_draw = bool(getattr(self, "_async_redraw_once", False))
         self._async_redraw_once = False
         if use_idle_draw:
@@ -1864,9 +1868,13 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._draw_filter_summary_overlay(ax, v)
             except Exception:
                 pass
-        self._apply_tight_layout_safe(pad=0.25)
-        self._apply_view_theme()
-        self._apply_view_font_scale()
+        try:
+            self._suppress_internal_draw_requests = True
+            self._apply_tight_layout_safe(pad=0.25)
+            self._apply_view_theme()
+            self._apply_view_font_scale()
+        finally:
+            self._suppress_internal_draw_requests = False
         # Clamp every axis to the bbox frozen after the last window resize.
         # This guarantees the layout stays pixel-identical no matter how many
         # times _redraw() is called (colormap change, display toggles, …).
@@ -3765,7 +3773,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         if self.angle_pts:
             self._update_angle_artists()
-        self.draw_idle()
+        if not getattr(self, "_suppress_internal_draw_requests", False):
+            self.draw_idle()
 
     def _apply_view_font_scale(self):
         scale = max(0.6, min(2.5, getattr(self, '_view_font_scale', 1.0)))
@@ -3815,7 +3824,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
         self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
-        self.draw_idle()
+        if not getattr(self, "_suppress_internal_draw_requests", False):
+            self.draw_idle()
 
     def set_profile_label_mode(self, mode: str):
         mode = (mode or "").strip().lower()

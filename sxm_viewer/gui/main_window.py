@@ -523,6 +523,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumbnail_render_state_timer.setSingleShot(True)
         self._thumbnail_render_state_timer.timeout.connect(self._flush_thumbnail_render_state_refresh)
         self._thumbnail_render_state_pending_paths = set()
+        self._preview_request_timer = QtCore.QTimer(self)
+        self._preview_request_timer.setSingleShot(True)
+        self._preview_request_timer.timeout.connect(self._flush_preview_request)
+        self._pending_preview_request = None
+        self._preview_render_in_progress = False
         self._spectro_manifest_save_timer = QtCore.QTimer(self)
         self._spectro_manifest_save_timer.setSingleShot(True)
         self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
@@ -6426,6 +6431,55 @@ QLabel:hover {{
     # functionality is available via the thumbnail UI and the "Add channel view" dialog.
 
     # ---------- preview + metadata ---------- 
+    def request_show_file_channel(self, header_path_str, channel_idx: int, use_local_cmap: bool = False):
+        try:
+            key = str(header_path_str) if header_path_str is not None else ""
+            idx = int(channel_idx)
+        except Exception:
+            return
+        if not key:
+            return
+        self._pending_preview_request = (key, idx, bool(use_local_cmap))
+        try:
+            if not self._preview_request_timer.isActive():
+                self._preview_request_timer.start(0)
+        except Exception:
+            self._flush_preview_request()
+
+    def _flush_preview_request(self):
+        if getattr(self, "_preview_render_in_progress", False):
+            return
+        request = getattr(self, "_pending_preview_request", None)
+        self._pending_preview_request = None
+        if not request:
+            return
+        try:
+            key, idx, use_local_cmap = request
+        except Exception:
+            return
+        try:
+            current_preview = getattr(self, "last_preview", None)
+            current_views = getattr(getattr(self, "preview_canvas", None), "views", None)
+            if (
+                current_preview
+                and str(current_preview[0]) == str(key)
+                and int(current_preview[1]) == int(idx)
+                and current_views
+            ):
+                return
+        except Exception:
+            pass
+        self._preview_render_in_progress = True
+        try:
+            self.show_file_channel(key, idx, use_local_cmap=bool(use_local_cmap))
+        finally:
+            self._preview_render_in_progress = False
+        if getattr(self, "_pending_preview_request", None):
+            try:
+                self._preview_request_timer.start(0)
+            except Exception:
+                self._flush_preview_request()
+
     def show_file_channel(self, header_path_str, channel_idx:int, use_local_cmap=False):
         highlight = getattr(self, '_highlighted_spec', None)
         if highlight:
