@@ -6181,13 +6181,38 @@ QLabel:hover {{
         labels = getattr(self, '_thumb_labels', {}) or {}
         if not labels:
             return
+        keys_to_refresh = set()
+        try:
+            cols = max(1, int(getattr(self, 'thumb_grid_columns', 1) or 1))
+            card_h = int(getattr(self, '_thumb_card_height', None) or (self.thumb_size_px + 48))
+            scroll = getattr(self, 'scroll', None)
+            vp = getattr(self, '_thumb_viewport', None)
+            y0 = scroll.verticalScrollBar().value() if scroll is not None else 0
+            vh = vp.height() if vp is not None else card_h * 4
+            first_row = max(0, int(y0 // max(1, card_h)) - 2)
+            last_row = int((y0 + vh) // max(1, card_h)) + 2
+            current = list(getattr(self, "current_thumb_files", []) or [])
+            start_idx = max(0, first_row * cols)
+            end_idx = min(len(current), (last_row + 1) * cols)
+            keys_to_refresh.update(str(key) for key in current[start_idx:end_idx])
+        except Exception:
+            keys_to_refresh = set(labels.keys())
+        try:
+            selected = str(getattr(self, "selected_file_for_thumbs", "") or "")
+            if selected:
+                keys_to_refresh.add(selected)
+        except Exception:
+            pass
+        if not keys_to_refresh:
+            return
         try:
             cmap_name = self.thumb_cmap_combo.currentText()
         except Exception:
             cmap_name = None
         if not cmap_name:
             cmap_name = getattr(self, 'thumb_cmap', 'viridis')
-        for file_key, label in labels.items():
+        for file_key in keys_to_refresh:
+            label = labels.get(str(file_key))
             if label is None:
                 continue
             try:
@@ -6313,10 +6338,38 @@ QLabel:hover {{
             bar = scroll.verticalScrollBar()
             if bar is None:
                 return None
+            value = int(bar.value())
+            anchor_key = None
+            anchor_offset = 0
+            try:
+                widgets = []
+                for mapping in (
+                    getattr(self, "thumb_widgets", {}) or {},
+                    getattr(self, "spectro_thumb_widgets", {}) or {},
+                ):
+                    for key, widget in mapping.items():
+                        if widget is None:
+                            continue
+                        try:
+                            y = int(widget.y())
+                            h = int(widget.height())
+                        except Exception:
+                            continue
+                        widgets.append((y, h, str(key)))
+                widgets.sort(key=lambda item: item[0])
+                for y, h, key in widgets:
+                    if y + max(1, h) >= value:
+                        anchor_key = key
+                        anchor_offset = max(0, value - y)
+                        break
+            except Exception:
+                anchor_key = None
             return {
-                "value": int(bar.value()),
+                "value": value,
                 "maximum": int(bar.maximum()),
-                "ratio": float(bar.value()) / float(bar.maximum()) if int(bar.maximum()) > 0 else 0.0,
+                "ratio": float(value) / float(bar.maximum()) if int(bar.maximum()) > 0 else 0.0,
+                "anchor_key": anchor_key,
+                "anchor_offset": int(anchor_offset),
             }
         except Exception:
             return None
@@ -6333,9 +6386,20 @@ QLabel:hover {{
                 bar = scroll.verticalScrollBar()
                 if bar is None:
                     return
+                anchor_key = str(state.get("anchor_key") or "")
+                anchor_widget = None
+                if anchor_key:
+                    anchor_widget = (getattr(self, "thumb_widgets", {}) or {}).get(anchor_key)
+                    if anchor_widget is None:
+                        anchor_widget = (getattr(self, "spectro_thumb_widgets", {}) or {}).get(anchor_key)
                 old_max = int(state.get("maximum") or 0)
                 value = int(state.get("value") or 0)
-                if old_max > 0 and int(bar.maximum()) != old_max:
+                if anchor_widget is not None:
+                    try:
+                        value = int(anchor_widget.y()) + int(state.get("anchor_offset") or 0)
+                    except Exception:
+                        pass
+                elif old_max > 0 and int(bar.maximum()) != old_max:
                     value = int(round(float(state.get("ratio") or 0.0) * int(bar.maximum())))
                 bar.setValue(max(0, min(value, int(bar.maximum()))))
             except Exception:
@@ -6343,7 +6407,7 @@ QLabel:hover {{
 
         _restore()
         if delayed:
-            for delay in (0, 50, 150, 300):
+            for delay in (0, 50, 150, 300, 700, 1200):
                 QtCore.QTimer.singleShot(delay, _restore)
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
@@ -8034,7 +8098,7 @@ QLabel:hover {{
             return
         if getattr(self, "_spectros_loading", False):
             return
-        self.ensure_spectros_loaded(refresh=True)
+        self.ensure_spectros_loaded(refresh=bool(getattr(self, "show_spectro_miniatures", False)))
 
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
@@ -10839,7 +10903,8 @@ QLabel:hover {{
             controller.update_hint()
 
     def _on_preview_canvas_state_changed(self, canvas):
-        self._store_canvas_view_clims(canvas)
+        if not getattr(self, "_suppress_thumbnail_clim_sync", False):
+            self._store_canvas_view_clims(canvas)
         self._on_canvas_display_options_changed(canvas)
         self._update_quick_crop_hint()
 

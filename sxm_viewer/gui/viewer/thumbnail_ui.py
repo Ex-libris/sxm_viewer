@@ -100,62 +100,7 @@ def _thumbnail_tooltip(viewer, file_key):
     return tooltip
 
 
-def _ensure_thumb_click_timer(viewer):
-    timer = getattr(viewer, "_thumb_click_timer", None)
-    if timer is not None:
-        return timer
-    parent = viewer if isinstance(viewer, QtCore.QObject) else None
-    timer = QtCore.QTimer(parent)
-    timer.setSingleShot(True)
-    timer.timeout.connect(lambda v=viewer: _flush_pending_thumb_click(v))
-    viewer._thumb_click_timer = timer
-    return timer
-
-
-def _cancel_pending_thumb_click(viewer):
-    timer = getattr(viewer, "_thumb_click_timer", None)
-    if timer is not None:
-        try:
-            timer.stop()
-        except Exception:
-            pass
-    viewer._pending_thumb_click = None
-
-
-def _run_plain_thumb_click(viewer, fp, ch_idx):
-    viewer._clear_thumb_multi_selection(update_styles=False)
-    viewer.on_thumbnail_clicked(fp, ch_idx)
-    viewer.last_thumb_anchor = str(fp)
-    try:
-        if not viewer.show_spectra:
-            return
-        entries = viewer.spectros_by_image.get(str(fp), [])
-        if not entries:
-            return
-        matrix_specs = [s for s in entries if s.get('matrix_index') is not None and 'matrix' in Path(s.get('path','')).name.lower()]
-        if matrix_specs:
-            viewer._open_matrix_explorer_for_file(str(fp))
-            return
-        viewer._open_spectro_summary_for_file(fp, show_mode="single", quiet=True)
-    except Exception:
-        pass
-
-
-def _flush_pending_thumb_click(viewer):
-    payload = getattr(viewer, "_pending_thumb_click", None)
-    viewer._pending_thumb_click = None
-    if not payload:
-        return
-    fp = payload.get("file_path")
-    try:
-        ch_idx = int(payload.get("channel_index") or 0)
-    except Exception:
-        ch_idx = 0
-    _run_plain_thumb_click(viewer, fp, ch_idx)
-
-
-def _schedule_plain_thumb_click(viewer, label_widget, fp, ch_idx):
-    _cancel_pending_thumb_click(viewer)
+def _activate_plain_thumb_click(viewer, fp, ch_idx):
     viewer._clear_thumb_multi_selection(update_styles=False)
     viewer.selected_file_for_thumbs = str(fp)
     try:
@@ -163,13 +108,7 @@ def _schedule_plain_thumb_click(viewer, label_widget, fp, ch_idx):
     except Exception:
         pass
     viewer.last_thumb_anchor = str(fp)
-    viewer._pending_thumb_click = {
-        "file_path": fp,
-        "channel_index": int(ch_idx),
-        "label_widget": label_widget,
-    }
-    interval = max(0, int(QtWidgets.QApplication.doubleClickInterval()))
-    _ensure_thumb_click_timer(viewer).start(interval)
+    viewer.on_thumbnail_clicked(fp, ch_idx)
 
 def _thumb_dimensions(viewer):
     """Return (width, height) for thumbnails preserving 4:3 aspect ratio."""
@@ -1110,7 +1049,6 @@ def _clear_spectro_thumb_multi_selection(viewer, update_styles=True):
 def _handle_thumb_click(viewer, label_widget, event):
     if event.button() != QtCore.Qt.LeftButton:
         return
-    _cancel_pending_thumb_click(viewer)
     if viewer._handle_spec_marker_click(label_widget, event):
         return
     if getattr(viewer, '_highlighted_spec', None):
@@ -1138,7 +1076,7 @@ def _handle_thumb_click(viewer, label_widget, event):
         viewer.last_thumb_anchor = str(fp)
         return
 
-    _schedule_plain_thumb_click(viewer, label_widget, fp, ch_idx)
+    _activate_plain_thumb_click(viewer, fp, ch_idx)
 
 
 def _make_thumb_press_handler(viewer, label_widget):
@@ -1226,7 +1164,6 @@ def _make_thumb_double_handler(viewer, label_widget):
             return
         if event.button() != QtCore.Qt.LeftButton:
             return
-        _cancel_pending_thumb_click(viewer)
         _safe_set_property(label_widget, "skip_release_click", True)
         fp = label_widget.property("file_path")
         ch_idx = int(label_widget.property("channel_index") or 0)

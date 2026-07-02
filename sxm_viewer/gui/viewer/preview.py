@@ -1,6 +1,8 @@
 """Preview helpers for SXMGridViewer."""
 from __future__ import annotations
 
+import time
+
 from ..._shared import (
     QtCore,
     QtGui,
@@ -673,6 +675,15 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
 
 
 def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=False):
+    perf_start = time.perf_counter()
+    perf_marks = []
+
+    def _mark_perf(label):
+        try:
+            perf_marks.append((str(label), (time.perf_counter() - perf_start) * 1000.0))
+        except Exception:
+            pass
+
     current_path_str = str(header_path_str)
     prev_preview = getattr(viewer, "last_preview", None)
     viewer.last_preview = (current_path_str, int(channel_idx))
@@ -712,6 +723,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         viewer._last_axis_unit = axis_unit
     except Exception as e:
         viewer.meta_box.setPlainText("Error reading channel: %s" % str(e)); return
+    _mark_perf("data")
 
     local_cmap = viewer.per_file_channel_cmap.get((file_key, channel_idx))
     cmap_to_use = local_cmap or getattr(viewer, "preview_cmap", None) or (viewer.preview_cmap_combo.currentText() or viewer.preview_cmap)
@@ -751,6 +763,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                 s for s in spec_entries
                 if s.get('matrix_index') is not None and is_matrix_file_entry(s)
             ])
+    _mark_perf("spectra")
 
     # build views (main + dynamic extras based on current file)
     views = []
@@ -803,6 +816,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         spec_pixels,
         marker_size=float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
     )
+    _mark_perf("markers")
     main = {
         'arr': display_arr,
         'extent': display_extent,
@@ -876,6 +890,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         except Exception:
             # Skip extra view if anything fails for this file
             continue
+    _mark_perf("extra_views")
 
     preserve = False
     try:
@@ -888,7 +903,12 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         )
     except Exception:
         preserve = False
-    viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
+    try:
+        viewer._suppress_thumbnail_clim_sync = True
+        viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
+    finally:
+        viewer._suppress_thumbnail_clim_sync = False
+    _mark_perf("canvas")
     if getattr(viewer, '_suppress_profile_restore', False):
         viewer._suppress_profile_restore = False
     suppress_profile_restart = getattr(viewer, '_suppress_profile_restart', False)
@@ -917,9 +937,26 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         QtCore.QTimer.singleShot(0, lambda pos=prev_pos: sb.setValue(pos))
     except Exception:
         viewer.meta_box.setPlainText(f"File: {header_path.name}")
+    _mark_perf("metadata")
     # Optional auto-tagging (constant-height/current) based on topography variance.
     try:
         _maybe_auto_tag_file(viewer, header_path, header, fds, channel_idx)
+    except Exception:
+        pass
+    _mark_perf("autotag")
+    try:
+        total_ms = (time.perf_counter() - perf_start) * 1000.0
+        threshold_ms = float(getattr(viewer, "preview_perf_log_threshold_ms", 250.0) or 250.0)
+        if total_ms >= threshold_ms:
+            parts = []
+            prev_ms = 0.0
+            for label, mark_ms in perf_marks:
+                parts.append(f"{label} {mark_ms - prev_ms:.0f} ms")
+                prev_ms = mark_ms
+            log_status(
+                f"[Perf] Preview {Path(file_key).name} ch {int(channel_idx)}: "
+                f"total {total_ms:.0f} ms | " + " | ".join(parts)
+            )
     except Exception:
         pass
 
