@@ -675,13 +675,23 @@ class MultiPreviewCanvas(FigureCanvas):
                 state = self.export_profile_state()
             except Exception:
                 state = None
+        previous_views = list(getattr(self, "views", []) or [])
         self.views = views[:]
         self._spectra_points = {}
         if not preserve_profiles:
             # whenever a new view set arrives, clear saved overlays so we don't mix files
             self._clear_saved_profile_artists(notify=False)
             self.profile_pts = None
-        self._redraw()
+        fast_updated = False
+        if bool(getattr(self, "_fast_preview_update_once", False)):
+            try:
+                fast_updated = self._fast_update_single_view(self.views, previous_views)
+            except Exception:
+                fast_updated = False
+            finally:
+                self._fast_preview_update_once = False
+        if not fast_updated:
+            self._redraw()
         if preserve_profiles and state is not None:
             try:
                 self.import_profile_state(state, emit=False)
@@ -692,6 +702,150 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._views_callback(self.views)
             except Exception:
                 pass
+
+    def _fast_update_single_view(self, views, previous_views=None):
+        if len(views or []) != 1:
+            return False
+        if len(previous_views or []) != 1:
+            return False
+        if self._view_layout != "grid":
+            return False
+        if getattr(self, "profile_enabled", False) or getattr(self, "angle_enabled", False):
+            return False
+        if getattr(self, "molecules", None) or getattr(self, "svg_molecules", None):
+            return False
+        ax = getattr(self, "main_ax", None)
+        if ax is None or ax not in self.fig.axes or not getattr(ax, "images", None):
+            return False
+        image = ax.images[0]
+        view = views[0]
+        previous_meta = self._image_meta.get(ax, {}) or {}
+        flip = self._use_relative_axes(view)
+        origin = 'lower' if flip else 'upper'
+        if str(previous_meta.get("origin", origin)) != origin:
+            return False
+        arr = np.asarray(view.get('arr'))
+        arr_plot = np.flipud(arr) if flip else arr
+        raw_extent = view.get('extent_raw')
+        if raw_extent is None:
+            raw_extent = view.get('extent')
+        display_extent = self._display_extent_for_view(view, raw_extent)
+
+        for artist in list(ax.texts) + list(ax.lines) + list(ax.collections) + list(ax.patches):
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._scale_bar_artists = []
+        self._spectra_points = {}
+        self._fixed_crop_overlay_artists = {}
+
+        self._ax_view_map = {ax: view}
+        self._active_view_ax = ax
+        self._hover_view_ax = None
+        image.set_data(arr_plot)
+        image.set_cmap(view.get('cmap', 'viridis'))
+        if display_extent is not None:
+            image.set_extent(display_extent)
+            try:
+                x0, x1, y0, y1 = image.get_extent()
+                ax.set_xlim(x0, x1)
+                ax.set_ylim(y0, y1)
+            except Exception:
+                pass
+        else:
+            try:
+                ax.set_xlim(-0.5, max(arr_plot.shape[1] - 0.5, 0.5))
+                if origin == 'upper':
+                    ax.set_ylim(max(arr_plot.shape[0] - 0.5, 0.5), -0.5)
+                else:
+                    ax.set_ylim(-0.5, max(arr_plot.shape[0] - 0.5, 0.5))
+            except Exception:
+                pass
+        clim = view.get('clim')
+        if clim:
+            try:
+                image.set_clim(*clim)
+            except Exception:
+                pass
+        else:
+            try:
+                image.autoscale()
+            except Exception:
+                pass
+        try:
+            self._image_meta[ax] = {
+                'extent': image.get_extent(),
+                'origin': origin,
+                'shape': arr_plot.shape,
+            }
+        except Exception:
+            self._image_meta[ax] = {
+                'extent': display_extent,
+                'origin': origin,
+                'shape': arr_plot.shape,
+            }
+        title = self._compose_view_title(view)
+        if title and self._show_title:
+            ax.set_title(title, fontsize=9)
+            apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
+        else:
+            ax.set_title("")
+        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        if self._colorbars and self._show_colorbar:
+            try:
+                cbar = self._colorbars[0]
+                cbar.update_normal(image)
+                cbar.set_label(cbar_label)
+                if not self._show_ticks:
+                    cbar.set_ticks([])
+            except Exception:
+                return False
+        ax.tick_params(labelsize=8)
+        if not self._show_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        else:
+            try:
+                ax.set_xticks(ax.get_xticks())
+                ax.set_yticks(ax.get_yticks())
+            except Exception:
+                pass
+        for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+            apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
+        self._draw_acquisition_overlay(ax, view)
+        self._draw_shortcut_hint(ax)
+        if self.scale_bar_enabled:
+            self._add_scale_bar(ax, view)
+        self._draw_image_size_overlay(ax, view)
+        self._draw_spectra(ax)
+        try:
+            self._draw_outlines(ax, view)
+        except Exception:
+            pass
+        try:
+            self._draw_fixed_crop_history(ax, view)
+        except Exception:
+            pass
+        try:
+            self._render_template_overlay(ax, view)
+        except Exception:
+            pass
+        try:
+            self._draw_filter_summary_overlay(ax, view)
+        except Exception:
+            pass
+        self._zoom_reset_limits = {ax: (ax.get_xlim(), ax.get_ylim())}
+        self._apply_view_theme()
+        self._apply_view_font_scale()
+        self._update_highlight_artists()
+        use_idle_draw = bool(getattr(self, "_async_redraw_once", False))
+        self._async_redraw_once = False
+        if use_idle_draw:
+            self.draw_idle()
+        else:
+            self.draw()
+        return True
 
     def set_view_layout(self, layout: str):
         layout = (layout or "").strip().lower()
@@ -1757,7 +1911,12 @@ class MultiPreviewCanvas(FigureCanvas):
             self._apply_angle_visibility()
         self._apply_profile_visibility()
         self._update_highlight_artists()
-        self.draw()
+        use_idle_draw = bool(getattr(self, "_async_redraw_once", False))
+        self._async_redraw_once = False
+        if use_idle_draw:
+            self.draw_idle()
+        else:
+            self.draw()
 
     def _draw_molecules(self, ax):
         if not self.show_molecules or not self.molecules:

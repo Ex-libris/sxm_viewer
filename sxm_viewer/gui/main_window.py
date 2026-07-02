@@ -3320,13 +3320,19 @@ QLabel:hover {{
                         del self._spectro_selection_before_drag
                     return True
 
-        # When the thumbnail viewport or container is resized, debounce and repopulate so
-        # the thumbnail grid recomputes columns responsively.
+        # Only reflow the thumbnail grid when the available viewport width changes.
+        # Height/content resizes happen constantly during lazy loading and should not
+        # rebuild the whole thumbnail panel.
         if obj in (getattr(self, '_thumb_viewport', None),
                    getattr(self, 'thumb_container', None),
                    getattr(self, 'scroll', None)) and event.type() == QtCore.QEvent.Resize:
             try:
-                self._thumbs_reflow_timer.start(150)
+                vp = getattr(self, '_thumb_viewport', None)
+                width = int(vp.width()) if vp is not None else int(getattr(obj, "width", lambda: 0)())
+                prev_width = int(getattr(self, "_last_thumb_reflow_width", 0) or 0)
+                if abs(width - prev_width) >= 2:
+                    self._last_thumb_reflow_width = width
+                    self._thumbs_reflow_timer.start(150)
             except Exception:
                 pass
         if obj in thumb_objects and event.type() in (QtCore.QEvent.Scroll, QtCore.QEvent.Wheel):
@@ -5792,22 +5798,27 @@ QLabel:hover {{
     def _get_filtered_channel_array(self, file_key, channel_idx, header, fd):
         file_key = str(file_key)
         channel_key = self._channel_cache_key(file_key, channel_idx, fd)
-        arr = self._get_channel_array(file_key, channel_idx, header, fd)
         unit = fd.get('PhysUnit','')
-        unit_final, arr_conv = normalize_unit_and_data(arr, unit)
         spec = self.thumbnail_filters.get(file_key)
         sig = _filter_signature(spec)
-        cache_key = (channel_key, unit_final, sig)
+        cache_key = (channel_key, str(unit or ""), sig)
         with self._filtered_cache_lock:
             cached = self._filtered_channel_cache.get(cache_key)
             if cached is not None:
                 self._filtered_channel_cache.move_to_end(cache_key)
-                return unit_final, cached
+                try:
+                    unit_final, result = cached
+                    return unit_final, result
+                except Exception:
+                    unit_final, _ = normalize_unit_and_data(np.asarray([], dtype=float), unit)
+                    return unit_final, cached
+        arr = self._get_channel_array(file_key, channel_idx, header, fd)
+        unit_final, arr_conv = normalize_unit_and_data(arr, unit)
         result = np.asarray(arr_conv, dtype=float)
         if sig:
             result = self._apply_filter_pipeline(result, spec.get('steps', []))
         with self._filtered_cache_lock:
-            self._filtered_channel_cache[cache_key] = result
+            self._filtered_channel_cache[cache_key] = (unit_final, result)
             while len(self._filtered_channel_cache) > FILTERED_CACHE_LIMIT:
                 self._filtered_channel_cache.popitem(last=False)
         return unit_final, result

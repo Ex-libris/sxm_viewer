@@ -905,6 +905,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         preserve = False
     try:
         viewer._suppress_thumbnail_clim_sync = True
+        try:
+            viewer.preview_canvas._async_redraw_once = True
+            viewer.preview_canvas._fast_preview_update_once = True
+        except Exception:
+            pass
         viewer.preview_canvas.set_views(views, preserve_profiles=preserve)
     finally:
         viewer._suppress_thumbnail_clim_sync = False
