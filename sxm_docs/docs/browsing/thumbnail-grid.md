@@ -40,6 +40,28 @@ Right-clicking an image thumbnail or a spectroscopy miniature exposes a **Source
 
 ---
 
+## Sorting and filtering
+
+Two drop-downs above the grid control how thumbnails are arranged:
+
+**Sort**:
+
+- **Name (A-Z)** - natural sort (handles embedded numbers sensibly, e.g. `scan2` before `scan10`)
+- **Date (new-old)** / **Date (old-new)** - by acquisition date/time from the file header
+- **Tag (CH-CC-U)** - groups constant-height scans, then constant-current, then untagged
+
+**Filter**:
+
+- **All**
+- **Constant height**
+- **Constant current**
+- **Untagged**
+- **Matrix datasets**
+
+These are tag/type-only filters - there is no free-text search box. Sorting and filtering apply to the currently loaded folder; they don't change which files are loaded, only how they're arranged and which ones are shown.
+
+---
+
 ## Multi-selection
 
 Selecting several thumbnails lets you:
