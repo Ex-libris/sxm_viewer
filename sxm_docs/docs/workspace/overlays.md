@@ -47,7 +47,7 @@ Many display-state choices propagate between the main preview and open pop-outs,
 
 ## In sessions and collections
 
-Overlay state is part of the saved workspace for sessions and is also preserved for collection items where per-item analysis context matters.
+Overlay state is part of the saved workspace for sessions. In collections, it is preserved for pop-out and crop-history items (saved as a snapshot of that exact view); plain thumbnail and preview collection items are lightweight file references and pick up whatever overlay state is active when you reopen the underlying file, the same as a normal folder load.
 
 ---
 

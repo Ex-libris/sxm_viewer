@@ -38,39 +38,52 @@ Sessions restore:
 
 ## Collections
 
-A **collection** is cross-folder: it saves a curated set of selected previews, pop-outs, and crop snapshots gathered from multiple folders or sessions. Collections are independent of any single folder.
+A **collection** is cross-folder: it is a curated, named list of scans and spectroscopy gathered while browsing several different folders, that you can reopen later like a virtual folder. Unlike a session, a collection is not tied to any single folder or working directory.
 
-### When to use collections
+Collection items are stored as **lightweight references** to the real file, channel, and any associated spectroscopy - not a rendered copy. Opening a collection reads the real files directly, so all channels, measurements, and filters work exactly as they would from a normal folder load. The one exception is pop-up and crop-history items, which carry their own overlay/crop state and are saved as a snapshot instead (see [Adding items](#adding-items) below).
 
-Use a collection when you want to assemble a set of "hero" images from different experiments without committing to saving a full folder session for each one.
+!!! tip
+    Use a collection when you want to sort images from one or more folders into a curated set - or several different sets at once - without saving a full folder session for each one.
 
-### Saving a collection
+### The current collection
+
+At any time, one collection can be the app's **current collection** - the default target that plain "Add to Collection" actions append to. It is shown in the toolbar **Collections** button (e.g. *Collection: myset (12 items)*) and persists across app restarts.
+
+- **Create a Collection...** starts a brand-new collection and makes it current. Nothing is written to disk until you actually add an item to it.
+- **Open a Collection...** opens the collection browser: a list of your recent collections (plus a **Browse for Another Collection...** option) with a live preview - item count, last-modified time, and a thumbnail strip - for whichever one is selected. From there you choose one of two explicit actions:
+    - **Set as Current Collection** - only changes the append target; your loaded folder and thumbnails are untouched.
+    - **Open (Load Into Workspace)** - fully replaces your current workspace with this collection's contents, like opening a folder.
+- **Recent Collections** (in the same toolbar menu) lists collections you've used recently for one-click reopening - clicking an entry always loads it (same as "Open (Load Into Workspace)" above).
+- **Clear Current Collection Target** forgets the current collection for this session without deleting anything.
+
+Opening a different collection, or picking one from Recent Collections, never overwrites or alters the collection you were previously working in - each collection file is only ever appended to when you explicitly add items to it.
+
+### Adding items
 
 Entry points:
 
-- toolbar collection actions
-- preview or pop-out **Collection** submenus
-- right-click on any preview or popup -> **Collection**
+- toolbar **Collections** menu
+- right-click a thumbnail selection -> **Collections**
+- preview or pop-out **Collections** submenus
 
-Available actions:
+| Action | What is saved | Storage |
+|---|---|---|
+| Add Selected Thumbnails | The selected thumbnail(s), with their associated spectroscopy | Lightweight reference |
+| Add Current Preview | The main preview's file and channel | Lightweight reference (falls back to a snapshot only if the view is a crop or otherwise has no real file behind it) |
+| Add Active Pop-up | The focused pop-out, with all its analysis overlays | Snapshot |
+| Add All Open Pop-ups | Every currently open pop-out | Snapshot |
+| Add Selected Crop History | Chosen entries from the crop history panel | Snapshot |
 
-| Action | What is saved |
-|---|---|
-| Add Current Preview | The main preview at its current state |
-| Add Active Pop-up | The focused pop-out with all its analysis overlays |
-| Add All Open Pop-ups | Every currently open pop-out |
-| Add Selected Crop History | Chosen entries from the crop history panel |
+Pop-ups and crop-history items are saved as a snapshot because they carry derived state - crop region, filter pipeline, profile/angle/molecule overlays - that a plain file+channel reference cannot represent. They are heavier and less robust if the original file is later moved, but faithfully restore that exact analysis state when reopened.
 
-### Linked vs portable
+#### Adding to a specific collection without switching
 
-When saving, you choose between two modes:
+Use **Add Selected Thumbnails to...** to route a batch of thumbnails to a collection you pick right now - from your recent list, browsed for, or created fresh via an explicit **+ New Collection...** option - without changing the current collection. This is the way to sort different selections from the same folder session into several different collections in one sitting: select a few thumbnails, route them to collection A, select a different few, route them to collection B, and so on, with no need to switch the current-collection target back and forth in between.
 
-**Linked** saves references to the original source files. Smaller file size, but requires access to the original data path when reopening.
+### Folder awareness
 
-**Portable** caches all image arrays into the collection file. Larger file, but safe to move to another machine or share with a colleague.
+Reopening a folder that already has files sorted into one or more collections shows a one-line notice naming them, so you don't lose track of previous sorting across sessions.
 
-### Restoring a collection
+### File format and compatibility
 
-Opening a collection clears the current workspace and rebuilds it as a curated virtual set. Items flagged as pop-outs are reopened as pop-out windows. All per-item analysis state such as profiles, angles, molecules, and scale-bar settings is reapplied.
-
-The collection file format is `.sxmcoll.json`.
+The collection file format is `.sxmcoll.json`. Collections created by older versions of SXM Viewer (which saved every item as a rendered snapshot) still open correctly - items whose source file can still be found are read as live references with full functionality; items whose source file is missing fall back to their original saved snapshot.

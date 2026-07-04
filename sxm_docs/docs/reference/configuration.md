@@ -9,6 +9,7 @@ SXM Viewer persists a range of user-interface and display preferences so the wor
 Examples described in the project history include:
 
 - recent folders and recent session locations
+- recent collections and the current collection target
 - typography choices
 - display state and overlay preferences
 - filter parameter defaults such as recent Laplacian settings

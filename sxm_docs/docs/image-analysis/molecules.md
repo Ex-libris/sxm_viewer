@@ -1,6 +1,6 @@
 # Molecule Overlays
 
-Molecule overlays let you place and manipulate molecular models directly on preview canvases, pop-outs, and canvas tiles.
+Molecule overlays let you place and manipulate molecular models directly on preview canvases, pop-outs, and canvas tiles. SXM Viewer has two independent molecule-overlay systems: a **3D model** overlay (this page's main content, below) and a **2D structure** overlay for SVG/Mol/SDF/XYZ files with its own styling controls (see [2D Structure Overlays](#2d-structure-overlays) further down).
 
 ![Molecule overlay placement and styling](../assets/screenshots/molecule-overlay-styling.gif){ width="900" }
 
@@ -90,6 +90,51 @@ Molecule overlays are tied to the current image state rather than being a purely
 ## Default appearance
 
 New overlays start in a bond-only display mode with the PyMol palette selected by default.
+
+---
+
+## 2D Structure Overlays
+
+A separate overlay type for placing a flat, 2D chemical structure (from an SVG, `.mol`, `.sdf`, `.xyz`, `.cdxml`, or `.cml` file) on top of an image - useful for annotating a scan with a reference structure diagram rather than a 3D ball-and-stick model.
+
+### Loading
+
+Use **Molecules -> Load 2D Structure...** to place one, or **Load Recent 2D Structure** to reuse one you've placed before. **Clear 2D Structures** removes all 2D overlays from the current view.
+
+### Editing and positioning
+
+Right-click a placed 2D structure for its full menu:
+
+| Action | What it does |
+|---|---|
+| Per-atom edit mode | Toggle dragging individual atoms to adjust bond lengths/angles |
+| Set reference bond length... | Calibrate the structure's scale against a known bond length |
+| Style (colors, text, bond order)... | Open the style dialog (below) |
+| Duplicate | Add a copy of the structure |
+| Delete | Remove this structure |
+
+Once selected, arrow keys nudge the whole structure by small increments.
+
+### Style dialog
+
+The **Style (colors, text, bond order)...** action opens one consolidated dialog for every visual option, applied live so you can see the effect immediately:
+
+**Atoms** - choose a color palette (CPK, Jmol, PyMOL, Avogadro, ASE) or a flat single color for every atom.
+
+**Bonds**:
+
+- **Show bond order** (double/triple bonds) - off by default. This reflects the source file's assumed bonding, often a gas-phase reference structure; bonding and aromaticity can change once a molecule is adsorbed on a surface, so enable it only when the structure is meant as an idealized reference, not a measured one.
+- **Show bond-length labels** - print each bond's length on the image.
+- **Color bonds** - uniform (default), by length using a continuous colormap, by length using discrete short/normal/long categories, or by bond order. The continuous mode only offers sequential/diverging colormaps (appropriate for an ordered quantity); the categorical mode only offers qualitative colormaps, with ColorBrewer's documented colorblind-safe schemes (`Dark2`, `Paired`, `Set2`) flagged in the list.
+- **Show color legend on the image** - adds a small on-image key explaining what the bond colors mean, useful when sharing a figure with someone unfamiliar with these conventions.
+
+**Text** - a text-size multiplier, and a high-contrast option (thicker text outline) for busy backgrounds or low-vision accessibility.
+
+**Presets** - **Save as default** applies the current style to every new 2D structure you load from then on; **Save preset.../Load preset...** save/load a style to/from a file, for sharing or reusing across sessions.
+
+### Exporting
+
+The right-click **Export** submenu covers: the edited structure file, XYZ coordinates only, a bond-length histogram, the current canvas as PNG, the overlay alone as a transparent PNG, and **Clean scheme with bond lengths...** - a publication-style rendering of just the structure and its bond-length annotations, without the underlying scan image.
 
 ---
 
