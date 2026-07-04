@@ -164,6 +164,12 @@ class CollectionController:
 
     def _clear_collection_undo_stack(self):
         try:
+            stack = self._collection_undo_stack()
+            if stack:
+                log_status(f"Undo history cleared for the previous collection ({len(stack)} action(s) discarded).")
+        except Exception:
+            pass
+        try:
             self.viewer._collection_undo_stack = []
         except Exception:
             pass
