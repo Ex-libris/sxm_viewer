@@ -783,11 +783,21 @@ class CollectionController:
             self.show_help()
 
     # ------------------------------------------------------------------
-    def _save_items(self, items, *, source_summary: str):
+    def _save_items(self, items, *, source_summary: str, target=None):
+        """Save items to a collection.
+
+        target: optional (collection_path, mode) tuple for ad-hoc routing to a specific
+        collection without changing the app's global current-collection pointer/undo stack -
+        used by the "Add ... to..." picker. When omitted (all pre-existing call sites), behaves
+        exactly as before: resolves/prompts for the current collection and makes it current.
+        """
         items = [item for item in list(items or []) if isinstance(item, dict)]
         if not items:
             return
-        path, mode = self._prompt_target(source_summary)
+        if target is not None:
+            path, mode = target
+        else:
+            path, mode = self._prompt_target(source_summary)
         if not path:
             return
         collection_path = Path(path)
@@ -873,7 +883,18 @@ class CollectionController:
                 self.viewer._record_collection_dir(collection_path.parent)
             except Exception:
                 pass
-            self._remember_current_collection(collection_path, mode=mode)
+            if target is not None:
+                # Ad-hoc routing: this collection was genuinely just used, so it's worth
+                # remembering as recent, but it must NOT become the current/append-target
+                # collection - that would silently redirect all future plain adds elsewhere.
+                recent_cb = getattr(self.viewer, "_record_recent_collection", None)
+                if callable(recent_cb):
+                    try:
+                        recent_cb(collection_path)
+                    except Exception:
+                        pass
+            else:
+                self._remember_current_collection(collection_path, mode=mode)
             show_saved_cb = getattr(self.viewer, "_show_saved_path_toast", None)
             if callable(show_saved_cb):
                 try:
@@ -884,12 +905,16 @@ class CollectionController:
                     )
                 except Exception:
                     pass
-            show_tray = getattr(self.viewer, "show_collection_tray", None)
-            if callable(show_tray):
-                try:
-                    show_tray(activate=False)
-                except Exception:
-                    pass
+            if target is None:
+                # Only refresh/show the persistent Tray widget for the current-collection flow -
+                # it's bound to viewer._collection_source, so showing it after an ad-hoc add to a
+                # *different* collection would display the wrong (unrelated) collection's contents.
+                show_tray = getattr(self.viewer, "show_collection_tray", None)
+                if callable(show_tray):
+                    try:
+                        show_tray(activate=False)
+                    except Exception:
+                        pass
             log_status(f"Updated collection {collection_path} with {len(appended)} item(s)")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to save collection: {exc}")
