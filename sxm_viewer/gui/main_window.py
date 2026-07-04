@@ -6671,6 +6671,21 @@ QLabel:hover {{
         except Exception:
             pass
 
+    @staticmethod
+    def _collection_display_name(path_str) -> str:
+        """Collection "name" the user sees is just its filename - strip the full
+        .sxmcoll.json double-suffix so it isn't stuck as e.g. "myset.sxmcoll"."""
+        try:
+            name = Path(path_str).name
+        except Exception:
+            return str(path_str)
+        if name.lower().endswith(".sxmcoll.json"):
+            return name[: -len(".sxmcoll.json")]
+        try:
+            return Path(path_str).stem
+        except Exception:
+            return name
+
     def _refresh_collection_ui(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
         short = current if current else "none"
@@ -6681,7 +6696,7 @@ QLabel:hover {{
         button_text = "Collections"
         if current:
             try:
-                button_text = f"Collection: {Path(current).stem}"
+                button_text = f"Collection: {self._collection_display_name(current)}"
             except Exception:
                 button_text = "Collection: active"
         for attr in ("collection_current_path_act", "toolbar_collection_current_path_act"):
@@ -6723,7 +6738,7 @@ QLabel:hover {{
         tray.clear()
         if window is not None:
             try:
-                window.setWindowTitle("Collection Tray" if not current else f"Collection Tray - {Path(current).stem}")
+                window.setWindowTitle("Collection Tray" if not current else f"Collection Tray - {self._collection_display_name(current)}")
             except Exception:
                 pass
         if not current:
