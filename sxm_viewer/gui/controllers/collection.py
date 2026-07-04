@@ -614,11 +614,14 @@ class CollectionController:
                 collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
             else:
                 collection_path = collection_path.with_suffix(".sxmcoll.json")
+        already_exists = collection_path.exists()
         mode = "linked"
+        item_count = 0
         try:
-            if collection_path.exists():
+            if already_exists:
                 payload = self._load_or_init_payload(collection_path, mode=mode)
                 mode = str(payload.get("default_mode") or mode)
+                item_count = len(payload.get("items") or [])
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to use this collection: {exc}")
             return
@@ -628,11 +631,19 @@ class CollectionController:
             pass
         self._clear_collection_undo_stack()
         self._remember_current_collection(collection_path, mode=mode)
-        QtWidgets.QMessageBox.information(
-            self.viewer,
-            "Collections",
-            f"Current collection set to:\n{collection_path}\n\nNew Add to Collection actions will append to this file in place; it will not be rewritten from scratch.",
-        )
+        if already_exists:
+            message = (
+                f"Current collection set to:\n{collection_path}\n\n"
+                f"This existing collection has {item_count} item(s). New Add to Collection actions "
+                "will append to it in place."
+            )
+        else:
+            message = (
+                f"New collection target chosen:\n{collection_path}\n\n"
+                "Nothing has been written to disk yet - the file will be created the next time you "
+                "use an Add to Collection action."
+            )
+        QtWidgets.QMessageBox.information(self.viewer, "Collections", message)
 
     def clear_current_collection(self):
         """Forget the current default collection target for this app session."""
