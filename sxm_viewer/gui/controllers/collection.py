@@ -234,6 +234,23 @@ class CollectionController:
                 pass
         return Path(getattr(self.viewer, "last_dir", "."))
 
+    def current_collection_item_count(self):
+        """Cheap item count for the current collection, for UI labels - no icon building."""
+        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current:
+            return None
+        path = Path(current)
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if str(payload.get("kind") or "") != self.KIND:
+                return None
+            return len(payload.get("items") or [])
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     def show_help(self):
         QtWidgets.QMessageBox.information(

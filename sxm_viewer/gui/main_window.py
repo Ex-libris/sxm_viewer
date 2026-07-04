@@ -6688,15 +6688,22 @@ QLabel:hover {{
 
     def _refresh_collection_ui(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
+        item_count = None
+        if current:
+            try:
+                item_count = self.collection_controller.current_collection_item_count()
+            except Exception:
+                item_count = None
+        count_suffix = f" ({item_count} item{'s' if item_count != 1 else ''})" if item_count is not None else ""
         short = current if current else "none"
         if len(short) > 96:
             short = "..." + short[-93:]
-        text = f"Current collection: {short}"
+        text = f"Current collection: {short}{count_suffix}"
         tooltip = current or "No current collection selected. Add actions will ask for a collection file."
         button_text = "Collections"
         if current:
             try:
-                button_text = f"Collection: {self._collection_display_name(current)}"
+                button_text = f"Collection: {self._collection_display_name(current)}{count_suffix}"
             except Exception:
                 button_text = "Collection: active"
         for attr in ("collection_current_path_act", "toolbar_collection_current_path_act"):
@@ -6725,6 +6732,33 @@ QLabel:hover {{
                 pass
         try:
             self._refresh_collection_tray()
+        except Exception:
+            pass
+
+    def _refresh_collection_toolbar_menu_labels(self):
+        """Update the toolbar 'Add Selected Thumbnails' entry with the live selection count -
+        connected to the Collections menu's aboutToShow so it's always current when opened."""
+        act = getattr(self, "toolbar_collection_add_selected_act", None)
+        if act is None:
+            return
+        try:
+            selected = self._ordered_thumbnail_selection()
+        except Exception:
+            selected = []
+        count = len(selected)
+        try:
+            if count > 1:
+                act.setText(f"Add Selected Thumbnails ({count})...")
+                act.setEnabled(True)
+                act.setToolTip("Add the currently selected thumbnails to the current collection as lightweight file references.")
+            elif count == 1:
+                act.setText("Add Selected Thumbnail...")
+                act.setEnabled(True)
+                act.setToolTip("Add the currently selected thumbnail to the current collection as a lightweight file reference.")
+            else:
+                act.setText("Add Selected Thumbnails...")
+                act.setEnabled(False)
+                act.setToolTip("Select one or more thumbnails first, then use this action.")
         except Exception:
             pass
 
@@ -9240,30 +9274,39 @@ QLabel:hover {{
 
         menu.addSeparator()
         collection_menu = menu.addMenu("Collections")
-        show_tray_act = QtWidgets.QAction("Show collection tray", collection_menu)
+        show_tray_act = QtWidgets.QAction("Show Collection Tray", collection_menu)
         show_tray_act.triggered.connect(self.on_show_collection_tray)
         collection_menu.addAction(show_tray_act)
-        add_selected_collection_act = QtWidgets.QAction("Add selected thumbnails to collection", collection_menu)
+        selected_count = len([p for p in targets if p])
+        add_label = (
+            f"Add Selected Thumbnails ({selected_count})..." if selected_count > 1
+            else "Add Selected Thumbnail..." if selected_count == 1
+            else "Add Selected Thumbnails..."
+        )
+        add_selected_collection_act = QtWidgets.QAction(add_label, collection_menu)
+        add_selected_collection_act.setEnabled(selected_count > 0)
         add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
         collection_menu.addAction(add_selected_collection_act)
-        remove_selected_collection_act = QtWidgets.QAction("Remove selected thumbnails from collection", collection_menu)
+        remove_selected_collection_act = QtWidgets.QAction("Remove Selected Thumbnails from Collection", collection_menu)
         remove_selected_collection_act.triggered.connect(
             lambda: self.collection_controller.remove_thumbnail_entries(
                 [{"file_path": str(path), "channel_index": int(self.channel_dropdown.currentIndex() or 0)} for path in targets if path]
             )
         )
-        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)))
+        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)) and selected_count > 0)
         collection_menu.addAction(remove_selected_collection_act)
-        choose_collection_act = QtWidgets.QAction("Choose current collection...", collection_menu)
+        choose_collection_act = QtWidgets.QAction("Choose Current Collection...", collection_menu)
         choose_collection_act.triggered.connect(self.on_choose_current_collection)
         collection_menu.addAction(choose_collection_act)
-        open_collection_act = QtWidgets.QAction("Open collection...", collection_menu)
+        open_collection_act = QtWidgets.QAction("Open Collection...", collection_menu)
         open_collection_act.triggered.connect(self.on_open_collection)
         collection_menu.addAction(open_collection_act)
-        clear_target_act = QtWidgets.QAction("Clear current collection target", collection_menu)
+        clear_target_act = QtWidgets.QAction("Clear Current Collection Target", collection_menu)
         clear_target_act.triggered.connect(self.on_clear_current_collection)
         collection_menu.addAction(clear_target_act)
-        if not getattr(self, "_collection_source", None):
+        if selected_count == 0:
+            add_selected_collection_act.setToolTip("Select one or more thumbnails first, then use this action.")
+        elif not getattr(self, "_collection_source", None):
             add_selected_collection_act.setToolTip(
                 "Choose or open a collection first, or use this action to create one when prompted."
             )

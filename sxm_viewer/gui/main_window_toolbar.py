@@ -104,6 +104,9 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("Open Collection...", viewer.on_open_collection)
     viewer.toolbar_collection_menu.addAction("Show Collection Tray", viewer.on_show_collection_tray)
+    viewer.toolbar_collection_add_selected_act = viewer.toolbar_collection_menu.addAction(
+        "Add Selected Thumbnails...", viewer.on_add_selected_thumbnails_to_collection
+    )
     viewer.toolbar_collection_menu.addAction("Add Current Preview...", viewer.on_add_current_preview_to_collection)
     viewer.toolbar_collection_menu.addAction("Add Active Pop-up...", viewer.on_add_active_popup_to_collection)
     viewer.toolbar_collection_menu.addAction("Add All Open Pop-ups...", viewer.on_add_all_popups_to_collection)
@@ -111,6 +114,7 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("What Is a Collection?", viewer.on_collection_help)
     viewer.toolbar_collection_btn.setMenu(viewer.toolbar_collection_menu)
+    viewer.toolbar_collection_menu.aboutToShow.connect(viewer._refresh_collection_toolbar_menu_labels)
     toolbar.addWidget(viewer.toolbar_collection_btn)
     try:
         viewer._refresh_collection_ui()
