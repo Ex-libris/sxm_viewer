@@ -233,15 +233,19 @@ class CollectionController:
             self.viewer,
             "Collections",
             (
-                "<b>Collections</b> are curated workspaces made from selected preview views, pop-ups, and crop "
-                "snapshots.<br><br>"
-                "Use them when you want to compare results from different folders without saving the whole "
-                "folder session.<br><br>"
+                "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
+                "while browsing several folders, then reopen it later like a virtual folder with full "
+                "measurement/filter support.<br><br>"
+                "Plain thumbnail and preview adds are stored as lightweight <b>references</b> to the real "
+                "file, channel, and any associated spectroscopy - not a rendered copy. Opening a collection "
+                "reads the real files directly, so all channels and measurements work exactly as they would "
+                "from a normal folder.<br><br>"
+                "<b>Pop-ups</b> and <b>crop-history</b> entries are the one exception: they carry their own "
+                "overlay/crop state, so they are still saved as a baked snapshot of that view. These are "
+                "heavier and less robust if the original file is later moved.<br><br>"
                 "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
                 "session. New <i>Add to collection</i> actions append to it by default until you open another "
-                "collection.<br><br>"
-                "<b>Linked</b>: lighter, expects original source data to remain available when possible.<br>"
-                "<b>Portable</b>: larger, caches image arrays so the collection can reopen more safely."
+                "collection."
             ),
         )
 
@@ -251,12 +255,23 @@ class CollectionController:
         if canvas is None or not isinstance(view, dict):
             QtWidgets.QMessageBox.information(self.viewer, "Collections", "There is no preview image to add.")
             return
-        item = self._build_item_from_canvas(
-            canvas,
-            source_kind="preview",
-            restore_as_popup=False,
-            label=self._friendly_item_label(view, prefix="Preview"),
-        )
+        item = None
+        if not self._view_requires_cached_array(view):
+            source_path = self._view_source_path(view)
+            meta = view.get("meta") or {}
+            channel_idx = meta.get("channel_index", view.get("channel_idx"))
+            if source_path and channel_idx is not None:
+                item = self._build_reference_item(
+                    source_path, channel_idx, source_kind="preview",
+                    label=self._friendly_item_label(view, prefix="Preview"),
+                )
+        if item is None:
+            item = self._build_item_from_canvas(
+                canvas,
+                source_kind="preview",
+                restore_as_popup=False,
+                label=self._friendly_item_label(view, prefix="Preview"),
+            )
         if item:
             self._save_items([item], source_summary=f"Add the current preview to a collection.\nItem: {item['label']}")
 
@@ -339,7 +354,7 @@ class CollectionController:
             self._save_items(items, source_summary=f"Add {len(items)} selected crop snapshot(s) to a collection.")
 
     def add_thumbnail_entries(self, entries):
-        """Add plain thumbnail/file entries to the current collection as fresh copies."""
+        """Add plain thumbnail/file entries to the current collection as lightweight references."""
         built_items = []
         for entry in list(entries or []):
             if not isinstance(entry, dict):
@@ -348,39 +363,23 @@ class CollectionController:
             channel_idx = entry.get("channel_index")
             if not file_path or channel_idx is None:
                 continue
-            try:
-                channel_idx = int(channel_idx)
-            except Exception:
-                continue
-            try:
-                bundle = self.viewer._build_single_channel_view(file_path, channel_idx)
-            except Exception:
-                bundle = None
-            view = bundle.get("view") if isinstance(bundle, dict) else None
-            if not isinstance(view, dict):
-                continue
-            built_items.append(
-                self._build_item_from_view_snapshot(
-                    view,
-                    getattr(self.viewer, "preview_canvas", None),
-                    source_kind="thumbnail",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="Thumbnail"),
-                )
-            )
-        built_items = [item for item in built_items if isinstance(item, dict)]
+            item = self._build_reference_item(file_path, channel_idx, source_kind="thumbnail")
+            if item:
+                built_items.append(item)
         if built_items:
             self._save_items(
                 built_items,
                 source_summary=(
                     f"Add {len(built_items)} thumbnail selection(s) to the current collection.\n"
-                    "These are stored as fresh collection copies without popup-only overlay state.\n"
+                    "These are stored as lightweight references to the real file, channel, and any\n"
+                    "associated spectroscopy - not a rendered copy.\n"
                     "If a current collection is selected, the items are appended to it."
                 ),
             )
 
     def add_from_view_drag_payload(self, payload: dict):
-        """Add a dragged preview view as a fresh collection item."""
+        """Add a dragged preview view: a lightweight reference for a plain view, or a legacy
+        baked snapshot for a view carrying crop/filter/overlay state a reference can't capture."""
         if not isinstance(payload, dict):
             return
         view = None
@@ -391,37 +390,46 @@ class CollectionController:
                 view = MultiPreviewCanvas.consume_drag_view_snapshot(drag_token)
             except Exception:
                 view = None
-        if not isinstance(view, dict):
+
+        item = None
+        if isinstance(view, dict):
+            if not self._view_requires_cached_array(view):
+                source_path = self._view_source_path(view)
+                meta = view.get("meta") or {}
+                channel_idx = meta.get("channel_index", view.get("channel_idx"))
+                if source_path and channel_idx is not None:
+                    item = self._build_reference_item(
+                        source_path, channel_idx, source_kind="dragged_view",
+                        label=self._friendly_item_label(view, prefix="Dragged view"),
+                    )
+            if item is None:
+                item = self._build_item_from_view_snapshot(
+                    view,
+                    getattr(self.viewer, "preview_canvas", None),
+                    source_kind="dragged_view",
+                    restore_as_popup=False,
+                    label=self._friendly_item_label(view, prefix="Dragged view"),
+                )
+        else:
             file_path = str(payload.get("file_path") or "").strip()
             channel_idx = payload.get("channel_index")
             if file_path and channel_idx is not None:
-                try:
-                    bundle = self.viewer._build_single_channel_view(file_path, int(channel_idx))
-                except Exception:
-                    bundle = None
-                view = bundle.get("view") if isinstance(bundle, dict) else None
-        if not isinstance(view, dict):
+                item = self._build_reference_item(file_path, channel_idx, source_kind="dragged_view")
+
+        if item is None:
             QtWidgets.QMessageBox.information(
                 self.viewer,
                 "Collections",
                 "The dragged view could not be added to the collection.",
             )
             return
-        item = self._build_item_from_view_snapshot(
-            view,
-            getattr(self.viewer, "preview_canvas", None),
-            source_kind="dragged_view",
-            restore_as_popup=False,
-            label=self._friendly_item_label(view, prefix="Dragged view"),
+        self._save_items(
+            [item],
+            source_summary=(
+                "Add the dragged preview view to the current collection.\n"
+                "Tip: use the popup Collection menu if you want to preserve popup-specific overlay state."
+            ),
         )
-        if item:
-            self._save_items(
-                [item],
-                source_summary=(
-                    "Add the dragged preview view to the current collection.\n"
-                    "Tip: use the popup Collection menu if you want to preserve popup-specific overlay state."
-                ),
-            )
 
     def remove_collection_items(self, item_ids):
         """Remove one or more items from the current collection file and refresh the workspace."""
@@ -686,21 +694,32 @@ class CollectionController:
     def handle_canvas_menu_action(self, action, view, canvas=None):
         if action == "collection_add":
             target_canvas = canvas or getattr(self.viewer, "preview_canvas", None)
-            if target_canvas is not None and len(list(getattr(target_canvas, "views", []) or [])) <= 1:
-                item = self._build_item_from_canvas(
-                    target_canvas,
-                    source_kind="view",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="View"),
-                )
-            else:
-                item = self._build_item_from_view_snapshot(
-                    view,
-                    target_canvas,
-                    source_kind="view",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="View"),
-                )
+            item = None
+            if isinstance(view, dict) and not self._view_requires_cached_array(view):
+                source_path = self._view_source_path(view)
+                meta = view.get("meta") or {}
+                channel_idx = meta.get("channel_index", view.get("channel_idx"))
+                if source_path and channel_idx is not None:
+                    item = self._build_reference_item(
+                        source_path, channel_idx, source_kind="view",
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
+            if item is None:
+                if target_canvas is not None and len(list(getattr(target_canvas, "views", []) or [])) <= 1:
+                    item = self._build_item_from_canvas(
+                        target_canvas,
+                        source_kind="view",
+                        restore_as_popup=False,
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
+                else:
+                    item = self._build_item_from_view_snapshot(
+                        view,
+                        target_canvas,
+                        source_kind="view",
+                        restore_as_popup=False,
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
             if item:
                 self._save_items([item], source_summary=f"Add this view to a collection.\nItem: {item['label']}")
         elif action == "collection_remove":
@@ -756,34 +775,61 @@ class CollectionController:
         try:
             payload = self._load_or_init_payload(collection_path, mode=mode)
             mode = str(payload.get("default_mode") or mode or "linked")
-            data_dir = collection_path.parent / str(payload.get("data_dir") or f"{collection_path.stem}_collection_data")
-            views_dir = data_dir / "views"
-            views_dir.mkdir(parents=True, exist_ok=True)
+            views_dir = None
             next_id = int(payload.get("next_item_id", 1) or 1)
             appended = []
             for raw_item in items:
                 item = dict(raw_item)
                 item_id = int(next_id)
                 next_id += 1
-                snapshot = self._recapture_item_snapshot(item, views_dir, item_id=item_id, mode=mode)
-                if not snapshot:
-                    continue
-                primary = self._snapshot_primary_meta(snapshot)
-                appended.append(
-                    {
-                        "id": item_id,
-                        "label": item.get("label") or primary.get("title") or f"Collection item {item_id}",
-                        "source_kind": item.get("source_kind") or "view",
-                        "storage_mode": mode,
-                        "restore_as_popup": bool(item.get("restore_as_popup", False)),
-                        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "source_file": primary.get("source_file"),
-                        "source_folder": primary.get("source_folder"),
-                        "channel_index": primary.get("channel_index"),
-                        "channel_name": primary.get("channel_name"),
-                        "snapshot": snapshot,
-                    }
-                )
+                if item.get("capture_kind"):
+                    # Legacy path: pop-ups, crop-history entries, and any view carrying
+                    # crop/filter/overlay state a plain file+channel reference can't represent.
+                    if views_dir is None:
+                        data_dir = collection_path.parent / str(payload.get("data_dir") or f"{collection_path.stem}_collection_data")
+                        views_dir = data_dir / "views"
+                        views_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot = self._recapture_item_snapshot(item, views_dir, item_id=item_id, mode=mode)
+                    if not snapshot:
+                        continue
+                    primary = self._snapshot_primary_meta(snapshot)
+                    appended.append(
+                        {
+                            "id": item_id,
+                            "label": item.get("label") or primary.get("title") or f"Collection item {item_id}",
+                            "source_kind": item.get("source_kind") or "view",
+                            "storage_mode": mode,
+                            "restore_as_popup": bool(item.get("restore_as_popup", False)),
+                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "source_file": primary.get("source_file"),
+                            "source_folder": primary.get("source_folder"),
+                            "channel_index": primary.get("channel_index"),
+                            "channel_name": primary.get("channel_name"),
+                            "snapshot": snapshot,
+                        }
+                    )
+                else:
+                    # Reference item: a real file + channel + spectro paths, no baked render.
+                    source_file = str(item.get("source_file") or "").strip()
+                    channel_index = item.get("channel_index")
+                    if not source_file or channel_index is None:
+                        continue
+                    try:
+                        channel_index = int(channel_index)
+                    except Exception:
+                        continue
+                    appended.append(
+                        {
+                            "id": item_id,
+                            "label": item.get("label") or Path(source_file).name,
+                            "source_kind": item.get("source_kind") or "thumbnail",
+                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "source_file": source_file,
+                            "channel_index": channel_index,
+                            "channel_name": item.get("channel_name") or "",
+                            "spectro_file_paths": list(item.get("spectro_file_paths") or []),
+                        }
+                    )
             if not appended:
                 QtWidgets.QMessageBox.information(
                     self.viewer,
@@ -794,6 +840,7 @@ class CollectionController:
             self._push_collection_undo_state(collection_path, payload, description="add_items")
             payload.setdefault("items", []).extend(appended)
             payload["next_item_id"] = next_id
+            payload["version"] = self.VERSION
             payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
@@ -809,7 +856,7 @@ class CollectionController:
                     show_saved_cb(
                         "Collection saved",
                         collection_path,
-                        detail=f"Added {len(appended)} item(s) | {'Linked' if mode == 'linked' else 'Portable'} mode",
+                        detail=f"Added {len(appended)} item(s)",
                     )
                 except Exception:
                     pass
@@ -933,6 +980,43 @@ class CollectionController:
                 include_state=False,
             )
         return None
+
+    def _build_reference_item(self, file_path, channel_idx, *, source_kind: str, label: str = None):
+        """Build a lightweight collection item that references a real file + channel directly,
+        with no rendered/baked pixel data - the common case for plain thumbnail/preview adds."""
+        viewer = self.viewer
+        try:
+            source_path = Path(file_path)
+        except Exception:
+            return None
+        if not source_path.exists():
+            return None
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            return None
+        _, fds = viewer.headers.get(str(source_path), (None, None))
+        channel_name = ""
+        if fds and 0 <= channel_idx < len(fds):
+            channel_name = str((fds[channel_idx] or {}).get("Caption", "") or "")
+        spectro_paths = []
+        for spec in list(viewer.spectros_by_image.get(str(source_path), []) or []):
+            spec_path = spec.get("path") if isinstance(spec, dict) else None
+            if spec_path:
+                spectro_paths.append(str(spec_path))
+        if not label:
+            label_parts = [source_path.name]
+            if channel_name:
+                label_parts.append(channel_name)
+            label = " | ".join(label_parts)
+        return {
+            "source_file": str(source_path),
+            "channel_index": channel_idx,
+            "channel_name": channel_name,
+            "spectro_file_paths": spectro_paths,
+            "source_kind": source_kind,
+            "label": label,
+        }
 
     def _build_item_from_canvas(self, canvas, *, source_kind: str, restore_as_popup: bool, label: str):
         if canvas is None or not getattr(canvas, "views", None):
@@ -1250,12 +1334,20 @@ class CollectionController:
             return None
         spectro_paths = []
         seen = set()
-        for view_entry in list(snapshot.get("views") or []):
-            for spec in list((view_entry or {}).get("spectra") or []):
-                spec_path = str((spec or {}).get("path") or "").strip()
-                if spec_path and spec_path not in seen:
-                    seen.add(spec_path)
-                    spectro_paths.append(spec_path)
+        if "spectro_file_paths" in item:
+            # Already-lightweight v2 item: the field is authoritative, no snapshot to mine.
+            for spec_path_str in list(item.get("spectro_file_paths") or []):
+                spec_path_str = str(spec_path_str or "").strip()
+                if spec_path_str and spec_path_str not in seen:
+                    seen.add(spec_path_str)
+                    spectro_paths.append(spec_path_str)
+        else:
+            for view_entry in list(snapshot.get("views") or []):
+                for spec in list((view_entry or {}).get("spectra") or []):
+                    spec_path = str((spec or {}).get("path") or "").strip()
+                    if spec_path and spec_path not in seen:
+                        seen.add(spec_path)
+                        spectro_paths.append(spec_path)
         first_view = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
         return {
             "id": item.get("id"),
