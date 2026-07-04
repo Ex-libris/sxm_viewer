@@ -12,6 +12,8 @@ from ..viewer import loader as viewer_loader
 from ..viewer import measurement as viewer_measurement
 from ..thumbnail_render import array_to_qimage
 
+RECENT_COLLECTION_LIMIT = 30
+
 
 _COLLECTION_HELP_HTML = (
     "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
@@ -948,6 +950,12 @@ class CollectionController:
         if callable(record_cb):
             try:
                 record_cb(self.viewer._collection_source, self.viewer._current_collection_mode)
+            except Exception:
+                pass
+        recent_cb = getattr(self.viewer, "_record_recent_collection", None)
+        if callable(recent_cb):
+            try:
+                recent_cb(self.viewer._collection_source)
             except Exception:
                 pass
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)

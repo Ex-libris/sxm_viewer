@@ -75,7 +75,7 @@ from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
-from .controllers.collection import CollectionController
+from .controllers.collection import CollectionController, RECENT_COLLECTION_LIMIT
 from .controllers.thumbnail_controller import ThumbnailController
 from .controllers.spectro_compare import SpectroCompareController
 from .controllers.session import SessionController
@@ -396,6 +396,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._last_collection_dir = Path(last_collection_dir) if last_collection_dir else Path(self.last_dir)
         except Exception:
             self._last_collection_dir = Path(self.last_dir)
+        self.recent_collections = list(self.config.get("recent_collections", []) or [])
         config_changed = False
         if "session_recovery_enabled" not in self.config:
             self.config["session_recovery_enabled"] = True
@@ -4317,6 +4318,52 @@ QLabel:hover {{
             save_config(self.config)
         except Exception:
             pass
+
+    def _record_recent_collection(self, path):
+        """Track a collection as recently-used, whether or not it becomes the current one."""
+        try:
+            collection_path = Path(path)
+        except Exception:
+            return
+        collection_str = str(collection_path)
+        recents = []
+        for p in getattr(self, "recent_collections", []) or []:
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() == collection_path.resolve():
+                    continue
+            except Exception:
+                if p == collection_str:
+                    continue
+            recents.append(p)
+        recents.insert(0, collection_str)
+        self.recent_collections = recents[:RECENT_COLLECTION_LIMIT]
+        try:
+            self.config["recent_collections"] = self.recent_collections
+            save_config(self.config)
+        except Exception:
+            pass
+        refresh = getattr(self, "_refresh_recent_collections_menu", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
+    def _clear_recent_collections(self):
+        self.recent_collections = []
+        try:
+            self.config["recent_collections"] = []
+            save_config(self.config)
+        except Exception:
+            pass
+        refresh = getattr(self, "_refresh_recent_collections_menu", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
 
     def _clear_recent_dirs(self):
         return self.recent_files_controller._clear_recent_dirs()
