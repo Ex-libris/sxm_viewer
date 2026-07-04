@@ -38,6 +38,7 @@ from ..config import (
     save_config,
     load_header_cache,
     save_header_cache,
+    load_collections_index,
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
@@ -4320,6 +4321,41 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _notify_folder_collection_usage(self, folder):
+        """One-line awareness notice: does this folder already have files sorted into any
+        collection(s)? Not persistent, not clickable (the toast widget doesn't support click
+        targets) - just a nudge pointing at Browse Collections for the rest of the interaction."""
+        try:
+            folder_key = str(Path(folder))
+        except Exception:
+            folder_key = str(folder)
+        try:
+            index = load_collections_index()
+        except Exception:
+            return
+        folder_entry = index.get(folder_key)
+        if not folder_entry:
+            return
+        names = []
+        for coll_path in folder_entry.keys():
+            try:
+                names.append(self._collection_display_name(coll_path))
+            except Exception:
+                names.append(Path(coll_path).name)
+        if not names:
+            return
+        count = len(names)
+        label = "collection" if count == 1 else "collections"
+        shown = ", ".join(names[:3])
+        if count > 3:
+            shown += f" (+{count - 3} more)"
+        message = f"This folder has files in {count} {label}: {shown} - see Collections > Browse Collections..."
+        log_status(message)
+        try:
+            self._show_toast(message, duration_ms=6000, variant="default")
+        except Exception:
+            pass
+
     def _record_recent_collection(self, path):
         """Track a collection as recently-used, whether or not it becomes the current one."""
         try:
@@ -4652,6 +4688,10 @@ QLabel:hover {{
                 self._auto_detect_tags_for_folder()
             except Exception:
                 pass
+        try:
+            self._notify_folder_collection_usage(folder)
+        except Exception:
+            pass
         return result
 
     def load_files(self, files, folder_hint: Path | None = None, *, append: bool = False, refresh_spectros: bool = True):

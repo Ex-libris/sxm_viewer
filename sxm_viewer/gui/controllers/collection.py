@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
+from ...config import load_collections_index, save_collections_index
 from ...data.io import parse_header
 from ..viewer import loader as viewer_loader
 from ..viewer import measurement as viewer_measurement
@@ -1052,6 +1053,51 @@ class CollectionController:
         elif action == "collection_help":
             self.show_help()
 
+    def _record_folder_collection_usage(self, appended_items, collection_path: Path):
+        """Track, per browsed folder, which collections have files from it - lets a folder
+        surface "you already sorted some of this into X, Y" when revisited later. Only reference
+        items have a meaningfully reusable "folder"; legacy/baked-snapshot popup/crop items are
+        skipped.
+
+        Uses viewer.last_dir as the folder key rather than each item's own
+        Path(source_file).parent - for Nanonis-converted scans, the real file lives inside a
+        per-scan .sxmviewer_nanonis/<hash>/ cache subfolder, not the folder the user actually
+        browsed, so deriving the key from the file path directly would record the wrong,
+        internal-cache folder instead of the user-facing one.
+        """
+        try:
+            browsed_folder = str(Path(getattr(self.viewer, "last_dir", "") or ""))
+        except Exception:
+            browsed_folder = ""
+        by_folder = {}
+        for item in list(appended_items or []):
+            source_file = str((item or {}).get("source_file") or "").strip()
+            if not source_file:
+                continue
+            try:
+                source_path = Path(source_file)
+            except Exception:
+                continue
+            folder_key = browsed_folder or str(source_path.parent)
+            by_folder.setdefault(folder_key, []).append(
+                {
+                    "filename": source_path.name,
+                    "channel_index": item.get("channel_index"),
+                    "added_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                }
+            )
+        if not by_folder:
+            return
+        collection_key = str(collection_path)
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        index = load_collections_index()
+        for folder_key, new_items in by_folder.items():
+            folder_entry = index.setdefault(folder_key, {})
+            coll_entry = folder_entry.setdefault(collection_key, {"items": [], "last_used": now})
+            coll_entry["items"].extend(new_items)
+            coll_entry["last_used"] = now
+        save_collections_index(index)
+
     # ------------------------------------------------------------------
     def _save_items(self, items, *, source_summary: str, target=None):
         """Save items to a collection.
@@ -1144,6 +1190,10 @@ class CollectionController:
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
+            try:
+                self._record_folder_collection_usage(appended, collection_path)
+            except Exception:
+                pass
             try:
                 self.viewer._record_collection_dir(collection_path.parent)
             except Exception:

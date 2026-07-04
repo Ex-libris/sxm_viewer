@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import json
 
-from .config_defaults import CONFIG_PATH, HEADER_CACHE_PATH, HEADER_CACHE_VERSION
+from .config_defaults import (
+    CONFIG_PATH,
+    HEADER_CACHE_PATH,
+    HEADER_CACHE_VERSION,
+    COLLECTIONS_INDEX_PATH,
+    COLLECTIONS_INDEX_VERSION,
+)
 
 
 def load_config():
@@ -52,11 +58,38 @@ def save_header_cache(cache):
         pass
 
 
+def load_collections_index():
+    """Load the folder -> collections usage index (which collections reference files from which
+    folder). Global file, mirrors the header-cache pattern - avoids writing into user data
+    folders and keeps folder-keyed lookups simple."""
+    try:
+        s = COLLECTIONS_INDEX_PATH.read_text(encoding="utf-8")
+        data = json.loads(s)
+        if not isinstance(data, dict):
+            return {}
+        if data.get("_version") != COLLECTIONS_INDEX_VERSION:
+            return {}
+        return data.get("folders", {})
+    except Exception:
+        return {}
+
+
+def save_collections_index(index):
+    """Persist the folder -> collections usage index."""
+    try:
+        payload = {"_version": COLLECTIONS_INDEX_VERSION, "folders": index}
+        COLLECTIONS_INDEX_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 __all__ = [
     "load_config",
     "save_config",
     "load_header_cache",
     "save_header_cache",
+    "load_collections_index",
+    "save_collections_index",
 ]
 
 
