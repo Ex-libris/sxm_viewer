@@ -649,6 +649,12 @@ class CollectionController:
         """Forget the current default collection target for this app session."""
         self.viewer._collection_source = None
         self.viewer._current_collection_mode = None
+        record_cb = getattr(self.viewer, "_record_current_collection", None)
+        if callable(record_cb):
+            try:
+                record_cb(None, None)
+            except Exception:
+                pass
         self._clear_collection_undo_stack()
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
@@ -935,6 +941,12 @@ class CollectionController:
         except Exception:
             pass
         self.viewer._current_collection_mode = str(mode or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
+        record_cb = getattr(self.viewer, "_record_current_collection", None)
+        if callable(record_cb):
+            try:
+                record_cb(self.viewer._collection_source, self.viewer._current_collection_mode)
+            except Exception:
+                pass
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
             try:

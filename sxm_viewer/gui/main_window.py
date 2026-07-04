@@ -516,8 +516,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_crop_template_overlay = False
         self.show_crop_history_overlay = True
         self._collection_item_snapshots = {}
-        self._collection_source = None
-        self._current_collection_mode = None
+        restored_collection_path = str(self.config.get("current_collection_path", "") or "").strip()
+        if restored_collection_path and Path(restored_collection_path).exists():
+            self._collection_source = restored_collection_path
+            self._current_collection_mode = str(self.config.get("current_collection_mode", "") or "") or "linked"
+        else:
+            self._collection_source = None
+            self._current_collection_mode = None
         self._workspace_kind = "folder"
         self._display_defaults = {
             'show_matrix_markers': True,
@@ -4304,6 +4309,14 @@ QLabel:hover {{
         self._last_collection_dir = folder_path
         self.config["last_collection_dir"] = str(folder_path)
         save_config(self.config)
+
+    def _record_current_collection(self, path, mode):
+        try:
+            self.config["current_collection_path"] = str(path) if path else ""
+            self.config["current_collection_mode"] = str(mode or "")
+            save_config(self.config)
+        except Exception:
+            pass
 
     def _clear_recent_dirs(self):
         return self.recent_files_controller._clear_recent_dirs()
