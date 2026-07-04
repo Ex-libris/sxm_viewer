@@ -474,6 +474,26 @@ class SvgBond:
 class SvgMoleculeOverlay:
     """Editable 2D molecule overlay parsed from text-based chemistry formats."""
 
+    # Display/style fields only (no geometry/identity) - the single source
+    # of truth for "what counts as style" used by both the defaults-for-new-
+    # molecules mechanism and the save/load style preset feature, so the two
+    # can't silently drift apart from the Style dialog's actual fields.
+    STYLE_FIELDS = (
+        "atom_color_mode", "flat_atom_color",
+        "label_font_scale", "high_contrast_labels",
+        "show_bond_order", "show_bond_length_labels",
+        "bond_color_mode", "bond_colormap", "bond_qualitative_cmap",
+        "show_legend",
+    )
+
+    def get_style_dict(self) -> dict:
+        return {name: getattr(self, name) for name in self.STYLE_FIELDS}
+
+    def apply_style_dict(self, style: dict) -> None:
+        for name in self.STYLE_FIELDS:
+            if name in (style or {}):
+                setattr(self, name, style[name])
+
     def __init__(self, filepath=None):
         self.filepath = str(filepath) if filepath else None
         self.name = Path(str(filepath)).stem if filepath else "2D Structure"
@@ -483,8 +503,38 @@ class SvgMoleculeOverlay:
         self.source_median_bond_length = 1.0
         self.edit_mode = False
         self.source_format = "svg"
-        self.show_bond_length_labels = True
-        self.color_bonds_by_length = False
+        # Off by default: a label on every single bond is the dominant
+        # source of visual clutter on anything bigger than a handful of
+        # atoms. Still user-toggleable via the Style dialog.
+        self.show_bond_length_labels = False
+        # Bond coloring: "uniform" (default), "length_continuous" (a
+        # sequential/diverging colormap over length deviation from
+        # reference), "length_binned" (discrete short/normal/long
+        # categories via a qualitative colormap), or "bond_order" (color by
+        # single/double/triple, qualitative colormap). Colormap names are
+        # real matplotlib colormaps, user-selectable via the Style dialog.
+        self.bond_color_mode = "uniform"
+        self.bond_colormap = "coolwarm"
+        self.bond_qualitative_cmap = "Set2"
+        # User-controllable style, exposed via the Style dialog rather than
+        # hardcoded, since font/color needs vary by figure use (screen
+        # review vs. publication) and by user (colorblind-safe palettes,
+        # larger text for readability).
+        self.atom_color_mode = "cpk"  # one of available_atom_palettes(), or "flat"
+        self.flat_atom_color = "#f7fafc"
+        self.label_font_scale = 1.0
+        self.high_contrast_labels = False
+        # Off by default: bond order (double/triple bonds) reflects the
+        # *source file's* assumed structure (often a gas-phase reference),
+        # which is not necessarily what a molecule adsorbed on a surface
+        # actually looks like - bonding and aromaticity can be altered by
+        # the surface. Rendering it as fact by default would overstate what
+        # is actually known/measured, so this is opt-in.
+        self.show_bond_order = False
+        # Off by default (no clutter until asked for); draws a small key
+        # explaining what the current bond-coloring colors/categories mean,
+        # useful for readers of a figure who don't know this app's colors.
+        self.show_legend = False
         if filepath:
             loaded = self.from_file(filepath)
             self.__dict__.update(loaded.__dict__)
@@ -501,7 +551,15 @@ class SvgMoleculeOverlay:
             "edit_mode": bool(self.edit_mode),
             "source_format": str(self.source_format or "svg"),
             "show_bond_length_labels": bool(self.show_bond_length_labels),
-            "color_bonds_by_length": bool(self.color_bonds_by_length),
+            "bond_color_mode": str(getattr(self, "bond_color_mode", "uniform") or "uniform"),
+            "bond_colormap": str(getattr(self, "bond_colormap", "coolwarm") or "coolwarm"),
+            "bond_qualitative_cmap": str(getattr(self, "bond_qualitative_cmap", "Set2") or "Set2"),
+            "atom_color_mode": str(getattr(self, "atom_color_mode", "cpk") or "cpk"),
+            "flat_atom_color": str(getattr(self, "flat_atom_color", "#f7fafc") or "#f7fafc"),
+            "label_font_scale": float(getattr(self, "label_font_scale", 1.0) or 1.0),
+            "high_contrast_labels": bool(getattr(self, "high_contrast_labels", False)),
+            "show_bond_order": bool(getattr(self, "show_bond_order", False)),
+            "show_legend": bool(getattr(self, "show_legend", False)),
         }
 
     @classmethod
@@ -516,7 +574,20 @@ class SvgMoleculeOverlay:
         obj.edit_mode = bool((data or {}).get("edit_mode", False))
         obj.source_format = str((data or {}).get("source_format") or "svg")
         obj.show_bond_length_labels = bool((data or {}).get("show_bond_length_labels", True))
-        obj.color_bonds_by_length = bool((data or {}).get("color_bonds_by_length", False))
+        if "bond_color_mode" in (data or {}):
+            obj.bond_color_mode = str((data or {}).get("bond_color_mode") or "uniform")
+        else:
+            # Migrate pre-existing saved sessions that only had the old
+            # boolean toggle.
+            obj.bond_color_mode = "length_continuous" if bool((data or {}).get("color_bonds_by_length", False)) else "uniform"
+        obj.bond_colormap = str((data or {}).get("bond_colormap") or "coolwarm")
+        obj.bond_qualitative_cmap = str((data or {}).get("bond_qualitative_cmap") or "Set2")
+        obj.atom_color_mode = str((data or {}).get("atom_color_mode") or "cpk")
+        obj.flat_atom_color = str((data or {}).get("flat_atom_color") or "#f7fafc")
+        obj.label_font_scale = float((data or {}).get("label_font_scale", 1.0) or 1.0)
+        obj.high_contrast_labels = bool((data or {}).get("high_contrast_labels", False))
+        obj.show_bond_order = bool((data or {}).get("show_bond_order", False))
+        obj.show_legend = bool((data or {}).get("show_legend", False))
         return obj
 
     @classmethod
