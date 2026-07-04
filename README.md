@@ -1,3 +1,12 @@
+### 2026-07-04 UPDATES (performance pass)
+A round of work aimed at the two things that show up most during everyday use: browsing thumbnails/previews and loading a folder for the first time.
+
+- clicking between thumbnails and previews is noticeably snappier - removed several redundant full-canvas re-renders that used to happen on every click
+- fixed a couple of display glitches introduced while chasing that speed-up (an accumulating scale bar, and image/axis misalignment when switching between very differently-sized scans)
+- loading a folder you've never opened before is roughly 4-5x faster for Nanonis `.sxm` conversion, now parallelized across CPU cores with verified byte-identical output
+- fixed a few accidentally-quadratic slow paths in spectroscopy loading (matching spectra to the right image, building per-spectrum metadata) - up to ~60x faster in the worst cases
+- the on-disk header cache no longer grows without bound across every folder you've ever opened
+
 ### 2026-05-07 UPDATES (talking with Kelvin's group)
 Nanonis support has been updated with a focus on faster scan loading and reloads:
 
