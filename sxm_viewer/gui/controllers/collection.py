@@ -442,9 +442,33 @@ class CollectionController:
                 pass
         return Path(getattr(self.viewer, "last_dir", "."))
 
-    def current_collection_item_count(self):
-        """Cheap item count for the current collection, for UI labels - no icon building."""
-        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+    def collection_summary(self, collection_path):
+        """Lightweight {item_count, updated_at, exists} summary for an arbitrary collection path,
+        used by the Browse Collections preview panel - no icon building, no viewer state touched."""
+        try:
+            path = Path(collection_path)
+        except Exception:
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+        if not path.exists():
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if str(payload.get("kind") or "") != self.KIND:
+                return {"exists": False, "item_count": 0, "updated_at": ""}
+            return {
+                "exists": True,
+                "item_count": len(payload.get("items") or []),
+                "updated_at": str(payload.get("updated_at") or ""),
+            }
+        except Exception:
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+
+    def current_collection_item_count(self, collection_path=None):
+        """Cheap item count for a collection, for UI labels - no icon building. Defaults to the
+        current collection when collection_path is omitted; pass an explicit path to preview
+        an arbitrary, non-current collection (e.g. from the Browse Collections dialog)."""
+        current = str(collection_path or getattr(self.viewer, "_collection_source", "") or "").strip()
         if not current:
             return None
         path = Path(current)
@@ -856,6 +880,12 @@ class CollectionController:
         )
         if not path:
             return
+        self.choose_current_collection_for(path)
+
+    def choose_current_collection_for(self, path, *, show_message: bool = True):
+        """Set an already-known collection path as the current append target - shared by the
+        blind file-picker flow above and the Browse Collections preview dialog's "Set as Current
+        Collection" button."""
         collection_path = _normalize_collection_path(path)
         already_exists = collection_path.exists()
         mode = "linked"
@@ -874,6 +904,8 @@ class CollectionController:
             pass
         self._clear_collection_undo_stack()
         self._remember_current_collection(collection_path, mode=mode)
+        if not show_message:
+            return
         if already_exists:
             message = (
                 f"Current collection set to:\n{collection_path}\n\n"
@@ -1495,9 +1527,11 @@ class CollectionController:
                 return text
         return ""
 
-    def tray_entries_for_current_collection(self, *, icon_size: int = 72):
-        """Build lightweight visual summaries for the collection tray in the main window."""
-        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+    def tray_entries_for_current_collection(self, *, icon_size: int = 72, collection_path=None):
+        """Build lightweight visual summaries for a collection (defaults to the current one).
+        Pass collection_path to preview an arbitrary, non-current collection (e.g. from the
+        Browse Collections dialog) without touching viewer state."""
+        current = str(collection_path or getattr(self.viewer, "_collection_source", "") or "").strip()
         if not current:
             return []
         path = Path(current)
