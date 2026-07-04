@@ -1,42 +1,37 @@
 # Outline Extraction
 
-Outline tools are used to define and edit extracted shape information directly on the image canvas.
+Outline extraction automatically traces the boundary of a prominent feature inside a region you select - it does not require manually tracing along an edge.
 
 ---
 
-## What this tool is for
+## Creating an outline
 
-Use outline extraction when you want a reusable contour-like overlay rather than a simple line or crop box.
+**Alt+drag** a rectangle on the preview or a pop-out around the feature you want outlined. The tool automatically finds the brightest/most prominent connected region inside that rectangle (using an intensity threshold with morphological clean-up) and extracts its boundary as a contour overlay.
 
-Typical uses include:
-
-- tracing a visible feature boundary
-- refining a previously extracted outline
-- preserving the result as part of the analysed image state
+Because the segmentation is automatic, the result depends on how tightly the rectangle is drawn around the feature - a tighter selection around just the feature of interest generally gives a cleaner outline than a loose one that includes surrounding background.
 
 ---
 
-## Interaction model
+## Editing outlines
 
-Outlines are part of the canvas editing workflow, so they follow the same general principles as other analysis tools:
+Right-click an existing outline for:
 
-- they are edited on the preview or pop-out image canvas
-- they participate in undo with ++ctrl+z++
-- they can be preserved through saved state workflows
+- **Change color...**
+- **Line width** (several presets)
+- **Line style** (solid, dashed, dotted, dense dash)
+- **Undo last outline** - removes only the most recently added outline
+- **Clear outlines** - removes every outline on the current view
 
-The project history also notes a dedicated fallback/undo path for outline edits, which is one reason they behave consistently with other canvas tools.
+Outline hit-testing is pixel-based and forgiving, so you don't need to click exactly on the thin contour line to select it.
 
----
-
-## Precision and selection
-
-Recent changes improved outline hit-testing so right-click detection uses a more forgiving pixel-based test. That makes existing outlines easier to select and manipulate without requiring an exact click on a thin line.
+!!! note "Two different undo mechanisms"
+    **Undo last outline** (in the right-click menu) is a dedicated, outline-only undo stack. The general ++ctrl+z++ canvas undo also covers outline add/clear/style actions, but as part of the same shared stack used by filters, crops, and other edits - so Ctrl+Z may undo something else first if you've made other changes since adding the outline.
 
 ---
 
 ## Saving and restoring
 
-Outline state is intended to survive the same workflows as other canvas-side analysis data, including session save/load and virtual-copy style workflows when the full image state is preserved.
+Outline state is preserved through session save/load and virtual-copy workflows, the same as other canvas-side analysis state.
 
 ---
 

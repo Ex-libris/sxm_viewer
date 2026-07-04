@@ -99,11 +99,18 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_menu = QtWidgets.QMenu(viewer.toolbar_collection_btn)
     viewer.toolbar_collection_current_path_act = viewer.toolbar_collection_menu.addAction("Current collection: none")
     viewer.toolbar_collection_current_path_act.setEnabled(False)
-    viewer.toolbar_collection_menu.addAction("Choose Current Collection...", viewer.on_choose_current_collection)
+    viewer.toolbar_collection_menu.addAction("Create a Collection...", viewer.on_create_collection)
+    viewer.toolbar_collection_menu.addAction("Open a Collection...", viewer.on_browse_collections)
     viewer.toolbar_collection_clear_target_act = viewer.toolbar_collection_menu.addAction("Clear Current Collection Target", viewer.on_clear_current_collection)
     viewer.toolbar_collection_menu.addSeparator()
-    viewer.toolbar_collection_menu.addAction("Open Collection...", viewer.on_open_collection)
+    viewer.toolbar_recent_collections_menu = viewer.toolbar_collection_menu.addMenu("Recent Collections")
     viewer.toolbar_collection_menu.addAction("Show Collection Tray", viewer.on_show_collection_tray)
+    viewer.toolbar_collection_add_selected_act = viewer.toolbar_collection_menu.addAction(
+        "Add Selected Thumbnails...", viewer.on_add_selected_thumbnails_to_collection
+    )
+    viewer.toolbar_collection_add_selected_to_act = viewer.toolbar_collection_menu.addAction(
+        "Add Selected Thumbnails to...", viewer.on_add_selected_thumbnails_to_collection_picker
+    )
     viewer.toolbar_collection_menu.addAction("Add Current Preview...", viewer.on_add_current_preview_to_collection)
     viewer.toolbar_collection_menu.addAction("Add Active Pop-up...", viewer.on_add_active_popup_to_collection)
     viewer.toolbar_collection_menu.addAction("Add All Open Pop-ups...", viewer.on_add_all_popups_to_collection)
@@ -111,6 +118,7 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("What Is a Collection?", viewer.on_collection_help)
     viewer.toolbar_collection_btn.setMenu(viewer.toolbar_collection_menu)
+    viewer.toolbar_collection_menu.aboutToShow.connect(viewer._refresh_collection_toolbar_menu_labels)
     toolbar.addWidget(viewer.toolbar_collection_btn)
     try:
         viewer._refresh_collection_ui()

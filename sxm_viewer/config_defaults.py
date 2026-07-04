@@ -6,6 +6,8 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / ".sxm_viewer_config.json"
 HEADER_CACHE_PATH = Path.home() / ".sxm_viewer_header_cache.json"
 HEADER_CACHE_VERSION = 2
+COLLECTIONS_INDEX_PATH = Path.home() / ".sxm_viewer_collections_index.json"
+COLLECTIONS_INDEX_VERSION = 1
 CH_EQUALITY_TOL_NM = 0.001    # 1 pm tolerance for "flat" topo samples
 CH_SAMPLE_POINTS = 16         # number of points to probe when classifying CH/CC
 CHANNEL_DATA_CACHE_LIMIT = 24  # max channel arrays cached in-memory
@@ -16,6 +18,8 @@ __all__ = [
     "CONFIG_PATH",
     "HEADER_CACHE_PATH",
     "HEADER_CACHE_VERSION",
+    "COLLECTIONS_INDEX_PATH",
+    "COLLECTIONS_INDEX_VERSION",
     "CH_EQUALITY_TOL_NM",
     "CH_SAMPLE_POINTS",
     "CHANNEL_DATA_CACHE_LIMIT",

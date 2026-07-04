@@ -15,8 +15,12 @@ A complete reference of the main keyboard shortcuts in SXM Viewer.
 | ++ctrl+s++ | Save current session (prompts once if no session file exists yet) |
 | ++ctrl+a++ | Select all visible thumbnails |
 | ++ctrl+c++ | Copy selected thumbnails as PNG files |
+| ++ctrl+d++ | Duplicate the active preview pop-out |
 | ++ctrl+shift+p++ | Bring all pop-outs to front |
 | ++ctrl+shift+m++ | Minimize all pop-outs |
+| ++ctrl+b++ | Switch to Browse mode |
+| ++ctrl+m++ | Switch to Measure mode |
+| ++ctrl+alt+s++ | Switch to Spectroscopy mode |
 
 ---
 
@@ -29,6 +33,7 @@ A complete reference of the main keyboard shortcuts in SXM Viewer.
 | Ctrl+Click | Add or remove a single thumbnail from selection |
 | Drag | Rubber-band multi-selection |
 | Double-click | Open image as a pop-out |
+| ++ctrl++ + scroll wheel | Resize thumbnails |
 
 ---
 
@@ -64,6 +69,9 @@ A complete reference of the main keyboard shortcuts in SXM Viewer.
 | ++ctrl++ + ++shift++ + drag | Rotate in X/Y |
 | Middle-button drag | Rotate in X/Y |
 | ++shift+r++ | Reset selected molecule to file state |
+| ++ctrl+z++ | Undo last molecule change |
+| ++ctrl+d++ | Duplicate selected molecule |
+| ++delete++ | Delete selected molecule |
 
 ---
 
@@ -80,6 +88,9 @@ A complete reference of the main keyboard shortcuts in SXM Viewer.
 | ++ctrl++ + drag body | Rotate crop frame (alternative) |
 | ++enter++ | Apply crop while editing |
 | ++ctrl+e++ | Exit crop-template edit mode |
+| ++ctrl+shift+r++ | Reapply the real-size crop template |
+| ++ctrl+shift+t++ | Toggle the crop-template overlay |
+| ++ctrl+shift+w++ | Close the latest quick-crop pop-out |
 
 ---
 
@@ -96,6 +107,49 @@ A complete reference of the main keyboard shortcuts in SXM Viewer.
 | ++r++ | Toggle precision mode |
 | ++a++ | Show or hide advanced controls |
 | ++delete++ / ++backspace++ | Delete selected overlay |
+
+---
+
+## Spectroscopy comparison dialog
+
+| Shortcut | Action |
+|---|---|
+| ++f++ | Fit selected traces |
+| ++ctrl+e++ | Export fit results as CSV |
+| ++ctrl+a++ | Select all traces |
+| ++ctrl+shift+a++ | Invert selection |
+| ++delete++ | Clear selected traces |
+| ++ctrl+delete++ | Clear all traces |
+| ++ctrl+z++ | Undo |
+| ++ctrl++ + scroll wheel | Scale font size |
+
+---
+
+## Publication canvas
+
+| Shortcut or gesture | Action |
+|---|---|
+| Rubber-band drag (empty space) | Select multiple tiles |
+| Drag (empty space) | Pan the canvas |
+| ++ctrl++ + scroll wheel | Zoom |
+| Arrow keys | Nudge selected tile(s) |
+| ++shift++ + arrow keys | Nudge in larger (10px) steps |
+| ++ctrl+a++ | Select all tiles |
+| ++esc++ | Clear selection |
+| ++delete++ / ++backspace++ | Delete selected tile(s) |
+| ++ctrl+z++ / ++ctrl+y++ | Undo / redo |
+| ++alt++ + drag tile | Duplicate tile |
+
+---
+
+## Minimap
+
+| Gesture | Action |
+|---|---|
+| Click a frame | Load it into the main preview |
+| ++shift++ + click a frame | Hide that frame from the layout |
+| Scroll wheel | Zoom, centered on the cursor |
+| Middle-drag or right-drag | Pan |
 
 ---
 

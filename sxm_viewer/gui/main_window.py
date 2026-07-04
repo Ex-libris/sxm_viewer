@@ -38,6 +38,7 @@ from ..config import (
     save_config,
     load_header_cache,
     save_header_cache,
+    load_collections_index,
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
@@ -59,6 +60,7 @@ from ..utils.units import (
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, robust_limits
 from .minimap import FrameMiniMap
 from .workers.batch_export import BatchExportSignals, BatchExportWorker
+from .dialogs.collection_browser import CollectionBrowserDialog
 from .dialogs.image_adjust import ImageAdjustDialog, ImageAdjustPreviewPanel
 from .dialogs.matrix_fit import MatrixFitDialog, MatrixFitWorker
 from .dialogs.profile_dialog import ProfileDialog
@@ -75,7 +77,7 @@ from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
-from .controllers.collection import CollectionController
+from .controllers.collection import CollectionController, RECENT_COLLECTION_LIMIT
 from .controllers.thumbnail_controller import ThumbnailController
 from .controllers.spectro_compare import SpectroCompareController
 from .controllers.session import SessionController
@@ -396,6 +398,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._last_collection_dir = Path(last_collection_dir) if last_collection_dir else Path(self.last_dir)
         except Exception:
             self._last_collection_dir = Path(self.last_dir)
+        self.recent_collections = list(self.config.get("recent_collections", []) or [])
         config_changed = False
         if "session_recovery_enabled" not in self.config:
             self.config["session_recovery_enabled"] = True
@@ -516,8 +519,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.show_crop_template_overlay = False
         self.show_crop_history_overlay = True
         self._collection_item_snapshots = {}
-        self._collection_source = None
-        self._current_collection_mode = None
+        restored_collection_path = str(self.config.get("current_collection_path", "") or "").strip()
+        if restored_collection_path and Path(restored_collection_path).exists():
+            self._collection_source = restored_collection_path
+            self._current_collection_mode = str(self.config.get("current_collection_mode", "") or "") or "linked"
+        else:
+            self._collection_source = None
+            self._current_collection_mode = None
         self._workspace_kind = "folder"
         self._display_defaults = {
             'show_matrix_markers': True,
@@ -4305,6 +4313,95 @@ QLabel:hover {{
         self.config["last_collection_dir"] = str(folder_path)
         save_config(self.config)
 
+    def _record_current_collection(self, path, mode):
+        try:
+            self.config["current_collection_path"] = str(path) if path else ""
+            self.config["current_collection_mode"] = str(mode or "")
+            save_config(self.config)
+        except Exception:
+            pass
+
+    def _notify_folder_collection_usage(self, folder):
+        """One-line awareness notice: does this folder already have files sorted into any
+        collection(s)? Not persistent, not clickable (the toast widget doesn't support click
+        targets) - just a nudge pointing at Browse Collections for the rest of the interaction."""
+        try:
+            folder_key = str(Path(folder))
+        except Exception:
+            folder_key = str(folder)
+        try:
+            index = load_collections_index()
+        except Exception:
+            return
+        folder_entry = index.get(folder_key)
+        if not folder_entry:
+            return
+        names = []
+        for coll_path in folder_entry.keys():
+            try:
+                names.append(self._collection_display_name(coll_path))
+            except Exception:
+                names.append(Path(coll_path).name)
+        if not names:
+            return
+        count = len(names)
+        label = "collection" if count == 1 else "collections"
+        shown = ", ".join(names[:3])
+        if count > 3:
+            shown += f" (+{count - 3} more)"
+        message = f"This folder has files in {count} {label}: {shown} - see Collections > Open a Collection..."
+        log_status(message)
+        try:
+            self._show_toast(message, duration_ms=6000, variant="default")
+        except Exception:
+            pass
+
+    def _record_recent_collection(self, path):
+        """Track a collection as recently-used, whether or not it becomes the current one."""
+        try:
+            collection_path = Path(path)
+        except Exception:
+            return
+        collection_str = str(collection_path)
+        recents = []
+        for p in getattr(self, "recent_collections", []) or []:
+            if not p:
+                continue
+            try:
+                if Path(p).resolve() == collection_path.resolve():
+                    continue
+            except Exception:
+                if p == collection_str:
+                    continue
+            recents.append(p)
+        recents.insert(0, collection_str)
+        self.recent_collections = recents[:RECENT_COLLECTION_LIMIT]
+        try:
+            self.config["recent_collections"] = self.recent_collections
+            save_config(self.config)
+        except Exception:
+            pass
+        refresh = getattr(self, "_refresh_recent_collections_menu", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
+    def _clear_recent_collections(self):
+        self.recent_collections = []
+        try:
+            self.config["recent_collections"] = []
+            save_config(self.config)
+        except Exception:
+            pass
+        refresh = getattr(self, "_refresh_recent_collections_menu", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                pass
+
     def _clear_recent_dirs(self):
         return self.recent_files_controller._clear_recent_dirs()
 
@@ -4591,6 +4688,10 @@ QLabel:hover {{
                 self._auto_detect_tags_for_folder()
             except Exception:
                 pass
+        try:
+            self._notify_folder_collection_usage(folder)
+        except Exception:
+            pass
         return result
 
     def load_files(self, files, folder_hint: Path | None = None, *, append: bool = False, refresh_spectros: bool = True):
@@ -6595,6 +6696,24 @@ QLabel:hover {{
         self.collection_controller.load_collection()
         self.show_collection_tray(activate=False)
 
+    def on_browse_collections(self):
+        """Preview a collection's contents before setting it as current or opening it - merges
+        the previous blind Choose/Open pickers into one dialog with a live preview."""
+        dlg = CollectionBrowserDialog(
+            self,
+            collection_controller=self.collection_controller,
+            recent_collections=getattr(self, "recent_collections", []),
+            default_dir=self.collection_controller._collection_dialog_start_dir(),
+        )
+        dlg.exec_()
+        self.show_collection_tray(activate=False)
+
+    def on_create_collection(self):
+        """Start a brand-new collection - a separate, plainly-named action from opening an
+        existing one."""
+        self.collection_controller.create_collection()
+        self.show_collection_tray(activate=False)
+
     def on_collection_help(self):
         """Explain linked vs portable collections and how they are intended to be used."""
         self.collection_controller.show_help()
@@ -6646,6 +6765,22 @@ QLabel:hover {{
         self._refresh_collection_tray()
         self.show_collection_tray(activate=False)
 
+    def on_add_selected_thumbnails_to_collection_picker(self):
+        """Route the current thumbnail selection to a collection picked just for this batch -
+        does not change the current-collection target, so a different selection can go to a
+        different collection right after without any global re-targeting."""
+        targets = list(self._ordered_thumbnail_selection() or [])
+        if not targets:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Collections",
+                "Select one or more thumbnails first, then use this action.",
+            )
+            return
+        channel_idx = int(self.channel_dropdown.currentIndex() or 0)
+        entries = [{"file_path": str(path), "channel_index": channel_idx} for path in targets if path]
+        self.collection_controller.add_thumbnail_entries_to(entries)
+
     def show_collection_tray(self, activate=True):
         window = getattr(self, "collection_tray_window", None)
         if window is None:
@@ -6658,17 +6793,39 @@ QLabel:hover {{
         except Exception:
             pass
 
+    @staticmethod
+    def _collection_display_name(path_str) -> str:
+        """Collection "name" the user sees is just its filename - strip the full
+        .sxmcoll.json double-suffix so it isn't stuck as e.g. "myset.sxmcoll"."""
+        try:
+            name = Path(path_str).name
+        except Exception:
+            return str(path_str)
+        if name.lower().endswith(".sxmcoll.json"):
+            return name[: -len(".sxmcoll.json")]
+        try:
+            return Path(path_str).stem
+        except Exception:
+            return name
+
     def _refresh_collection_ui(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
+        item_count = None
+        if current:
+            try:
+                item_count = self.collection_controller.current_collection_item_count()
+            except Exception:
+                item_count = None
+        count_suffix = f" ({item_count} item{'s' if item_count != 1 else ''})" if item_count is not None else ""
         short = current if current else "none"
         if len(short) > 96:
             short = "..." + short[-93:]
-        text = f"Current collection: {short}"
+        text = f"Current collection: {short}{count_suffix}"
         tooltip = current or "No current collection selected. Add actions will ask for a collection file."
         button_text = "Collections"
         if current:
             try:
-                button_text = f"Collection: {Path(current).stem}"
+                button_text = f"Collection: {self._collection_display_name(current)}{count_suffix}"
             except Exception:
                 button_text = "Collection: active"
         for attr in ("collection_current_path_act", "toolbar_collection_current_path_act"):
@@ -6700,6 +6857,86 @@ QLabel:hover {{
         except Exception:
             pass
 
+    def _refresh_collection_toolbar_menu_labels(self):
+        """Update the toolbar's selection-dependent 'Add Selected Thumbnails' entries with the
+        live selection count - connected to the Collections menu's aboutToShow so it's always
+        current when opened."""
+        try:
+            selected = self._ordered_thumbnail_selection()
+        except Exception:
+            selected = []
+        count = len(selected)
+
+        act = getattr(self, "toolbar_collection_add_selected_act", None)
+        if act is not None:
+            try:
+                if count > 1:
+                    act.setText(f"Add Selected Thumbnails ({count})...")
+                    act.setEnabled(True)
+                    act.setToolTip("Add the currently selected thumbnails to the current collection as lightweight file references.")
+                elif count == 1:
+                    act.setText("Add Selected Thumbnail...")
+                    act.setEnabled(True)
+                    act.setToolTip("Add the currently selected thumbnail to the current collection as a lightweight file reference.")
+                else:
+                    act.setText("Add Selected Thumbnails...")
+                    act.setEnabled(False)
+                    act.setToolTip("Select one or more thumbnails first, then use this action.")
+            except Exception:
+                pass
+
+        act_to = getattr(self, "toolbar_collection_add_selected_to_act", None)
+        if act_to is not None:
+            try:
+                if count > 1:
+                    act_to.setText(f"Add Selected Thumbnails ({count}) to...")
+                    act_to.setEnabled(True)
+                    act_to.setToolTip(
+                        "Route the currently selected thumbnails to a collection you pick now - "
+                        "does not change your current collection target."
+                    )
+                elif count == 1:
+                    act_to.setText("Add Selected Thumbnail to...")
+                    act_to.setEnabled(True)
+                    act_to.setToolTip(
+                        "Route the currently selected thumbnail to a collection you pick now - "
+                        "does not change your current collection target."
+                    )
+                else:
+                    act_to.setText("Add Selected Thumbnails to...")
+                    act_to.setEnabled(False)
+                    act_to.setToolTip("Select one or more thumbnails first, then use this action.")
+            except Exception:
+                pass
+
+        self._refresh_recent_collections_menu()
+
+    def _refresh_recent_collections_menu(self):
+        """Populate the toolbar's 'Recent Collections' submenu - clicking an entry opens it
+        (fully replaces the workspace), matching the existing recent-folder/recent-session
+        behavior. Use 'Open a Collection...' (via the browser dialog's "Set as Current
+        Collection" button) if you only want to change the append target without loading."""
+        menu = getattr(self, "toolbar_recent_collections_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        recents = list(getattr(self, "recent_collections", []) or [])
+        if not recents:
+            act = menu.addAction("No recent collections")
+            act.setEnabled(False)
+            return
+        for path in recents:
+            try:
+                label = self._collection_display_name(path)
+            except Exception:
+                label = path
+            act = menu.addAction(label)
+            act.setToolTip(f"Open {path} (replaces your current workspace)")
+            act.triggered.connect(lambda checked=False, p=path: self.collection_controller.load_collection(Path(p)))
+        menu.addSeparator()
+        clear_act = menu.addAction("Clear Recent Collections")
+        clear_act.triggered.connect(self._clear_recent_collections)
+
     def _refresh_collection_tray(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
         group = getattr(self, "collection_group", None)
@@ -6710,7 +6947,7 @@ QLabel:hover {{
         tray.clear()
         if window is not None:
             try:
-                window.setWindowTitle("Collection Tray" if not current else f"Collection Tray - {Path(current).stem}")
+                window.setWindowTitle("Collection Tray" if not current else f"Collection Tray - {self._collection_display_name(current)}")
             except Exception:
                 pass
         if not current:
@@ -9212,30 +9449,53 @@ QLabel:hover {{
 
         menu.addSeparator()
         collection_menu = menu.addMenu("Collections")
-        show_tray_act = QtWidgets.QAction("Show collection tray", collection_menu)
+        show_tray_act = QtWidgets.QAction("Show Collection Tray", collection_menu)
         show_tray_act.triggered.connect(self.on_show_collection_tray)
         collection_menu.addAction(show_tray_act)
-        add_selected_collection_act = QtWidgets.QAction("Add selected thumbnails to collection", collection_menu)
+        selected_count = len([p for p in targets if p])
+        add_label = (
+            f"Add Selected Thumbnails ({selected_count})..." if selected_count > 1
+            else "Add Selected Thumbnail..." if selected_count == 1
+            else "Add Selected Thumbnails..."
+        )
+        add_selected_collection_act = QtWidgets.QAction(add_label, collection_menu)
+        add_selected_collection_act.setEnabled(selected_count > 0)
         add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
         collection_menu.addAction(add_selected_collection_act)
-        remove_selected_collection_act = QtWidgets.QAction("Remove selected thumbnails from collection", collection_menu)
+        add_label_to = (
+            f"Add Selected Thumbnails ({selected_count}) to..." if selected_count > 1
+            else "Add Selected Thumbnail to..." if selected_count == 1
+            else "Add Selected Thumbnails to..."
+        )
+        add_selected_collection_to_act = QtWidgets.QAction(add_label_to, collection_menu)
+        add_selected_collection_to_act.setEnabled(selected_count > 0)
+        add_selected_collection_to_act.setToolTip(
+            "Route the selected thumbnail(s) to a collection you pick now - does not change your "
+            "current collection target."
+            if selected_count > 0 else "Select one or more thumbnails first, then use this action."
+        )
+        add_selected_collection_to_act.triggered.connect(self.on_add_selected_thumbnails_to_collection_picker)
+        collection_menu.addAction(add_selected_collection_to_act)
+        remove_selected_collection_act = QtWidgets.QAction("Remove Selected Thumbnails from Collection", collection_menu)
         remove_selected_collection_act.triggered.connect(
             lambda: self.collection_controller.remove_thumbnail_entries(
                 [{"file_path": str(path), "channel_index": int(self.channel_dropdown.currentIndex() or 0)} for path in targets if path]
             )
         )
-        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)))
+        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)) and selected_count > 0)
         collection_menu.addAction(remove_selected_collection_act)
-        choose_collection_act = QtWidgets.QAction("Choose current collection...", collection_menu)
-        choose_collection_act.triggered.connect(self.on_choose_current_collection)
-        collection_menu.addAction(choose_collection_act)
-        open_collection_act = QtWidgets.QAction("Open collection...", collection_menu)
-        open_collection_act.triggered.connect(self.on_open_collection)
+        create_collection_act = QtWidgets.QAction("Create a Collection...", collection_menu)
+        create_collection_act.triggered.connect(self.on_create_collection)
+        collection_menu.addAction(create_collection_act)
+        open_collection_act = QtWidgets.QAction("Open a Collection...", collection_menu)
+        open_collection_act.triggered.connect(self.on_browse_collections)
         collection_menu.addAction(open_collection_act)
-        clear_target_act = QtWidgets.QAction("Clear current collection target", collection_menu)
+        clear_target_act = QtWidgets.QAction("Clear Current Collection Target", collection_menu)
         clear_target_act.triggered.connect(self.on_clear_current_collection)
         collection_menu.addAction(clear_target_act)
-        if not getattr(self, "_collection_source", None):
+        if selected_count == 0:
+            add_selected_collection_act.setToolTip("Select one or more thumbnails first, then use this action.")
+        elif not getattr(self, "_collection_source", None):
             add_selected_collection_act.setToolTip(
                 "Choose or open a collection first, or use this action to create one when prompted."
             )

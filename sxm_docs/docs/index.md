@@ -1,6 +1,6 @@
 # SXM Viewer
 
-**SXM Viewer** is a scientific SPM (Scanning Probe Microscopy) data analysis tool tuned for data acquired with an Anfatec SXM controller running an Omicron Infinity microscope (tribus head, QPlus sensors at 8.6 K). It also supports MATRIX vendor files and Nanonis formats.
+**SXM Viewer** is a scientific SPM (Scanning Probe Microscopy) data analysis tool tuned for data acquired with an Anfatec SXM controller running an Omicron Infinity microscope (tribus head, QPlus sensors at 8.6 K). It also supports Nanonis `.sxm` files via a conversion adapter.
 
 ![Main menu overview](assets/screenshots/main-menu.png){ width="1100" }
 
@@ -10,11 +10,11 @@
 ## What it does
 
 - **Browse** large SPM data folders quickly via a thumbnail grid and minimap — no blocking on full renders.
-- **Analyse** images with profiles, angle measurements, cropping, filters, and A/B comparison.
-- **Visualise spectroscopy** — single traces, matrix scans, waterfall plots, and parabola fits — alongside your scan images.
-- **Overlay** molecular models, scale bars, and acquisition metadata directly on images.
-- **Export** publication-ready figures to PNG, SVG, PDF, and PowerPoint, or compose multi-image figure layouts in the built-in canvas.
-- **Save sessions and collections** so you can return exactly where you left off, or curate a cross-folder set of key images.
+- **Analyse** images with profiles, angle measurements, cropping, filters, drift correction, and A/B comparison.
+- **Visualise spectroscopy** — single traces, matrix scans, waterfall plots, and parabola/KPFM fits — alongside your scan images.
+- **Overlay** 3D and 2D molecular models, scale bars, and acquisition metadata directly on images.
+- **Export** publication-ready figures to PNG, SVG, PDF, and PowerPoint, animations from a scan sequence, or compose multi-image figure layouts in the built-in canvas.
+- **Save sessions (with autosave/recovery) and collections** so you can return exactly where you left off, or curate a cross-folder set of key images.
 
 ---
 

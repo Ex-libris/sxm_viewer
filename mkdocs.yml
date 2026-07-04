@@ -60,6 +60,7 @@ nav:
     - Angle Measurements: image-analysis/angles.md
     - Filters & Processing: image-analysis/filters.md
     - Image Comparison (A/B): image-analysis/compare.md
+    - Drift Correction & Animation: image-analysis/drift-and-animation.md
     - Molecule Overlays: image-analysis/molecules.md
     - Outline Extraction: image-analysis/outlines.md
     - Histogram & Contrast: image-analysis/histogram.md

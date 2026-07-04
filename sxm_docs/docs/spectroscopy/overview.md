@@ -24,16 +24,27 @@ Right-click a spectroscopy thumbnail -> **Miniature channel** to choose which ch
 | Drag | Rubber-band selection |
 | Double-click | Open spectroscopy popup |
 
+### Right-click actions
+
+Right-clicking a spectroscopy thumbnail exposes more than just channel selection: **Open spectroscopy**, **Open site summary**, **Compare this site** (opens a multi-trace comparison for every spectrum at that location), **Show metadata in Details**, **Assign to current image (&lt;name&gt;)** / **Clear manual assignment** (see [Assignment, sites, and stacks](#assignment-sites-and-stacks) below), plus the Source file submenu.
+
+---
+
+## Assignment, sites, and stacks
+
+Every spectroscopy file is automatically matched to the scan image it most likely belongs to, using spatial and timestamp proximity. Behind that simple appearance, spectra are actually organized into a small hierarchy:
+
+- **Sites** - physical locations that were measured, grouping repeated or nearby spectra together.
+- **Stacks** - a site measured repeatedly, e.g. at different tip heights (a Z-stack).
+- **Assignment confidence** - each auto-assignment carries a confidence level; a spectrum matched less certainly to its image is flagged as **low confidence** and drawn differently on the thumbnail marker (see [Thumbnail Grid](../browsing/thumbnail-grid.md)) and can be filtered for specifically in the [Spectroscopy Browser](browser.md).
+
+If an automatic assignment is wrong, right-click the spectroscopy thumbnail (or its entry in the browser tree) and choose **Assign to current image** to manually attach it to whichever image is currently displayed, or **Clear manual assignment** to revert to the automatic match.
+
 ---
 
 ## Spectroscopy browser
 
-Open the **Spectroscopy Browser** from the toolbar. It presents all associated spectroscopy files as a multi-column table with sortable columns. From the browser you can:
-
-- select single or multiple spectroscopies
-- open them in the spectroscopy popup
-- reuse the same popup while appending more traces
-- apply a channel preset to selected entries
+Open the **Spectroscopy Browser** from the toolbar for a searchable, filterable tree of every associated spectrum, organized as Image -> Site -> Trace - see [Spectroscopy Browser](browser.md) for the full search/filter controls and a note on the separate per-file Spectro Summary dialog.
 
 ---
 
@@ -53,7 +64,7 @@ The main popup keeps the high-frequency controls visible:
 
 - **Channel**
 - **Axis**
-- **Fit parabola**
+- **Fit parabola** - fits the trace to a quadratic and reports its coefficients, RMSE, and the fit's vertex position (labeled **LCPD** - local contact potential difference - since this fit is most often used on bias-spectroscopy/KPFM data). See [Parabola Fits](parabolas.md) for what these numbers mean and how the same fit is used for batch and matrix-wide fitting.
 - **Copy channel**
 - toggles for **Markers**, **Lines**, **Grid**, and **Dark**
 
@@ -139,5 +150,4 @@ Marker positions are correctly placed in both absolute and relative axes display
 - Single-point I(V), I(z), df(V), df(z) traces
 - Grid or matrix spectroscopy (see [Matrix Scans](matrix.md))
 - KPFM data (see [KPFM](kpfm.md))
-- Parabola fits (see [Parabola Fits](parabolas.md))
-- WSxM XYZ export
+- Parabola fits, used across single-spectrum, batch, and matrix-wide workflows (see [Parabola Fits](parabolas.md))

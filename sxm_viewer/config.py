@@ -5,6 +5,8 @@ from .config_defaults import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
     HEADER_CACHE_VERSION,
+    COLLECTIONS_INDEX_PATH,
+    COLLECTIONS_INDEX_VERSION,
     CH_EQUALITY_TOL_NM,
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
@@ -16,12 +18,16 @@ from .config_io import (
     save_config,
     load_header_cache,
     save_header_cache,
+    load_collections_index,
+    save_collections_index,
 )
 
 __all__ = [
     "CONFIG_PATH",
     "HEADER_CACHE_PATH",
     "HEADER_CACHE_VERSION",
+    "COLLECTIONS_INDEX_PATH",
+    "COLLECTIONS_INDEX_VERSION",
     "CH_EQUALITY_TOL_NM",
     "CH_SAMPLE_POINTS",
     "CHANNEL_DATA_CACHE_LIMIT",
@@ -31,6 +37,8 @@ __all__ = [
     "save_config",
     "load_header_cache",
     "save_header_cache",
+    "load_collections_index",
+    "save_collections_index",
 ]
 
 

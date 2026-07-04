@@ -1,41 +1,46 @@
 # Parabola Fits
 
-Parabola-fit workflows are part of the spectroscopy toolset for datasets where a fitted curve is more informative than the raw trace alone.
+SXM Viewer fits a quadratic curve (`a·V² + b·V + c`) to bias-dependent spectroscopy traces - the same fit is used everywhere a "Fit parabola" button appears: single-spectrum popups, batch fitting across a comparison set, and per-pixel across a whole matrix grid.
 
 ---
 
-## Purpose
+## What the fit reports
 
-Use parabola fits when you want to extract a compact fitted description from spectroscopy data and compare fitted behaviour across several entries.
-
----
-
-## Typical workflow
-
-A common pattern is:
-
-1. Open one or more spectroscopy traces.
-2. Inspect them in the spectroscopy popup or comparison workflow.
-3. Apply the relevant fit operation.
-4. Export the resulting plot or use it alongside the rest of the spectroscopy analysis.
+Fitting a trace reports the quadratic coefficients `a`, `b`, `c` (each with a propagated uncertainty) and the fit's RMSE. The headline result, though, is the fit's **vertex position** - `V = -b/(2a)` - labeled **LCPD** (local contact potential difference) throughout the app, since this fit is used almost exclusively on bias-spectroscopy/KPFM data where the vertex of the parabola *is* the contact potential.
 
 ---
 
-## In the broader spectroscopy workflow
+## Single-spectrum fit
 
-Parabola fits live alongside:
+Open a spectroscopy popup and use **Fit parabola** (see [Spectroscopy Overview](overview.md)). The fitted curve is drawn over the trace, and the coefficients/LCPD/RMSE are shown alongside it.
 
-- single-spectrum popups
-- matrix workflows
-- KPFM-related spectroscopy pages
-- waterfall and comparison views
+---
 
-Because spectroscopy windows already support typography, export, and multi-curve display controls, fit-based views benefit from the same plotting environment.
+## Batch fitting across several spectra
+
+In the spectroscopy comparison dialog, **Fit selected** (++f++) or **Fit all** runs the same fit independently across every trace in the set, building a results table with each trace's name, X/Y/Z position, `a`, `b` (LCPD), `c` (with uncertainties), and RMSE. **Export CSV** (++ctrl+e++) saves that table.
+
+### Comparing LCPD between two traces
+
+Shift-click two LCPD guide lines in the comparison plot to draw a **ΔLCPD** annotation between them - a quick way to read off the contact-potential difference between two specific spectra without doing the subtraction yourself.
+
+---
+
+## Matrix-wide fitting
+
+Fitting every pixel in a matrix/grid dataset at once produces a set of 2D fit-parameter maps rather than a table - see [Matrix Scans](matrix.md) and [KPFM Data](kpfm.md#matrix-wide-fitting).
+
+---
+
+## Converting a frequency-shift spectrum to force
+
+A related, separate tool in the comparison dialog - **Convert to force** - reconstructs a force-vs-distance curve from a Δf(z) spectrum using the Sader-Jarvis method, given the cantilever's resonance frequency, spring constant, oscillation amplitude, and Q factor. These parameters can be remembered between sessions so you don't have to re-enter them every time.
 
 ---
 
 ## Related pages
 
 - [Spectroscopy Overview](overview.md)
+- [Matrix Scans](matrix.md)
 - [KPFM Data](kpfm.md)
 - [CSV & Data Export](../export-and-sharing/data.md)

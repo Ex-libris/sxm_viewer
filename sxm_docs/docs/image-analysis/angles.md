@@ -23,7 +23,7 @@ Typical actions include:
 - saving the result as an overlay for later recall
 - toggling saved angle overlays with ++ctrl+2++
 
-Angle overlays participate in the same session and collection workflows as other analysis state.
+Angle overlays participate in the same session workflows as other analysis state, and are preserved when a view is added to a collection as a pop-out or crop-history snapshot (plain thumbnail/preview collection items are lightweight file references and do not carry overlay state).
 
 ---
 
@@ -43,7 +43,7 @@ The saved-overlay toggle controls the saved items only; active measurements rema
 Angle overlays are preserved in:
 
 - sessions
-- collections
+- collection items saved as a pop-out or crop-history snapshot
 - popup and preview canvas state
 - virtual copies derived from analysed views
 

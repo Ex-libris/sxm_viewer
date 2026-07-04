@@ -7,55 +7,62 @@ from datetime import datetime
 from pathlib import Path
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
+from ...config import load_collections_index, save_collections_index
 from ...data.io import parse_header
+from ..viewer import loader as viewer_loader
 from ..viewer import measurement as viewer_measurement
 from ..thumbnail_render import array_to_qimage
 
+RECENT_COLLECTION_LIMIT = 30
+
+
+def _normalize_collection_path(path) -> Path:
+    """Ensure a user-picked/typed path ends in the .sxmcoll.json double-suffix."""
+    collection_path = Path(path)
+    if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
+        if collection_path.suffix.lower() == ".json":
+            collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
+        else:
+            collection_path = collection_path.with_suffix(".sxmcoll.json")
+    return collection_path
+
+
+_COLLECTION_HELP_HTML = (
+    "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
+    "while browsing several folders, then reopen it later like a virtual folder with full "
+    "measurement/filter support.<br><br>"
+    "Plain thumbnail and preview adds are stored as lightweight <b>references</b> to the real "
+    "file, channel, and any associated spectroscopy - not a rendered copy. Opening a collection "
+    "reads the real files directly, so all channels and measurements work exactly as they would "
+    "from a normal folder.<br><br>"
+    "<b>Pop-ups</b> and <b>crop-history</b> entries are the one exception: they carry their own "
+    "overlay/crop state, so they are still saved as a baked snapshot of that view. These are "
+    "heavier and less robust if the original file is later moved.<br><br>"
+    "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
+    "session. New <i>Add to collection</i> actions append to it by default until you open another "
+    "collection. Existing collections are always appended to in place - never overwritten."
+)
+
 
 class _CollectionTargetDialog(QtWidgets.QDialog):
-    """Prompt for collection destination and linked/portable storage mode."""
+    """Prompt for which collection to add these items to."""
 
     def __init__(self, parent, *, source_summary: str, default_path: str):
         super().__init__(parent)
         self.setWindowTitle("Add to Collection")
         self.setModal(True)
-        self.resize(640, 0)
+        self.resize(520, 0)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        banner = QtWidgets.QFrame(self)
-        banner.setStyleSheet(
-            "QFrame {"
-            "  background: #eef7ff;"
-            "  border: 1px solid #b7d4f7;"
-            "  border-radius: 8px;"
-            "}"
-        )
-        banner_layout = QtWidgets.QVBoxLayout(banner)
-        banner_layout.setContentsMargins(12, 10, 12, 10)
-        banner_layout.setSpacing(4)
-        banner_title = QtWidgets.QLabel("Add Selected Analysis To A Collection", banner)
-        banner_title.setStyleSheet("font-weight: 700; color: #174a8b;")
-        banner_msg = QtWidgets.QLabel(
-            "Collections are reusable analysis sets. Keep appending into the same collection while you move across folders.",
-            banner,
-        )
-        banner_msg.setWordWrap(True)
-        banner_msg.setStyleSheet("color: #2a4560;")
-        banner_layout.addWidget(banner_title)
-        banner_layout.addWidget(banner_msg)
-        layout.addWidget(banner)
-
         intro = QtWidgets.QLabel(
-            "<b>Collections</b> are curated workspaces built from selected views across folders or sessions.<br>"
-            "Choose whether this save should stay lightweight (<b>Linked</b>) or carry its own image data "
-            "for moving/sharing (<b>Portable</b>).",
+            "Pick an existing collection to append to, or type a new name to start one. A "
+            "collection can span many folders - keep adding to the same one as you browse.",
             self,
         )
         intro.setWordWrap(True)
-        intro.setTextFormat(QtCore.Qt.RichText)
         layout.addWidget(intro)
 
         summary = QtWidgets.QLabel(source_summary, self)
@@ -63,48 +70,59 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         summary.setStyleSheet("color: #555;")
         layout.addWidget(summary)
 
-        mode_group = QtWidgets.QGroupBox("Storage mode", self)
-        mode_layout = QtWidgets.QVBoxLayout(mode_group)
-        mode_layout.setContentsMargins(10, 10, 10, 10)
-        mode_layout.setSpacing(8)
-
-        self.linked_rb = QtWidgets.QRadioButton(
-            "Linked (Recommended): keep the collection light and reopen original source views when possible. "
-            "Derived crops are cached only when needed.",
-            mode_group,
-        )
-        self.linked_rb.setChecked(True)
-        self.portable_rb = QtWidgets.QRadioButton(
-            "Portable: cache every selected image array inside the collection. Larger file, but safer to move "
-            "to another machine or share with someone else.",
-            mode_group,
-        )
-        mode_layout.addWidget(self.linked_rb)
-        mode_layout.addWidget(self.portable_rb)
-        layout.addWidget(mode_group)
-
-        path_group = QtWidgets.QGroupBox("Collection file", self)
-        path_layout = QtWidgets.QGridLayout(path_group)
-        path_layout.setContentsMargins(10, 10, 10, 10)
-        path_layout.setHorizontalSpacing(8)
-        path_layout.setVerticalSpacing(8)
-        path_layout.addWidget(QtWidgets.QLabel("Path", path_group), 0, 0)
-        self.path_edit = QtWidgets.QLineEdit(default_path, path_group)
-        self.path_edit.setPlaceholderText("Choose an existing collection to append, or type a new file name.")
-        path_layout.addWidget(self.path_edit, 0, 1)
-        browse_btn = QtWidgets.QPushButton("Browse...", path_group)
+        path_row = QtWidgets.QHBoxLayout()
+        path_row.setSpacing(8)
+        self.path_edit = QtWidgets.QLineEdit(default_path, self)
+        self.path_edit.setPlaceholderText("Choose an existing collection to append to, or type a new file name.")
+        path_row.addWidget(self.path_edit)
+        browse_btn = QtWidgets.QPushButton("Browse...", self)
         browse_btn.clicked.connect(self._on_browse)
-        path_layout.addWidget(browse_btn, 0, 2)
+        path_row.addWidget(browse_btn)
+        layout.addLayout(path_row)
+
         hint = QtWidgets.QLabel(
-            "If the file already exists, the selected items will be appended to it in place. "
-            "The collection file is not overwritten. New files are created with the extension <code>.sxmcoll.json</code>.",
-            path_group,
+            "An existing collection is appended to in place, never overwritten. New collections "
+            "are saved as <code>.sxmcoll.json</code> files.",
+            self,
         )
         hint.setWordWrap(True)
         hint.setTextFormat(QtCore.Qt.RichText)
-        hint.setStyleSheet("color: #555;")
-        path_layout.addWidget(hint, 1, 0, 1, 3)
-        layout.addWidget(path_group)
+        hint.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.advanced_toggle = QtWidgets.QToolButton(self)
+        self.advanced_toggle.setText("Advanced: storage mode for pop-up/crop snapshots")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setStyleSheet("QToolButton { border: none; }")
+        self.advanced_toggle.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self.advanced_toggle)
+
+        self.mode_group = QtWidgets.QGroupBox(self)
+        mode_layout = QtWidgets.QVBoxLayout(self.mode_group)
+        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setSpacing(6)
+        mode_note = QtWidgets.QLabel(
+            "Only affects pop-up and crop-history items, which are saved as a rendered snapshot "
+            "because they carry overlay/crop state a plain reference can't represent. Plain "
+            "thumbnail and preview adds are always lightweight references either way.",
+            self.mode_group,
+        )
+        mode_note.setWordWrap(True)
+        mode_note.setStyleSheet("color: #555;")
+        mode_layout.addWidget(mode_note)
+        self.linked_rb = QtWidgets.QRadioButton(
+            "Linked (recommended) - reopen the original source when possible", self.mode_group
+        )
+        self.linked_rb.setChecked(True)
+        self.portable_rb = QtWidgets.QRadioButton(
+            "Portable - cache the rendered image so it's safe to move or share", self.mode_group
+        )
+        mode_layout.addWidget(self.linked_rb)
+        mode_layout.addWidget(self.portable_rb)
+        self.mode_group.setVisible(False)
+        layout.addWidget(self.mode_group)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -117,6 +135,10 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _on_advanced_toggled(self, checked):
+        self.advanced_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self.mode_group.setVisible(checked)
+
     def _on_browse(self):
         start = self.path_edit.text().strip() or "analysis_collection.sxmcoll.json"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -124,31 +146,220 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
             "Choose collection file",
             start,
             "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
         )
         if path:
             self.path_edit.setText(path)
 
     def _show_help(self):
-        QtWidgets.QMessageBox.information(
-            self,
-            "Collections",
-            (
-                "<b>Linked</b> collections keep the file smaller and still remember where each item came from. "
-                "They are best when the original data stays on the same machine.<br><br>"
-                "<b>Portable</b> collections cache every selected image/crop, so they reopen more safely on a "
-                "different machine or after moving files. They take more disk space."
-            ),
-        )
+        QtWidgets.QMessageBox.information(self, "Collections", _COLLECTION_HELP_HTML)
 
     def values(self):
         return self.path_edit.text().strip(), ("portable" if self.portable_rb.isChecked() else "linked")
+
+
+class _CollectionQuickPickDialog(QtWidgets.QDialog):
+    """Pick a specific collection to route this one batch to, without changing the app's global
+    current-collection target. Always offers an explicit, separately-labeled "+ New Collection..."
+    choice distinct from picking an existing one - creating vs. appending is never left to "type a
+    name and hope"."""
+
+    _NEW_MARKER = "__new_collection__"
+    _BROWSE_MARKER = "__browse_collection__"
+
+    def __init__(self, parent, *, source_summary: str, recent_collections, default_dir: Path):
+        super().__init__(parent)
+        self.setWindowTitle("Add To Collection...")
+        self.setModal(True)
+        self.resize(480, 0)
+        self._default_dir = Path(default_dir)
+        self._resolved_path = None
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        intro = QtWidgets.QLabel(
+            "Route this selection to a specific collection. This does not change your current "
+            "collection or affect any other collection.",
+            self,
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        summary = QtWidgets.QLabel(source_summary, self)
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #555;")
+        layout.addWidget(summary)
+
+        self.combo = QtWidgets.QComboBox(self)
+        recent_collections = list(recent_collections or [])
+        for path in recent_collections:
+            self.combo.addItem(self._display_label(path), str(path))
+        if recent_collections:
+            self.combo.insertSeparator(self.combo.count())
+        self.combo.addItem("+ New Collection...", self._NEW_MARKER)
+        self.combo.addItem("Browse for Existing Collection...", self._BROWSE_MARKER)
+        layout.addWidget(self.combo)
+
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(self.status_label)
+
+        self.advanced_toggle = QtWidgets.QToolButton(self)
+        self.advanced_toggle.setText("Advanced: storage mode for pop-up/crop snapshots")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setStyleSheet("QToolButton { border: none; }")
+        self.advanced_toggle.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self.advanced_toggle)
+
+        self.mode_group = QtWidgets.QGroupBox(self)
+        mode_layout = QtWidgets.QVBoxLayout(self.mode_group)
+        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setSpacing(6)
+        mode_note = QtWidgets.QLabel(
+            "Only affects pop-up and crop-history items, which are saved as a rendered snapshot "
+            "because they carry overlay/crop state a plain reference can't represent. Plain "
+            "thumbnail and preview adds are always lightweight references either way.",
+            self.mode_group,
+        )
+        mode_note.setWordWrap(True)
+        mode_note.setStyleSheet("color: #555;")
+        mode_layout.addWidget(mode_note)
+        self.linked_rb = QtWidgets.QRadioButton(
+            "Linked (recommended) - reopen the original source when possible", self.mode_group
+        )
+        self.linked_rb.setChecked(True)
+        self.portable_rb = QtWidgets.QRadioButton(
+            "Portable - cache the rendered image so it's safe to move or share", self.mode_group
+        )
+        mode_layout.addWidget(self.linked_rb)
+        mode_layout.addWidget(self.portable_rb)
+        self.mode_group.setVisible(False)
+        layout.addWidget(self.mode_group)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal,
+            self,
+        )
+        help_btn = buttons.addButton("What is a collection?", QtWidgets.QDialogButtonBox.HelpRole)
+        help_btn.clicked.connect(self._show_help)
+        self._ok_button = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if recent_collections:
+            self._resolved_path = str(recent_collections[0])
+        self._update_status_label()
+        self.combo.currentIndexChanged.connect(self._on_combo_changed)
+
+    @staticmethod
+    def _display_label(path) -> str:
+        name = Path(path).name
+        if name.lower().endswith(".sxmcoll.json"):
+            return name[: -len(".sxmcoll.json")]
+        return name
+
+    def _update_status_label(self):
+        if self._resolved_path:
+            if Path(self._resolved_path).exists():
+                self.status_label.setText(f"Will append to the existing collection: {self._resolved_path}")
+            else:
+                self.status_label.setText(f"Will create a new collection: {self._resolved_path}")
+        else:
+            self.status_label.setText(
+                "No recent collections yet - choose \"+ New Collection...\" or "
+                "\"Browse for Existing Collection...\" above."
+            )
+        self._ok_button.setEnabled(self._resolved_path is not None)
+
+    def _on_combo_changed(self, index):
+        data = self.combo.itemData(index)
+        if data == self._NEW_MARKER:
+            self._prompt_new_collection()
+        elif data == self._BROWSE_MARKER:
+            self._prompt_browse_existing()
+        else:
+            self._resolved_path = data
+            self._update_status_label()
+
+    def _prompt_new_collection(self):
+        start = str(self._default_dir / "new_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Name the new collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
+        )
+        if not path:
+            self._revert_combo_selection()
+            return
+        self._insert_and_select(str(_normalize_collection_path(path)), is_new=True)
+
+    def _prompt_browse_existing(self):
+        start = str(self._default_dir / "analysis_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Choose an existing collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+        )
+        if not path:
+            self._revert_combo_selection()
+            return
+        self._insert_and_select(str(Path(path)), is_new=False)
+
+    def _insert_and_select(self, path_str, *, is_new):
+        self.combo.blockSignals(True)
+        for i in range(self.combo.count()):
+            if self.combo.itemData(i) == path_str:
+                self.combo.setCurrentIndex(i)
+                self.combo.blockSignals(False)
+                self._resolved_path = path_str
+                self._update_status_label()
+                return
+        label = self._display_label(path_str) + (" (new)" if is_new else "")
+        self.combo.insertItem(0, label, path_str)
+        self.combo.setCurrentIndex(0)
+        self.combo.blockSignals(False)
+        self._resolved_path = path_str
+        self._update_status_label()
+
+    def _revert_combo_selection(self):
+        self.combo.blockSignals(True)
+        found = False
+        if self._resolved_path:
+            for i in range(self.combo.count()):
+                if self.combo.itemData(i) == self._resolved_path:
+                    self.combo.setCurrentIndex(i)
+                    found = True
+                    break
+        if not found:
+            self.combo.setCurrentIndex(-1)
+        self.combo.blockSignals(False)
+
+    def _on_advanced_toggled(self, checked):
+        self.advanced_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self.mode_group.setVisible(checked)
+
+    def _show_help(self):
+        QtWidgets.QMessageBox.information(self, "Collections", _COLLECTION_HELP_HTML)
+
+    def values(self):
+        return self._resolved_path, ("portable" if self.portable_rb.isChecked() else "linked")
 
 
 class CollectionController:
     """Create and reopen curated, cross-folder collections of selected analysis items."""
 
     KIND = "sxm_collection"
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, viewer):
         self.viewer = viewer
@@ -161,6 +372,12 @@ class CollectionController:
         return stack
 
     def _clear_collection_undo_stack(self):
+        try:
+            stack = self._collection_undo_stack()
+            if stack:
+                log_status(f"Undo history cleared for the previous collection ({len(stack)} action(s) discarded).")
+        except Exception:
+            pass
         try:
             self.viewer._collection_undo_stack = []
         except Exception:
@@ -226,23 +443,50 @@ class CollectionController:
                 pass
         return Path(getattr(self.viewer, "last_dir", "."))
 
+    def collection_summary(self, collection_path):
+        """Lightweight {item_count, updated_at, exists} summary for an arbitrary collection path,
+        used by the Browse Collections preview panel - no icon building, no viewer state touched."""
+        try:
+            path = Path(collection_path)
+        except Exception:
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+        if not path.exists():
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if str(payload.get("kind") or "") != self.KIND:
+                return {"exists": False, "item_count": 0, "updated_at": ""}
+            return {
+                "exists": True,
+                "item_count": len(payload.get("items") or []),
+                "updated_at": str(payload.get("updated_at") or ""),
+            }
+        except Exception:
+            return {"exists": False, "item_count": 0, "updated_at": ""}
+
+    def current_collection_item_count(self, collection_path=None):
+        """Cheap item count for a collection, for UI labels - no icon building. Defaults to the
+        current collection when collection_path is omitted; pass an explicit path to preview
+        an arbitrary, non-current collection (e.g. from the Browse Collections dialog)."""
+        current = str(collection_path or getattr(self.viewer, "_collection_source", "") or "").strip()
+        if not current:
+            return None
+        path = Path(current)
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if str(payload.get("kind") or "") != self.KIND:
+                return None
+            return len(payload.get("items") or [])
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     def show_help(self):
-        QtWidgets.QMessageBox.information(
-            self.viewer,
-            "Collections",
-            (
-                "<b>Collections</b> are curated workspaces made from selected preview views, pop-ups, and crop "
-                "snapshots.<br><br>"
-                "Use them when you want to compare results from different folders without saving the whole "
-                "folder session.<br><br>"
-                "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
-                "session. New <i>Add to collection</i> actions append to it by default until you open another "
-                "collection.<br><br>"
-                "<b>Linked</b>: lighter, expects original source data to remain available when possible.<br>"
-                "<b>Portable</b>: larger, caches image arrays so the collection can reopen more safely."
-            ),
-        )
+        QtWidgets.QMessageBox.information(self.viewer, "Collections", _COLLECTION_HELP_HTML)
 
     def add_current_preview(self):
         canvas = getattr(self.viewer, "preview_canvas", None)
@@ -250,12 +494,23 @@ class CollectionController:
         if canvas is None or not isinstance(view, dict):
             QtWidgets.QMessageBox.information(self.viewer, "Collections", "There is no preview image to add.")
             return
-        item = self._build_item_from_canvas(
-            canvas,
-            source_kind="preview",
-            restore_as_popup=False,
-            label=self._friendly_item_label(view, prefix="Preview"),
-        )
+        item = None
+        if not self._view_requires_cached_array(view):
+            source_path = self._view_source_path(view)
+            meta = view.get("meta") or {}
+            channel_idx = meta.get("channel_index", view.get("channel_idx"))
+            if source_path and channel_idx is not None:
+                item = self._build_reference_item(
+                    source_path, channel_idx, source_kind="preview",
+                    label=self._friendly_item_label(view, prefix="Preview"),
+                )
+        if item is None:
+            item = self._build_item_from_canvas(
+                canvas,
+                source_kind="preview",
+                restore_as_popup=False,
+                label=self._friendly_item_label(view, prefix="Preview"),
+            )
         if item:
             self._save_items([item], source_summary=f"Add the current preview to a collection.\nItem: {item['label']}")
 
@@ -338,7 +593,7 @@ class CollectionController:
             self._save_items(items, source_summary=f"Add {len(items)} selected crop snapshot(s) to a collection.")
 
     def add_thumbnail_entries(self, entries):
-        """Add plain thumbnail/file entries to the current collection as fresh copies."""
+        """Add plain thumbnail/file entries to the current collection as lightweight references."""
         built_items = []
         for entry in list(entries or []):
             if not isinstance(entry, dict):
@@ -347,39 +602,58 @@ class CollectionController:
             channel_idx = entry.get("channel_index")
             if not file_path or channel_idx is None:
                 continue
-            try:
-                channel_idx = int(channel_idx)
-            except Exception:
-                continue
-            try:
-                bundle = self.viewer._build_single_channel_view(file_path, channel_idx)
-            except Exception:
-                bundle = None
-            view = bundle.get("view") if isinstance(bundle, dict) else None
-            if not isinstance(view, dict):
-                continue
-            built_items.append(
-                self._build_item_from_view_snapshot(
-                    view,
-                    getattr(self.viewer, "preview_canvas", None),
-                    source_kind="thumbnail",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="Thumbnail"),
-                )
-            )
-        built_items = [item for item in built_items if isinstance(item, dict)]
+            item = self._build_reference_item(file_path, channel_idx, source_kind="thumbnail")
+            if item:
+                built_items.append(item)
         if built_items:
             self._save_items(
                 built_items,
                 source_summary=(
                     f"Add {len(built_items)} thumbnail selection(s) to the current collection.\n"
-                    "These are stored as fresh collection copies without popup-only overlay state.\n"
+                    "These are stored as lightweight references to the real file, channel, and any\n"
+                    "associated spectroscopy - not a rendered copy.\n"
                     "If a current collection is selected, the items are appended to it."
                 ),
             )
 
+    def add_thumbnail_entries_to(self, entries):
+        """Add plain thumbnail/file entries to a collection the user picks for this batch only -
+        does not change the app's current-collection target. This is how you route different
+        selections from the same folder into different collections without repeatedly
+        re-choosing the global current collection."""
+        built_items = []
+        for entry in list(entries or []):
+            if not isinstance(entry, dict):
+                continue
+            file_path = str(entry.get("file_path") or "").strip()
+            channel_idx = entry.get("channel_index")
+            if not file_path or channel_idx is None:
+                continue
+            item = self._build_reference_item(file_path, channel_idx, source_kind="thumbnail")
+            if item:
+                built_items.append(item)
+        if not built_items:
+            return
+        dlg = _CollectionQuickPickDialog(
+            self.viewer,
+            source_summary=f"Add {len(built_items)} thumbnail selection(s) to a specific collection.",
+            recent_collections=getattr(self.viewer, "recent_collections", []),
+            default_dir=self._collection_dialog_start_dir(),
+        )
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        path, mode = dlg.values()
+        if not path:
+            return
+        self._save_items(
+            built_items,
+            source_summary="",
+            target=(_normalize_collection_path(path), mode),
+        )
+
     def add_from_view_drag_payload(self, payload: dict):
-        """Add a dragged preview view as a fresh collection item."""
+        """Add a dragged preview view: a lightweight reference for a plain view, or a legacy
+        baked snapshot for a view carrying crop/filter/overlay state a reference can't capture."""
         if not isinstance(payload, dict):
             return
         view = None
@@ -390,37 +664,46 @@ class CollectionController:
                 view = MultiPreviewCanvas.consume_drag_view_snapshot(drag_token)
             except Exception:
                 view = None
-        if not isinstance(view, dict):
+
+        item = None
+        if isinstance(view, dict):
+            if not self._view_requires_cached_array(view):
+                source_path = self._view_source_path(view)
+                meta = view.get("meta") or {}
+                channel_idx = meta.get("channel_index", view.get("channel_idx"))
+                if source_path and channel_idx is not None:
+                    item = self._build_reference_item(
+                        source_path, channel_idx, source_kind="dragged_view",
+                        label=self._friendly_item_label(view, prefix="Dragged view"),
+                    )
+            if item is None:
+                item = self._build_item_from_view_snapshot(
+                    view,
+                    getattr(self.viewer, "preview_canvas", None),
+                    source_kind="dragged_view",
+                    restore_as_popup=False,
+                    label=self._friendly_item_label(view, prefix="Dragged view"),
+                )
+        else:
             file_path = str(payload.get("file_path") or "").strip()
             channel_idx = payload.get("channel_index")
             if file_path and channel_idx is not None:
-                try:
-                    bundle = self.viewer._build_single_channel_view(file_path, int(channel_idx))
-                except Exception:
-                    bundle = None
-                view = bundle.get("view") if isinstance(bundle, dict) else None
-        if not isinstance(view, dict):
+                item = self._build_reference_item(file_path, channel_idx, source_kind="dragged_view")
+
+        if item is None:
             QtWidgets.QMessageBox.information(
                 self.viewer,
                 "Collections",
                 "The dragged view could not be added to the collection.",
             )
             return
-        item = self._build_item_from_view_snapshot(
-            view,
-            getattr(self.viewer, "preview_canvas", None),
-            source_kind="dragged_view",
-            restore_as_popup=False,
-            label=self._friendly_item_label(view, prefix="Dragged view"),
+        self._save_items(
+            [item],
+            source_summary=(
+                "Add the dragged preview view to the current collection.\n"
+                "Tip: use the popup Collection menu if you want to preserve popup-specific overlay state."
+            ),
         )
-        if item:
-            self._save_items(
-                [item],
-                source_summary=(
-                    "Add the dragged preview view to the current collection.\n"
-                    "Tip: use the popup Collection menu if you want to preserve popup-specific overlay state."
-                ),
-            )
 
     def remove_collection_items(self, item_ids):
         """Remove one or more items from the current collection file and refresh the workspace."""
@@ -594,20 +877,25 @@ class CollectionController:
             "Choose current collection",
             start,
             "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
         )
         if not path:
             return
-        collection_path = Path(path)
-        if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
-            if collection_path.suffix.lower() == ".json":
-                collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
-            else:
-                collection_path = collection_path.with_suffix(".sxmcoll.json")
+        self.choose_current_collection_for(path)
+
+    def choose_current_collection_for(self, path, *, show_message: bool = True):
+        """Set an already-known collection path as the current append target - shared by the
+        blind file-picker flow above and the Browse Collections preview dialog's "Set as Current
+        Collection" button."""
+        collection_path = _normalize_collection_path(path)
+        already_exists = collection_path.exists()
         mode = "linked"
+        item_count = 0
         try:
-            if collection_path.exists():
+            if already_exists:
                 payload = self._load_or_init_payload(collection_path, mode=mode)
                 mode = str(payload.get("default_mode") or mode)
+                item_count = len(payload.get("items") or [])
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to use this collection: {exc}")
             return
@@ -617,16 +905,68 @@ class CollectionController:
             pass
         self._clear_collection_undo_stack()
         self._remember_current_collection(collection_path, mode=mode)
+        if not show_message:
+            return
+        if already_exists:
+            message = (
+                f"Current collection set to:\n{collection_path}\n\n"
+                f"This existing collection has {item_count} item(s). New Add to Collection actions "
+                "will append to it in place."
+            )
+        else:
+            message = (
+                f"New collection target chosen:\n{collection_path}\n\n"
+                "Nothing has been written to disk yet - the file will be created the next time you "
+                "use an Add to Collection action."
+            )
+        QtWidgets.QMessageBox.information(self.viewer, "Collections", message)
+
+    def create_collection(self):
+        """Explicitly start a brand-new collection and set it as current - a separate, plainly-
+        named action from "Open a Collection..." so starting fresh vs. reopening something
+        existing is never left for the user to infer from a shared picker."""
+        start = str(self._collection_dialog_start_dir() / "new_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.viewer,
+            "Create a new collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
+        )
+        if not path:
+            return
+        collection_path = _normalize_collection_path(path)
+        if collection_path.exists():
+            if QtWidgets.QMessageBox.question(
+                self.viewer,
+                "Collections",
+                f"{collection_path.name} already exists.\n\n"
+                "Open it as your current collection instead of creating a new one?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            ) != QtWidgets.QMessageBox.Yes:
+                return
+            self.choose_current_collection_for(collection_path)
+            return
+        self.choose_current_collection_for(collection_path, show_message=False)
         QtWidgets.QMessageBox.information(
             self.viewer,
             "Collections",
-            f"Current collection set to:\n{collection_path}\n\nNew Add to Collection actions will append to this file in place; it will not be rewritten from scratch.",
+            f"New collection target set:\n{collection_path}\n\n"
+            "It is now your current collection. Nothing is written to disk yet - the file is "
+            "created the next time you use an Add to Collection action.",
         )
 
     def clear_current_collection(self):
         """Forget the current default collection target for this app session."""
         self.viewer._collection_source = None
         self.viewer._current_collection_mode = None
+        record_cb = getattr(self.viewer, "_record_current_collection", None)
+        if callable(record_cb):
+            try:
+                record_cb(None, None)
+            except Exception:
+                pass
         self._clear_collection_undo_stack()
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
@@ -685,21 +1025,32 @@ class CollectionController:
     def handle_canvas_menu_action(self, action, view, canvas=None):
         if action == "collection_add":
             target_canvas = canvas or getattr(self.viewer, "preview_canvas", None)
-            if target_canvas is not None and len(list(getattr(target_canvas, "views", []) or [])) <= 1:
-                item = self._build_item_from_canvas(
-                    target_canvas,
-                    source_kind="view",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="View"),
-                )
-            else:
-                item = self._build_item_from_view_snapshot(
-                    view,
-                    target_canvas,
-                    source_kind="view",
-                    restore_as_popup=False,
-                    label=self._friendly_item_label(view, prefix="View"),
-                )
+            item = None
+            if isinstance(view, dict) and not self._view_requires_cached_array(view):
+                source_path = self._view_source_path(view)
+                meta = view.get("meta") or {}
+                channel_idx = meta.get("channel_index", view.get("channel_idx"))
+                if source_path and channel_idx is not None:
+                    item = self._build_reference_item(
+                        source_path, channel_idx, source_kind="view",
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
+            if item is None:
+                if target_canvas is not None and len(list(getattr(target_canvas, "views", []) or [])) <= 1:
+                    item = self._build_item_from_canvas(
+                        target_canvas,
+                        source_kind="view",
+                        restore_as_popup=False,
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
+                else:
+                    item = self._build_item_from_view_snapshot(
+                        view,
+                        target_canvas,
+                        source_kind="view",
+                        restore_as_popup=False,
+                        label=self._friendly_item_label(view, prefix="View"),
+                    )
             if item:
                 self._save_items([item], source_summary=f"Add this view to a collection.\nItem: {item['label']}")
         elif action == "collection_remove":
@@ -738,51 +1089,128 @@ class CollectionController:
         elif action == "collection_help":
             self.show_help()
 
+    def _record_folder_collection_usage(self, appended_items, collection_path: Path):
+        """Track, per browsed folder, which collections have files from it - lets a folder
+        surface "you already sorted some of this into X, Y" when revisited later. Only reference
+        items have a meaningfully reusable "folder"; legacy/baked-snapshot popup/crop items are
+        skipped.
+
+        Uses viewer.last_dir as the folder key rather than each item's own
+        Path(source_file).parent - for Nanonis-converted scans, the real file lives inside a
+        per-scan .sxmviewer_nanonis/<hash>/ cache subfolder, not the folder the user actually
+        browsed, so deriving the key from the file path directly would record the wrong,
+        internal-cache folder instead of the user-facing one.
+        """
+        try:
+            browsed_folder = str(Path(getattr(self.viewer, "last_dir", "") or ""))
+        except Exception:
+            browsed_folder = ""
+        by_folder = {}
+        for item in list(appended_items or []):
+            source_file = str((item or {}).get("source_file") or "").strip()
+            if not source_file:
+                continue
+            try:
+                source_path = Path(source_file)
+            except Exception:
+                continue
+            folder_key = browsed_folder or str(source_path.parent)
+            by_folder.setdefault(folder_key, []).append(
+                {
+                    "filename": source_path.name,
+                    "channel_index": item.get("channel_index"),
+                    "added_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                }
+            )
+        if not by_folder:
+            return
+        collection_key = str(collection_path)
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        index = load_collections_index()
+        for folder_key, new_items in by_folder.items():
+            folder_entry = index.setdefault(folder_key, {})
+            coll_entry = folder_entry.setdefault(collection_key, {"items": [], "last_used": now})
+            coll_entry["items"].extend(new_items)
+            coll_entry["last_used"] = now
+        save_collections_index(index)
+
     # ------------------------------------------------------------------
-    def _save_items(self, items, *, source_summary: str):
+    def _save_items(self, items, *, source_summary: str, target=None):
+        """Save items to a collection.
+
+        target: optional (collection_path, mode) tuple for ad-hoc routing to a specific
+        collection without changing the app's global current-collection pointer/undo stack -
+        used by the "Add ... to..." picker. When omitted (all pre-existing call sites), behaves
+        exactly as before: resolves/prompts for the current collection and makes it current.
+        """
         items = [item for item in list(items or []) if isinstance(item, dict)]
         if not items:
             return
-        path, mode = self._prompt_target(source_summary)
+        if target is not None:
+            path, mode = target
+        else:
+            path, mode = self._prompt_target(source_summary)
         if not path:
             return
-        collection_path = Path(path)
-        if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
-            if collection_path.suffix.lower() == ".json":
-                collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
-            else:
-                collection_path = collection_path.with_suffix(".sxmcoll.json")
+        collection_path = _normalize_collection_path(path)
         try:
             payload = self._load_or_init_payload(collection_path, mode=mode)
             mode = str(payload.get("default_mode") or mode or "linked")
-            data_dir = collection_path.parent / str(payload.get("data_dir") or f"{collection_path.stem}_collection_data")
-            views_dir = data_dir / "views"
-            views_dir.mkdir(parents=True, exist_ok=True)
+            views_dir = None
             next_id = int(payload.get("next_item_id", 1) or 1)
             appended = []
             for raw_item in items:
                 item = dict(raw_item)
                 item_id = int(next_id)
                 next_id += 1
-                snapshot = self._recapture_item_snapshot(item, views_dir, item_id=item_id, mode=mode)
-                if not snapshot:
-                    continue
-                primary = self._snapshot_primary_meta(snapshot)
-                appended.append(
-                    {
-                        "id": item_id,
-                        "label": item.get("label") or primary.get("title") or f"Collection item {item_id}",
-                        "source_kind": item.get("source_kind") or "view",
-                        "storage_mode": mode,
-                        "restore_as_popup": bool(item.get("restore_as_popup", False)),
-                        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "source_file": primary.get("source_file"),
-                        "source_folder": primary.get("source_folder"),
-                        "channel_index": primary.get("channel_index"),
-                        "channel_name": primary.get("channel_name"),
-                        "snapshot": snapshot,
-                    }
-                )
+                if item.get("capture_kind"):
+                    # Legacy path: pop-ups, crop-history entries, and any view carrying
+                    # crop/filter/overlay state a plain file+channel reference can't represent.
+                    if views_dir is None:
+                        data_dir = collection_path.parent / str(payload.get("data_dir") or f"{collection_path.stem}_collection_data")
+                        views_dir = data_dir / "views"
+                        views_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot = self._recapture_item_snapshot(item, views_dir, item_id=item_id, mode=mode)
+                    if not snapshot:
+                        continue
+                    primary = self._snapshot_primary_meta(snapshot)
+                    appended.append(
+                        {
+                            "id": item_id,
+                            "label": item.get("label") or primary.get("title") or f"Collection item {item_id}",
+                            "source_kind": item.get("source_kind") or "view",
+                            "storage_mode": mode,
+                            "restore_as_popup": bool(item.get("restore_as_popup", False)),
+                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "source_file": primary.get("source_file"),
+                            "source_folder": primary.get("source_folder"),
+                            "channel_index": primary.get("channel_index"),
+                            "channel_name": primary.get("channel_name"),
+                            "snapshot": snapshot,
+                        }
+                    )
+                else:
+                    # Reference item: a real file + channel + spectro paths, no baked render.
+                    source_file = str(item.get("source_file") or "").strip()
+                    channel_index = item.get("channel_index")
+                    if not source_file or channel_index is None:
+                        continue
+                    try:
+                        channel_index = int(channel_index)
+                    except Exception:
+                        continue
+                    appended.append(
+                        {
+                            "id": item_id,
+                            "label": item.get("label") or Path(source_file).name,
+                            "source_kind": item.get("source_kind") or "thumbnail",
+                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "source_file": source_file,
+                            "channel_index": channel_index,
+                            "channel_name": item.get("channel_name") or "",
+                            "spectro_file_paths": list(item.get("spectro_file_paths") or []),
+                        }
+                    )
             if not appended:
                 QtWidgets.QMessageBox.information(
                     self.viewer,
@@ -793,31 +1221,51 @@ class CollectionController:
             self._push_collection_undo_state(collection_path, payload, description="add_items")
             payload.setdefault("items", []).extend(appended)
             payload["next_item_id"] = next_id
+            payload["version"] = self.VERSION
             payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
             try:
+                self._record_folder_collection_usage(appended, collection_path)
+            except Exception:
+                pass
+            try:
                 self.viewer._record_collection_dir(collection_path.parent)
             except Exception:
                 pass
-            self._remember_current_collection(collection_path, mode=mode)
+            if target is not None:
+                # Ad-hoc routing: this collection was genuinely just used, so it's worth
+                # remembering as recent, but it must NOT become the current/append-target
+                # collection - that would silently redirect all future plain adds elsewhere.
+                recent_cb = getattr(self.viewer, "_record_recent_collection", None)
+                if callable(recent_cb):
+                    try:
+                        recent_cb(collection_path)
+                    except Exception:
+                        pass
+            else:
+                self._remember_current_collection(collection_path, mode=mode)
             show_saved_cb = getattr(self.viewer, "_show_saved_path_toast", None)
             if callable(show_saved_cb):
                 try:
                     show_saved_cb(
                         "Collection saved",
                         collection_path,
-                        detail=f"Added {len(appended)} item(s) | {'Linked' if mode == 'linked' else 'Portable'} mode",
+                        detail=f"Added {len(appended)} item(s)",
                     )
                 except Exception:
                     pass
-            show_tray = getattr(self.viewer, "show_collection_tray", None)
-            if callable(show_tray):
-                try:
-                    show_tray(activate=False)
-                except Exception:
-                    pass
+            if target is None:
+                # Only refresh/show the persistent Tray widget for the current-collection flow -
+                # it's bound to viewer._collection_source, so showing it after an ad-hoc add to a
+                # *different* collection would display the wrong (unrelated) collection's contents.
+                show_tray = getattr(self.viewer, "show_collection_tray", None)
+                if callable(show_tray):
+                    try:
+                        show_tray(activate=False)
+                    except Exception:
+                        pass
             log_status(f"Updated collection {collection_path} with {len(appended)} item(s)")
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self.viewer, "Collections", f"Unable to save collection: {exc}")
@@ -874,6 +1322,18 @@ class CollectionController:
         except Exception:
             pass
         self.viewer._current_collection_mode = str(mode or getattr(self.viewer, "_current_collection_mode", "linked") or "linked")
+        record_cb = getattr(self.viewer, "_record_current_collection", None)
+        if callable(record_cb):
+            try:
+                record_cb(self.viewer._collection_source, self.viewer._current_collection_mode)
+            except Exception:
+                pass
+        recent_cb = getattr(self.viewer, "_record_recent_collection", None)
+        if callable(recent_cb):
+            try:
+                recent_cb(self.viewer._collection_source)
+            except Exception:
+                pass
         refresh = getattr(self.viewer, "_refresh_collection_ui", None)
         if callable(refresh):
             try:
@@ -932,6 +1392,43 @@ class CollectionController:
                 include_state=False,
             )
         return None
+
+    def _build_reference_item(self, file_path, channel_idx, *, source_kind: str, label: str = None):
+        """Build a lightweight collection item that references a real file + channel directly,
+        with no rendered/baked pixel data - the common case for plain thumbnail/preview adds."""
+        viewer = self.viewer
+        try:
+            source_path = Path(file_path)
+        except Exception:
+            return None
+        if not source_path.exists():
+            return None
+        try:
+            channel_idx = int(channel_idx)
+        except Exception:
+            return None
+        _, fds = viewer.headers.get(str(source_path), (None, None))
+        channel_name = ""
+        if fds and 0 <= channel_idx < len(fds):
+            channel_name = str((fds[channel_idx] or {}).get("Caption", "") or "")
+        spectro_paths = []
+        for spec in list(viewer.spectros_by_image.get(str(source_path), []) or []):
+            spec_path = spec.get("path") if isinstance(spec, dict) else None
+            if spec_path:
+                spectro_paths.append(str(spec_path))
+        if not label:
+            label_parts = [source_path.name]
+            if channel_name:
+                label_parts.append(channel_name)
+            label = " | ".join(label_parts)
+        return {
+            "source_file": str(source_path),
+            "channel_index": channel_idx,
+            "channel_name": channel_name,
+            "spectro_file_paths": spectro_paths,
+            "source_kind": source_kind,
+            "label": label,
+        }
 
     def _build_item_from_canvas(self, canvas, *, source_kind: str, restore_as_popup: bool, label: str):
         if canvas is None or not getattr(canvas, "views", None):
@@ -1116,9 +1613,11 @@ class CollectionController:
                 return text
         return ""
 
-    def tray_entries_for_current_collection(self, *, icon_size: int = 72):
-        """Build lightweight visual summaries for the collection tray in the main window."""
-        current = str(getattr(self.viewer, "_collection_source", "") or "").strip()
+    def tray_entries_for_current_collection(self, *, icon_size: int = 72, collection_path=None):
+        """Build lightweight visual summaries for a collection (defaults to the current one).
+        Pass collection_path to preview an arbitrary, non-current collection (e.g. from the
+        Browse Collections dialog) without touching viewer state."""
+        current = str(collection_path or getattr(self.viewer, "_collection_source", "") or "").strip()
         if not current:
             return []
         path = Path(current)
@@ -1216,6 +1715,64 @@ class CollectionController:
         meta = view.get("meta") or {}
         return view.get("path") or meta.get("path") or meta.get("file_path")
 
+    def _migrate_v1_item_to_reference(self, item: dict):
+        """Best-effort conversion of a legacy (v1) baked-snapshot item into a v2 reference.
+
+        Returns a v2-style reference dict (source_file/channel_index/spectro_file_paths) when
+        the item's source file can still be resolved on disk, or None when the item must keep
+        using the legacy snapshot-restore path (source missing, unresolvable, or a popup/crop
+        item that intentionally stays on the legacy path - see Step 3).
+        """
+        if not isinstance(item, dict):
+            return None
+        if "legacy_snapshot" in item:
+            return None
+        source_kind = str(item.get("source_kind") or "").strip().lower()
+        if source_kind in ("popup", "crop_history"):
+            return None
+        snapshot = dict(item.get("snapshot") or {})
+        primary = self._snapshot_primary_meta(snapshot)
+        source_file = str(item.get("source_file") or primary.get("source_file") or "").strip()
+        if not source_file:
+            return None
+        try:
+            source_path = Path(source_file)
+            if not source_path.exists():
+                return None
+        except Exception:
+            return None
+        channel_index = item.get("channel_index", primary.get("channel_index"))
+        try:
+            channel_index = int(channel_index)
+        except Exception:
+            return None
+        spectro_paths = []
+        seen = set()
+        if "spectro_file_paths" in item:
+            # Already-lightweight v2 item: the field is authoritative, no snapshot to mine.
+            for spec_path_str in list(item.get("spectro_file_paths") or []):
+                spec_path_str = str(spec_path_str or "").strip()
+                if spec_path_str and spec_path_str not in seen:
+                    seen.add(spec_path_str)
+                    spectro_paths.append(spec_path_str)
+        else:
+            for view_entry in list(snapshot.get("views") or []):
+                for spec in list((view_entry or {}).get("spectra") or []):
+                    spec_path = str((spec or {}).get("path") or "").strip()
+                    if spec_path and spec_path not in seen:
+                        seen.add(spec_path)
+                        spectro_paths.append(spec_path)
+        first_view = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+        return {
+            "id": item.get("id"),
+            "label": str(item.get("label") or source_path.name),
+            "source_file": str(source_path),
+            "channel_index": channel_index,
+            "channel_name": item.get("channel_name") or self._snapshot_channel_name(first_view),
+            "spectro_file_paths": spectro_paths,
+            "created_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+        }
+
     # ------------------------------------------------------------------
     def _load_payload_into_viewer(self, payload: dict, collection_path: Path):
         viewer = self.viewer
@@ -1275,12 +1832,77 @@ class CollectionController:
         viewer._collection_item_snapshots = {}
         viewer._workspace_kind = "collection"
         self._remember_current_collection(collection_path, mode=str(payload.get("default_mode") or "linked"))
-        loaded_keys = []
+
+        # Partition items into real file+channel references (loaded through the normal folder
+        # pipeline, just like a real folder) vs. items that must stay on the legacy baked-snapshot
+        # path (orphaned v1 items whose source is gone, or deliberately-legacy popup/crop items).
+        reference_items = []
+        legacy_items = []
+        for item in items:
+            ref = self._migrate_v1_item_to_reference(item)
+            if ref is not None:
+                reference_items.append((item, ref))
+            else:
+                legacy_items.append(item)
+
+        file_list = []
+        seen_files = set()
+        first_reference_channel = None
+        for _, ref in reference_items:
+            source_file = str(ref.get("source_file") or "")
+            if source_file and source_file not in seen_files:
+                seen_files.add(source_file)
+                file_list.append(Path(source_file))
+                if first_reference_channel is None:
+                    first_reference_channel = ref.get("channel_index")
+
+        if file_list:
+            viewer_loader.load_files(
+                viewer, file_list, folder_hint=None, source_label="collection",
+                append=False, refresh_spectros=False,
+            )
+
+        # Group each reference item's associated spectro files by their own real parent folder
+        # (not the collection file's folder) so per-folder disk caching stays correct for a
+        # genuinely cross-folder collection.
+        spectro_groups = {}
+        spectro_seen = set()
+        for _, ref in reference_items:
+            for spec_path_str in list(ref.get("spectro_file_paths") or []):
+                if spec_path_str in spectro_seen:
+                    continue
+                try:
+                    spec_path = Path(spec_path_str)
+                    if not spec_path.exists():
+                        continue
+                except Exception:
+                    continue
+                spectro_seen.add(spec_path_str)
+                spectro_groups.setdefault(str(spec_path.parent), []).append(spec_path)
+        for parent_str, group_files in spectro_groups.items():
+            try:
+                viewer_loader.load_spectroscopy_files(
+                    viewer, group_files, folder_hint=Path(parent_str), append=True, refresh=False,
+                )
+            except Exception:
+                continue
+
+        # Purely cosmetic per-item display hints (cmap); never touches arrays/headers.
+        for _, ref in reference_items:
+            display_hint = ref.get("display_hint")
+            cmap = display_hint.get("cmap") if isinstance(display_hint, dict) else None
+            if cmap:
+                try:
+                    viewer.per_file_channel_cmap[(str(ref.get("source_file")), int(ref.get("channel_index")))] = str(cmap)
+                except Exception:
+                    pass
+
+        loaded_keys = [str(p) for p in file_list]
         popup_items = []
         skipped = []
-        any_spectra = False
-        for item in items:
-            snapshot = dict(item.get("snapshot") or {})
+        any_spectra = bool(spectro_groups)
+        for item in legacy_items:
+            snapshot = dict(item.get("snapshot") or item.get("legacy_snapshot") or {})
             restore_as_popup = self._should_restore_item_as_popup(item, snapshot)
             primary_view = self._build_primary_view_for_item(item, snapshot, views_dir)
             key = None
@@ -1307,8 +1929,8 @@ class CollectionController:
             elif not key:
                 skipped.append(str(item.get("label") or item.get("id") or "item"))
 
-        if any_spectra:
-            self._apply_collection_spectro_settings(payload, items)
+        if legacy_items and any_spectra:
+            self._apply_collection_spectro_settings(payload, legacy_items)
 
         self._setup_collection_channel_dropdown()
         try:
@@ -1317,7 +1939,7 @@ class CollectionController:
             pass
         if loaded_keys:
             try:
-                viewer.show_file_channel(loaded_keys[0], 0)
+                viewer.show_file_channel(loaded_keys[0], int(first_reference_channel or 0))
             except Exception:
                 pass
         for item, snapshot in popup_items:
@@ -1332,19 +1954,20 @@ class CollectionController:
             except Exception:
                 continue
 
-        message = f"Opened collection with {len(loaded_keys)} library item(s)"
+        message = f"Opened collection with {len(reference_items)} item(s)"
+        if legacy_items:
+            message += f", plus {len(legacy_items)} legacy item(s) restored from a cached snapshot (source file not reachable)"
         if popup_items:
-            message += f" and {len(popup_items)} restored pop-up(s)"
+            message += f", including {len(popup_items)} restored pop-up(s)"
         message += "."
         if skipped:
             message += f"\n\nSkipped {len(skipped)} item(s) that could not be rebuilt."
-        if payload.get("default_mode") == "linked":
-            message += "\n\nLinked collection: original source files are preferred when available."
-        else:
-            message += "\n\nPortable collection: cached image data is being used."
         message += "\n\nThis collection is now the default target for Add to Collection actions in this app session."
         QtWidgets.QMessageBox.information(viewer, "Collection opened", message)
-        log_status(f"Opened collection {collection_path} with {len(loaded_keys)} item(s)")
+        log_status(
+            f"Opened collection {collection_path} with {len(reference_items)} reference item(s), "
+            f"{len(legacy_items)} legacy item(s)"
+        )
 
     def _setup_collection_channel_dropdown(self):
         viewer = self.viewer

@@ -1,36 +1,47 @@
 # Minimap
 
-The minimap gives a compact overview of the current thumbnail layout and helps you navigate large grids quickly.
+The minimap ("Folder layout") shows where each scan in the current folder was physically taken, laid out spatially - not a scaled-down copy of the thumbnail grid's layout.
 
 ---
 
-## What the minimap is for
+## What it shows
 
-When a folder contains many scans, the thumbnail area can become much larger than the visible window. The minimap helps you:
+Each scan frame is drawn as a small rectangle at its real acquisition position, color-coded by tag:
 
-- see roughly where you are in the current grid
-- jump to another region of the dataset
-- keep spatial context while browsing large folders
+- **Green** - constant-height (CH) frames
+- **Blue** - constant-current (CC) frames
+- **Gray** - untagged frames
+
+Hovering over a frame shows its filename in a tooltip.
+
+Toggle **Show real view** to switch from flat colored rectangles to actual rendered channel thumbnails at each position - useful when you want to recognize a specific scan by its appearance rather than by color/tag alone.
+
+---
+
+## Navigating
+
+- **Click** a frame to load it into the main preview.
+- **Shift+click** a frame to hide it from the layout (useful for decluttering a busy area); use **Show all frames** to bring back everything you've hidden.
+- **Mouse wheel** zooms in/out, centered on the cursor position. A separate **zoom slider** and **Reset** button next to the panel do the same thing without needing the cursor over the map.
+- **Middle-drag** or **right-drag** pans the view.
 
 ---
 
 ## Typical workflow
 
-Use the thumbnail grid for precise selection, and use the minimap for fast coarse navigation.
+Use the thumbnail grid for precise selection, and the minimap for fast spatial navigation - especially useful when scans overlap or were taken at slightly different positions across the same sample area, since the minimap is the only view that shows those positions to scale.
 
 A common pattern is:
 
-1. Scroll or zoom through the grid.
-2. Use the minimap to jump to another region.
-3. Click the target thumbnail to load it into the main preview.
+1. Use the minimap to spot the physical region you're interested in (helped by the CH/CC color coding).
+2. Click the relevant frame to load it into the main preview.
+3. Use the thumbnail grid or spectroscopy markers for more precise selection from there.
 
 ---
 
 ## Relationship to the grid
 
-The minimap does not replace the main thumbnail grid. It mirrors the current browsing layout and is most useful when the visible area shows only a small part of the full set.
-
-Selections, preview loading, and pop-out actions still happen in the main grid.
+The minimap does not replace the main thumbnail grid - it's a complementary spatial view. Selections, preview loading, and pop-out actions still happen in the main grid; the minimap is for figuring out *where* to look next.
 
 ---
 
@@ -40,4 +51,4 @@ Selections, preview loading, and pop-out actions still happen in the main grid.
     If you are working with spectroscopy-heavy folders, use the minimap to navigate to the relevant image region, then use the main grid or spectroscopy markers for precise selection.
 
 !!! tip
-    The minimap is most helpful after loading large folders where the main grid would otherwise require lots of manual scrolling.
+    Turn on **Show real view** when you need to visually recognize a scan rather than rely on its CH/CC color alone.

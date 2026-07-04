@@ -1,6 +1,6 @@
 # Spectroscopy Browser
 
-The Spectroscopy Browser provides a table-based view of the spectroscopy data associated with the current workspace.
+The Spectroscopy Browser is a searchable, filterable **tree** of every spectroscopy trace associated with the current workspace - organized hierarchically as **Image -> Site -> Trace**, not a flat table.
 
 ![Spectroscopy workspace context](../assets/screenshots/spectroscopies.png){ width="900" }
 
@@ -8,38 +8,36 @@ The Spectroscopy Browser provides a table-based view of the spectroscopy data as
 
 ## What it shows
 
-Open the browser from the toolbar. It presents spectroscopy entries in a **multi-column table** rather than only as markers or miniatures in the thumbnail grid.
+Open the browser from the toolbar. Each top-level entry is a source image; underneath it, spectra are grouped into **sites** (locations that were measured, possibly repeatedly or as a Z-stack) and finally individual **traces**.
 
 This is useful when you want to:
 
-- sort and inspect many associated spectra
-- select several entries quickly
-- open or augment spectroscopy popups from a structured list
+- see at a glance which images have associated spectroscopy, and how much
+- search across image/site/file/channel/position instead of scanning the thumbnail grid
+- open several related traces into the same comparison plot
+
+### Search and filters
+
+- A **search box** filters the tree live by image name, site, file, channel, or position text.
+- Four checkboxes narrow the tree further: **Current image** (only spectra tied to the image currently shown in the main preview), **Z-stacks**, **Matrix**, and **Low confidence** (spectra whose automatic image assignment - see [Spectroscopy Overview](overview.md#assignment-sites-and-stacks) - wasn't confident).
 
 ---
 
 ## Common actions
 
-From the browser you can:
+Right-click an entry in the tree for:
 
-- select single or multiple spectroscopies
-- open them in a spectroscopy popup
-- reuse the same popup while appending more traces
-- apply channel presets to selected entries
+- **Open** - opens the trace in a spectroscopy popup
+- **Assign to current image** - manually attaches this spectrum to whichever image is currently displayed, overriding the automatic assignment
+- **Clear manual assignment** - reverts to the automatic assignment
 
-The project history also describes a waterfall plotting workflow and richer plot context menus for spectroscopy windows.
+Selecting several entries (Shift/Ctrl-click) and opening them feeds a **shared comparison plot** instead of opening one popup per trace - see [Spectroscopy Overview](overview.md) for the comparison workflow this leads into.
 
 ---
 
-## Selection behavior
+## A separate, per-file dialog: Spectro Summary
 
-Selection is designed to work like the rest of the UI:
-
-- single click selects one spectrum
-- Shift/Ctrl selection builds multi-selection
-- multi-selection can feed a shared popup instead of creating a new one every time
-
-This is especially helpful when comparing a group of related curves.
+Right-clicking a thumbnail's spectroscopy miniature (or certain "show spectros for this file" actions) opens a different, **per-file** dialog - a small modal listing just that file's own spectroscopy entries, with its own preview thumbnail, channel selector, marker-color picker, and (for matrix files) a colormap combo. This is a lighter-weight, single-file complement to the global searchable browser above, not the same window.
 
 ---
 
@@ -49,16 +47,14 @@ The browser complements the thumbnail-grid workflow rather than replacing it.
 
 Use:
 
-- the **thumbnail grid** when you want image-first navigation with spatial context
-- the **browser** when you want a sortable, table-like spectroscopy workflow
-
-See [Spectroscopy Overview](overview.md).
+- the **thumbnail grid** when you want image-first navigation with spatial context (see [Thumbnail Grid](../browsing/thumbnail-grid.md) for the marker symbols, low-confidence indicator, and stack badges drawn there)
+- the **browser** when you want to search/filter across everything at once, independent of which image is currently on screen
 
 ---
 
 ## Plot controls
 
-Spectroscopy windows support a richer set of display controls, including:
+Once a trace or comparison is open in a spectroscopy popup, it supports a richer set of display controls, including:
 
 - grid, line, point, and dark-background toggles
 - per-trace styling for colour, thickness, and line style
