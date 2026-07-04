@@ -464,6 +464,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.recent_molecules = list(self.config.get("recent_molecules", []))
         self.recent_svg_molecules = list(self.config.get("recent_svg_molecules", []))
         self.last_svg_molecule_dir = str(self.config.get("last_svg_molecule_dir", "") or "")
+        self.svg_molecule_style_defaults = dict(self.config.get("svg_molecule_style_defaults", {}) or {})
         self.quick_crop_mode = bool(self.config.get("quick_crop_mode", False))
         self.quick_crop_aspect_mode = str(self.config.get("quick_crop_aspect_mode", "free") or "free").strip().lower()
         if self.quick_crop_aspect_mode not in {"free", "keep", "square"}:
@@ -1492,6 +1493,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            if getattr(self, "svg_molecule_style_defaults", None):
+                MultiPreviewCanvas._SVG_MOLECULE_STYLE_DEFAULTS = dict(self.svg_molecule_style_defaults)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_recent_molecule_callback(self._on_recent_molecules_updated)
         except Exception:
             pass
@@ -1501,6 +1507,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         try:
             self.preview_canvas.set_last_svg_molecule_dir_callback(self._on_last_svg_molecule_dir_updated)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_svg_molecule_style_defaults_callback(self._on_svg_molecule_style_defaults_updated)
         except Exception:
             pass
         self.preview_canvas.enable_scale_bar(self.scale_bar_cb.isChecked())
@@ -4298,6 +4308,14 @@ QLabel:hover {{
         try:
             self.last_svg_molecule_dir = str(path or "")
             self.config["last_svg_molecule_dir"] = self.last_svg_molecule_dir
+            save_config(self.config)
+        except Exception:
+            pass
+
+    def _on_svg_molecule_style_defaults_updated(self, style: dict):
+        try:
+            self.svg_molecule_style_defaults = dict(style or {})
+            self.config["svg_molecule_style_defaults"] = self.svg_molecule_style_defaults
             save_config(self.config)
         except Exception:
             pass
