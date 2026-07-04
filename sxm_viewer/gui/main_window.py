@@ -6708,6 +6708,12 @@ QLabel:hover {{
         dlg.exec_()
         self.show_collection_tray(activate=False)
 
+    def on_create_collection(self):
+        """Start a brand-new collection - a separate, plainly-named action from opening an
+        existing one."""
+        self.collection_controller.create_collection()
+        self.show_collection_tray(activate=False)
+
     def on_collection_help(self):
         """Explain linked vs portable collections and how they are intended to be used."""
         self.collection_controller.show_help()
@@ -9478,9 +9484,12 @@ QLabel:hover {{
         )
         remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)) and selected_count > 0)
         collection_menu.addAction(remove_selected_collection_act)
-        browse_collections_act = QtWidgets.QAction("Browse Collections...", collection_menu)
-        browse_collections_act.triggered.connect(self.on_browse_collections)
-        collection_menu.addAction(browse_collections_act)
+        create_collection_act = QtWidgets.QAction("Create a Collection...", collection_menu)
+        create_collection_act.triggered.connect(self.on_create_collection)
+        collection_menu.addAction(create_collection_act)
+        open_collection_act = QtWidgets.QAction("Open a Collection...", collection_menu)
+        open_collection_act.triggered.connect(self.on_browse_collections)
+        collection_menu.addAction(open_collection_act)
         clear_target_act = QtWidgets.QAction("Clear Current Collection Target", collection_menu)
         clear_target_act.triggered.connect(self.on_clear_current_collection)
         collection_menu.addAction(clear_target_act)

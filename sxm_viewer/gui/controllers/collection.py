@@ -921,6 +921,42 @@ class CollectionController:
             )
         QtWidgets.QMessageBox.information(self.viewer, "Collections", message)
 
+    def create_collection(self):
+        """Explicitly start a brand-new collection and set it as current - a separate, plainly-
+        named action from "Open a Collection..." so starting fresh vs. reopening something
+        existing is never left for the user to infer from a shared picker."""
+        start = str(self._collection_dialog_start_dir() / "new_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.viewer,
+            "Create a new collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
+        )
+        if not path:
+            return
+        collection_path = _normalize_collection_path(path)
+        if collection_path.exists():
+            if QtWidgets.QMessageBox.question(
+                self.viewer,
+                "Collections",
+                f"{collection_path.name} already exists.\n\n"
+                "Open it as your current collection instead of creating a new one?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            ) != QtWidgets.QMessageBox.Yes:
+                return
+            self.choose_current_collection_for(collection_path)
+            return
+        self.choose_current_collection_for(collection_path, show_message=False)
+        QtWidgets.QMessageBox.information(
+            self.viewer,
+            "Collections",
+            f"New collection target set:\n{collection_path}\n\n"
+            "It is now your current collection. Nothing is written to disk yet - the file is "
+            "created the next time you use an Add to Collection action.",
+        )
+
     def clear_current_collection(self):
         """Forget the current default collection target for this app session."""
         self.viewer._collection_source = None
