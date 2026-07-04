@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from ..._shared import (
     QtCore,
@@ -350,12 +351,21 @@ def _spec_time_for_assignment(spec):
     return spec.get('time')
 
 
+@lru_cache(maxsize=4096)
+def _normalized_path_str(base):
+    return str(Path(base))
+
+
 def _spec_identity_key(spec):
     if not spec:
         return None
     base = spec.get("path")
+    # Cached: a folder's specs share a small number of distinct file paths
+    # (e.g. ~1440 spectra from one matrix file all have the same "path"),
+    # so normalizing it fresh through Path() on every single spec is
+    # thousands of redundant reconstructions of the same few strings.
     try:
-        base = str(Path(base))
+        base = _normalized_path_str(base)
     except Exception:
         base = str(base)
     idx = spec.get("matrix_index")
@@ -413,16 +423,26 @@ def _constant_axis_value_nm(values, unit_hint="nm", tol_nm=1e-3):
     return None
 
 
+_Z_LEVEL_TOKENS = ("z-controller", "absolute z", "z absolute", "z_abs", "abs z", "topo", "topography", "piezo")
+_Z_LEVEL_TOKEN_RE = re.compile("|".join(re.escape(token) for token in _Z_LEVEL_TOKENS))
+_Z_LEVEL_EXACT_LABELS = frozenset({"z", "z (m)", "z_nm"})
+
+
 def _metadata_z_from_spec(spec):
     if not spec:
         return None, None, None
     best = None
-    for key, value in list((spec or {}).items()):
+    for key, value in (spec or {}).items():
         label = str(key or "").strip()
         if not label:
             continue
         label_low = label.lower()
-        if not any(token in label_low for token in ("z-controller", "absolute z", "z absolute", "z_abs", "abs z", "topo", "topography", "piezo")) and label_low not in {"z", "z (m)", "z_nm"}:
+        # This runs across every key of every spec (most of which aren't
+        # z-channel related at all), so the token check needs to be cheap
+        # for the common non-matching case: a single compiled-once regex
+        # search instead of looping over a freshly-built tuple of substrings
+        # with `any(...)` on every call.
+        if not _Z_LEVEL_TOKEN_RE.search(label_low) and label_low not in _Z_LEVEL_EXACT_LABELS:
             continue
         unit_hint = ""
         if "(m)" in label_low:

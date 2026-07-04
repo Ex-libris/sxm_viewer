@@ -334,6 +334,40 @@ def _deserialize_cache_value(value):
     return value
 
 
+def _sanitize_metadata_value(value):
+    """Deep-copy `value` while dropping numpy arrays and normalizing numpy
+    scalars/Paths, in a single recursive pass.
+
+    Equivalent in net effect to `_deserialize_cache_value(_serialize_cache_value(value))`,
+    but without round-tripping every value (including plain scalars that need
+    no conversion at all) through a JSON-style intermediate form. That
+    round-trip was the dominant cost of loading a folder's spectroscopy
+    metadata (datetime values were being formatted to ISO strings and
+    immediately re-parsed back to the exact same datetime, for example).
+    """
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return None
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            sanitized = _sanitize_metadata_value(item)
+            if sanitized is not None:
+                out[str(key)] = sanitized
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            sanitized = _sanitize_metadata_value(item)
+            if sanitized is not None:
+                out.append(sanitized)
+        return out
+    return value
+
+
 def _spec_channel_names(spec) -> list[str]:
     names = []
     channels = spec.get("channels") or {}
@@ -417,6 +451,9 @@ def _payload_specs_usable(specs) -> bool:
     return any(_spec_has_payload_data(spec) for spec in specs)
 
 
+_SPEC_METADATA_SIMPLE_SCALAR_TYPES = (str, int, float, bool)
+
+
 def _spec_metadata_entry(spec):
     entry = {}
     spec_dict = dict(spec or {})
@@ -439,9 +476,19 @@ def _spec_metadata_entry(spec):
             if axes:
                 entry["AxisChoices"] = axes
             continue
-        serialized = _serialize_cache_value(value)
-        if serialized is not None:
-            entry[key] = _deserialize_cache_value(serialized)
+        # Most metadata values are already plain, cache-safe scalars
+        # (str/int/float/bool) needing no conversion at all; datetimes also
+        # need none here (only the on-disk manifest form needs the ISO-string
+        # round trip). Skipping straight to the value, and using the
+        # single-pass sanitizer for the remaining container/numpy/Path cases,
+        # is what turned this from the dominant cost of loading a folder's
+        # spectroscopy cache (~2900 specs x ~55 keys each) into a minor one.
+        if isinstance(value, _SPEC_METADATA_SIMPLE_SCALAR_TYPES) or isinstance(value, datetime):
+            entry[key] = value
+            continue
+        sanitized = _sanitize_metadata_value(value)
+        if sanitized is not None:
+            entry[key] = sanitized
     axis_choices = spec_dict.get("AxisChoices")
     if axis_choices:
         axes = []
@@ -657,10 +704,15 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
     folder = Path(folder)
     txts = sorted(folder.glob("*.txt"))
     if getattr(viewer, "convert_nanonis_enabled", True):
+        t_conv0 = time.perf_counter()
         converted = convert_nanonis(folder)
+        conv_ms = (time.perf_counter() - t_conv0) * 1000.0
         if converted:
             txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
-            log_status(f"Converted {len(converted)} Nanonis scan(s)")
+            log_status(
+                f"Converted {len(converted)} Nanonis scan(s) "
+                f"[Perf] {conv_ms:.0f} ms total, {conv_ms / max(1, len(converted)):.1f} ms/file avg"
+            )
     else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
     return txts
@@ -1627,20 +1679,17 @@ def _scan_spectros(
         )
         return info
 
-    def _spec_within_extent_local(sx, sy, extent, margin_frac=0.02):
+    def _extent_bounds_with_margin(extent, margin_frac=0.02):
+        """Return (xmin, xmax, ymin, ymax) for `extent` padded by `margin_frac`, or None."""
         try:
             x0, x1, y1, y0 = extent
             xmin, xmax = sorted((float(x0), float(x1)))
             ymin, ymax = sorted((float(y0), float(y1)))
             mx = (xmax - xmin) * float(margin_frac)
             my = (ymax - ymin) * float(margin_frac)
-            xmin -= mx
-            xmax += mx
-            ymin -= my
-            ymax += my
-            return xmin <= float(sx) <= xmax and ymin <= float(sy) <= ymax
+            return (xmin - mx, xmax + mx, ymin - my, ymax + my)
         except Exception:
-            return False
+            return None
 
     def _image_before_reference(candidates, ref_epoch):
         if not candidates:
@@ -1737,15 +1786,26 @@ def _scan_spectros(
             except Exception:
                 continue
         if xy_specs:
+            # Vectorized containment check: this loop runs once per candidate
+            # reference image (commonly 100s in a folder), and used to check
+            # every spectrum in the matrix (100s-1000s) one at a time in pure
+            # Python, an uncached O(images x spectra) cost paid on every load
+            # regardless of how "warm" the spectro cache is. Building the xy
+            # array once and testing all spectra per candidate in one numpy
+            # call instead turns that inner loop into a single vectorized op.
+            xy_arr = np.asarray(xy_specs, dtype=float)
+            xs = xy_arr[:, 0]
+            ys = xy_arr[:, 1]
             scored = []
             for item in enriched:
                 extent = item.get("extent")
                 if not extent:
                     continue
-                hits = 0
-                for sx, sy in xy_specs:
-                    if _spec_within_extent_local(sx, sy, extent, margin_frac=0.02):
-                        hits += 1
+                bounds = _extent_bounds_with_margin(extent, margin_frac=0.02)
+                if bounds is None:
+                    continue
+                xmin, xmax, ymin, ymax = bounds
+                hits = int(np.count_nonzero((xs >= xmin) & (xs <= xmax) & (ys >= ymin) & (ys <= ymax)))
                 if hits > 0:
                     scored.append((hits, item))
             if scored:
@@ -1785,7 +1845,9 @@ def _scan_spectros(
             disk_cache_dir = None
     manifest_enabled = bool(getattr(viewer, "spectro_manifest_cache_enabled", True))
     lazy_payload = bool(getattr(viewer, "spectro_lazy_payload_enabled", True))
+    _manifest_load_t0 = time.perf_counter()
     manifest_entries = _load_spectro_manifest(disk_cache_dir) if manifest_enabled else {}
+    stats["manifest_load_ms"] = (time.perf_counter() - _manifest_load_t0) * 1000.0
     manifest_changed = False
     cache = viewer._spectro_cache
     seen_keys = set()
@@ -1835,10 +1897,17 @@ def _scan_spectros(
     bulk_manifest_ready = False
     if manifest_enabled and lazy_payload and file_records:
         try:
-            bulk_manifest_ready = all(
-                _manifest_entry_valid(manifest_entries.get(record["rel_key"]), mtime=record["mtime"], fsize=record["size"])
-                for record in file_records
-            )
+            invalid_records = [
+                record for record in file_records
+                if not _manifest_entry_valid(manifest_entries.get(record["rel_key"]), mtime=record["mtime"], fsize=record["size"])
+            ]
+            bulk_manifest_ready = not invalid_records
+            if invalid_records:
+                log_status(
+                    f"[Perf] Bulk manifest path skipped ({len(invalid_records)}/{len(file_records)} file(s) "
+                    f"invalidated it): {', '.join(r['path'].name for r in invalid_records[:5])}"
+                    + (" ..." if len(invalid_records) > 5 else "")
+                )
         except Exception:
             bulk_manifest_ready = False
 
@@ -1900,7 +1969,8 @@ def _scan_spectros(
             f"  Cache: {len(file_records)}/{len(file_records)} files (100% hit rate)  |  memory: 0  |  manifest: {stats.get('manifest_hits', 0)}  |  disk: 0  |  parsed: 0"
         )
         log_status(
-            f"  Timings: discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload 0 ms  |  raw parse 0 ms"
+            f"  Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
+            f"manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload 0 ms  |  raw parse 0 ms  |  matrix anchor {stats.get('anchor_ms', 0.0):.0f} ms"
         )
         try:
             json_line = {
@@ -1919,6 +1989,7 @@ def _scan_spectros(
             pass
         return specs, stats
 
+    _loop_t0 = time.perf_counter()
     for idx, record in enumerate(file_records, 1):
         spec_list = None
         parse_error = None
@@ -2021,8 +2092,13 @@ def _scan_spectros(
             grid_rows = info.get("grid_rows") or 1
             grid_cols = info.get("grid_cols") or 1
             _ensure_grid_indices(spec_list, grid_rows, grid_cols, zero_based=info.get("zero_based", True))
-            # Anchor all points of the matrix to a single reference image to avoid scatter
+            # Anchor all points of the matrix to a single reference image to avoid scatter.
+            # This is an uncached O(candidate_images x spectra_in_matrix) scan (see
+            # _assign_matrix_reference's inner containment loop) that reruns in full
+            # on every load regardless of how "warm" the spectro cache is.
+            t_anchor = time.perf_counter()
             chosen_key = _assign_matrix_reference(spec_list, viewer.headers, mtime, image_paths=image_paths, image_meta=getattr(viewer, "image_meta", None))
+            stats["anchor_ms"] = stats.get("anchor_ms", 0.0) + (time.perf_counter() - t_anchor) * 1000.0
             if not chosen_key and image_paths:
                 fallback_key = image_paths[0]
                 for s in spec_list:
@@ -2078,6 +2154,7 @@ def _scan_spectros(
         if total and (idx % progress_step == 0 or idx == total):
             pct = idx / total * 100.0
             log_status(f"  - spectroscopy load {idx}/{total} ({pct:4.0f}%)")
+    stats["loop_total_ms"] = (time.perf_counter() - _loop_t0) * 1000.0
     try:
         log_status("  - spectroscopy finalize metadata...")
     except Exception:
@@ -2128,7 +2205,10 @@ def _scan_spectros(
             f"  Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  manifest: {manifest_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
         )
         log_status(
-            f"  Timings: discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload {stats.get('disk_cache_ms', 0.0):.0f} ms  |  raw parse {stats.get('parse_ms', 0.0):.0f} ms"
+            f"  Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
+            f"manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload {stats.get('disk_cache_ms', 0.0):.0f} ms  |  "
+            f"raw parse {stats.get('parse_ms', 0.0):.0f} ms  |  matrix anchor {stats.get('anchor_ms', 0.0):.0f} ms  |  "
+            f"per-file loop total {stats.get('loop_total_ms', 0.0):.0f} ms"
         )
     if viewer.matrix_datasets:
         log_status("  Matrix datasets:")

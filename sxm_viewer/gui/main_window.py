@@ -634,7 +634,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_hist_cache = {}
         self.matrix_datasets = {}
         log_status("Loading header cache...")
+        _hc_t0 = time.perf_counter()
         self.header_cache = load_header_cache()
+        log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms | {len(self.header_cache)} entries")
         self._header_cache_dirty = False
         self.state = ViewerState.from_viewer(self)
         # Deprecated: previously stored concrete arrays for extra views
@@ -7105,8 +7107,32 @@ QLabel:hover {{
         }
         self._header_cache_dirty = True
 
+    def _prune_stale_header_cache_entries(self):
+        """Drop header-cache entries whose source file no longer exists.
+
+        Nothing else ever removes entries from this cache, so left alone it
+        grows across every folder ever opened for as long as the app is
+        used, making the JSON parse at startup slower and slower over time.
+        Only called from _save_header_cache (i.e. when the cache is already
+        being written back to disk), not on every load, so this doesn't add
+        a stat() call per cached entry to the common all-cached-hits path.
+
+        Guarded to run at most once per session: a folder full of files
+        never seen before (many cache misses -> many saves in a row) would
+        otherwise re-scan the entire multi-thousand-entry cache on every
+        single one of those saves, adding a real ~300-400ms each time a
+        session opens several new folders in a row.
+        """
+        if getattr(self, "_header_cache_pruned_this_session", False):
+            return
+        self._header_cache_pruned_this_session = True
+        stale_keys = [key for key in list(self.header_cache.keys()) if not os.path.exists(key)]
+        for key in stale_keys:
+            self.header_cache.pop(key, None)
+
     def _save_header_cache(self):
         if getattr(self, '_header_cache_dirty', False):
+            self._prune_stale_header_cache_entries()
             save_header_cache(self.header_cache)
             self._header_cache_dirty = False
 

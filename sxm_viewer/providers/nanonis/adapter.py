@@ -5,9 +5,11 @@ the GUI and the native (Omicron/Anfatec) pipeline.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 import re
 import shutil
 import sys
@@ -47,6 +49,17 @@ class ChannelExport:
     offset: float = 0.0
 
 
+_NANONIS_CONVERT_MAX_WORKERS = min(8, max(1, (os.cpu_count() or 4)))
+
+
+def _convert_one_scan_safe(reader, scan_path: Path, cache_root: Path) -> Optional[Path]:
+    try:
+        return _convert_scan_file(reader, scan_path, cache_root)
+    except Exception as exc:
+        log(f"[Nanonis] Failed to convert {scan_path.name}: {exc}")
+        return None
+
+
 def prepare_nanonis_folder(folder: Path | str) -> List[Path]:
     """Convert Nanonis scans within ``folder`` and return generated header paths."""
     folder = Path(folder)
@@ -59,15 +72,18 @@ def prepare_nanonis_folder(folder: Path | str) -> List[Path]:
         return []
     cache_root = folder / NANONIS_CACHE_DIRNAME
     cache_root.mkdir(exist_ok=True)
-    generated: List[Path] = []
-    for scan_path in scan_files:
-        try:
-            header_path = _convert_scan_file(reader, scan_path, cache_root)
-        except Exception as exc:
-            log(f"[Nanonis] Failed to convert {scan_path.name}: {exc}")
-            continue
-        if header_path is not None:
-            generated.append(header_path)
+    # Each scan file converts into its own hashed cache subdirectory (see
+    # _cache_dir_for), so conversions are fully independent of each other —
+    # a first-time load of a folder full of never-before-seen scans (no
+    # cache hits at all) was previously converting them one at a time at
+    # ~75-85 ms/file, which adds up to many seconds for a few hundred files.
+    # ThreadPoolExecutor.map still returns results in `scan_files` order.
+    with ThreadPoolExecutor(max_workers=_NANONIS_CONVERT_MAX_WORKERS) as executor:
+        results = executor.map(
+            lambda scan_path: _convert_one_scan_safe(reader, scan_path, cache_root),
+            scan_files,
+        )
+        generated = [header_path for header_path in results if header_path is not None]
     return generated
 
 
@@ -76,7 +92,7 @@ def prepare_nanonis_files(paths: Iterable[Path | str]) -> List[Path]:
     reader = _ensure_nanonis_reader()
     if reader is None:
         return []
-    generated: List[Path] = []
+    jobs: List[Tuple[Path, Path]] = []
     seen = set()
     for raw_path in paths or []:
         scan_path = Path(raw_path)
@@ -91,13 +107,15 @@ def prepare_nanonis_files(paths: Iterable[Path | str]) -> List[Path]:
         seen.add(key)
         cache_root = scan_path.parent / NANONIS_CACHE_DIRNAME
         cache_root.mkdir(exist_ok=True)
-        try:
-            header_path = _convert_scan_file(reader, scan_path, cache_root)
-        except Exception as exc:
-            log(f"[Nanonis] Failed to convert {scan_path.name}: {exc}")
-            continue
-        if header_path is not None:
-            generated.append(header_path)
+        jobs.append((scan_path, cache_root))
+    if not jobs:
+        return []
+    with ThreadPoolExecutor(max_workers=_NANONIS_CONVERT_MAX_WORKERS) as executor:
+        results = executor.map(
+            lambda job: _convert_one_scan_safe(reader, job[0], job[1]),
+            jobs,
+        )
+        generated = [header_path for header_path in results if header_path is not None]
     return generated
 
 
