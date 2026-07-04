@@ -314,6 +314,20 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.setAcceptDrops(True)
         log_status("Initializing SXM Viewer...")
         self._app_start_ts = time.perf_counter()
+        # Kick off the header-cache JSON load (pure I/O + parsing, no
+        # dependency on anything else in __init__) on a background thread as
+        # early as possible, so it overlaps with the Qt widget construction
+        # below instead of blocking it. In particular, the very first widget
+        # requiring text rendering pays a one-time ~400-500ms Qt font-
+        # subsystem warm-up cost on Windows (measured directly: unrelated to
+        # this app's code, present even for a bare QLineEdit in an empty
+        # script) - previously that cost was paid strictly *after* this load
+        # finished; now the two run concurrently.
+        self._header_cache_bg_result = {}
+        def _load_header_cache_bg():
+            self._header_cache_bg_result["cache"] = load_header_cache()
+        self._header_cache_thread = threading.Thread(target=_load_header_cache_bg, daemon=True)
+        self._header_cache_thread.start()
         self.setWindowTitle(APP_NAME)
         apply_window_icon(self)
         self.resize(*MAIN_WINDOW_SIZE)
@@ -635,8 +649,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.matrix_datasets = {}
         log_status("Loading header cache...")
         _hc_t0 = time.perf_counter()
-        self.header_cache = load_header_cache()
-        log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms | {len(self.header_cache)} entries")
+        # Join the background load started at the top of __init__ instead of
+        # loading synchronously here - by this point the load has usually
+        # already run concurrently with widget construction above, so this
+        # join is typically near-instant rather than paying the full cost.
+        self._header_cache_thread.join()
+        self.header_cache = self._header_cache_bg_result.get("cache", {})
+        log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms (background-overlapped) | {len(self.header_cache)} entries")
         self._header_cache_dirty = False
         self.state = ViewerState.from_viewer(self)
         # Deprecated: previously stored concrete arrays for extra views
