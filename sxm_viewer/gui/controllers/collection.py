@@ -125,6 +125,7 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
             "Choose collection file",
             start,
             "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
         )
         if path:
             self.path_edit.setText(path)
@@ -603,6 +604,7 @@ class CollectionController:
             "Choose current collection",
             start,
             "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
         )
         if not path:
             return
