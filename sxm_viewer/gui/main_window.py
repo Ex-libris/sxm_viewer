@@ -6706,6 +6706,22 @@ QLabel:hover {{
         self._refresh_collection_tray()
         self.show_collection_tray(activate=False)
 
+    def on_add_selected_thumbnails_to_collection_picker(self):
+        """Route the current thumbnail selection to a collection picked just for this batch -
+        does not change the current-collection target, so a different selection can go to a
+        different collection right after without any global re-targeting."""
+        targets = list(self._ordered_thumbnail_selection() or [])
+        if not targets:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Collections",
+                "Select one or more thumbnails first, then use this action.",
+            )
+            return
+        channel_idx = int(self.channel_dropdown.currentIndex() or 0)
+        entries = [{"file_path": str(path), "channel_index": channel_idx} for path in targets if path]
+        self.collection_controller.add_thumbnail_entries_to(entries)
+
     def show_collection_tray(self, activate=True):
         window = getattr(self, "collection_tray_window", None)
         if window is None:
@@ -6783,31 +6799,57 @@ QLabel:hover {{
             pass
 
     def _refresh_collection_toolbar_menu_labels(self):
-        """Update the toolbar 'Add Selected Thumbnails' entry with the live selection count -
-        connected to the Collections menu's aboutToShow so it's always current when opened."""
-        act = getattr(self, "toolbar_collection_add_selected_act", None)
-        if act is None:
-            return
+        """Update the toolbar's selection-dependent 'Add Selected Thumbnails' entries with the
+        live selection count - connected to the Collections menu's aboutToShow so it's always
+        current when opened."""
         try:
             selected = self._ordered_thumbnail_selection()
         except Exception:
             selected = []
         count = len(selected)
-        try:
-            if count > 1:
-                act.setText(f"Add Selected Thumbnails ({count})...")
-                act.setEnabled(True)
-                act.setToolTip("Add the currently selected thumbnails to the current collection as lightweight file references.")
-            elif count == 1:
-                act.setText("Add Selected Thumbnail...")
-                act.setEnabled(True)
-                act.setToolTip("Add the currently selected thumbnail to the current collection as a lightweight file reference.")
-            else:
-                act.setText("Add Selected Thumbnails...")
-                act.setEnabled(False)
-                act.setToolTip("Select one or more thumbnails first, then use this action.")
-        except Exception:
-            pass
+
+        act = getattr(self, "toolbar_collection_add_selected_act", None)
+        if act is not None:
+            try:
+                if count > 1:
+                    act.setText(f"Add Selected Thumbnails ({count})...")
+                    act.setEnabled(True)
+                    act.setToolTip("Add the currently selected thumbnails to the current collection as lightweight file references.")
+                elif count == 1:
+                    act.setText("Add Selected Thumbnail...")
+                    act.setEnabled(True)
+                    act.setToolTip("Add the currently selected thumbnail to the current collection as a lightweight file reference.")
+                else:
+                    act.setText("Add Selected Thumbnails...")
+                    act.setEnabled(False)
+                    act.setToolTip("Select one or more thumbnails first, then use this action.")
+            except Exception:
+                pass
+
+        act_to = getattr(self, "toolbar_collection_add_selected_to_act", None)
+        if act_to is not None:
+            try:
+                if count > 1:
+                    act_to.setText(f"Add Selected Thumbnails ({count}) to...")
+                    act_to.setEnabled(True)
+                    act_to.setToolTip(
+                        "Route the currently selected thumbnails to a collection you pick now - "
+                        "does not change your current collection target."
+                    )
+                elif count == 1:
+                    act_to.setText("Add Selected Thumbnail to...")
+                    act_to.setEnabled(True)
+                    act_to.setToolTip(
+                        "Route the currently selected thumbnail to a collection you pick now - "
+                        "does not change your current collection target."
+                    )
+                else:
+                    act_to.setText("Add Selected Thumbnails to...")
+                    act_to.setEnabled(False)
+                    act_to.setToolTip("Select one or more thumbnails first, then use this action.")
+            except Exception:
+                pass
+
         self._refresh_recent_collections_menu()
 
     def _refresh_recent_collections_menu(self):
@@ -9361,6 +9403,20 @@ QLabel:hover {{
         add_selected_collection_act.setEnabled(selected_count > 0)
         add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
         collection_menu.addAction(add_selected_collection_act)
+        add_label_to = (
+            f"Add Selected Thumbnails ({selected_count}) to..." if selected_count > 1
+            else "Add Selected Thumbnail to..." if selected_count == 1
+            else "Add Selected Thumbnails to..."
+        )
+        add_selected_collection_to_act = QtWidgets.QAction(add_label_to, collection_menu)
+        add_selected_collection_to_act.setEnabled(selected_count > 0)
+        add_selected_collection_to_act.setToolTip(
+            "Route the selected thumbnail(s) to a collection you pick now - does not change your "
+            "current collection target."
+            if selected_count > 0 else "Select one or more thumbnails first, then use this action."
+        )
+        add_selected_collection_to_act.triggered.connect(self.on_add_selected_thumbnails_to_collection_picker)
+        collection_menu.addAction(add_selected_collection_to_act)
         remove_selected_collection_act = QtWidgets.QAction("Remove Selected Thumbnails from Collection", collection_menu)
         remove_selected_collection_act.triggered.connect(
             lambda: self.collection_controller.remove_thumbnail_entries(

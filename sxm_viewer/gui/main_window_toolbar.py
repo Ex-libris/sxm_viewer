@@ -108,6 +108,9 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_add_selected_act = viewer.toolbar_collection_menu.addAction(
         "Add Selected Thumbnails...", viewer.on_add_selected_thumbnails_to_collection
     )
+    viewer.toolbar_collection_add_selected_to_act = viewer.toolbar_collection_menu.addAction(
+        "Add Selected Thumbnails to...", viewer.on_add_selected_thumbnails_to_collection_picker
+    )
     viewer.toolbar_collection_menu.addAction("Add Current Preview...", viewer.on_add_current_preview_to_collection)
     viewer.toolbar_collection_menu.addAction("Add Active Pop-up...", viewer.on_add_active_popup_to_collection)
     viewer.toolbar_collection_menu.addAction("Add All Open Pop-ups...", viewer.on_add_all_popups_to_collection)

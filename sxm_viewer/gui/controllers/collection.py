@@ -15,6 +15,17 @@ from ..thumbnail_render import array_to_qimage
 RECENT_COLLECTION_LIMIT = 30
 
 
+def _normalize_collection_path(path) -> Path:
+    """Ensure a user-picked/typed path ends in the .sxmcoll.json double-suffix."""
+    collection_path = Path(path)
+    if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
+        if collection_path.suffix.lower() == ".json":
+            collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
+        else:
+            collection_path = collection_path.with_suffix(".sxmcoll.json")
+    return collection_path
+
+
 _COLLECTION_HELP_HTML = (
     "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
     "while browsing several folders, then reopen it later like a virtual folder with full "
@@ -144,6 +155,203 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
 
     def values(self):
         return self.path_edit.text().strip(), ("portable" if self.portable_rb.isChecked() else "linked")
+
+
+class _CollectionQuickPickDialog(QtWidgets.QDialog):
+    """Pick a specific collection to route this one batch to, without changing the app's global
+    current-collection target. Always offers an explicit, separately-labeled "+ New Collection..."
+    choice distinct from picking an existing one - creating vs. appending is never left to "type a
+    name and hope"."""
+
+    _NEW_MARKER = "__new_collection__"
+    _BROWSE_MARKER = "__browse_collection__"
+
+    def __init__(self, parent, *, source_summary: str, recent_collections, default_dir: Path):
+        super().__init__(parent)
+        self.setWindowTitle("Add To Collection...")
+        self.setModal(True)
+        self.resize(480, 0)
+        self._default_dir = Path(default_dir)
+        self._resolved_path = None
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        intro = QtWidgets.QLabel(
+            "Route this selection to a specific collection. This does not change your current "
+            "collection or affect any other collection.",
+            self,
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        summary = QtWidgets.QLabel(source_summary, self)
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #555;")
+        layout.addWidget(summary)
+
+        self.combo = QtWidgets.QComboBox(self)
+        recent_collections = list(recent_collections or [])
+        for path in recent_collections:
+            self.combo.addItem(self._display_label(path), str(path))
+        if recent_collections:
+            self.combo.insertSeparator(self.combo.count())
+        self.combo.addItem("+ New Collection...", self._NEW_MARKER)
+        self.combo.addItem("Browse for Existing Collection...", self._BROWSE_MARKER)
+        layout.addWidget(self.combo)
+
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(self.status_label)
+
+        self.advanced_toggle = QtWidgets.QToolButton(self)
+        self.advanced_toggle.setText("Advanced: storage mode for pop-up/crop snapshots")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setStyleSheet("QToolButton { border: none; }")
+        self.advanced_toggle.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self.advanced_toggle)
+
+        self.mode_group = QtWidgets.QGroupBox(self)
+        mode_layout = QtWidgets.QVBoxLayout(self.mode_group)
+        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setSpacing(6)
+        mode_note = QtWidgets.QLabel(
+            "Only affects pop-up and crop-history items, which are saved as a rendered snapshot "
+            "because they carry overlay/crop state a plain reference can't represent. Plain "
+            "thumbnail and preview adds are always lightweight references either way.",
+            self.mode_group,
+        )
+        mode_note.setWordWrap(True)
+        mode_note.setStyleSheet("color: #555;")
+        mode_layout.addWidget(mode_note)
+        self.linked_rb = QtWidgets.QRadioButton(
+            "Linked (recommended) - reopen the original source when possible", self.mode_group
+        )
+        self.linked_rb.setChecked(True)
+        self.portable_rb = QtWidgets.QRadioButton(
+            "Portable - cache the rendered image so it's safe to move or share", self.mode_group
+        )
+        mode_layout.addWidget(self.linked_rb)
+        mode_layout.addWidget(self.portable_rb)
+        self.mode_group.setVisible(False)
+        layout.addWidget(self.mode_group)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal,
+            self,
+        )
+        help_btn = buttons.addButton("What is a collection?", QtWidgets.QDialogButtonBox.HelpRole)
+        help_btn.clicked.connect(self._show_help)
+        self._ok_button = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if recent_collections:
+            self._resolved_path = str(recent_collections[0])
+        self._update_status_label()
+        self.combo.currentIndexChanged.connect(self._on_combo_changed)
+
+    @staticmethod
+    def _display_label(path) -> str:
+        name = Path(path).name
+        if name.lower().endswith(".sxmcoll.json"):
+            return name[: -len(".sxmcoll.json")]
+        return name
+
+    def _update_status_label(self):
+        if self._resolved_path:
+            if Path(self._resolved_path).exists():
+                self.status_label.setText(f"Will append to the existing collection: {self._resolved_path}")
+            else:
+                self.status_label.setText(f"Will create a new collection: {self._resolved_path}")
+        else:
+            self.status_label.setText(
+                "No recent collections yet - choose \"+ New Collection...\" or "
+                "\"Browse for Existing Collection...\" above."
+            )
+        self._ok_button.setEnabled(self._resolved_path is not None)
+
+    def _on_combo_changed(self, index):
+        data = self.combo.itemData(index)
+        if data == self._NEW_MARKER:
+            self._prompt_new_collection()
+        elif data == self._BROWSE_MARKER:
+            self._prompt_browse_existing()
+        else:
+            self._resolved_path = data
+            self._update_status_label()
+
+    def _prompt_new_collection(self):
+        start = str(self._default_dir / "new_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Name the new collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+            options=QtWidgets.QFileDialog.DontConfirmOverwrite,
+        )
+        if not path:
+            self._revert_combo_selection()
+            return
+        self._insert_and_select(str(_normalize_collection_path(path)), is_new=True)
+
+    def _prompt_browse_existing(self):
+        start = str(self._default_dir / "analysis_collection.sxmcoll.json")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Choose an existing collection",
+            start,
+            "SXM Collection (*.sxmcoll.json);;JSON (*.json)",
+        )
+        if not path:
+            self._revert_combo_selection()
+            return
+        self._insert_and_select(str(Path(path)), is_new=False)
+
+    def _insert_and_select(self, path_str, *, is_new):
+        self.combo.blockSignals(True)
+        for i in range(self.combo.count()):
+            if self.combo.itemData(i) == path_str:
+                self.combo.setCurrentIndex(i)
+                self.combo.blockSignals(False)
+                self._resolved_path = path_str
+                self._update_status_label()
+                return
+        label = self._display_label(path_str) + (" (new)" if is_new else "")
+        self.combo.insertItem(0, label, path_str)
+        self.combo.setCurrentIndex(0)
+        self.combo.blockSignals(False)
+        self._resolved_path = path_str
+        self._update_status_label()
+
+    def _revert_combo_selection(self):
+        self.combo.blockSignals(True)
+        found = False
+        if self._resolved_path:
+            for i in range(self.combo.count()):
+                if self.combo.itemData(i) == self._resolved_path:
+                    self.combo.setCurrentIndex(i)
+                    found = True
+                    break
+        if not found:
+            self.combo.setCurrentIndex(-1)
+        self.combo.blockSignals(False)
+
+    def _on_advanced_toggled(self, checked):
+        self.advanced_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self.mode_group.setVisible(checked)
+
+    def _show_help(self):
+        QtWidgets.QMessageBox.information(self, "Collections", _COLLECTION_HELP_HTML)
+
+    def values(self):
+        return self._resolved_path, ("portable" if self.portable_rb.isChecked() else "linked")
 
 
 class CollectionController:
@@ -383,6 +591,41 @@ class CollectionController:
                 ),
             )
 
+    def add_thumbnail_entries_to(self, entries):
+        """Add plain thumbnail/file entries to a collection the user picks for this batch only -
+        does not change the app's current-collection target. This is how you route different
+        selections from the same folder into different collections without repeatedly
+        re-choosing the global current collection."""
+        built_items = []
+        for entry in list(entries or []):
+            if not isinstance(entry, dict):
+                continue
+            file_path = str(entry.get("file_path") or "").strip()
+            channel_idx = entry.get("channel_index")
+            if not file_path or channel_idx is None:
+                continue
+            item = self._build_reference_item(file_path, channel_idx, source_kind="thumbnail")
+            if item:
+                built_items.append(item)
+        if not built_items:
+            return
+        dlg = _CollectionQuickPickDialog(
+            self.viewer,
+            source_summary=f"Add {len(built_items)} thumbnail selection(s) to a specific collection.",
+            recent_collections=getattr(self.viewer, "recent_collections", []),
+            default_dir=self._collection_dialog_start_dir(),
+        )
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        path, mode = dlg.values()
+        if not path:
+            return
+        self._save_items(
+            built_items,
+            source_summary="",
+            target=(_normalize_collection_path(path), mode),
+        )
+
     def add_from_view_drag_payload(self, payload: dict):
         """Add a dragged preview view: a lightweight reference for a plain view, or a legacy
         baked snapshot for a view carrying crop/filter/overlay state a reference can't capture."""
@@ -613,12 +856,7 @@ class CollectionController:
         )
         if not path:
             return
-        collection_path = Path(path)
-        if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
-            if collection_path.suffix.lower() == ".json":
-                collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
-            else:
-                collection_path = collection_path.with_suffix(".sxmcoll.json")
+        collection_path = _normalize_collection_path(path)
         already_exists = collection_path.exists()
         mode = "linked"
         item_count = 0
@@ -800,12 +1038,7 @@ class CollectionController:
             path, mode = self._prompt_target(source_summary)
         if not path:
             return
-        collection_path = Path(path)
-        if collection_path.suffix.lower() != ".json" or not collection_path.name.endswith(".sxmcoll.json"):
-            if collection_path.suffix.lower() == ".json":
-                collection_path = collection_path.with_name(collection_path.stem + ".sxmcoll.json")
-            else:
-                collection_path = collection_path.with_suffix(".sxmcoll.json")
+        collection_path = _normalize_collection_path(path)
         try:
             payload = self._load_or_init_payload(collection_path, mode=mode)
             mode = str(payload.get("default_mode") or mode or "linked")
