@@ -523,6 +523,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._thumbnail_render_state_timer.setSingleShot(True)
         self._thumbnail_render_state_timer.timeout.connect(self._flush_thumbnail_render_state_refresh)
         self._thumbnail_render_state_pending_paths = set()
+        self._preview_request_timer = QtCore.QTimer(self)
+        self._preview_request_timer.setSingleShot(True)
+        self._preview_request_timer.timeout.connect(self._flush_preview_request)
+        self._pending_preview_request = None
+        self._preview_render_in_progress = False
         self._spectro_manifest_save_timer = QtCore.QTimer(self)
         self._spectro_manifest_save_timer.setSingleShot(True)
         self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
@@ -629,7 +634,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_hist_cache = {}
         self.matrix_datasets = {}
         log_status("Loading header cache...")
+        _hc_t0 = time.perf_counter()
         self.header_cache = load_header_cache()
+        log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms | {len(self.header_cache)} entries")
         self._header_cache_dirty = False
         self.state = ViewerState.from_viewer(self)
         # Deprecated: previously stored concrete arrays for extra views
@@ -3320,13 +3327,19 @@ QLabel:hover {{
                         del self._spectro_selection_before_drag
                     return True
 
-        # When the thumbnail viewport or container is resized, debounce and repopulate so
-        # the thumbnail grid recomputes columns responsively.
+        # Only reflow the thumbnail grid when the available viewport width changes.
+        # Height/content resizes happen constantly during lazy loading and should not
+        # rebuild the whole thumbnail panel.
         if obj in (getattr(self, '_thumb_viewport', None),
                    getattr(self, 'thumb_container', None),
                    getattr(self, 'scroll', None)) and event.type() == QtCore.QEvent.Resize:
             try:
-                self._thumbs_reflow_timer.start(150)
+                vp = getattr(self, '_thumb_viewport', None)
+                width = int(vp.width()) if vp is not None else int(getattr(obj, "width", lambda: 0)())
+                prev_width = int(getattr(self, "_last_thumb_reflow_width", 0) or 0)
+                if abs(width - prev_width) >= 2:
+                    self._last_thumb_reflow_width = width
+                    self._thumbs_reflow_timer.start(150)
             except Exception:
                 pass
         if obj in thumb_objects and event.type() in (QtCore.QEvent.Scroll, QtCore.QEvent.Wheel):
@@ -5658,22 +5671,27 @@ QLabel:hover {{
     def _get_filtered_channel_array(self, file_key, channel_idx, header, fd):
         file_key = str(file_key)
         channel_key = self._channel_cache_key(file_key, channel_idx, fd)
-        arr = self._get_channel_array(file_key, channel_idx, header, fd)
         unit = fd.get('PhysUnit','')
-        unit_final, arr_conv = normalize_unit_and_data(arr, unit)
         spec = self.thumbnail_filters.get(file_key)
         sig = _filter_signature(spec)
-        cache_key = (channel_key, unit_final, sig)
+        cache_key = (channel_key, str(unit or ""), sig)
         with self._filtered_cache_lock:
             cached = self._filtered_channel_cache.get(cache_key)
             if cached is not None:
                 self._filtered_channel_cache.move_to_end(cache_key)
-                return unit_final, cached
+                try:
+                    unit_final, result = cached
+                    return unit_final, result
+                except Exception:
+                    unit_final, _ = normalize_unit_and_data(np.asarray([], dtype=float), unit)
+                    return unit_final, cached
+        arr = self._get_channel_array(file_key, channel_idx, header, fd)
+        unit_final, arr_conv = normalize_unit_and_data(arr, unit)
         result = np.asarray(arr_conv, dtype=float)
         if sig:
             result = self._apply_filter_pipeline(result, spec.get('steps', []))
         with self._filtered_cache_lock:
-            self._filtered_channel_cache[cache_key] = result
+            self._filtered_channel_cache[cache_key] = (unit_final, result)
             while len(self._filtered_channel_cache) > FILTERED_CACHE_LIMIT:
                 self._filtered_channel_cache.popitem(last=False)
         return unit_final, result
@@ -6047,13 +6065,38 @@ QLabel:hover {{
         labels = getattr(self, '_thumb_labels', {}) or {}
         if not labels:
             return
+        keys_to_refresh = set()
+        try:
+            cols = max(1, int(getattr(self, 'thumb_grid_columns', 1) or 1))
+            card_h = int(getattr(self, '_thumb_card_height', None) or (self.thumb_size_px + 48))
+            scroll = getattr(self, 'scroll', None)
+            vp = getattr(self, '_thumb_viewport', None)
+            y0 = scroll.verticalScrollBar().value() if scroll is not None else 0
+            vh = vp.height() if vp is not None else card_h * 4
+            first_row = max(0, int(y0 // max(1, card_h)) - 2)
+            last_row = int((y0 + vh) // max(1, card_h)) + 2
+            current = list(getattr(self, "current_thumb_files", []) or [])
+            start_idx = max(0, first_row * cols)
+            end_idx = min(len(current), (last_row + 1) * cols)
+            keys_to_refresh.update(str(key) for key in current[start_idx:end_idx])
+        except Exception:
+            keys_to_refresh = set(labels.keys())
+        try:
+            selected = str(getattr(self, "selected_file_for_thumbs", "") or "")
+            if selected:
+                keys_to_refresh.add(selected)
+        except Exception:
+            pass
+        if not keys_to_refresh:
+            return
         try:
             cmap_name = self.thumb_cmap_combo.currentText()
         except Exception:
             cmap_name = None
         if not cmap_name:
             cmap_name = getattr(self, 'thumb_cmap', 'viridis')
-        for file_key, label in labels.items():
+        for file_key in keys_to_refresh:
+            label = labels.get(str(file_key))
             if label is None:
                 continue
             try:
@@ -6179,10 +6222,38 @@ QLabel:hover {{
             bar = scroll.verticalScrollBar()
             if bar is None:
                 return None
+            value = int(bar.value())
+            anchor_key = None
+            anchor_offset = 0
+            try:
+                widgets = []
+                for mapping in (
+                    getattr(self, "thumb_widgets", {}) or {},
+                    getattr(self, "spectro_thumb_widgets", {}) or {},
+                ):
+                    for key, widget in mapping.items():
+                        if widget is None:
+                            continue
+                        try:
+                            y = int(widget.y())
+                            h = int(widget.height())
+                        except Exception:
+                            continue
+                        widgets.append((y, h, str(key)))
+                widgets.sort(key=lambda item: item[0])
+                for y, h, key in widgets:
+                    if y + max(1, h) >= value:
+                        anchor_key = key
+                        anchor_offset = max(0, value - y)
+                        break
+            except Exception:
+                anchor_key = None
             return {
-                "value": int(bar.value()),
+                "value": value,
                 "maximum": int(bar.maximum()),
-                "ratio": float(bar.value()) / float(bar.maximum()) if int(bar.maximum()) > 0 else 0.0,
+                "ratio": float(value) / float(bar.maximum()) if int(bar.maximum()) > 0 else 0.0,
+                "anchor_key": anchor_key,
+                "anchor_offset": int(anchor_offset),
             }
         except Exception:
             return None
@@ -6199,9 +6270,20 @@ QLabel:hover {{
                 bar = scroll.verticalScrollBar()
                 if bar is None:
                     return
+                anchor_key = str(state.get("anchor_key") or "")
+                anchor_widget = None
+                if anchor_key:
+                    anchor_widget = (getattr(self, "thumb_widgets", {}) or {}).get(anchor_key)
+                    if anchor_widget is None:
+                        anchor_widget = (getattr(self, "spectro_thumb_widgets", {}) or {}).get(anchor_key)
                 old_max = int(state.get("maximum") or 0)
                 value = int(state.get("value") or 0)
-                if old_max > 0 and int(bar.maximum()) != old_max:
+                if anchor_widget is not None:
+                    try:
+                        value = int(anchor_widget.y()) + int(state.get("anchor_offset") or 0)
+                    except Exception:
+                        pass
+                elif old_max > 0 and int(bar.maximum()) != old_max:
                     value = int(round(float(state.get("ratio") or 0.0) * int(bar.maximum())))
                 bar.setValue(max(0, min(value, int(bar.maximum()))))
             except Exception:
@@ -6209,7 +6291,7 @@ QLabel:hover {{
 
         _restore()
         if delayed:
-            for delay in (0, 50, 150, 300):
+            for delay in (0, 50, 150, 300, 700, 1200):
                 QtCore.QTimer.singleShot(delay, _restore)
 
     # NOTE: removed on_file_channel_selected and on_file_channel_show_clicked
@@ -6217,6 +6299,55 @@ QLabel:hover {{
     # functionality is available via the thumbnail UI and the "Add channel view" dialog.
 
     # ---------- preview + metadata ---------- 
+    def request_show_file_channel(self, header_path_str, channel_idx: int, use_local_cmap: bool = False):
+        try:
+            key = str(header_path_str) if header_path_str is not None else ""
+            idx = int(channel_idx)
+        except Exception:
+            return
+        if not key:
+            return
+        self._pending_preview_request = (key, idx, bool(use_local_cmap))
+        try:
+            if not self._preview_request_timer.isActive():
+                self._preview_request_timer.start(0)
+        except Exception:
+            self._flush_preview_request()
+
+    def _flush_preview_request(self):
+        if getattr(self, "_preview_render_in_progress", False):
+            return
+        request = getattr(self, "_pending_preview_request", None)
+        self._pending_preview_request = None
+        if not request:
+            return
+        try:
+            key, idx, use_local_cmap = request
+        except Exception:
+            return
+        try:
+            current_preview = getattr(self, "last_preview", None)
+            current_views = getattr(getattr(self, "preview_canvas", None), "views", None)
+            if (
+                current_preview
+                and str(current_preview[0]) == str(key)
+                and int(current_preview[1]) == int(idx)
+                and current_views
+            ):
+                return
+        except Exception:
+            pass
+        self._preview_render_in_progress = True
+        try:
+            self.show_file_channel(key, idx, use_local_cmap=bool(use_local_cmap))
+        finally:
+            self._preview_render_in_progress = False
+        if getattr(self, "_pending_preview_request", None):
+            try:
+                self._preview_request_timer.start(0)
+            except Exception:
+                self._flush_preview_request()
+
     def show_file_channel(self, header_path_str, channel_idx:int, use_local_cmap=False):
         highlight = getattr(self, '_highlighted_spec', None)
         if highlight:
@@ -6842,8 +6973,32 @@ QLabel:hover {{
         }
         self._header_cache_dirty = True
 
+    def _prune_stale_header_cache_entries(self):
+        """Drop header-cache entries whose source file no longer exists.
+
+        Nothing else ever removes entries from this cache, so left alone it
+        grows across every folder ever opened for as long as the app is
+        used, making the JSON parse at startup slower and slower over time.
+        Only called from _save_header_cache (i.e. when the cache is already
+        being written back to disk), not on every load, so this doesn't add
+        a stat() call per cached entry to the common all-cached-hits path.
+
+        Guarded to run at most once per session: a folder full of files
+        never seen before (many cache misses -> many saves in a row) would
+        otherwise re-scan the entire multi-thousand-entry cache on every
+        single one of those saves, adding a real ~300-400ms each time a
+        session opens several new folders in a row.
+        """
+        if getattr(self, "_header_cache_pruned_this_session", False):
+            return
+        self._header_cache_pruned_this_session = True
+        stale_keys = [key for key in list(self.header_cache.keys()) if not os.path.exists(key)]
+        for key in stale_keys:
+            self.header_cache.pop(key, None)
+
     def _save_header_cache(self):
         if getattr(self, '_header_cache_dirty', False):
+            self._prune_stale_header_cache_entries()
             save_header_cache(self.header_cache)
             self._header_cache_dirty = False
 
@@ -7640,10 +7795,22 @@ QLabel:hover {{
             arr = view.get("arr")
         except Exception:
             return None, None, None
-        vmin, vmax, finite = self._contrast_finite_values(arr)
+        try:
+            data = np.asarray(arr, dtype=float)
+        except Exception:
+            return None, None, None
+        if data.ndim == 2:
+            try:
+                region = detect_valid_scan_region(data)
+            except Exception:
+                region = None
+            if region:
+                r0, r1 = region
+                data = data[r0:r1 + 1, :]
+        finite = data[np.isfinite(data)]
         if finite.size == 0:
             return None, None, None
-        return vmin, vmax, finite
+        return float(np.nanmin(finite)), float(np.nanmax(finite)), finite
 
     def _recommended_view_clim(self, view, *, pct_low=1.0, pct_high=99.0):
         if not view:
@@ -7705,14 +7872,14 @@ QLabel:hover {{
 
     def _reset_contrast(self, canvas):
         view = self._resolve_canvas_contrast_target(canvas)
-        suggested = self._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
-        if suggested is None:
+        vmin, vmax, _finite = self._view_finite_values(view)
+        if vmin is None or vmax is None:
             return
         try:
             canvas.push_undo_state("reset_contrast")
         except Exception:
             pass
-        self._apply_clim_to_view(canvas, view, suggested[0], suggested[1])
+        self._apply_clim_to_view(canvas, view, vmin, vmax)
 
     def _open_histogram_dialog(self, canvas):
         open_histogram_dialog(self, canvas)
@@ -7900,7 +8067,7 @@ QLabel:hover {{
             return
         if getattr(self, "_spectros_loading", False):
             return
-        self.ensure_spectros_loaded(refresh=True)
+        self.ensure_spectros_loaded(refresh=bool(getattr(self, "show_spectro_miniatures", False)))
 
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
@@ -10705,7 +10872,8 @@ QLabel:hover {{
             controller.update_hint()
 
     def _on_preview_canvas_state_changed(self, canvas):
-        self._store_canvas_view_clims(canvas)
+        if not getattr(self, "_suppress_thumbnail_clim_sync", False):
+            self._store_canvas_view_clims(canvas)
         self._on_canvas_display_options_changed(canvas)
         self._update_quick_crop_hint()
 

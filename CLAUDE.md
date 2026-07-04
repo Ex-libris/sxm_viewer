@@ -1,0 +1,355 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+SXM Viewer is a Python/PyQt5 desktop application for scientific SPM (Scanning
+Probe Microscopy) data analysis and visualization. It natively supports
+Anfatec/Omicron file formats and, via a conversion adapter, Nanonis `.sxm`
+files.
+
+## Commands
+
+Setup and run (from repo root, PowerShell):
+
+```powershell
+conda create -n sxmviewer python=3.11
+conda activate sxmviewer
+cd .\scripts
+python -m pip install -r .\requirements.txt
+cd ..
+python -m sxm_viewer
+```
+
+- Legacy launch shim: `python sxm_grid_viewer.py` (forwards to `python -m sxm_viewer`).
+- There is no lint/format/test tooling configured for the main package (no
+  `pyproject.toml`, `setup.cfg`, `pytest.ini`, or CI test workflow) — verify
+  changes by running the app manually. The one exception is the vendored
+  `nanonispy2` reader (see below), which ships its own `tests/test_read.py`.
+- `scripts/install.py` / `scripts/install_sxm_viewer.bat` /
+  `scripts/run_sxm_viewer.bat` are Windows installer/launcher helpers, not
+  part of the app's runtime import path.
+
+## Architecture
+
+### Package layout (`sxm_viewer/`)
+
+- `config.py`, `config_defaults.py`, `config_io.py` — user config file
+  (`~/.sxm_viewer_config.json`), header cache (`~/.sxm_viewer_header_cache.json`,
+  bump `HEADER_CACHE_VERSION` on breaking format changes), and in-memory
+  cache size limits (`CHANNEL_DATA_CACHE_LIMIT`, `FILTERED_CACHE_LIMIT`).
+- `_shared.py` — common Qt/matplotlib/numpy imports re-exported for the GUI
+  layer, plus a process-wide patch of `FigureCanvasQTAgg.resizeEvent` to guard
+  against non-finite/zero resize events. `matplotlib.use("Agg")` is set here.
+- `app_meta.py` — app name/org constants and window-icon discovery
+  (`samples/app_icon.*`).
+- `cli.py` — the real entry point (`python -m sxm_viewer` → `__main__.py` →
+  `cli.main()`), which builds the `QApplication` and shows `SXMGridViewer`.
+- `data/` — format-agnostic parsing: `io.py` (Omicron/Anfatec header + channel
+  parsing, `parse_header`/`read_channel_file`/`normalize_unit_and_data`),
+  `spectroscopy.py` (`.dat` metadata, axis helpers, matrix-scan detection),
+  `matrix.py` (`MatrixDataset` representation).
+- `processing/` — `filters.py` (image filter definitions/pipeline),
+  `detection.py` (topography-channel auto-detection), `nanonis_adapter.py`
+  (thin re-export shim into `providers/nanonis`).
+- `providers/` — format-specific adapters, kept import-isolated from GUI/Qt:
+  - `nanonis/adapter.py` converts Nanonis `.sxm` scans into Omicron-style
+    header/channel caches (`.sxmviewer_nanonis/` folders next to the data,
+    gitignored). Channel caches are binary `.npy`; CH/CC tag auto-detection
+    reuses cached results when the header and topography source are
+    unchanged, so warm reloads skip redundant topography re-reads.
+  - `nanonis/vendor/` bundles `nanonispy2` upstream — **do not edit**, it
+    mirrors an external package and is the only place with its own tests.
+- `utils/` — small helpers (`units.py` unit parsing/formatting, `logging.py`).
+- `gui/` — the Qt UI (see below).
+
+### GUI structure (`gui/`)
+
+`main_window.py` (`SXMGridViewer`) is the top-level coordinator: it builds the
+shared widgets (thumbnail list, preview canvas, toolbars), instantiates
+feature controllers, and wires high-level events (folder load, theme switch).
+It is intentionally large/monolithic as the historical center of the app —
+new feature logic should generally *not* be added directly here once it grows
+non-trivial; instead follow the extension pattern below.
+
+```
+gui/
+├── main_window.py            # SXMGridViewer: composition root
+├── main_window_layout.py     # layout helpers, shortcuts panel
+├── main_window_toolbar.py    # toolbar actions, dark-mode toggle
+├── main_window_spectro.py    # spectro dock wiring
+├── controllers/              # feature controllers, see table below
+├── viewer/                   # thumbnail loading/rendering, preview, loader, measurement, state
+├── dialogs/                  # modal dialogs (histogram/profile/filters/spectroscopy/matrix-fit)
+├── canvases/                 # canvas workspace window, tiles, rendering, molecule overlays
+├── spectroscopy/             # spectroscopy browser/controller/overlays/popups
+├── workers/                  # QThread-based background workers (e.g. batch export)
+└── thumbnail_render.py, minimap.py, palettes.py, styles.py, ...  # shared widgets/utilities
+```
+
+Controllers in `gui/controllers/` expose a compact API (e.g.
+`show_histogram()`, `handle_thumbnail_event()`) and receive only the widgets/
+callbacks they need — dependencies are explicit, not implicit via shared
+mutable state:
+
+| Controller | Responsibilities |
+| --- | --- |
+| `preview_popup.py` | pop-out window spawning, toolbar sync |
+| `thumbnail_controller.py` | thumbnail clicks, drag-to-canvas, keyboard nav, CH/CC tagging |
+| `histogram.py` | Histogram & Range dialog, auto CLIM, live preview updates |
+| `profile.py` | wires canvases to `ProfileDialog`, keeps measurements/overlays in sync |
+| `spectro_compare.py` | spectroscopy comparison workflows, trace export, minima |
+| `quick_crop.py` | quick crop panel, overlays, pop-out history |
+| `collection.py` | collection/session-level state across loaded scans |
+| `filter_controller.py` | image filter pipeline application/state |
+| `image_compare.py` | side-by-side/overlay image comparison workflows |
+| `session.py` | serializes/deserializes full viewer state to session JSON files |
+
+**Extending the GUI**: prototype new cross-widget features inline in
+`main_window.py` first; once the workflow solidifies, move it into a new
+controller module with a documented public surface (expected widgets,
+signals) and wire it up via composition in the main window constructor. This
+is how the current controller set came to exist and keeps `main_window.py`
+navigable despite its size.
+
+Widgets/canvases (`viewer/`, `canvases/`) and dialogs (`dialogs/`) stay pure
+UI: they emit Qt signals but do not reach back into `main_window` directly;
+controllers subscribe to those signals instead.
+
+### The `gui/viewer/*.py` module-function convention
+
+`gui/viewer/thumbnail_ui.py`, `preview.py`, `loader.py`, `measurement.py`, and
+`export.py` do **not** define classes. Every top-level function takes the
+`SXMGridViewer` instance as its first parameter (conventionally named
+`viewer`) and reads/writes `viewer.*` attributes directly — e.g.
+`populate_thumbnails_for_channel(viewer, channel_idx)`,
+`show_file_channel(viewer, header_path_str, channel_idx)`,
+`load_folder(viewer, folder)`. `main_window.py` exposes each as a one-line
+bound-method shim (e.g. `SXMGridViewer.on_thumb_sort_changed` just calls
+`viewer_thumb_ui.on_thumb_sort_changed(self, idx)`). This is a mixin achieved
+via plain functions instead of actual mixin classes — when adding a thumbnail/
+preview/loader/measurement/export feature, add a function here rather than a
+method on `SXMGridViewer`. Note this differs from `gui/controllers/*.py`,
+where `SessionController`/`CollectionController`/etc. are real classes
+holding `self.viewer` — that inconsistency is historical, not a rule to
+replicate deliberately.
+
+## Feature reference: where to find things
+
+Line numbers below are approximate (as of the code at documentation time) —
+files like `main_window.py` and `detail_preview_canvas.py` change often, so
+re-grep the method name to confirm before relying on an exact line.
+
+### Menus & toolbars
+- `SXMGridViewer` is a `QtWidgets.QWidget`, not `QMainWindow` — there is no
+  classic `menuBar()`. "Menus" are `QToolButton`s with attached `QMenu`s.
+  Toolbar assembly lives in `gui/main_window_toolbar.py`
+  (`create_main_toolbar`, `update_toolbar_actions`), invoked from
+  `SXMGridViewer.__init__`.
+- Menu population helpers in `main_window.py`: `_populate_browse_molecules_menu`,
+  `_refresh_recent_dirs_menu`, `_refresh_recent_session_dirs_menu`.
+- Right-click/context menus (not the toolbar) are separate methods:
+  `_on_thumb_context_menu`, `_on_spectro_thumb_context_menu`,
+  `_populate_marker_style_menu` in `main_window.py`.
+- The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
+  and its tabbed side panel are built independently of the main window's.
+- Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
+  own menus, e.g. `SpectroscopyPopup.trace_style_menu`/`legend_menu`/`filters_menu`.
+
+### Keyboard shortcuts
+- `SXMGridViewer.keyPressEvent` — Ctrl+A (select all thumbnails, only when
+  focus is in the thumbnail area), Ctrl+C (copy thumbnail selection to
+  clipboard as files), Ctrl+D (duplicate preview popup), arrow keys (thumbnail
+  navigation).
+- `QShortcut`s registered in `SXMGridViewer.__init__`: Ctrl+Shift+C/Z/W/R/T/M
+  for quick-crop toggle/undo/close/real-size/template/minimize,
+  Ctrl+Shift+P (recall popups), Ctrl+S (save session).
+- `_init_mode_shortcuts` wires per-mode shortcuts for Browse/Measure/Spectro
+  mode switching.
+- The main preview canvas (`MultiPreviewCanvas.keyPressEvent` in
+  `detail_preview_canvas.py`) has its own independent key map: Ctrl+1..5 toggle
+  profile/angle/molecule/scale-bar/acquisition overlays, Ctrl+H toggles the
+  shortcut hint, Ctrl+C copies the displayed image, Ctrl+Z undoes, `A` triggers
+  histogram auto-contrast, `M` opens molecule load, `R` resets zoom, X/Y/Z
+  rotate the selected molecule, Enter/Esc apply/cancel crop-transform mode.
+- The publication canvas has yet another independent key map
+  (`CanvasGraphicsView.keyPressEvent` / `ExperimentalCanvasWindow._handle_canvas_key`
+  in `gui/canvases/canvas_view.py` / `canvas_window.py`): arrows nudge
+  selected items, Ctrl+A selects all, Escape clears selection,
+  Delete/Backspace deletes, Ctrl+Z/Ctrl+Y undo/redo.
+- Full user-facing shortcut list: `docs/SHORTCUTS.md`.
+
+### Mouse events & drag-drop
+- Main window: `dragEnterEvent`/`dropEvent` accept dropped folders/files;
+  `eventFilter` intercepts drag events on the thumbnail viewport for in-grid
+  thumbnail reordering (`_handle_thumbnail_drag_event`); rectangle-select is
+  `_update_rubber_band_selection`.
+- Main preview canvas (`MultiPreviewCanvas` in `detail_preview_canvas.py`)
+  uses matplotlib's `mpl_connect` (not Qt event overrides) for most
+  interaction: `_on_base_click` is the primary dispatcher (scale-bar drag,
+  molecule drag, crop-handle drag, double-click pop-out, right-click context
+  menu, Ctrl-drag = quick profile line, Ctrl+Alt-drag = quick angle,
+  Shift-drag = crop rect/square, Alt-drag = outline extraction);
+  `_on_press`/`_on_motion`/`_on_release` handle profile-line editing;
+  `_on_angle_*` handle angle-measurement frames; `_on_sb_*` handle scale-bar
+  repositioning; `_on_scroll_zoom` handles cursor-centered zoom. Qt-level
+  `mouseMoveEvent`/`mouseReleaseEvent` only handle starting an external QDrag
+  (dragging the image out to another widget).
+- Publication canvas (`gui/canvases/canvas_view.py` `CanvasGraphicsView`,
+  `canvas_items.py` `CanvasImageItem`): rubber-band select and panning on the
+  view; item drag/resize/rotate and Alt-drag-to-duplicate on individual tiles.
+
+### Sorting & filtering thumbnails
+- Sort/filter combos live on `SXMGridViewer` (`thumb_sort_combo`,
+  `thumb_filter_combo`); changes are handled by
+  `on_thumb_sort_changed`/`on_thumb_filter_changed` in `main_window.py`,
+  which are thin shims into `gui/viewer/thumbnail_ui.py`'s
+  `on_thumb_sort_changed`/`on_thumb_filter_changed` — the actual sort/filter
+  logic lives in `populate_thumbnails_for_channel`.
+- Sort modes: Name (A-Z, natural sort), Date (new→old / old→new, via
+  `sort_key_date`/header datetime), Tag (constant-height → constant-current →
+  untagged). No manual drag-order or size-based sort exists.
+- Filter modes: All, Constant height, Constant current, Untagged, Matrix
+  datasets — tag/type-only, no free-text search.
+
+### Sessions vs. collections (two distinct persistence mechanisms)
+- **Session** (`gui/controllers/session.py`, `SessionController`) — the *entire*
+  app state: loaded folder, headers, per-file channel/cmap/adjustments,
+  thumbnail filters/sort, preview + canvas + popup snapshots, window layout,
+  zoom state. Saved as one `*.json` file (`save_session`/`save_session_as`/
+  `load_session`) plus a sidecar `<name>_data/` folder holding `.npy` arrays
+  and view snapshots. Payload has a `version` field but no migration logic is
+  implemented yet (single format so far). Autosave/recovery snapshots
+  (`_save_recovery_snapshot`, `_maybe_offer_recovery_session` in
+  `main_window.py`) reuse the same `save_session`/`load_session` machinery.
+  Collections are **not** part of the session payload.
+- **Collection** (`gui/controllers/collection.py`, `CollectionController`) — a
+  standalone, user-named "scrapbook" of view/popup/crop snapshots gathered
+  from anywhere, independent of which folder/session is currently loaded.
+  Saved as `*.sxmcoll.json` (`KIND = "sxm_collection"`) plus a sidecar
+  `<stem>_collection_data/views/` folder. Item-level add/remove only — no
+  whole-file rename/delete method (left to the OS file dialog). UI is the
+  floating `_CollectionTrayWindow`/`_CollectionTrayList` in `main_window.py`.
+
+### Main preview canvas: image display & redraw speed
+`MultiPreviewCanvas` (`gui/canvases/detail_preview_canvas.py`, ~12k lines) is
+the core image-rendering canvas (a matplotlib `FigureCanvas` embedded in Qt).
+Performance-relevant entry points, since this file is the usual target for
+responsiveness work (see recent commits on thumbnail/preview perf):
+- `_redraw` — full rebuild of the figure (all `imshow` axes, cmap/clim,
+  colorbar, overlays); expensive, used when structure changes (layout,
+  view count, tool mode).
+- `_fast_update_single_view` — cheap path: mutates an existing image's
+  `set_data`/`set_cmap`/`set_extent`/`set_clim` in place instead of a full
+  `_redraw`, used when exactly one view changes and no profile/angle/molecule
+  tool is active.
+- `draw`/`draw_idle`/`set_render_suspended` — suspend/batch redraws during
+  bulk updates, replaying once unsuspended.
+- `resizeEvent`/`_reflow_after_resize`/`_finalize_after_resize` — debounced
+  resize: a cheap `draw_idle()` reflow while actively resizing, full
+  `_redraw()` only once resizing settles.
+- Throttled drag paths: `_on_motion_value` throttles fixed-crop template drag
+  refresh (`_fixed_crop_drag_throttle_ms`); profile/angle artists have
+  blitting fast-paths (`_blit_profile_artists`, `_blit_angle_frames`).
+
+`_redraw` and `_fast_update_single_view` both configure a single axes/image
+for a view via the same shared helpers in `gui/canvases/preview_axes_sync.py`
+(`sync_axes_to_view`, `style_colorbar`) rather than duplicating that logic —
+when the fast path was a hand-rolled second copy of this setup, it missed
+matplotlib invalidation rules the full rebuild got for free, causing three
+separate bugs in one session: `ax.dataLim` doesn't update when you call
+`image.set_extent()` (only when an artist is first added), the axes'
+aspect-locked box/attached colorbar can lag behind an extent change without
+an explicit `ax.apply_aspect()`, and `ax.set_xticks(ax.get_xticks())` freezes
+the axis onto a stale `FixedLocator` that silently drags `xlim`/`ylim` back
+to whatever range the *first* image needed. See that module's docstring for
+the full explanation. `_render_view_figure`/`_render_views_grid` (export/print
+figures) independently re-derive similar axis setup for a throwaway
+Figure/Axes and are flagged inline as a related risk if this bug class ever
+resurfaces there.
+
+### Overlays (all types)
+All drawn/managed inside `MultiPreviewCanvas`
+(`gui/canvases/detail_preview_canvas.py`) unless noted:
+- **Scale bar** — `_add_scale_bar`/`_refresh_scale_bars`, drag via `_on_sb_*`,
+  toggle Ctrl+4.
+- **3D molecule overlay** — `Molecule`/`MoleculePropertiesDialog`
+  (`gui/canvases/molecular_overlay.py`); drawn by `_draw_molecules`, toggle
+  Ctrl+3.
+- **2D/SVG molecule overlay** — `SvgMoleculeOverlay`/`SvgAtom`/`SvgBond`
+  (`gui/canvases/svg_molecule_overlay.py`); drawn by `_draw_svg_molecules`.
+- **Profile line & HUD** — `_update_profile_artists`, saved profiles via
+  `_add_saved_profile_from_pts`, toggle Ctrl+1.
+- **Angle measurement** — `_update_angle_artists`, toggle Ctrl+2.
+- **Crop rectangle/template + history** — `_render_template_overlay`,
+  `_draw_fixed_crop_history`.
+- **Acquisition/metadata text box** — `_draw_acquisition_overlay` (Ctrl+5),
+  `_draw_image_size_overlay`, `_draw_filter_summary_overlay`.
+- **Outline/contour** — `_draw_outlines` (Alt-drag to create).
+- **Spectroscopy markers on thumbnails** — `gui/spectroscopy/overlays.py`:
+  `_render_spectroscopy_overlays` draws matrix footprints, marker symbols
+  (`_draw_marker_symbol`), and stack badges (`_draw_stack_badge`) onto
+  thumbnail pixmaps.
+- **Publication canvas** — molecule placement reuses `Molecule`/
+  `SvgMoleculeOverlay` per-tile; alignment guides while dragging tiles are
+  `AlignmentGuide` (`canvas_items.py`) shown/cleared via
+  `CanvasGraphicsView.show_alignment_guides`/`clear_alignment_guides`.
+
+### Publication canvas (figure composition workspace)
+`ExperimentalCanvasWindow` (`gui/canvases/canvas_window.py`) is the top-level
+window for composing a multi-panel publication figure from loaded scans;
+launched lazily from `main_window.py` and cached on `self._canvas_window`.
+Supporting modules: `canvas_view.py` (`CanvasGraphicsView`, a `QGraphicsView`),
+`canvas_items.py` (`CanvasImageItem`, `RubberBandSelection`, `AlignmentGuide`
+— `QGraphicsItem` subclasses), `canvas_rendering.py` (export-quality
+matplotlib rendering), `canvas_layout.py` (2x2/1x3/3x1 layout presets),
+`canvas_state.py` (undo/redo stack), `canvas_io.py` (`save_canvas`/
+`load_canvas`/`export_image`, JSON with `{"version":1,"items":[...]}`).
+**`experimental_canvas.py` is dead/legacy code** — nothing imports it; it was
+superseded by the split modules above and should not be extended.
+
+### Spectroscopy dialogs & popups
+`gui/dialogs/spectroscopy_dialogs.py` defines the dialog classes;
+`gui/spectroscopy/popups.py` and `gui/controllers/spectro_compare.py`
+(`SpectroCompareController`) are the actual orchestrators that decide which
+dialog to open:
+- `SpectroscopyPopup` — single-spectrum viewer/plotter.
+- `MatrixSpectroViewer` — grid/matrix (CITS-style) spectroscopy viewer;
+  click a pixel to plot/compare its spectrum.
+- `SpectroscopyCompareDialog` — multi-trace comparison (stacks/sites of
+  repeated spectra), background subtraction, waterfall/offset.
+- `KPFMFitTrendDialog` — plots fit-derived metrics (e.g. contact potential)
+  vs. Z/height across a stack of fits.
+- `SpectroSummaryDialog` (`gui/spectroscopy/summary_dialog.py`) — browsing
+  list of spectroscopy entries with thumbnail preview, hands off to the
+  dialogs above.
+- `gui/spectroscopy/controller.py` is **not** a UI controller — it's the
+  spec-to-image assignment/grouping logic (`_assign_spectros_to_images`,
+  `_build_spectro_sites`, `_annotate_xy_stacks`) that groups spectra into
+  "sites"/"stacks" before `SpectroCompareController` opens a popup for them.
+- `gui/spectroscopy/overlays.py` — marker/badge drawing (see Overlays above).
+
+### Fitting workflows
+Both single-spectrum fitting (`SpectroscopyPopup._on_fit_clicked`) and batch
+fitting (`_SpectroFitWorker.run`, feeding `KPFMFitTrendDialog`) call a shared
+`fit_parabola_bias(V, data)` helper (parabolic bias-spectroscopy fit, e.g.
+KPFM contact-potential). Matrix-wide per-pixel fitting is
+`gui/dialogs/matrix_fit.py`'s `MatrixFitWorker`, which auto-picks a Δf/KPFM
+channel and produces 2D fit-parameter maps, rendered/exported by
+`MatrixFitDialog`. Both worker classes follow the same
+`QObject.moveToThread(QThread)` + `thread.started.connect(worker.run)`
+pattern rather than `QRunnable`.
+
+### Cross-cutting conventions
+
+- Keep GUI code free of provider internals; providers (`providers/`) must not
+  import GUI/Qt code, so format support can be tested/reused headlessly.
+- Cache folders `.sxmviewer_nanonis/` are generated next to data and are
+  gitignored, as are `.sxm`/`.dat` sample files themselves — sample/test data
+  lives outside the repo (e.g. a local `data_local/`) or under `samples/` for
+  curated, non-personal examples.
+- Header cache and channel-data caches are bounded (`CHANNEL_DATA_CACHE_LIMIT`,
+  `FILTERED_CACHE_LIMIT`) and versioned (`HEADER_CACHE_VERSION`) — bump the
+  version constant when changing the cached data shape so stale caches are
+  invalidated rather than misread.
