@@ -148,7 +148,7 @@ class CollectionController:
     """Create and reopen curated, cross-folder collections of selected analysis items."""
 
     KIND = "sxm_collection"
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, viewer):
         self.viewer = viewer
@@ -1215,6 +1215,56 @@ class CollectionController:
             return None
         meta = view.get("meta") or {}
         return view.get("path") or meta.get("path") or meta.get("file_path")
+
+    def _migrate_v1_item_to_reference(self, item: dict):
+        """Best-effort conversion of a legacy (v1) baked-snapshot item into a v2 reference.
+
+        Returns a v2-style reference dict (source_file/channel_index/spectro_file_paths) when
+        the item's source file can still be resolved on disk, or None when the item must keep
+        using the legacy snapshot-restore path (source missing, unresolvable, or a popup/crop
+        item that intentionally stays on the legacy path - see Step 3).
+        """
+        if not isinstance(item, dict):
+            return None
+        if "legacy_snapshot" in item:
+            return None
+        source_kind = str(item.get("source_kind") or "").strip().lower()
+        if source_kind in ("popup", "crop_history"):
+            return None
+        snapshot = dict(item.get("snapshot") or {})
+        primary = self._snapshot_primary_meta(snapshot)
+        source_file = str(item.get("source_file") or primary.get("source_file") or "").strip()
+        if not source_file:
+            return None
+        try:
+            source_path = Path(source_file)
+            if not source_path.exists():
+                return None
+        except Exception:
+            return None
+        channel_index = item.get("channel_index", primary.get("channel_index"))
+        try:
+            channel_index = int(channel_index)
+        except Exception:
+            return None
+        spectro_paths = []
+        seen = set()
+        for view_entry in list(snapshot.get("views") or []):
+            for spec in list((view_entry or {}).get("spectra") or []):
+                spec_path = str((spec or {}).get("path") or "").strip()
+                if spec_path and spec_path not in seen:
+                    seen.add(spec_path)
+                    spectro_paths.append(spec_path)
+        first_view = (((snapshot.get("views") or [{}]) or [{}])[0]) or {}
+        return {
+            "id": item.get("id"),
+            "label": str(item.get("label") or source_path.name),
+            "source_file": str(source_path),
+            "channel_index": channel_index,
+            "channel_name": item.get("channel_name") or self._snapshot_channel_name(first_view),
+            "spectro_file_paths": spectro_paths,
+            "created_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+        }
 
     # ------------------------------------------------------------------
     def _load_payload_into_viewer(self, payload: dict, collection_path: Path):
