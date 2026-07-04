@@ -300,6 +300,35 @@ from .constants import (
     UI_FONT_SIZE,
 )
 
+
+class _SpectroScanWorkerSignals(QtCore.QObject):
+    finished = QtCore.pyqtSignal(object, object)  # (specs, spec_stats)
+    failed = QtCore.pyqtSignal(str)
+
+
+class _SpectroScanWorker(QtCore.QObject):
+    """Runs viewer._scan_spectros() (-> viewer_loader._scan_spectros: file
+    I/O, parsing, matrix anchoring, all audited to contain no Qt widget/GUI-
+    object access) off the GUI thread, so the deferred post-folder-load scan
+    no longer freezes the whole window. See _run_pending_spectro_load_async
+    in SXMGridViewer."""
+
+    def __init__(self, viewer, folder):
+        super().__init__()
+        self.viewer = viewer
+        self.folder = folder
+        self.signals = _SpectroScanWorkerSignals()
+        self.finished = self.signals.finished
+        self.failed = self.signals.failed
+
+    def run(self):
+        try:
+            specs, spec_stats = self.viewer._scan_spectros(self.folder)
+            self.signals.finished.emit(specs, spec_stats)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
 class SXMGridViewer(QtWidgets.QWidget):
     SpectroSummaryDialog = SpectroSummaryDialog
     FRAME_ZOOM_SLIDER_MIN = 0
@@ -591,7 +620,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectro_miniature_cache = OrderedDict()
         self._spectro_autoload_timer = QtCore.QTimer(self)
         self._spectro_autoload_timer.setSingleShot(True)
-        self._spectro_autoload_timer.timeout.connect(self._run_pending_spectro_load)
+        self._spectro_autoload_timer.timeout.connect(self._run_pending_spectro_load_async)
+        self._spectro_scan_thread = None
+        self._spectro_scan_worker = None
+        self._spectro_manifest_pending_save = False
         # spectro_eager_limit: 0 means no deferral; otherwise parse at most N spectroscopy files eagerly
         limit_cfg = int(self.config.get("spectro_eager_limit", 300))
         self.spectro_eager_limit = max(0, limit_cfg)
@@ -1627,7 +1659,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         # repeated rebuilds while the user is dragging.
         self._thumbs_reflow_timer = QtCore.QTimer(self)
         self._thumbs_reflow_timer.setSingleShot(True)
-        self._thumbs_reflow_timer.timeout.connect(lambda: self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex()))
+        self._thumbs_reflow_timer.timeout.connect(lambda: viewer_thumb_ui.reflow_thumbnail_grid(self, self.channel_dropdown.currentIndex()))
         try:
             main_splitter.splitterMoved.connect(lambda pos, idx: self._thumbs_reflow_timer.start(150))
             main_splitter.splitterMoved.connect(lambda pos, idx: self._on_main_splitter_moved(pos, idx))
@@ -5084,6 +5116,9 @@ QLabel:hover {{
 
     def _request_visible_thumbs(self):
         """Schedule thumbnail rendering for currently visible rows (+margin)."""
+        _t0_rvt = time.perf_counter()
+        _prev_call_ts = getattr(self, "_last_request_visible_thumbs_ts", None)
+        self._last_request_visible_thumbs_ts = _t0_rvt
         if not getattr(self, 'current_thumb_files', None):
             return
         vp = getattr(self, '_thumb_viewport', None)
@@ -5100,6 +5135,9 @@ QLabel:hover {{
         start_idx = max(0, first_row * cols)
         end_idx = min(len(self.current_thumb_files), (last_row + 1) * cols)
         visible_keys = self.current_thumb_files[start_idx:end_idx]
+        _gap_ms = ((_t0_rvt - _prev_call_ts) * 1000) if _prev_call_ts is not None else 0.0
+        if _gap_ms > 500:
+            log_status(f"[Perf] _request_visible_thumbs: {_gap_ms:.0f} ms since previous call | cols={cols} range=[{start_idx}:{end_idx}] loaded={len(self._thumb_loaded)} inflight={len(self._thumb_inflight)}")
         for key in visible_keys:
             if key in self._thumb_loaded or key in self._thumb_inflight:
                 continue
@@ -8063,11 +8101,82 @@ QLabel:hover {{
             pass
 
     def _run_pending_spectro_load(self):
+        """Synchronous fallback path - kept for the case where the async
+        worker setup itself fails (see _run_pending_spectro_load_async)."""
         if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
             return
         if getattr(self, "_spectros_loading", False):
             return
         self.ensure_spectros_loaded(refresh=bool(getattr(self, "show_spectro_miniatures", False)))
+
+    def _run_pending_spectro_load_async(self):
+        """Background-threaded variant of _run_pending_spectro_load, used
+        only for the deferred post-folder-load autoload trigger
+        (_spectro_autoload_timer). The scan (_scan_spectros: file I/O,
+        parsing, matrix anchoring - all plain data work, audited for Qt
+        thread-safety) runs off the GUI thread so the window stays
+        responsive; previously this ran synchronously and froze the entire
+        UI (including resize/maximize handling) for as long as the scan
+        took (1-2+ seconds on real folders). Every other caller of
+        ensure_spectros_loaded/_reload_spectros elsewhere in the app is
+        left untouched and stays fully synchronous, since several of them
+        rely on self.spectros being populated immediately after the call
+        returns."""
+        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
+            return
+        if getattr(self, "_spectros_loading", False):
+            return
+        refresh = bool(getattr(self, "show_spectro_miniatures", False))
+        self._spectros_loading = True
+        self._spectros_pending = False
+        self._spectros_loaded = False
+        self._spectro_miniature_cache.clear()
+        try:
+            folder = getattr(self, 'spec_folder_path', None) or self.last_dir
+            folder = Path(folder)
+        except Exception:
+            folder = self.last_dir
+        self._spectro_deferred = set()
+        log_status("[Lazy] Loading spectroscopy references...")
+        log_status(f"Scanning spectroscopy files in: {folder}")
+        t_scan_start = time.perf_counter()
+
+        thread = QtCore.QThread(self)
+        worker = _SpectroScanWorker(self, folder)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def _cleanup_thread():
+            thread.quit()
+            thread.wait()
+            self._spectro_scan_thread = None
+            self._spectro_scan_worker = None
+
+        def _on_finished(specs, spec_stats):
+            scan_ms = (time.perf_counter() - t_scan_start) * 1000.0
+            _cleanup_thread()
+            self._apply_spectro_scan_results(specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
+            self._spectros_loading = False
+            if not refresh and self._spectros_loaded:
+                self._schedule_marker_refresh()
+                if self.last_preview:
+                    try:
+                        self.show_file_channel(self.last_preview[0], self.last_preview[1])
+                    except Exception:
+                        pass
+
+        def _on_failed(error_msg):
+            log_status(f"Spectroscopy scan failed: {error_msg}")
+            _cleanup_thread()
+            self._spectros_loading = False
+
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        # Keep references alive for the thread's lifetime (a local-only
+        # QThread/QObject can be garbage-collected out from under itself).
+        self._spectro_scan_thread = thread
+        self._spectro_scan_worker = worker
+        thread.start()
 
     def _reload_spectros(self, refresh=True):
         # unless we complete a successful reload, consider spectra cache stale
@@ -8082,17 +8191,22 @@ QLabel:hover {{
             folder = self.last_dir
         log_status(f"Scanning spectroscopy files in: {folder}")
         self._spectro_deferred = set()
-        self.spectros, spec_stats = self._scan_spectros(folder)
-        t_scan_end = time.perf_counter()
-        if spec_stats:
-            total_entries = spec_stats.get('total_specs', len(self.spectros))
-            single_files = spec_stats.get('single_dat_files', 0)
-            single_entries = spec_stats.get('single_entries', single_files)
-            matrix_files = spec_stats.get('matrix_dat_files', 0)
-            matrix_entries = spec_stats.get('matrix_specs', 0)
+        specs, spec_stats = self._scan_spectros(folder)
+        scan_ms = (time.perf_counter() - t_scan_start) * 1000.0
+        self._apply_spectro_scan_results(specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
+
+    def _apply_spectro_scan_results(self, specs, spec_stats, *, refresh, scan_ms):
+        """Everything _reload_spectros does after _scan_spectros returns -
+        factored out so both the synchronous path and the background-thread
+        completion handler (_run_pending_spectro_load_async) share the exact
+        same result-applying logic, always running on the GUI thread."""
+        self.spectros = specs
+        if not spec_stats:
             # keep stats for UI but avoid duplicate terminal spam (loader already logged)
-        else:
             log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
+        if getattr(self, "_spectro_manifest_pending_save", False):
+            self._spectro_manifest_pending_save = False
+            self._schedule_spectro_manifest_save()
         t_assign_start = time.perf_counter()
         self._assign_spectros_to_images()
         t_assign_end = time.perf_counter()
@@ -8110,7 +8224,6 @@ QLabel:hover {{
         else:
             t_thumb_start = t_assign_end
             t_thumb_end = t_assign_end
-        scan_ms = (t_scan_end - t_scan_start) * 1000.0
         assign_ms = (t_assign_end - t_assign_start) * 1000.0
         thumb_ms = (t_thumb_end - t_thumb_start) * 1000.0
         log_status(f"[Perf] Spectros: scan {scan_ms:.0f} ms | assign {assign_ms:.0f} ms | thumbs {thumb_ms:.0f} ms")

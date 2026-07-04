@@ -1952,8 +1952,14 @@ def _scan_spectros(
             manifest_changed = True
         viewer._spectro_manifest_entries = manifest_entries
         if manifest_changed:
+            # Don't call viewer._schedule_spectro_manifest_save() directly here:
+            # _scan_spectros can run on a background thread (see
+            # _run_pending_spectro_load_async in main_window.py), and that
+            # method starts a QTimer owned by the GUI thread - unsafe to
+            # start from any other thread. Callers apply this flag back on
+            # the main thread once _scan_spectros returns.
             if hasattr(viewer, "_schedule_spectro_manifest_save"):
-                viewer._schedule_spectro_manifest_save()
+                viewer._spectro_manifest_pending_save = True
             else:
                 _save_spectro_manifest(disk_cache_dir, manifest_entries)
         specs.sort(key=lambda s: s.get('time') or datetime.min)
@@ -2170,8 +2176,10 @@ def _scan_spectros(
             manifest_changed = True
         viewer._spectro_manifest_entries = manifest_entries
         if manifest_changed:
+            # See the matching comment above in the bulk-manifest-path branch:
+            # deferred to a flag since this can run on a background thread.
             if hasattr(viewer, "_schedule_spectro_manifest_save"):
-                viewer._schedule_spectro_manifest_save()
+                viewer._spectro_manifest_pending_save = True
             else:
                 _save_spectro_manifest(disk_cache_dir, manifest_entries)
     try:
