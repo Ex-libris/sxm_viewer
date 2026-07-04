@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sip
+import time
 
 from ..._shared import (
     QtCore,
@@ -541,6 +542,7 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
 
 
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
+    _t0_populate = time.perf_counter()
     preserve_scroll_state = None
     scroll_widget = getattr(viewer, "scroll", None)
     try:
@@ -838,8 +840,11 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 pass
             viewer._refresh_frame_map_pixmaps()
             _finish_populate()
+            _total_ms = (time.perf_counter() - _t0_populate) * 1000
+            log_status(f"[Perf] populate_thumbnails_for_channel (spectro miniatures): total {_total_ms:.0f} ms | {len(display_entries)} entries")
             return
 
+    _t0_loop = time.perf_counter()
     for i, t in enumerate(files_iter):
         key = str(t)
         if key not in viewer.headers:
@@ -930,13 +935,73 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         if col >= max_cols:
             col = 0; row += 1
 
+    _loop_ms = (time.perf_counter() - _t0_loop) * 1000
     # kick off initial batch for visible thumbs
+    _t0_visible = time.perf_counter()
     try:
         viewer._request_visible_thumbs()
     except Exception:
         pass
+    _visible_ms = (time.perf_counter() - _t0_visible) * 1000
     viewer._refresh_frame_map_pixmaps()
     _finish_populate()
+    _total_ms = (time.perf_counter() - _t0_populate) * 1000
+    log_status(f"[Perf] populate_thumbnails_for_channel: total {_total_ms:.0f} ms | widget loop {_loop_ms:.0f} ms ({len(files_iter)} files) | request_visible {_visible_ms:.0f} ms")
+
+
+def reflow_thumbnail_grid(viewer, channel_idx: int):
+    """Cheap re-layout for a pure viewport-width change (more/fewer columns
+    now fit) - e.g. the window being resized or maximized. The full
+    populate_thumbnails_for_channel() destroys and recreates every
+    thumbnail's QLabel/QFrame/QVBoxLayout/tooltip/event-handler/style-sheet
+    from scratch, which is where the "substantial delay on resize/maximize"
+    actually came from (measured: ~900ms-1.3s of an ~1s+ total for 224
+    files) - all to change row/col assignment, not any widget's content.
+    Existing card widgets are just repositioned in the grid instead
+    (QGridLayout.addWidget on an already-parented widget moves it in
+    place; it does not recreate anything). Falls back to a full rebuild if
+    there's nothing to reposition yet.
+    """
+    has_image_widgets = bool(getattr(viewer, "thumb_widgets", None))
+    has_spectro_widgets = bool(getattr(viewer, "spectro_thumb_widgets", None))
+    if not has_image_widgets and not has_spectro_widgets:
+        return populate_thumbnails_for_channel(viewer, channel_idx)
+    _t0 = time.perf_counter()
+    thumb_w, thumb_h = viewer._thumb_dimensions()
+    try:
+        vp = getattr(viewer, '_thumb_viewport', None)
+        avail_w = vp.width() if vp is not None else (viewer.thumb_container.width() if hasattr(viewer, 'thumb_container') else 800)
+    except Exception:
+        avail_w = 800
+    card_w = thumb_w + 24
+    max_cols = max(1, min(12, int(avail_w / card_w)))
+    if max_cols == getattr(viewer, "thumb_grid_columns", None):
+        return
+    viewer.thumb_grid_columns = max_cols
+    if getattr(viewer, "current_thumbnail_entries", None):
+        ordered_keys = [str(item.get("key", "")) for item in viewer.current_thumbnail_entries]
+    else:
+        ordered_keys = list(getattr(viewer, "current_thumb_files", []) or [])
+    image_widgets = getattr(viewer, "thumb_widgets", {}) or {}
+    spectro_widgets = getattr(viewer, "spectro_thumb_widgets", {}) or {}
+    row = col = 0
+    moved = 0
+    for key in ordered_keys:
+        card = image_widgets.get(key) or spectro_widgets.get(key)
+        if card is None:
+            continue
+        viewer.thumb_layout.addWidget(card, row, col)
+        moved += 1
+        col += 1
+        if col >= max_cols:
+            col = 0
+            row += 1
+    try:
+        viewer._request_visible_thumbs()
+    except Exception:
+        pass
+    elapsed_ms = (time.perf_counter() - _t0) * 1000
+    log_status(f"[Perf] reflow_thumbnail_grid: {elapsed_ms:.0f} ms | {moved} widgets repositioned, {max_cols} cols")
 
 def on_thumb_sort_changed(viewer, idx):
     try:
