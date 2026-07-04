@@ -13,50 +13,42 @@ from ..viewer import measurement as viewer_measurement
 from ..thumbnail_render import array_to_qimage
 
 
+_COLLECTION_HELP_HTML = (
+    "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
+    "while browsing several folders, then reopen it later like a virtual folder with full "
+    "measurement/filter support.<br><br>"
+    "Plain thumbnail and preview adds are stored as lightweight <b>references</b> to the real "
+    "file, channel, and any associated spectroscopy - not a rendered copy. Opening a collection "
+    "reads the real files directly, so all channels and measurements work exactly as they would "
+    "from a normal folder.<br><br>"
+    "<b>Pop-ups</b> and <b>crop-history</b> entries are the one exception: they carry their own "
+    "overlay/crop state, so they are still saved as a baked snapshot of that view. These are "
+    "heavier and less robust if the original file is later moved.<br><br>"
+    "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
+    "session. New <i>Add to collection</i> actions append to it by default until you open another "
+    "collection. Existing collections are always appended to in place - never overwritten."
+)
+
+
 class _CollectionTargetDialog(QtWidgets.QDialog):
-    """Prompt for collection destination and linked/portable storage mode."""
+    """Prompt for which collection to add these items to."""
 
     def __init__(self, parent, *, source_summary: str, default_path: str):
         super().__init__(parent)
         self.setWindowTitle("Add to Collection")
         self.setModal(True)
-        self.resize(640, 0)
+        self.resize(520, 0)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        banner = QtWidgets.QFrame(self)
-        banner.setStyleSheet(
-            "QFrame {"
-            "  background: #eef7ff;"
-            "  border: 1px solid #b7d4f7;"
-            "  border-radius: 8px;"
-            "}"
-        )
-        banner_layout = QtWidgets.QVBoxLayout(banner)
-        banner_layout.setContentsMargins(12, 10, 12, 10)
-        banner_layout.setSpacing(4)
-        banner_title = QtWidgets.QLabel("Add Selected Analysis To A Collection", banner)
-        banner_title.setStyleSheet("font-weight: 700; color: #174a8b;")
-        banner_msg = QtWidgets.QLabel(
-            "Collections are reusable analysis sets. Keep appending into the same collection while you move across folders.",
-            banner,
-        )
-        banner_msg.setWordWrap(True)
-        banner_msg.setStyleSheet("color: #2a4560;")
-        banner_layout.addWidget(banner_title)
-        banner_layout.addWidget(banner_msg)
-        layout.addWidget(banner)
-
         intro = QtWidgets.QLabel(
-            "<b>Collections</b> are curated workspaces built from selected views across folders or sessions.<br>"
-            "Choose whether this save should stay lightweight (<b>Linked</b>) or carry its own image data "
-            "for moving/sharing (<b>Portable</b>).",
+            "Pick an existing collection to append to, or type a new name to start one. A "
+            "collection can span many folders - keep adding to the same one as you browse.",
             self,
         )
         intro.setWordWrap(True)
-        intro.setTextFormat(QtCore.Qt.RichText)
         layout.addWidget(intro)
 
         summary = QtWidgets.QLabel(source_summary, self)
@@ -64,48 +56,59 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         summary.setStyleSheet("color: #555;")
         layout.addWidget(summary)
 
-        mode_group = QtWidgets.QGroupBox("Storage mode", self)
-        mode_layout = QtWidgets.QVBoxLayout(mode_group)
-        mode_layout.setContentsMargins(10, 10, 10, 10)
-        mode_layout.setSpacing(8)
-
-        self.linked_rb = QtWidgets.QRadioButton(
-            "Linked (Recommended): keep the collection light and reopen original source views when possible. "
-            "Derived crops are cached only when needed.",
-            mode_group,
-        )
-        self.linked_rb.setChecked(True)
-        self.portable_rb = QtWidgets.QRadioButton(
-            "Portable: cache every selected image array inside the collection. Larger file, but safer to move "
-            "to another machine or share with someone else.",
-            mode_group,
-        )
-        mode_layout.addWidget(self.linked_rb)
-        mode_layout.addWidget(self.portable_rb)
-        layout.addWidget(mode_group)
-
-        path_group = QtWidgets.QGroupBox("Collection file", self)
-        path_layout = QtWidgets.QGridLayout(path_group)
-        path_layout.setContentsMargins(10, 10, 10, 10)
-        path_layout.setHorizontalSpacing(8)
-        path_layout.setVerticalSpacing(8)
-        path_layout.addWidget(QtWidgets.QLabel("Path", path_group), 0, 0)
-        self.path_edit = QtWidgets.QLineEdit(default_path, path_group)
-        self.path_edit.setPlaceholderText("Choose an existing collection to append, or type a new file name.")
-        path_layout.addWidget(self.path_edit, 0, 1)
-        browse_btn = QtWidgets.QPushButton("Browse...", path_group)
+        path_row = QtWidgets.QHBoxLayout()
+        path_row.setSpacing(8)
+        self.path_edit = QtWidgets.QLineEdit(default_path, self)
+        self.path_edit.setPlaceholderText("Choose an existing collection to append to, or type a new file name.")
+        path_row.addWidget(self.path_edit)
+        browse_btn = QtWidgets.QPushButton("Browse...", self)
         browse_btn.clicked.connect(self._on_browse)
-        path_layout.addWidget(browse_btn, 0, 2)
+        path_row.addWidget(browse_btn)
+        layout.addLayout(path_row)
+
         hint = QtWidgets.QLabel(
-            "If the file already exists, the selected items will be appended to it in place. "
-            "The collection file is not overwritten. New files are created with the extension <code>.sxmcoll.json</code>.",
-            path_group,
+            "An existing collection is appended to in place, never overwritten. New collections "
+            "are saved as <code>.sxmcoll.json</code> files.",
+            self,
         )
         hint.setWordWrap(True)
         hint.setTextFormat(QtCore.Qt.RichText)
-        hint.setStyleSheet("color: #555;")
-        path_layout.addWidget(hint, 1, 0, 1, 3)
-        layout.addWidget(path_group)
+        hint.setStyleSheet("color: #555; font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.advanced_toggle = QtWidgets.QToolButton(self)
+        self.advanced_toggle.setText("Advanced: storage mode for pop-up/crop snapshots")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setStyleSheet("QToolButton { border: none; }")
+        self.advanced_toggle.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self.advanced_toggle)
+
+        self.mode_group = QtWidgets.QGroupBox(self)
+        mode_layout = QtWidgets.QVBoxLayout(self.mode_group)
+        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setSpacing(6)
+        mode_note = QtWidgets.QLabel(
+            "Only affects pop-up and crop-history items, which are saved as a rendered snapshot "
+            "because they carry overlay/crop state a plain reference can't represent. Plain "
+            "thumbnail and preview adds are always lightweight references either way.",
+            self.mode_group,
+        )
+        mode_note.setWordWrap(True)
+        mode_note.setStyleSheet("color: #555;")
+        mode_layout.addWidget(mode_note)
+        self.linked_rb = QtWidgets.QRadioButton(
+            "Linked (recommended) - reopen the original source when possible", self.mode_group
+        )
+        self.linked_rb.setChecked(True)
+        self.portable_rb = QtWidgets.QRadioButton(
+            "Portable - cache the rendered image so it's safe to move or share", self.mode_group
+        )
+        mode_layout.addWidget(self.linked_rb)
+        mode_layout.addWidget(self.portable_rb)
+        self.mode_group.setVisible(False)
+        layout.addWidget(self.mode_group)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -117,6 +120,10 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _on_advanced_toggled(self, checked):
+        self.advanced_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self.mode_group.setVisible(checked)
 
     def _on_browse(self):
         start = self.path_edit.text().strip() or "analysis_collection.sxmcoll.json"
@@ -131,16 +138,7 @@ class _CollectionTargetDialog(QtWidgets.QDialog):
             self.path_edit.setText(path)
 
     def _show_help(self):
-        QtWidgets.QMessageBox.information(
-            self,
-            "Collections",
-            (
-                "<b>Linked</b> collections keep the file smaller and still remember where each item came from. "
-                "They are best when the original data stays on the same machine.<br><br>"
-                "<b>Portable</b> collections cache every selected image/crop, so they reopen more safely on a "
-                "different machine or after moving files. They take more disk space."
-            ),
-        )
+        QtWidgets.QMessageBox.information(self, "Collections", _COLLECTION_HELP_HTML)
 
     def values(self):
         return self.path_edit.text().strip(), ("portable" if self.portable_rb.isChecked() else "linked")
@@ -253,25 +251,7 @@ class CollectionController:
 
     # ------------------------------------------------------------------
     def show_help(self):
-        QtWidgets.QMessageBox.information(
-            self.viewer,
-            "Collections",
-            (
-                "<b>Collections</b> are curated, cross-folder lists of scans and spectroscopy - build one "
-                "while browsing several folders, then reopen it later like a virtual folder with full "
-                "measurement/filter support.<br><br>"
-                "Plain thumbnail and preview adds are stored as lightweight <b>references</b> to the real "
-                "file, channel, and any associated spectroscopy - not a rendered copy. Opening a collection "
-                "reads the real files directly, so all channels and measurements work exactly as they would "
-                "from a normal folder.<br><br>"
-                "<b>Pop-ups</b> and <b>crop-history</b> entries are the one exception: they carry their own "
-                "overlay/crop state, so they are still saved as a baked snapshot of that view. These are "
-                "heavier and less robust if the original file is later moved.<br><br>"
-                "Once you create or open a collection, it becomes the <b>current collection</b> for this app "
-                "session. New <i>Add to collection</i> actions append to it by default until you open another "
-                "collection."
-            ),
-        )
+        QtWidgets.QMessageBox.information(self.viewer, "Collections", _COLLECTION_HELP_HTML)
 
     def add_current_preview(self):
         canvas = getattr(self.viewer, "preview_canvas", None)
