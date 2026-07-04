@@ -25,7 +25,7 @@ import matplotlib
 from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
-from ..._shared import QtCore, QtGui, QtWidgets
+from ..._shared import QtCore, QtGui, QtWidgets, log_status
 from ...config import load_config, save_config
 from .molecular_overlay import (
     Molecule,
@@ -37,6 +37,7 @@ from .molecular_overlay import (
 )
 from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SUFFIXES
 from .canvas_rendering import iso_export_filename
+from .preview_axes_sync import sync_axes_to_view, style_colorbar
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
@@ -704,28 +705,36 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
 
     def _fast_update_single_view(self, views, previous_views=None):
+        _perf_t0 = time.perf_counter()
+        _perf_marks = []
+
+        def _mark(label):
+            _perf_marks.append((label, (time.perf_counter() - _perf_t0) * 1000.0))
+
+        def _bail(reason):
+            log_status(f"[Perf] Fast-canvas-update skipped: {reason}")
+            return False
+
         if len(views or []) != 1:
-            return False
+            return _bail(f"views count {len(views or [])} != 1")
         if len(previous_views or []) != 1:
-            return False
-        if self._view_layout != "grid":
-            return False
+            return _bail(f"previous_views count {len(previous_views or [])} != 1")
+        # Grid vs. stacked layout only differ in subplot rows/cols, which are
+        # identical (1x1) when there is exactly one view (already guaranteed above).
         if getattr(self, "profile_enabled", False) or getattr(self, "angle_enabled", False):
-            return False
+            return _bail("profile_enabled or angle_enabled")
         if getattr(self, "molecules", None) or getattr(self, "svg_molecules", None):
-            return False
+            return _bail("molecules or svg_molecules present")
         ax = getattr(self, "main_ax", None)
         if ax is None or ax not in self.fig.axes or not getattr(ax, "images", None):
-            return False
+            return _bail("main_ax missing/stale or has no images")
         image = ax.images[0]
         view = views[0]
         previous_meta = self._image_meta.get(ax, {}) or {}
         flip = self._use_relative_axes(view)
         origin = 'lower' if flip else 'upper'
         if str(previous_meta.get("origin", origin)) != origin:
-            return False
-        arr = np.asarray(view.get('arr'))
-        arr_plot = np.flipud(arr) if flip else arr
+            return _bail(f"origin changed {previous_meta.get('origin')!r} -> {origin!r}")
         raw_extent = view.get('extent_raw')
         if raw_extent is None:
             raw_extent = view.get('extent')
@@ -736,6 +745,13 @@ class MultiPreviewCanvas(FigureCanvas):
                 artist.remove()
             except Exception:
                 pass
+        # Scale bars are AnchoredSizeBar instances added via ax.add_artist(),
+        # so they live in ax.artists and are not covered by the sweep above.
+        for sb in list(self._scale_bar_artists):
+            try:
+                sb.remove()
+            except Exception:
+                pass
         self._scale_bar_artists = []
         self._spectra_points = {}
         self._fixed_crop_overlay_artists = {}
@@ -743,98 +759,60 @@ class MultiPreviewCanvas(FigureCanvas):
         self._ax_view_map = {ax: view}
         self._active_view_ax = ax
         self._hover_view_ax = None
-        image.set_data(arr_plot)
-        image.set_cmap(view.get('cmap', 'viridis'))
-        if display_extent is not None:
-            image.set_extent(display_extent)
-            try:
-                x0, x1, y0, y1 = image.get_extent()
-                ax.set_xlim(x0, x1)
-                ax.set_ylim(y0, y1)
-            except Exception:
-                pass
-        else:
-            try:
-                ax.set_xlim(-0.5, max(arr_plot.shape[1] - 0.5, 0.5))
-                if origin == 'upper':
-                    ax.set_ylim(max(arr_plot.shape[0] - 0.5, 0.5), -0.5)
-                else:
-                    ax.set_ylim(-0.5, max(arr_plot.shape[0] - 0.5, 0.5))
-            except Exception:
-                pass
-        clim = view.get('clim')
-        if clim:
-            try:
-                image.set_clim(*clim)
-            except Exception:
-                pass
-        else:
-            try:
-                image.autoscale()
-            except Exception:
-                pass
-        try:
-            self._image_meta[ax] = {
-                'extent': image.get_extent(),
-                'origin': origin,
-                'shape': arr_plot.shape,
-            }
-        except Exception:
-            self._image_meta[ax] = {
-                'extent': display_extent,
-                'origin': origin,
-                'shape': arr_plot.shape,
-            }
         title = self._compose_view_title(view)
-        if title and self._show_title:
-            ax.set_title(title, fontsize=9)
-            apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
-        else:
-            ax.set_title("")
+        try:
+            self._image_meta[ax] = sync_axes_to_view(
+                ax, image, view,
+                flip=flip, origin=origin, display_extent=display_extent,
+                title=title, show_title=self._show_title,
+                font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
+                show_ticks=self._show_ticks,
+            )
+        except Exception:
+            return False
+        _mark("image_data")
         cbar_label = view.get('colorbar_label') or view.get('unit', '')
         if self._colorbars and self._show_colorbar:
             try:
-                cbar = self._colorbars[0]
-                cbar.update_normal(image)
-                cbar.set_label(cbar_label)
-                if not self._show_ticks:
-                    cbar.set_ticks([])
+                style_colorbar(
+                    self._colorbars[0], image, cbar_label,
+                    font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
+                    show_ticks=self._show_ticks,
+                )
             except Exception:
                 return False
-        ax.tick_params(labelsize=8)
-        if not self._show_ticks:
-            ax.set_xticks([])
-            ax.set_yticks([])
-        else:
-            try:
-                ax.set_xticks(ax.get_xticks())
-                ax.set_yticks(ax.get_yticks())
-            except Exception:
-                pass
-        for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
-            apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
+        _mark("title_colorbar_ticks")
         self._draw_acquisition_overlay(ax, view)
+        _mark("acquisition_overlay")
         self._draw_shortcut_hint(ax)
+        _mark("shortcut_hint")
         if self.scale_bar_enabled:
             self._add_scale_bar(ax, view)
+        _mark("scale_bar")
         self._draw_image_size_overlay(ax, view)
+        _mark("image_size_overlay")
         self._draw_spectra(ax)
+        _mark("spectra_markers")
         try:
             self._draw_outlines(ax, view)
         except Exception:
             pass
+        _mark("outlines")
         try:
             self._draw_fixed_crop_history(ax, view)
         except Exception:
             pass
+        _mark("crop_history")
         try:
             self._render_template_overlay(ax, view)
         except Exception:
             pass
+        _mark("crop_template")
         try:
             self._draw_filter_summary_overlay(ax, view)
         except Exception:
             pass
+        _mark("filter_summary")
         self._zoom_reset_limits = {ax: (ax.get_xlim(), ax.get_ylim())}
         try:
             self._suppress_internal_draw_requests = True
@@ -843,12 +821,22 @@ class MultiPreviewCanvas(FigureCanvas):
             self._update_highlight_artists()
         finally:
             self._suppress_internal_draw_requests = False
+        _mark("theme_font_highlight")
         use_idle_draw = bool(getattr(self, "_async_redraw_once", False))
         self._async_redraw_once = False
         if use_idle_draw:
             self.draw_idle()
         else:
             self.draw()
+        _mark("draw")
+        total_ms = _perf_marks[-1][1] if _perf_marks else 0.0
+        if total_ms >= 20.0:
+            parts = []
+            prev = 0.0
+            for label, ms in _perf_marks:
+                parts.append(f"{label} {ms - prev:.0f} ms")
+                prev = ms
+            log_status(f"[Perf] Fast-canvas-update: total {total_ms:.0f} ms | " + " | ".join(parts))
         return True
 
     def set_view_layout(self, layout: str):
@@ -1227,8 +1215,11 @@ class MultiPreviewCanvas(FigureCanvas):
         return [mol.to_dict() for mol in (self.molecules or [])]
 
     def import_molecule_state(self, state):
+        incoming = list(state or [])
+        if incoming == self.export_molecule_state():
+            return
         self.molecules = []
-        for entry in state or []:
+        for entry in incoming:
             try:
                 self.molecules.append(Molecule.from_dict(entry))
             except Exception:
@@ -1239,8 +1230,11 @@ class MultiPreviewCanvas(FigureCanvas):
         return [overlay.to_dict() for overlay in (self.svg_molecules or [])]
 
     def import_svg_molecule_state(self, state):
+        incoming = list(state or [])
+        if incoming == self.export_svg_molecule_state():
+            return
         self.svg_molecules = []
-        for entry in state or []:
+        for entry in incoming:
             try:
                 self.svg_molecules.append(SvgMoleculeOverlay.from_dict(entry))
             except Exception:
@@ -1666,6 +1660,7 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _redraw(self):
+        _redraw_t0 = time.perf_counter()
         # Preserve current zoom/limits per view before clearing
         current_limits = {}
         current_base_limits = {}
@@ -1733,53 +1728,27 @@ class MultiPreviewCanvas(FigureCanvas):
                 self.main_ax = ax
             arr = np.asarray(v['arr'])
             flip = self._use_relative_axes(v)
-            if flip:
-                arr_plot = np.flipud(arr)
-            else:
-                arr_plot = arr
+            arr_plot = np.flipud(arr) if flip else arr
             raw_extent = v.get('extent_raw')
             if raw_extent is None:
                 raw_extent = v.get('extent')
-            cmap = v.get('cmap', 'viridis')
             origin = 'lower' if flip else 'upper'
             display_extent = self._display_extent_for_view(v, raw_extent)
             aspect_mode = "auto" if self._fit_to_canvas else "equal"
-            if display_extent is None:
-                im = ax.imshow(
-                    arr_plot,
-                    origin=origin,
-                    interpolation='nearest',
-                    aspect=aspect_mode,
-                    cmap=cmap,
-                )
-            else:
-                im = ax.imshow(
-                    arr_plot,
-                    extent=display_extent,
-                    origin=origin,
-                    interpolation='nearest',
-                    aspect=aspect_mode,
-                    cmap=cmap,
-                )
-            try:
-                self._image_meta[ax] = {
-                    'extent': im.get_extent(),
-                    'origin': origin,
-                    'shape': arr_plot.shape,
-                }
-            except Exception:
-                self._image_meta[ax] = {
-                    'extent': display_extent,
-                    'origin': origin,
-                    'shape': arr_plot.shape,
-                }
-            clim = v.get('clim')
-            if clim:
-                try:
-                    im.set_clim(*clim)
-                except Exception:
-                    pass
+            # cmap/extent/clim/title/ticks are all applied by sync_axes_to_view
+            # below, so the initial call only needs what imshow requires up
+            # front (origin/interpolation/aspect can't be set post-hoc as
+            # cleanly and don't need the fast-path invalidation handling).
+            im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', aspect=aspect_mode)
             ax.set_autoscale_on(False)
+            title = self._compose_view_title(v)
+            self._image_meta[ax] = sync_axes_to_view(
+                ax, im, v,
+                flip=flip, origin=origin, display_extent=display_extent,
+                title=title, show_title=self._show_title,
+                font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
+                show_ticks=self._show_ticks,
+            )
             cbar_label = v.get('colorbar_label') or v.get('unit', '')
             if cbar_label and self._show_colorbar:
                 try:
@@ -1787,45 +1756,26 @@ class MultiPreviewCanvas(FigureCanvas):
                     if self._colorbar_orientation == 'horizontal':
                         cax = divider.append_axes("bottom", size="5%", pad=0.08)
                         cbar = self.fig.colorbar(im, cax=cax, orientation='horizontal')
-                        cbar.set_label(cbar_label)
                         cbar.ax.xaxis.set_label_coords(0.5, 0.5)
                         cbar.ax.xaxis.label.set_horizontalalignment('center')
                         cbar.ax.xaxis.label.set_verticalalignment('center')
                     else:
                         cax = divider.append_axes("right", size="4%", pad=0.02)
                         cbar = self.fig.colorbar(im, cax=cax, orientation='vertical')
-                        cbar.set_label(cbar_label)
                         cbar.ax.yaxis.set_label_coords(0.5, 0.5)
                         cbar.ax.yaxis.label.set_horizontalalignment('center')
                         cbar.ax.yaxis.label.set_verticalalignment('center')
                 except Exception:
                     cbar = self.fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02, orientation=self._colorbar_orientation)
-                    cbar.set_label(cbar_label)
-                if not self._show_ticks:
-                    cbar.set_ticks([])
-                try:
-                    apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
-                    apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
-                    for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
-                        apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
-                except Exception:
-                    pass
+                style_colorbar(
+                    cbar, im, cbar_label,
+                    font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
+                    show_ticks=self._show_ticks,
+                )
                 self._colorbars.append(cbar)
-            title = self._compose_view_title(v)
-            if title and self._show_title:
-                ax.set_title(title, fontsize=9)
-                apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
-            else:
-                ax.set_title("")
-            ax.tick_params(labelsize=8)
-            for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
-                apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, v)
             if ax is self.main_ax:
                 self._draw_shortcut_hint(ax)
-            if not self._show_ticks:
-                ax.set_xticks([])
-                ax.set_yticks([])
             # Restore previous zoom if available
             if preserve_zoom:
                 key = self._outline_key(v)
@@ -1925,6 +1875,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self.draw_idle()
         else:
             self.draw()
+        _redraw_ms = (time.perf_counter() - _redraw_t0) * 1000.0
+        if _redraw_ms >= 20.0:
+            log_status(f"[Perf] Full _redraw: total {_redraw_ms:.0f} ms | views={len(self.views)} | idle_draw={use_idle_draw}")
 
     def _draw_molecules(self, ax):
         if not self.show_molecules or not self.molecules:
@@ -9045,6 +8998,13 @@ class MultiPreviewCanvas(FigureCanvas):
         return (x0, x1, y1, y0)
 
     def _render_view_figure(self, view):
+        # Known related risk: this (and _render_views_grid below) builds a
+        # standalone export/print figure and independently re-derives extent/
+        # clim/title setup rather than calling preview_axes_sync.sync_axes_to_view,
+        # since it targets a fresh, throwaway Figure/Axes rather than the
+        # interactive canvas's reused ones. If a display bug like the ones
+        # documented in preview_axes_sync.py's module docstring resurfaces in
+        # exported/printed images, check here for the same class of drift.
         fig = Figure(figsize=(6, 6))
         ax = fig.add_subplot(1, 1, 1)
         arr = np.asarray(view.get('arr'))
@@ -9182,7 +9142,12 @@ class MultiPreviewCanvas(FigureCanvas):
             return None
 
     def _render_views_grid(self, views):
-        """Render multiple views into a single figure grid."""
+        """Render multiple views into a single figure grid.
+
+        See the "known related risk" note on _render_view_figure above — this
+        independently re-derives the same kind of axis setup as
+        preview_axes_sync.sync_axes_to_view for a throwaway export figure.
+        """
         views = views or []
         total = len(views)
         if total == 0:

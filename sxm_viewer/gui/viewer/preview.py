@@ -1127,10 +1127,13 @@ def _maybe_auto_tag_file(viewer, header_path:Path, header:dict, fds:list, channe
     if not tag_info:
         return
     if tag_info['tag'] == 'constant-height':
-        viewer.tags[key] = {'tag': 'constant-height', 'abs_z_pm': tag_info.get('abs_pm'), 'auto': True,
-                            'rng_nm': tag_info.get('rng_nm')}
+        new_tag = {'tag': 'constant-height', 'abs_z_pm': tag_info.get('abs_pm'), 'auto': True,
+                   'rng_nm': tag_info.get('rng_nm')}
     else:
-        viewer.tags[key] = {'tag': 'constant-current', 'auto': True, 'rng_nm': tag_info.get('rng_nm')}
+        new_tag = {'tag': 'constant-current', 'auto': True, 'rng_nm': tag_info.get('rng_nm')}
+    if existing == new_tag:
+        return
+    viewer.tags[key] = new_tag
     viewer.config['tags'] = viewer.tags
     save_config(viewer.config)
 
