@@ -1312,11 +1312,23 @@ def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_
                 viewer._spectro_cache.pop(norm_key, None)
         except Exception:
             full_specs = None
-    folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
+    # Prefer the spectrum's own real parent folder for cache placement - a single global
+    # (spec_folder_path/last_dir) is wrong for a spectrum whose file lives elsewhere, e.g. a
+    # cross-folder collection. Falls back to the global only when the file's own parent isn't
+    # resolvable (matches prior behavior exactly for the plain single-folder case, where the
+    # file's parent and the global folder are the same directory anyway).
+    folder = None
     try:
-        folder = Path(folder) if folder else filepath.parent
+        if filepath.parent.exists():
+            folder = filepath.parent
     except Exception:
-        folder = filepath.parent
+        folder = None
+    if folder is None:
+        folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
+        try:
+            folder = Path(folder) if folder else filepath.parent
+        except Exception:
+            folder = filepath.parent
     disk_cache_dir = None
     if getattr(viewer, "spectro_disk_cache_enabled", True):
         try:
@@ -1415,14 +1427,14 @@ def hydrate_spectro_entries(viewer, specs):
 def refresh_spectro_manifest_from_viewer(viewer):
     if not getattr(viewer, "spectro_manifest_cache_enabled", True):
         return
-    folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
+    global_folder = getattr(viewer, "spec_folder_path", None) or getattr(viewer, "last_dir", None)
     try:
-        folder = Path(folder) if folder else None
+        global_folder = Path(global_folder) if global_folder else None
     except Exception:
-        folder = None
-    if folder is None:
+        global_folder = None
+    if global_folder is None:
         return
-    cache_dir = folder / ".sxmviewer_spectro_cache"
+    cache_dir = global_folder / ".sxmviewer_spectro_cache"
     manifest = dict(getattr(viewer, "_spectro_manifest_entries", {}) or {})
     grouped = defaultdict(list)
     for spec in getattr(viewer, "spectros", []) or []:
@@ -1436,6 +1448,18 @@ def refresh_spectro_manifest_from_viewer(viewer):
             filepath = Path(spec_list[0].get("path"))
         except Exception:
             continue
+        # Key each entry relative to the spectrum's own real parent folder when possible, not a
+        # single global folder - avoids misattributing/colliding cross-folder entries in a
+        # collection under one folder's relative-path namespace. The on-disk manifest file itself
+        # is still saved under the single global folder (see _flush_spectro_manifest_save in
+        # main_window.py); a fully per-folder manifest is out of scope here, so a cross-folder
+        # collection loses the bulk-manifest fast-path on reopen but never gets wrong data - it
+        # falls back to the per-file disk cache (already folder-correct, see hydrate_spectro_file)
+        # or a fresh parse.
+        try:
+            folder = filepath.parent if filepath.parent.exists() else global_folder
+        except Exception:
+            folder = global_folder
         rel_key = _spectro_relative_key(folder, filepath)
         previous = manifest.get(rel_key, {})
         mtime = previous.get("mtime")
