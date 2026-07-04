@@ -27,6 +27,10 @@ Enable **Display -> Show acquisition overlay** to add a top-right HUD showing:
 - **CC images**: bias and setpoint current
 - **CH images**: absolute z position
 
+### A few canvas shortcuts worth knowing
+
+Beyond the overlay toggles (++ctrl+1++ through ++ctrl+5++, covered in [Overlays](../workspace/overlays.md)): ++a++ triggers histogram auto-contrast directly without opening the dialog, ++m++ opens the molecule-load dialog, and ++ctrl+h++ toggles the on-canvas shortcut hint text. See [Keyboard Shortcuts](../getting-started/shortcuts.md) for the complete reference.
+
 ---
 
 ## Pop-out windows
@@ -57,6 +61,7 @@ Right-click the preview canvas -> **Pop out** to open the current view as a floa
 | Arrange or tile | **Pop-ups** toolbar split-button -> Arrange |
 | Close all | **Pop-ups** toolbar menu -> Close all |
 | Reopen last closed | ++ctrl+z++ when nothing else is available to undo |
+| Duplicate active pop-out | ++ctrl+d++ |
 
 The **Pop-ups** toolbar button is a split button: primary click recalls open pop-outs, while the menu gives per-window focus, arrange, minimize, and restore actions.
 

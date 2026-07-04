@@ -35,6 +35,7 @@ It is strongly recommended to install SXM Viewer inside a dedicated Python envir
 | Download ZIP | Quick setup without Git |
 | Git clone | Keeping the checkout up to date |
 | Project installer (`scripts/install.py`) | Users who want the repo to create and manage its own `.venv` |
+| Windows batch launchers | Double-click setup/launch with no terminal commands at all |
 
 ---
 
@@ -119,6 +120,12 @@ git pull
     ```bash
     git --version
     ```
+
+---
+
+## Windows batch launchers
+
+If you'd rather not type any commands, `scripts/install_sxm_viewer.bat` and `scripts/run_sxm_viewer.bat` wrap the same setup/launch steps as double-clickable Windows batch files. `run_sxm_viewer.bat` auto-detects a usable Python (trying Conda, a local `venv`, `py -3`, then whatever is on `PATH`, in that order) so it can generally just be re-run after the initial install.
 
 ---
 

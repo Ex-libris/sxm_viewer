@@ -19,12 +19,12 @@ Typical examples include:
 
 ## Behavior
 
-The log lives inside the main window as a collapsible panel. Project history notes also describe:
+The log lives inside the main window as a collapsible panel, with:
 
-- timestamps
-- auto-scrolling
+- timestamps (`HH:MM:SS` prefix on each line)
+- auto-scrolling to the latest message
 - a clear button
-- a bounded line count to keep the widget manageable
+- a bounded history of 500 lines, so the widget stays fast even during long sessions
 
 ---
 

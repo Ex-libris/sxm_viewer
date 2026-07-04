@@ -6,9 +6,11 @@ SXM Viewer gives each image view its own display state, including colormap and c
 
 ## Changing the colormap
 
-Use the preview or pop-out controls to switch the active colormap for the current view. Colormaps can also be managed in canvas workflows and comparison tools where different panels have different display needs.
+Use the preview or pop-out colormap controls to switch the active colormap. This isn't just a temporary display change: it's stored as a **per-file, per-channel override** that persists across sessions - so switching the colormap while viewing one file/channel doesn't affect any other file's or channel's colormap, and reopening that same file/channel later reapplies the colormap you chose. The global default colormap (used for anything without its own override) only changes when nothing is currently selected.
 
-Examples from the app include:
+Right-clicking a **virtual copy** in the thumbnail grid has its own **Colormap** submenu, with a handful of featured colormaps, a "More..." option for the full list, and a **Use global thumbnail/preview cmap** action to clear that copy's override and fall back to the default.
+
+Colormaps can also be managed in canvas workflows and comparison tools where different panels have different display needs. Examples from the app include:
 
 - scientific grayscale or topography maps for normal viewing
 - fixed diverging maps for signed difference views

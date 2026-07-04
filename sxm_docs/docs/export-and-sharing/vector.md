@@ -18,9 +18,16 @@ PNG is still the simplest choice for quick sharing, but vector export is often b
 
 ## Available routes
 
-From image and plot workflows, right-click export menus expose explicit save/copy paths for vector output where supported.
+**Main preview / pop-outs** - the right-click menu has four distinct vector-ish actions:
 
-The project history also notes explicit support for SVG and PDF export in the broader figure workflow.
+- **Copy displayed as SVG** - the whole tiled view, including colorbar and labels
+- **Copy data view as SVG (vector)** - the image data only, no colorbar/labels
+- **Save displayed view as SVG...**
+- **Save displayed view as PDF...**
+
+Only the copy action has a data-only variant; saving to a file always includes the full displayed view.
+
+**Publication Canvas** - vector export only exists via the right-click menu on empty canvas space, and only for **selected tiles** (there's no "export the whole canvas as SVG" action - see [Publication Canvas](../workspace/canvas.md#export)). With multiple tiles selected, copying composes them into a single multi-tile SVG document, while saving to a folder writes one SVG file per tile.
 
 ---
 

@@ -74,7 +74,7 @@ Current UX limitation:
 Mode switching:
 - `Ctrl+B` - switch to Browse mode.
 - `Ctrl+M` - switch to Measure mode.
-- `Ctrl+S` - switch to Spectroscopy mode.
+- `Ctrl+Alt+S` - switch to Spectroscopy mode.
 
 Quick crop controls:
 - `Ctrl+Shift+C` - toggle quick crop mode.
@@ -87,6 +87,7 @@ Quick crop controls:
 - `Ctrl+Shift+W` - close the latest quick-crop pop-out.
 
 General:
+- `Ctrl+S` - save the current session (prompts once if no session file exists yet).
 - `Ctrl+Z` - undo the focused canvas action; if no focused canvas action is
   available, fall back to quick-crop undo.
 - `Ctrl+D` - duplicate the current preview into a popup.
