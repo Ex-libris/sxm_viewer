@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...data.io import parse_header
+from ..viewer import loader as viewer_loader
 from ..viewer import measurement as viewer_measurement
 from ..thumbnail_render import array_to_qimage
 
@@ -1325,12 +1326,77 @@ class CollectionController:
         viewer._collection_item_snapshots = {}
         viewer._workspace_kind = "collection"
         self._remember_current_collection(collection_path, mode=str(payload.get("default_mode") or "linked"))
-        loaded_keys = []
+
+        # Partition items into real file+channel references (loaded through the normal folder
+        # pipeline, just like a real folder) vs. items that must stay on the legacy baked-snapshot
+        # path (orphaned v1 items whose source is gone, or deliberately-legacy popup/crop items).
+        reference_items = []
+        legacy_items = []
+        for item in items:
+            ref = self._migrate_v1_item_to_reference(item)
+            if ref is not None:
+                reference_items.append((item, ref))
+            else:
+                legacy_items.append(item)
+
+        file_list = []
+        seen_files = set()
+        first_reference_channel = None
+        for _, ref in reference_items:
+            source_file = str(ref.get("source_file") or "")
+            if source_file and source_file not in seen_files:
+                seen_files.add(source_file)
+                file_list.append(Path(source_file))
+                if first_reference_channel is None:
+                    first_reference_channel = ref.get("channel_index")
+
+        if file_list:
+            viewer_loader.load_files(
+                viewer, file_list, folder_hint=None, source_label="collection",
+                append=False, refresh_spectros=False,
+            )
+
+        # Group each reference item's associated spectro files by their own real parent folder
+        # (not the collection file's folder) so per-folder disk caching stays correct for a
+        # genuinely cross-folder collection.
+        spectro_groups = {}
+        spectro_seen = set()
+        for _, ref in reference_items:
+            for spec_path_str in list(ref.get("spectro_file_paths") or []):
+                if spec_path_str in spectro_seen:
+                    continue
+                try:
+                    spec_path = Path(spec_path_str)
+                    if not spec_path.exists():
+                        continue
+                except Exception:
+                    continue
+                spectro_seen.add(spec_path_str)
+                spectro_groups.setdefault(str(spec_path.parent), []).append(spec_path)
+        for parent_str, group_files in spectro_groups.items():
+            try:
+                viewer_loader.load_spectroscopy_files(
+                    viewer, group_files, folder_hint=Path(parent_str), append=True, refresh=False,
+                )
+            except Exception:
+                continue
+
+        # Purely cosmetic per-item display hints (cmap); never touches arrays/headers.
+        for _, ref in reference_items:
+            display_hint = ref.get("display_hint")
+            cmap = display_hint.get("cmap") if isinstance(display_hint, dict) else None
+            if cmap:
+                try:
+                    viewer.per_file_channel_cmap[(str(ref.get("source_file")), int(ref.get("channel_index")))] = str(cmap)
+                except Exception:
+                    pass
+
+        loaded_keys = [str(p) for p in file_list]
         popup_items = []
         skipped = []
-        any_spectra = False
-        for item in items:
-            snapshot = dict(item.get("snapshot") or {})
+        any_spectra = bool(spectro_groups)
+        for item in legacy_items:
+            snapshot = dict(item.get("snapshot") or item.get("legacy_snapshot") or {})
             restore_as_popup = self._should_restore_item_as_popup(item, snapshot)
             primary_view = self._build_primary_view_for_item(item, snapshot, views_dir)
             key = None
@@ -1357,8 +1423,8 @@ class CollectionController:
             elif not key:
                 skipped.append(str(item.get("label") or item.get("id") or "item"))
 
-        if any_spectra:
-            self._apply_collection_spectro_settings(payload, items)
+        if legacy_items and any_spectra:
+            self._apply_collection_spectro_settings(payload, legacy_items)
 
         self._setup_collection_channel_dropdown()
         try:
@@ -1367,7 +1433,7 @@ class CollectionController:
             pass
         if loaded_keys:
             try:
-                viewer.show_file_channel(loaded_keys[0], 0)
+                viewer.show_file_channel(loaded_keys[0], int(first_reference_channel or 0))
             except Exception:
                 pass
         for item, snapshot in popup_items:
@@ -1382,19 +1448,20 @@ class CollectionController:
             except Exception:
                 continue
 
-        message = f"Opened collection with {len(loaded_keys)} library item(s)"
+        message = f"Opened collection with {len(reference_items)} item(s)"
+        if legacy_items:
+            message += f", plus {len(legacy_items)} legacy item(s) restored from a cached snapshot (source file not reachable)"
         if popup_items:
-            message += f" and {len(popup_items)} restored pop-up(s)"
+            message += f", including {len(popup_items)} restored pop-up(s)"
         message += "."
         if skipped:
             message += f"\n\nSkipped {len(skipped)} item(s) that could not be rebuilt."
-        if payload.get("default_mode") == "linked":
-            message += "\n\nLinked collection: original source files are preferred when available."
-        else:
-            message += "\n\nPortable collection: cached image data is being used."
         message += "\n\nThis collection is now the default target for Add to Collection actions in this app session."
         QtWidgets.QMessageBox.information(viewer, "Collection opened", message)
-        log_status(f"Opened collection {collection_path} with {len(loaded_keys)} item(s)")
+        log_status(
+            f"Opened collection {collection_path} with {len(reference_items)} reference item(s), "
+            f"{len(legacy_items)} legacy item(s)"
+        )
 
     def _setup_collection_channel_dropdown(self):
         viewer = self.viewer
