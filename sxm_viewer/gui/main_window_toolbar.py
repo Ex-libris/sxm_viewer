@@ -103,6 +103,7 @@ def create_main_toolbar(viewer):
     viewer.toolbar_collection_clear_target_act = viewer.toolbar_collection_menu.addAction("Clear Current Collection Target", viewer.on_clear_current_collection)
     viewer.toolbar_collection_menu.addSeparator()
     viewer.toolbar_collection_menu.addAction("Open Collection...", viewer.on_open_collection)
+    viewer.toolbar_recent_collections_menu = viewer.toolbar_collection_menu.addMenu("Recent Collections")
     viewer.toolbar_collection_menu.addAction("Show Collection Tray", viewer.on_show_collection_tray)
     viewer.toolbar_collection_add_selected_act = viewer.toolbar_collection_menu.addAction(
         "Add Selected Thumbnails...", viewer.on_add_selected_thumbnails_to_collection

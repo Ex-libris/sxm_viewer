@@ -6808,6 +6808,33 @@ QLabel:hover {{
                 act.setToolTip("Select one or more thumbnails first, then use this action.")
         except Exception:
             pass
+        self._refresh_recent_collections_menu()
+
+    def _refresh_recent_collections_menu(self):
+        """Populate the toolbar's 'Recent Collections' submenu - clicking an entry opens it
+        (fully replaces the workspace), matching the existing recent-folder/recent-session
+        behavior. Use 'Choose Current Collection...'/'Browse Collections...' if you only want to
+        change the append target without loading."""
+        menu = getattr(self, "toolbar_recent_collections_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        recents = list(getattr(self, "recent_collections", []) or [])
+        if not recents:
+            act = menu.addAction("No recent collections")
+            act.setEnabled(False)
+            return
+        for path in recents:
+            try:
+                label = self._collection_display_name(path)
+            except Exception:
+                label = path
+            act = menu.addAction(label)
+            act.setToolTip(f"Open {path} (replaces your current workspace)")
+            act.triggered.connect(lambda checked=False, p=path: self.collection_controller.load_collection(Path(p)))
+        menu.addSeparator()
+        clear_act = menu.addAction("Clear Recent Collections")
+        clear_act.triggered.connect(self._clear_recent_collections)
 
     def _refresh_collection_tray(self):
         current = str(getattr(self, "_collection_source", "") or "").strip()
