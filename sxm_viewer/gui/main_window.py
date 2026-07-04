@@ -4349,7 +4349,7 @@ QLabel:hover {{
         shown = ", ".join(names[:3])
         if count > 3:
             shown += f" (+{count - 3} more)"
-        message = f"This folder has files in {count} {label}: {shown} - see Collections > Browse Collections..."
+        message = f"This folder has files in {count} {label}: {shown} - see Collections > Open a Collection..."
         log_status(message)
         try:
             self._show_toast(message, duration_ms=6000, variant="default")
@@ -6914,8 +6914,8 @@ QLabel:hover {{
     def _refresh_recent_collections_menu(self):
         """Populate the toolbar's 'Recent Collections' submenu - clicking an entry opens it
         (fully replaces the workspace), matching the existing recent-folder/recent-session
-        behavior. Use 'Choose Current Collection...'/'Browse Collections...' if you only want to
-        change the append target without loading."""
+        behavior. Use 'Open a Collection...' (via the browser dialog's "Set as Current
+        Collection" button) if you only want to change the append target without loading."""
         menu = getattr(self, "toolbar_recent_collections_menu", None)
         if menu is None:
             return
