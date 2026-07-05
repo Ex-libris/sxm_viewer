@@ -129,19 +129,19 @@ def _shift_view_relative_zero(owner, view, enabled: bool):
                 except Exception:
                     return None
             return None
+        # clim here has already been shifted into the new zero-referenced
+        # coordinate space by the caller - preserve it as-is (whether it came
+        # from Reset, Auto, or a manual drag) instead of discarding the low
+        # bound and re-deriving it from the array's own extent, which used to
+        # silently overwrite any custom contrast range back to (0, data max)
+        # on every toggle.
         try:
-            _lo, _hi = clim
-            hi_val = float(_hi)
+            lo_val, hi_val = float(clim[0]), float(clim[1])
         except Exception:
             return None
-        finite = np.asarray(arr, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        if finite.size:
-            hi_val = max(hi_val, float(np.nanmax(finite)))
-        hi_val = max(hi_val, 0.0)
-        if hi_val <= 0.0:
+        if hi_val <= lo_val:
             return None
-        return (0.0, hi_val)
+        return (lo_val, hi_val)
 
     new_view = owner._copy_view_for_popup(view)
     arr = new_view.get("arr")

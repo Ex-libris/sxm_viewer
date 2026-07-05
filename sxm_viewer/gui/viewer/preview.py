@@ -1038,8 +1038,6 @@ def _auto_preview_clim(arr, *, relative_zero: bool = False):
                     finite = trimmed
         vmin = float(np.nanpercentile(finite, 1.0))
         vmax = float(np.nanpercentile(finite, 99.0))
-        if relative_zero:
-            vmin = 0.0
         if vmin == vmax:
             return None
         return (vmin, vmax)

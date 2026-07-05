@@ -580,6 +580,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._preview_request_timer.timeout.connect(self._flush_preview_request)
         self._pending_preview_request = None
         self._preview_render_in_progress = False
+        self._compact_histogram_apply_timer = QtCore.QTimer(self)
+        self._compact_histogram_apply_timer.setSingleShot(True)
+        self._compact_histogram_apply_timer.timeout.connect(self._flush_compact_histogram_clim)
+        self._pending_compact_histogram_clim = None
+        self._pending_compact_histogram_final = False
+        self._suppress_compact_histogram_refresh = False
+        self._compact_histogram_gesture_active = False
         self._spectro_manifest_save_timer = QtCore.QTimer(self)
         self._spectro_manifest_save_timer.setSingleShot(True)
         self._spectro_manifest_save_timer.timeout.connect(self._flush_spectro_manifest_save)
@@ -1518,6 +1525,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
         self.preview_canvas.set_histogram_auto_callback(lambda c: self._auto_contrast(c))
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
+        self.preview_canvas.set_display_relative_zero_menu_callback(
+            self.on_unit_relative_toggled,
+            state_cb=lambda: self.display_units_relative,
+            tooltip="Display values relative to the current zero/reference",
+        )
         self.preview_canvas.set_compare_menu_callback(
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
             state_cb=self.compare_menu_state,
@@ -4663,8 +4675,6 @@ QLabel:hover {{
                     return None
                 vmin = float(np.nanpercentile(finite, 1.0))
                 vmax = float(np.nanpercentile(finite, 99.0))
-            if relative_zero:
-                vmin = 0.0
             if vmin == vmax:
                 return None
             return (vmin, vmax)
@@ -8141,8 +8151,6 @@ QLabel:hover {{
         if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or float(vmax) <= float(vmin):
             fallback = self._auto_preview_clim(arr, relative_zero=relative_zero)
             return fallback
-        if relative_zero:
-            vmin = 0.0
         return (float(vmin), float(vmax))
 
     def _apply_clim_to_view(self, canvas, view, lo, hi):
@@ -11286,6 +11294,115 @@ QLabel:hover {{
             self._store_canvas_view_clims(canvas)
         self._on_canvas_display_options_changed(canvas)
         self._update_quick_crop_hint()
+        if canvas is getattr(self, "preview_canvas", None) and not getattr(
+            self, "_suppress_compact_histogram_refresh", False
+        ):
+            self._refresh_compact_histogram()
+
+    def _compact_histogram_current_view(self):
+        canvas = getattr(self, "preview_canvas", None)
+        views = list(getattr(canvas, "views", None) or [])
+        if not views:
+            return None, None
+        try:
+            idx = canvas.active_view_index()
+        except Exception:
+            idx = 0
+        idx = max(0, min(idx, len(views) - 1))
+        return canvas, views[idx]
+
+    def _refresh_compact_histogram(self):
+        widget = getattr(self, "compact_histogram", None)
+        if widget is None:
+            return
+        canvas, view = self._compact_histogram_current_view()
+        if view is None:
+            widget.clear()
+            return
+        vmin, vmax, finite = self._view_finite_values(view)
+        if vmin is None:
+            widget.clear()
+            return
+        lo, hi = view.get("clim", (vmin, vmax))
+        widget.set_data(vmin, vmax, lo, hi, finite)
+
+    def _on_compact_histogram_clim_changed(self, lo, hi, final):
+        # Undo must snapshot the state as it was BEFORE this gesture's first
+        # change, not before whichever flush happens to run last - so the
+        # push happens here, on the first event of a new gesture, rather than
+        # in _flush_compact_histogram_clim gated on "final" (which would
+        # capture an already-partially-applied intermediate state instead).
+        if not getattr(self, "_compact_histogram_gesture_active", False):
+            self._compact_histogram_gesture_active = True
+            canvas, _view = self._compact_histogram_current_view()
+            if canvas is not None:
+                try:
+                    canvas.push_undo_state("histogram_range")
+                except Exception:
+                    pass
+        self._pending_compact_histogram_clim = (float(lo), float(hi))
+        self._pending_compact_histogram_final = bool(final) or bool(
+            getattr(self, "_pending_compact_histogram_final", False)
+        )
+        try:
+            if not self._compact_histogram_apply_timer.isActive():
+                self._compact_histogram_apply_timer.start(0)
+        except Exception:
+            self._flush_compact_histogram_clim()
+
+    def _flush_compact_histogram_clim(self):
+        pending = getattr(self, "_pending_compact_histogram_clim", None)
+        final = bool(getattr(self, "_pending_compact_histogram_final", False))
+        self._pending_compact_histogram_clim = None
+        self._pending_compact_histogram_final = False
+        if final:
+            self._compact_histogram_gesture_active = False
+        if not pending:
+            return
+        canvas, view = self._compact_histogram_current_view()
+        if view is None:
+            return
+        lo, hi = pending
+        if lo > hi:
+            lo, hi = hi, lo
+        self._suppress_compact_histogram_refresh = True
+        try:
+            canvas._fast_preview_update_once = True
+            canvas._async_redraw_once = True
+        except Exception:
+            pass
+        try:
+            self._apply_clim_to_view(canvas, view, lo, hi)
+        finally:
+            self._suppress_compact_histogram_refresh = False
+
+    def _on_compact_histogram_auto_requested(self):
+        widget = getattr(self, "compact_histogram", None)
+        canvas, view = self._compact_histogram_current_view()
+        if view is None:
+            return
+        try:
+            suggested = self._recommended_view_clim(view, pct_low=1.0, pct_high=99.0)
+        except Exception:
+            suggested = None
+        if suggested is None:
+            return
+        lo, hi = suggested
+        if widget is not None:
+            widget.set_range(lo, hi)
+        self._on_compact_histogram_clim_changed(lo, hi, True)
+
+    def _on_compact_histogram_reset_requested(self):
+        widget = getattr(self, "compact_histogram", None)
+        canvas, view = self._compact_histogram_current_view()
+        if view is None:
+            return
+        vmin, vmax, _finite = self._view_finite_values(view)
+        if vmin is None:
+            return
+        if widget is not None:
+            widget.set_range(vmin, vmax)
+        self._on_compact_histogram_clim_changed(vmin, vmax, True)
 
     def _sync_quick_crop_template_controls(self):
         controller = getattr(self, "quick_crop_controller", None)

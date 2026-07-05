@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from .compact_histogram import CompactHistogramWidget
 from .constants import UI_FONT_FAMILY
 from .styles import MAIN_SHORTCUTS_PANEL_STYLE, lower_control_frame_style, mode_selector_style
 
@@ -78,6 +79,13 @@ def create_lower_controls(viewer):
     viewer.browse_molecules_menu.aboutToShow.connect(viewer._populate_browse_molecules_menu)
     viewer.browse_molecules_btn.setMenu(viewer.browse_molecules_menu)
     top_row.addWidget(viewer.browse_molecules_btn)
+
+    viewer.compact_histogram = CompactHistogramWidget(frame)
+    viewer.compact_histogram.climChanged.connect(viewer._on_compact_histogram_clim_changed)
+    viewer.compact_histogram.autoRequested.connect(viewer._on_compact_histogram_auto_requested)
+    viewer.compact_histogram.resetRequested.connect(viewer._on_compact_histogram_reset_requested)
+    top_row.addWidget(viewer.compact_histogram)
+
     top_row.addStretch(1)
     layout.addLayout(top_row)
 
