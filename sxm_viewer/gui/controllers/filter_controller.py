@@ -30,8 +30,12 @@ from ...processing.filters import (
     log_filter_image,
     histogram_equalize_image,
     clahe_filter_image,
+    repair_bad_lines,
+    remove_spikes,
 )
+from ...processing.periodic_noise import apply_mask_filter
 from ..dialogs.filters import CustomFilterDialog, SingleFilterDialog
+from ..dialogs.periodic_noise import PeriodicNoiseDialog
 from ..thumbnail_render import detect_valid_scan_region
 
 
@@ -148,6 +152,17 @@ class FilterController:
                 axis = params.get('axis', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_axis', 'row'))
                 method = params.get('method', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_method', 'median'))
                 return line_flatten_image(arr, axis=axis, method=method)
+            if key == 'line_repair':
+                ratio = params.get('ratio', FILTER_DEFINITIONS.get('line_repair', {}).get('default_ratio', 25.0))
+                return repair_bad_lines(arr, ratio=ratio)
+            if key == 'spike_removal':
+                ratio = params.get('ratio', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_ratio', 25.0))
+                window = params.get('window', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_window', 3))
+                return remove_spikes(arr, ratio=ratio, window=window)
+            if key == 'periodic_noise':
+                regions = params.get('regions', ())
+                taper = params.get('taper', FILTER_DEFINITIONS.get('periodic_noise', {}).get('default_taper', 0.01))
+                return apply_mask_filter(arr, regions, taper=taper)
         except Exception:
             pass
         return arr
@@ -430,6 +445,12 @@ class FilterController:
             filt_menu.addAction(status_act)
             filt_menu.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
+            if info.get("requires_dialog"):
+                # Needs a dedicated review dialog, not the generic slider-based
+                # SingleFilterDialog (e.g. periodic-noise removal, where which
+                # peaks to remove requires looking at the actual spectrum) -
+                # added as its own menu entry below instead.
+                continue
             prefix = "Add step: " if current_steps else ""
             act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", filt_menu)
             if info.get("needs_gaussian") and not _gaussian_available():
@@ -440,6 +461,7 @@ class FilterController:
         filt_menu.addSeparator()
         custom_label = "Edit custom pipeline..." if current_steps else "Custom pipeline..."
         filt_menu.addAction(custom_label, lambda: self._open_custom_filter_for_canvas(canvas))
+        filt_menu.addAction("Remove periodic noise...", lambda: self._open_periodic_noise_dialog_for_canvas(canvas))
         filt_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
@@ -469,6 +491,82 @@ class FilterController:
             steps = list(existing_steps) + [step]
             label = label or self._filter_pipeline_label_from_steps(steps, default=step_label)
         self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
+        self._sync_main_preview_filter_to_thumbnail(canvas, steps, label)
+
+    def _sync_main_preview_filter_to_thumbnail(self, canvas, steps, label, allow_full_rerender=True):
+        """Persist a filter pipeline applied directly to the MAIN preview
+        canvas (never a popup - those are independent, detached views) into
+        the same thumbnail_filters registry the batch thumbnail-menu path
+        (_apply_filter_to_paths) already writes to.
+
+        show_file_channel always rebuilds a view's array/clim from
+        thumbnail_filters + the filtered/clim caches (see
+        _get_filtered_channel_array) - it has no awareness of whatever a
+        canvas-only pipeline application transiently left on canvas.views.
+        Without this, a filter applied to the current preview would look
+        right until the user navigated away and back, at which point
+        show_file_channel would silently rebuild from the (unedited)
+        persisted state and the thumbnail would never have reflected the
+        change in the first place.
+        """
+        viewer = self.viewer
+        if viewer is None or canvas is not getattr(viewer, "preview_canvas", None):
+            return
+        views = list(getattr(canvas, "views", None) or [])
+        path_keys = set()
+        for view in views:
+            path = view.get("path") if isinstance(view, dict) else None
+            if path:
+                path_keys.add(str(Path(path)))
+        if not path_keys:
+            return
+        normalized_steps = self._normalize_preview_filter_steps(steps)
+        for key in path_keys:
+            if normalized_steps:
+                steps_copy = [dict(step) for step in normalized_steps]
+                spec_label = label or self._filter_pipeline_label_from_steps(steps_copy, default="Custom")
+                viewer.thumbnail_filters[key] = {"steps": steps_copy, "label": spec_label}
+            else:
+                viewer.thumbnail_filters.pop(key, None)
+        try:
+            viewer._invalidate_thumbnail_cache(path_keys)
+        except Exception:
+            pass
+        try:
+            viewer._invalidate_filtered_cache(path_keys)
+        except Exception:
+            pass
+        try:
+            viewer._refresh_thumbnail_pixmaps_for_paths(list(path_keys))
+        except Exception:
+            pass
+        # Force a full rebuild through show_file_channel - the same "apply
+        # filter, then persist, then re-navigate" pattern _apply_filter_to_paths
+        # already uses (filter_controller.py _apply_filter_to_paths). This
+        # isn't just belt-and-suspenders: applying a filter directly to the
+        # canvas runs it on an array that may already have display-only
+        # transforms baked in (e.g. "Values relative to zero" re-zeros to the
+        # array's own minimum in _scale_unit_for_display) computed BEFORE this
+        # filter existed. show_file_channel re-derives filter -> then
+        # display-scaling in the correct order from raw data, so re-running it
+        # is what actually keeps the immediately-applied result and the
+        # "navigate away and back" result identical, instead of the two
+        # differing by whatever stale baseline was left over from before the
+        # filter was applied.
+        #
+        # Skipped when allow_full_rerender=False: show_file_channel rebuilds
+        # extent/shape from the header's full scan size, which would discard
+        # an in-progress incomplete-scan crop (crop isn't itself persisted
+        # anywhere show_file_channel reads from) - callers that just cropped
+        # the view pass False to keep that crop intact.
+        if not allow_full_rerender:
+            return
+        try:
+            last_preview = getattr(viewer, "last_preview", None)
+            if last_preview and str(last_preview[0]) in path_keys:
+                viewer.show_file_channel(last_preview[0], last_preview[1])
+        except Exception:
+            pass
 
     def _open_custom_filter_for_canvas(self, canvas):
         if not canvas or not getattr(canvas, "views", None):
@@ -507,6 +605,50 @@ class FilterController:
             label = dlg.pipeline_label()
             self._restore_filter_views_on_canvas(canvas, original_views)
             self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
+            return
+        self._restore_filter_views_on_canvas(canvas, original_views)
+
+    def _open_periodic_noise_dialog_for_canvas(self, canvas):
+        if not canvas or not getattr(canvas, "views", None):
+            return
+        original_views = self._clone_filter_source_views(canvas, canvas.views)
+        base_arr = self._base_filter_image_from_views(original_views)
+        if base_arr is None:
+            return
+        first_view = original_views[0] if original_views else None
+        header = None
+        try:
+            file_key = str((first_view or {}).get("path") or "")
+            header, _fds = (getattr(self.viewer, "headers", {}) or {}).get(file_key, (None, None))
+        except Exception:
+            header = None
+        existing_steps = self._canvas_filter_steps(canvas)
+        dialog_parent = None
+        try:
+            dialog_parent = canvas.window() if canvas is not None else None
+        except Exception:
+            dialog_parent = None
+        if dialog_parent is None:
+            dialog_parent = canvas or self.viewer
+        dlg = PeriodicNoiseDialog(
+            dialog_parent,
+            base_arr,
+            header=header,
+            preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
+            preview_target_text=self.viewer._friendly_view_title(first_view, "current image"),
+        )
+        try:
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            pass
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            step = dlg.accepted_step()
+            self._restore_filter_views_on_canvas(canvas, original_views)
+            if step is not None:
+                steps = list(existing_steps) + [step]
+                label = self._filter_pipeline_label_from_steps(steps, default="Remove periodic noise")
+                self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
             return
         self._restore_filter_views_on_canvas(canvas, original_views)
 

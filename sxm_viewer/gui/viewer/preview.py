@@ -839,6 +839,17 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'spec_pixels': list(spec_pixels),
         'stack_badges': list(stack_badges),
     }
+    # A filter pipeline applied while this file was previously shown (via the
+    # quick-menu or "Let the robot") is persisted to thumbnail_filters and
+    # already baked into arr_base above via _get_filtered_channel_array - but
+    # that only affects the pixel data, not this view's own metadata, so the
+    # on-canvas "Filter: ..." badge and the Filters menu's "existing steps"
+    # would otherwise look empty on every fresh show_file_channel call even
+    # though the image itself is correctly filtered.
+    main_filter_steps = viewer._thumbnail_filter_steps(file_key)
+    if main_filter_steps:
+        main['filter_steps'] = main_filter_steps
+        main['filter_label'] = viewer._thumbnail_filter_label(file_key)
     if clim_main:
         main['clim'] = clim_main
     views.append(main)
@@ -884,6 +895,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                      'path': str(header_path), 'channel_idx': int(idx2),
                      'acquisition_overlay_text': acq_overlay.get("text", ""),
                      'spec_pixels': list(spec_pixels)}
+            extra_filter_steps = viewer._thumbnail_filter_steps(file_key)
+            if extra_filter_steps:
+                vdict['filter_steps'] = extra_filter_steps
+                vdict['filter_label'] = viewer._thumbnail_filter_label(file_key)
             if clim2:
                 vdict['clim'] = clim2
             views.append(vdict)

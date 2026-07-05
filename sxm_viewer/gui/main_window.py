@@ -49,6 +49,7 @@ from ..processing.filters import (
     _gaussian_available,
     _filter_signature,
 )
+from ..processing import auto_enhance as _auto_enhance
 from ..processing.detection import _find_topography_channel
 from ..utils.units import (
     _NUMERIC_RE,
@@ -8204,6 +8205,114 @@ QLabel:hover {{
     def _open_histogram_dialog(self, canvas):
         open_histogram_dialog(self, canvas)
 
+    def _on_let_the_robot_clicked(self, canvas=None):
+        """Diagnose the current view (tilt, incomplete scan, glitched lines,
+        spikes, noise, contrast) and apply whichever fixes actually apply, as
+        ordinary visible/editable steps in the same filter pipeline the
+        Filters menu uses - see processing/auto_enhance.diagnose()."""
+        canvas = canvas or getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        # Clicking the button doesn't naturally move keyboard focus onto the
+        # canvas (QToolButton defaults to no focus), so canvas shortcuts like
+        # "A" for auto-contrast would otherwise silently do nothing until the
+        # user clicks directly inside the plot area first.
+        try:
+            canvas.setFocus(QtCore.Qt.OtherFocusReason)
+        except Exception:
+            pass
+        view = self._resolve_canvas_contrast_target(canvas)
+        if view is None:
+            self._show_toast("No image loaded to enhance.")
+            return
+        arr = view.get("arr")
+        if arr is None:
+            self._show_toast("No image loaded to enhance.")
+            return
+        arr = np.asarray(arr, dtype=float)
+        summaries = []
+        source_view = view
+
+        # Incomplete-scan crop first, since it changes array shape - detected
+        # here (GUI layer) rather than in auto_enhance, which stays array-only.
+        try:
+            region = detect_valid_scan_region(arr) if arr.ndim == 2 else None
+        except Exception:
+            region = None
+        if region is not None:
+            r0, r1 = region
+            h = arr.shape[0]
+            if r0 > 0 or r1 < h - 1:
+                cropped = arr[r0:r1 + 1, :]
+                cropped_view = dict(view)
+                cropped_view["arr"] = np.array(cropped, copy=True)
+                try:
+                    w = arr.shape[1]
+                    crop_extent = canvas._compute_crop_extent(view, w, h, 0, w - 1, r0, r1)
+                except Exception:
+                    crop_extent = None
+                if crop_extent is not None:
+                    cropped_view["extent_raw"] = crop_extent
+                    try:
+                        display_extent = canvas._display_extent_for_view(cropped_view, crop_extent)
+                    except Exception:
+                        display_extent = None
+                    if display_extent is not None:
+                        cropped_view["extent"] = display_extent
+                    else:
+                        cropped_view.pop("extent", None)
+                arr = cropped
+                source_view = cropped_view
+                summaries.append(f"cropped to the valid scan region ({r1 - r0 + 1}/{h} rows)")
+
+        steps, diagnosis_summaries = _auto_enhance.diagnose(arr)
+        summaries.extend(diagnosis_summaries)
+
+        did_crop = source_view is not view
+        did_something = bool(steps) or did_crop
+        if steps or did_crop:
+            self.filter_controller._set_filter_pipeline_on_canvas(
+                canvas, steps, label="Auto-enhance", source_views=[source_view], push_undo=True
+            )
+            self.filter_controller._sync_main_preview_filter_to_thumbnail(
+                canvas, steps, "Auto-enhance", allow_full_rerender=not did_crop
+            )
+
+        # Contrast is always worth checking, even when no structural fix was
+        # needed - reuses the exact same robust-percentile path Auto uses.
+        current_view = self._resolve_canvas_contrast_target(canvas)
+        if current_view is not None:
+            suggested = self._recommended_view_clim(current_view, pct_low=1.0, pct_high=99.0)
+            if suggested is not None:
+                lo, hi = suggested
+                prev_clim = current_view.get("clim")
+                changed = True
+                if prev_clim is not None:
+                    try:
+                        prev_lo, prev_hi = float(prev_clim[0]), float(prev_clim[1])
+                        span = max(abs(hi - lo), 1e-12)
+                        changed = (abs(prev_lo - lo) + abs(prev_hi - hi)) / span > 0.01
+                    except Exception:
+                        changed = True
+                if changed:
+                    if not did_something:
+                        try:
+                            canvas.push_undo_state("auto_enhance")
+                        except Exception:
+                            pass
+                    self._apply_clim_to_view(canvas, current_view, lo, hi)
+                    summaries.append("adjusted contrast")
+                    did_something = True
+
+        if not did_something:
+            self._show_toast("Already looks good - no changes made.")
+            log_status("Let the robot: already looks good, no changes made")
+            return
+
+        summary = ", ".join(summaries) if summaries else "enhanced the image"
+        self._show_toast(summary[:1].upper() + summary[1:], duration_ms=2600)
+        log_status(f"Let the robot: {summary}")
+
     def _is_matrix_spec(self, spec) -> bool:
         try:
             if not spec:
@@ -9345,6 +9454,12 @@ QLabel:hover {{
             sub.addAction(status_act)
             sub.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
+            if info.get('requires_dialog'):
+                # Needs a per-image review dialog (e.g. periodic-noise removal
+                # - which peaks to remove is specific to one image's own
+                # spectrum) - doesn't make sense as a blind batch action, so
+                # it's left out of this multi-file quick-menu entirely.
+                continue
             prefix = "Add step: " if current_thumb_steps else ""
             act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", menu)
             if info.get('needs_gaussian') and not _gaussian_available():

@@ -35,7 +35,11 @@ except ImportError:  # pragma: no cover - python <3.5 not supported, safeguard o
 
 
 NANONIS_CACHE_DIRNAME = ".sxmviewer_nanonis"
-NANONIS_CACHE_VERSION = 3
+# Bumped: ScanTimeForward[s]/ScanTimeBackward[s] were previously never written
+# to the cached header (isinstance(scan_time, (list, tuple)) silently missed
+# nanonispy2's numpy-array scan_time) - existing caches need rebuilding to
+# pick up the fix.
+NANONIS_CACHE_VERSION = 4
 _NANONIS_READ = None
 _IMPORT_ERROR = None
 
@@ -198,7 +202,11 @@ def _extract_scan_header(scan) -> Dict[str, object]:
         or ""
     )
     scan_time = hdr.get("scan_time")
-    if isinstance(scan_time, (list, tuple)):
+    # nanonispy2 parses this as a numpy array (its own entries_to_be_floated
+    # coercion), never a plain list/tuple - a plain isinstance(list, tuple)
+    # check silently misses it for every real file, so ScanTimeForward[s]/
+    # ScanTimeBackward[s] never got populated at all.
+    if isinstance(scan_time, (list, tuple, np.ndarray)):
         if len(scan_time) >= 1:
             header["ScanTimeForward[s]"] = _safe_float(scan_time[0])
         if len(scan_time) >= 2:

@@ -23,14 +23,32 @@ def flatten_remove_median(img, axis='both'):
         out = out - med
     return out
 
+def _fit_plane_coeffs(arr, x, y, degree=1):
+    """Least-squares fit a plane (degree=1) or quadratic surface (degree=2)
+    to ``arr`` over pixel grid ``x``/``y``. Returns ``(coeffs, surface,
+    residual_std)`` - shared by subtract_best_fit_plane/subtract_2nd_order_plane
+    and by the auto-enhance diagnosis, which needs the residual to decide
+    whether a tilt/plane correction is warranted at all.
+    """
+    if degree == 1:
+        A = np.c_[x.ravel(), y.ravel(), np.ones_like(x).ravel()]
+    else:
+        A = np.c_[x.ravel()**2, y.ravel()**2, x.ravel()*y.ravel(), x.ravel(), y.ravel(), np.ones_like(x).ravel()]
+    C, _, _, _ = np.linalg.lstsq(A, arr.ravel(), rcond=None)
+    if degree == 1:
+        surface = C[0]*x + C[1]*y + C[2]
+    else:
+        surface = C[0]*x**2 + C[1]*y**2 + C[2]*x*y + C[3]*x + C[4]*y + C[5]
+    residual_std = float(np.nanstd(arr - surface))
+    return C, surface, residual_std
+
+
 def subtract_best_fit_plane(img):
     """Subtract best fit plane ax + by + c."""
     arr = np.asarray(img, dtype=float)
     h, w = arr.shape
     y, x = np.mgrid[:h, :w]
-    A = np.c_[x.ravel(), y.ravel(), np.ones_like(x).ravel()]
-    C, _, _, _ = np.linalg.lstsq(A, arr.ravel(), rcond=None)
-    plane = (C[0]*x + C[1]*y + C[2])
+    _, plane, _ = _fit_plane_coeffs(arr, x, y, degree=1)
     return arr - plane
 
 def subtract_2nd_order_plane(img):
@@ -38,9 +56,7 @@ def subtract_2nd_order_plane(img):
     arr = np.asarray(img, dtype=float)
     h, w = arr.shape
     y, x = np.mgrid[:h, :w]
-    A = np.c_[x.ravel()**2, y.ravel()**2, x.ravel()*y.ravel(), x.ravel(), y.ravel(), np.ones_like(x).ravel()]
-    C, _, _, _ = np.linalg.lstsq(A, arr.ravel(), rcond=None)
-    plane = (C[0]*x**2 + C[1]*y**2 + C[2]*x*y + C[3]*x + C[4]*y + C[5])
+    _, plane, _ = _fit_plane_coeffs(arr, x, y, degree=2)
     return arr - plane
 
 
@@ -112,6 +128,174 @@ def line_flatten_image(img, axis='row', method='median'):
     if axis in ('col', 'both'):
         arr = _process_one_axis(arr, 1)
     return arr
+
+
+def _robust_std(values):
+    """MAD-based robust standard deviation estimate (resistant to the
+    outliers/glitches this module's detectors are themselves looking for -
+    a plain np.std would be skewed by the very artifacts being measured)."""
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size < 2:
+        return 0.0
+    mad = np.nanmedian(np.abs(finite - np.nanmedian(finite)))
+    return float(1.4826 * mad)
+
+
+def _row_glitch_scores(row_stat):
+    """Per-row "how far from a smooth trend" score: each interior row's stat
+    compared to the straight-line average of its immediate neighbors. This
+    cancels out any linear gradient (tilt) exactly, so it stays near zero for
+    smooth topography and only spikes at an isolated glitched row - unlike
+    comparing against a small local neighborhood's own median/MAD, which is
+    itself too noisy an estimate (too few points) to reliably tell a real
+    glitch apart from ordinary row-to-row noise.
+    """
+    h = row_stat.shape[0]
+    deviation = np.zeros(h, dtype=float)
+    if h < 3:
+        return deviation
+    deviation[1:-1] = row_stat[1:-1] - 0.5 * (row_stat[:-2] + row_stat[2:])
+    return deviation
+
+
+def _percentile_ratio_outlier_mask(values, ratio=25.0, ref_pct=95.0, min_samples=10):
+    """Flag entries whose magnitude exceeds ``ratio`` times the ``ref_pct``
+    percentile of |values| - i.e. it must clearly exceed even the roughest
+    slice of otherwise-ordinary data, not just be a few standard deviations
+    out. Real SPM topography's fine-scale roughness is heavy-tailed (its
+    residuals are nowhere near Gaussian), so a MAD/z-score threshold that
+    works on smooth synthetic test data ends up flagging a large fraction of
+    perfectly ordinary texture on real scans - this scales with whatever the
+    data's own "normal roughness" ceiling actually is instead of assuming a
+    fixed statistical shape.
+
+    ``ref_pct`` deliberately stops short of the very top of the distribution
+    (95th, not 99th): a single genuine glitch also nudges its immediate
+    neighbors' scores (see _row_glitch_scores), so a reference percentile
+    too close to the max can end up measuring the glitch's own ripple
+    instead of the data's ordinary spread, masking the very thing being
+    looked for. ``ratio=25`` was picked empirically to sit an order of
+    magnitude above real scan data's own worst-case ratio at this
+    reference point while remaining far below a genuine synthetic
+    glitch/spike's ratio - see the auto-enhance test suite.
+    """
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size < min_samples:
+        return np.zeros(values.shape, dtype=bool)
+    ref = np.percentile(np.abs(finite), float(ref_pct))
+    if ref <= 0:
+        return np.zeros(values.shape, dtype=bool)
+    return np.abs(values) > (float(ratio) * ref)
+
+
+def repair_bad_lines(img, ratio=25.0):
+    """
+    Detect and repair single glitched scan lines (e.g. a tip glitch or scan
+    error affecting one row) by interpolating from the nearest unaffected
+    rows above/below.
+
+    A row is flagged when it deviates from the straight-line trend of its
+    immediate neighbors (see _row_glitch_scores) by more than ``ratio`` times
+    the 99th-percentile deviation across the whole image (see
+    _percentile_ratio_outlier_mask) - distinct from line_flatten_image, which
+    removes a per-line offset/tilt from every row rather than detecting and
+    replacing specific bad ones.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input 2-D image.
+    ratio : float
+        How many times the 99th-percentile row deviation a row's own
+        deviation must exceed to be treated as glitched. Default 4.0.
+
+    Returns
+    -------
+    ndarray
+        Image with flagged rows replaced by interpolation from the nearest
+        good rows; unchanged if no rows are flagged.
+    """
+    arr = np.asarray(img, dtype=float)
+    out = arr.copy()
+    h = arr.shape[0]
+    if h < 6:
+        return out
+    row_stat = np.nanmedian(arr, axis=1)
+    deviation = _row_glitch_scores(row_stat)
+    bad = _percentile_ratio_outlier_mask(deviation[1:-1], ratio=ratio)
+    bad = np.concatenate(([False], bad, [False]))  # edge rows have no well-defined score
+    if not bad.any():
+        return out
+    good_idx = np.where(~bad)[0]
+    if good_idx.size == 0:
+        return out
+    for i in np.where(bad)[0]:
+        above = good_idx[good_idx < i]
+        below = good_idx[good_idx > i]
+        if above.size and below.size:
+            a, b = above[-1], below[0]
+            w = (i - a) / float(b - a)
+            out[i, :] = (1 - w) * out[a, :] + w * out[b, :]
+        elif above.size:
+            out[i, :] = out[above[-1], :]
+        elif below.size:
+            out[i, :] = out[below[0], :]
+    return out
+
+
+try:
+    from scipy.ndimage import median_filter as _scipy_median_filter
+except Exception:
+    _scipy_median_filter = None
+
+
+def remove_spikes(img, ratio=25.0, window=3):
+    """
+    Replace isolated outlier pixels (e.g. tip-contamination spikes or dead
+    pixels) with the local median, leaving the rest of the image untouched -
+    unlike a Gaussian blur, only pixels that are extreme outliers relative to
+    their immediate neighborhood are modified.
+
+    Requires scipy. Falls back to returning the input unchanged when scipy is
+    not available.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input 2-D image.
+    ratio : float
+        How many times the 99th-percentile local-median residual a pixel's
+        own residual must exceed to be treated as a spike (see
+        _percentile_ratio_outlier_mask) - not a fixed z-score, since real
+        SPM topography's fine-scale roughness is heavy-tailed enough that a
+        Gaussian-style threshold flags a large fraction of ordinary texture
+        on real scans, even though it looks fine on smooth synthetic data.
+        Default 4.0.
+    window : int
+        Size of the local median window (odd, >= 3). Default 3.
+
+    Returns
+    -------
+    ndarray
+        Image with flagged pixels replaced by the local median; unchanged if
+        no pixels are flagged or scipy is unavailable.
+    """
+    arr = np.asarray(img, dtype=float)
+    if _scipy_median_filter is None:
+        return arr.copy()
+    w = int(window)
+    if w < 3:
+        w = 3
+    if w % 2 == 0:
+        w += 1
+    med = _scipy_median_filter(arr, size=w)
+    residual = arr - med
+    out = arr.copy()
+    spike_mask = _percentile_ratio_outlier_mask(residual, ratio=ratio, min_samples=50)
+    out[spike_mask] = med[spike_mask]
+    return out
 
 
 try:
@@ -342,6 +526,29 @@ FILTER_DEFINITIONS = {
         'default_clip_limit': 0.03,
         'default_tile_size': 8,
     },
+    'line_repair': {
+        'label': 'Repair glitched scan lines',
+        'needs_gaussian': False,
+        'default_ratio': 25.0,
+    },
+    'spike_removal': {
+        'label': 'Remove isolated spikes',
+        'needs_gaussian': False,
+        'default_ratio': 25.0,
+        'default_window': 3,
+    },
+    'periodic_noise': {
+        'label': 'Remove periodic noise (FFT)',
+        'needs_gaussian': False,
+        'default_taper': 0.01,
+        # Not a slider-based filter like the others above - params.regions is
+        # only ever populated by the dedicated review dialog
+        # (gui/dialogs/periodic_noise.py), never a plain default, since which
+        # frequency regions to remove is a decision that requires looking at
+        # the actual spectrum (see that dialog's docstring for why this
+        # stays manual).
+        'requires_dialog': True,
+    },
 }
 
 def _gaussian_available():
@@ -370,9 +577,15 @@ __all__ = [
     "log_filter_image",
     "histogram_equalize_image",
     "clahe_filter_image",
+    "repair_bad_lines",
+    "remove_spikes",
     "FILTER_DEFINITIONS",
     "_gaussian_available",
     "_filter_signature",
+    "_fit_plane_coeffs",
+    "_robust_std",
+    "_row_glitch_scores",
+    "_percentile_ratio_outlier_mask",
 ]
 
 
