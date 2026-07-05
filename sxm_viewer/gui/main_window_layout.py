@@ -86,6 +86,18 @@ def create_lower_controls(viewer):
     viewer.compact_histogram.resetRequested.connect(viewer._on_compact_histogram_reset_requested)
     top_row.addWidget(viewer.compact_histogram)
 
+    viewer.let_the_robot_btn = _configure_compact_control(QtWidgets.QToolButton(frame))
+    viewer.let_the_robot_btn.setObjectName("letTheRobotButton")
+    viewer.let_the_robot_btn.setText("\U0001F916 Let the robot")
+    viewer.let_the_robot_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+    viewer.let_the_robot_btn.setToolTip(
+        "Diagnose the current image (tilt, incomplete scan, glitched lines, spikes, "
+        "noise, contrast) and apply whichever fixes apply, as visible/editable steps "
+        "in the normal filter pipeline."
+    )
+    viewer.let_the_robot_btn.clicked.connect(lambda: viewer._on_let_the_robot_clicked(viewer.preview_canvas))
+    top_row.addWidget(viewer.let_the_robot_btn)
+
     top_row.addStretch(1)
     layout.addLayout(top_row)
 

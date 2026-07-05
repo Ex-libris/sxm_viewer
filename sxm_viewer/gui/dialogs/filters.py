@@ -295,6 +295,25 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.tile_size_label = QtWidgets.QLabel("CLAHE tile size")
         form.addRow(self.tile_size_label, self.tile_size_combo)
 
+        self.ratio_spin = QtWidgets.QDoubleSpinBox()
+        self.ratio_spin.setDecimals(1)
+        self.ratio_spin.setRange(3.0, 200.0)
+        self.ratio_spin.setSingleStep(1.0)
+        ratio_default = FILTER_DEFINITIONS.get(self.filter_key, {}).get("default_ratio", 25.0)
+        self.ratio_spin.setValue(float(self._initial_params.get("ratio", ratio_default)))
+        self.ratio_label = QtWidgets.QLabel("Sensitivity (lower = more aggressive)")
+        form.addRow(self.ratio_label, self.ratio_spin)
+
+        self.spike_window_combo = QtWidgets.QComboBox()
+        self.spike_window_combo.addItem("3", 3)
+        self.spike_window_combo.addItem("5", 5)
+        self.spike_window_combo.addItem("7", 7)
+        window_default = int(self._initial_params.get("window", FILTER_DEFINITIONS.get("spike_removal", {}).get("default_window", 3)))
+        window_choices = [3, 5, 7]
+        self.spike_window_combo.setCurrentIndex(window_choices.index(window_default) if window_default in window_choices else 0)
+        self.spike_window_label = QtWidgets.QLabel("Spike window size (px)")
+        form.addRow(self.spike_window_label, self.spike_window_combo)
+
         body.addWidget(controls, 1)
 
         if self._show_dialog_preview:
@@ -336,6 +355,8 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self.clip_limit_spin.valueChanged.connect(self._schedule_preview_update)
         self.tile_size_combo.currentIndexChanged.connect(self._schedule_preview_update)
         self.method_combo.currentIndexChanged.connect(self._schedule_preview_update)
+        self.ratio_spin.valueChanged.connect(self._schedule_preview_update)
+        self.spike_window_combo.currentIndexChanged.connect(self._schedule_preview_update)
 
         self._on_filter_selection_changed()
         self._schedule_preview_update()
@@ -358,6 +379,9 @@ class SingleFilterDialog(QtWidgets.QDialog):
         self._set_param_row_visible(self.tile_size_label, self.tile_size_combo, show_clahe)
         show_line_flatten = key == "line_flatten"
         self._set_param_row_visible(self.method_label, self.method_combo, show_line_flatten)
+        show_ratio = key in ("line_repair", "spike_removal")
+        self._set_param_row_visible(self.ratio_label, self.ratio_spin, show_ratio)
+        self._set_param_row_visible(self.spike_window_label, self.spike_window_combo, key == "spike_removal")
 
     def _schedule_preview_update(self, *_args):
         self._preview_timer.start()
@@ -384,6 +408,11 @@ class SingleFilterDialog(QtWidgets.QDialog):
         elif self.filter_key == "line_flatten":
             params["axis"] = self.axis_combo.currentText()
             params["method"] = self.method_combo.currentText()
+        elif self.filter_key == "line_repair":
+            params["ratio"] = float(self.ratio_spin.value())
+        elif self.filter_key == "spike_removal":
+            params["ratio"] = float(self.ratio_spin.value())
+            params["window"] = int(self.spike_window_combo.currentData() or 3)
         return {"key": self.filter_key, "params": params}
 
     def current_step_label(self):

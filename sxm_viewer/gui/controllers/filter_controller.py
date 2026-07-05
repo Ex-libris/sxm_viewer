@@ -30,6 +30,8 @@ from ...processing.filters import (
     log_filter_image,
     histogram_equalize_image,
     clahe_filter_image,
+    repair_bad_lines,
+    remove_spikes,
 )
 from ..dialogs.filters import CustomFilterDialog, SingleFilterDialog
 from ..thumbnail_render import detect_valid_scan_region
@@ -148,6 +150,13 @@ class FilterController:
                 axis = params.get('axis', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_axis', 'row'))
                 method = params.get('method', FILTER_DEFINITIONS.get('line_flatten', {}).get('default_method', 'median'))
                 return line_flatten_image(arr, axis=axis, method=method)
+            if key == 'line_repair':
+                ratio = params.get('ratio', FILTER_DEFINITIONS.get('line_repair', {}).get('default_ratio', 25.0))
+                return repair_bad_lines(arr, ratio=ratio)
+            if key == 'spike_removal':
+                ratio = params.get('ratio', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_ratio', 25.0))
+                window = params.get('window', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_window', 3))
+                return remove_spikes(arr, ratio=ratio, window=window)
         except Exception:
             pass
         return arr
