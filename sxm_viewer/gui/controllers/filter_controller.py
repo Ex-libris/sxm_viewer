@@ -478,6 +478,82 @@ class FilterController:
             steps = list(existing_steps) + [step]
             label = label or self._filter_pipeline_label_from_steps(steps, default=step_label)
         self._set_filter_pipeline_on_canvas(canvas, steps, label=label, push_undo=True)
+        self._sync_main_preview_filter_to_thumbnail(canvas, steps, label)
+
+    def _sync_main_preview_filter_to_thumbnail(self, canvas, steps, label, allow_full_rerender=True):
+        """Persist a filter pipeline applied directly to the MAIN preview
+        canvas (never a popup - those are independent, detached views) into
+        the same thumbnail_filters registry the batch thumbnail-menu path
+        (_apply_filter_to_paths) already writes to.
+
+        show_file_channel always rebuilds a view's array/clim from
+        thumbnail_filters + the filtered/clim caches (see
+        _get_filtered_channel_array) - it has no awareness of whatever a
+        canvas-only pipeline application transiently left on canvas.views.
+        Without this, a filter applied to the current preview would look
+        right until the user navigated away and back, at which point
+        show_file_channel would silently rebuild from the (unedited)
+        persisted state and the thumbnail would never have reflected the
+        change in the first place.
+        """
+        viewer = self.viewer
+        if viewer is None or canvas is not getattr(viewer, "preview_canvas", None):
+            return
+        views = list(getattr(canvas, "views", None) or [])
+        path_keys = set()
+        for view in views:
+            path = view.get("path") if isinstance(view, dict) else None
+            if path:
+                path_keys.add(str(Path(path)))
+        if not path_keys:
+            return
+        normalized_steps = self._normalize_preview_filter_steps(steps)
+        for key in path_keys:
+            if normalized_steps:
+                steps_copy = [dict(step) for step in normalized_steps]
+                spec_label = label or self._filter_pipeline_label_from_steps(steps_copy, default="Custom")
+                viewer.thumbnail_filters[key] = {"steps": steps_copy, "label": spec_label}
+            else:
+                viewer.thumbnail_filters.pop(key, None)
+        try:
+            viewer._invalidate_thumbnail_cache(path_keys)
+        except Exception:
+            pass
+        try:
+            viewer._invalidate_filtered_cache(path_keys)
+        except Exception:
+            pass
+        try:
+            viewer._refresh_thumbnail_pixmaps_for_paths(list(path_keys))
+        except Exception:
+            pass
+        # Force a full rebuild through show_file_channel - the same "apply
+        # filter, then persist, then re-navigate" pattern _apply_filter_to_paths
+        # already uses (filter_controller.py _apply_filter_to_paths). This
+        # isn't just belt-and-suspenders: applying a filter directly to the
+        # canvas runs it on an array that may already have display-only
+        # transforms baked in (e.g. "Values relative to zero" re-zeros to the
+        # array's own minimum in _scale_unit_for_display) computed BEFORE this
+        # filter existed. show_file_channel re-derives filter -> then
+        # display-scaling in the correct order from raw data, so re-running it
+        # is what actually keeps the immediately-applied result and the
+        # "navigate away and back" result identical, instead of the two
+        # differing by whatever stale baseline was left over from before the
+        # filter was applied.
+        #
+        # Skipped when allow_full_rerender=False: show_file_channel rebuilds
+        # extent/shape from the header's full scan size, which would discard
+        # an in-progress incomplete-scan crop (crop isn't itself persisted
+        # anywhere show_file_channel reads from) - callers that just cropped
+        # the view pass False to keep that crop intact.
+        if not allow_full_rerender:
+            return
+        try:
+            last_preview = getattr(viewer, "last_preview", None)
+            if last_preview and str(last_preview[0]) in path_keys:
+                viewer.show_file_channel(last_preview[0], last_preview[1])
+        except Exception:
+            pass
 
     def _open_custom_filter_for_canvas(self, canvas):
         if not canvas or not getattr(canvas, "views", None):

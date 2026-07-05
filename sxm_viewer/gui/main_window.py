@@ -8213,6 +8213,14 @@ QLabel:hover {{
         canvas = canvas or getattr(self, "preview_canvas", None)
         if canvas is None:
             return
+        # Clicking the button doesn't naturally move keyboard focus onto the
+        # canvas (QToolButton defaults to no focus), so canvas shortcuts like
+        # "A" for auto-contrast would otherwise silently do nothing until the
+        # user clicks directly inside the plot area first.
+        try:
+            canvas.setFocus(QtCore.Qt.OtherFocusReason)
+        except Exception:
+            pass
         view = self._resolve_canvas_contrast_target(canvas)
         if view is None:
             self._show_toast("No image loaded to enhance.")
@@ -8260,10 +8268,14 @@ QLabel:hover {{
         steps, diagnosis_summaries = _auto_enhance.diagnose(arr)
         summaries.extend(diagnosis_summaries)
 
-        did_something = bool(steps) or source_view is not view
-        if steps or source_view is not view:
+        did_crop = source_view is not view
+        did_something = bool(steps) or did_crop
+        if steps or did_crop:
             self.filter_controller._set_filter_pipeline_on_canvas(
                 canvas, steps, label="Auto-enhance", source_views=[source_view], push_undo=True
+            )
+            self.filter_controller._sync_main_preview_filter_to_thumbnail(
+                canvas, steps, "Auto-enhance", allow_full_rerender=not did_crop
             )
 
         # Contrast is always worth checking, even when no structural fix was
