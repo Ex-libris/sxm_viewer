@@ -826,8 +826,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self._zoom_reset_limits = {ax: (ax.get_xlim(), ax.get_ylim())}
         try:
             self._suppress_internal_draw_requests = True
-            self._apply_view_theme()
-            self._apply_view_font_scale()
+            # This path reuses the existing axes/artists rather than rebuilding
+            # them, so re-walking every tick label/colorbar/scale-bar to
+            # reapply theme/font styling is only needed when something that
+            # styling actually depends on has changed since it was last
+            # applied - otherwise the artists already reflect it.
+            if self._compute_theme_sig() != getattr(self, "_theme_sig", None):
+                self._apply_view_theme()
+            if self._compute_font_sig() != getattr(self, "_font_sig", None):
+                self._apply_view_font_scale()
             self._update_highlight_artists()
         finally:
             self._suppress_internal_draw_requests = False
@@ -3944,8 +3951,26 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         if self.angle_pts:
             self._update_angle_artists()
+        self._theme_sig = self._compute_theme_sig()
         if not getattr(self, "_suppress_internal_draw_requests", False):
             self.draw_idle()
+
+    def _compute_theme_sig(self):
+        """Cheap fingerprint of everything _apply_view_theme reads, so callers
+        that reuse existing axes/artists (the fast single-view redraw path)
+        can skip re-walking every artist when nothing theme-relevant changed
+        since the last time it was actually applied."""
+        sb_settings = getattr(self, '_scale_bar_settings', None) or {}
+        return (
+            bool(self._detail_dark),
+            bool(self._detail_grid),
+            sb_settings.get('text_color'),
+            sb_settings.get('bar_color'),
+            len(self.fig.axes),
+            len(getattr(self, '_colorbars', None) or []),
+            len(getattr(self, '_scale_bar_artists', None) or []),
+            bool(self.angle_pts),
+        )
 
     def _apply_view_font_scale(self):
         scale = max(0.6, min(2.5, getattr(self, '_view_font_scale', 1.0)))
@@ -3995,8 +4020,24 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
         self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+        self._font_sig = self._compute_font_sig()
         if not getattr(self, "_suppress_internal_draw_requests", False):
             self.draw_idle()
+
+    def _compute_font_sig(self):
+        """Cheap fingerprint of everything _apply_view_font_scale reads - see
+        _compute_theme_sig for why this exists."""
+        return (
+            self._font_family,
+            round(float(getattr(self, '_view_font_scale', 1.0)), 4),
+            bool(getattr(self, '_plot_font_bold', False)),
+            bool(getattr(self, '_plot_font_italic', False)),
+            bool(getattr(self, '_plot_font_underline', False)),
+            len(self.fig.axes),
+            len(getattr(self, '_colorbars', None) or []),
+            len(getattr(self, '_scale_bar_artists', None) or []),
+            len(getattr(self, '_angle_frames', None) or []),
+        )
 
     def set_profile_label_mode(self, mode: str):
         mode = (mode or "").strip().lower()
