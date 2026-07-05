@@ -67,14 +67,25 @@ FigureCanvas.resizeEvent = _safe_resize_event
 _backend_qt5agg.FigureCanvasQTAgg.resizeEvent = _safe_resize_event
 
 
+_INTERNAL_LOG_TAGS = ("[Perf]", "[SXMViewer-JSON]", "[Session]")
+
+
 def log_status(message: str):
-    """Emit startup/progress info to the terminal."""
+    """Emit startup/progress info to the terminal, and to the in-app Activity
+    Log unless the message is tagged as internal-only instrumentation (perf
+    timing breakdowns, raw JSON dumps, per-file scan sub-steps) - those stay
+    in the console for developers but would just be noise in the GUI."""
+    text = str(message)
     try:
-        print(f"[SXMViewer] {message}", flush=True)
+        print(f"[SXMViewer] {text}", flush=True)
     except Exception:
         pass
+    stripped = text.lstrip()
+    is_internal = stripped.startswith(_INTERNAL_LOG_TAGS) or stripped.startswith("- ")
+    if is_internal:
+        return
     try:
-        log_emitter.message_logged.emit(str(message))
+        log_emitter.message_logged.emit(text)
     except Exception:
         pass
 

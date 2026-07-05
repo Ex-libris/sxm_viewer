@@ -709,9 +709,10 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
         conv_ms = (time.perf_counter() - t_conv0) * 1000.0
         if converted:
             txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} Nanonis scan(s)")
             log_status(
-                f"Converted {len(converted)} Nanonis scan(s) "
-                f"[Perf] {conv_ms:.0f} ms total, {conv_ms / max(1, len(converted)):.1f} ms/file avg"
+                f"[Perf] Nanonis conversion: {conv_ms:.0f} ms total, "
+                f"{conv_ms / max(1, len(converted)):.1f} ms/file avg"
             )
     else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
@@ -1996,10 +1997,10 @@ def _scan_spectros(
             f"  Spectra: {stats['total_specs']} total  |  from singles: {stats['single_entries']} traces  |  from matrices: {stats['matrix_specs']} traces"
         )
         log_status(
-            f"  Cache: {len(file_records)}/{len(file_records)} files (100% hit rate)  |  memory: 0  |  manifest: {stats.get('manifest_hits', 0)}  |  disk: 0  |  parsed: 0"
+            f"  [Perf] Cache: {len(file_records)}/{len(file_records)} files (100% hit rate)  |  memory: 0  |  manifest: {stats.get('manifest_hits', 0)}  |  disk: 0  |  parsed: 0"
         )
         log_status(
-            f"  Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
+            f"  [Perf] Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
             f"manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload 0 ms  |  raw parse 0 ms  |  matrix anchor {stats.get('anchor_ms', 0.0):.0f} ms"
         )
         try:
@@ -2234,10 +2235,10 @@ def _scan_spectros(
     if total:
         cache_pct = (total_cached / max(total, 1)) * 100
         log_status(
-            f"  Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  manifest: {manifest_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
+            f"  [Perf] Cache: {total_cached}/{total} files ({cache_pct:.0f}% hit rate)  |  memory: {cache_hits}  |  manifest: {manifest_hits}  |  disk: {disk_hits}  |  parsed: {cache_miss}"
         )
         log_status(
-            f"  Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
+            f"  [Perf] Timings: manifest load {stats.get('manifest_load_ms', 0.0):.0f} ms  |  discovery {stats.get('discovery_ms', 0.0):.0f} ms  |  "
             f"manifest {stats.get('manifest_ms', 0.0):.0f} ms  |  disk payload {stats.get('disk_cache_ms', 0.0):.0f} ms  |  "
             f"raw parse {stats.get('parse_ms', 0.0):.0f} ms  |  matrix anchor {stats.get('anchor_ms', 0.0):.0f} ms  |  "
             f"per-file loop total {stats.get('loop_total_ms', 0.0):.0f} ms"
