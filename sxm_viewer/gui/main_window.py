@@ -9454,6 +9454,12 @@ QLabel:hover {{
             sub.addAction(status_act)
             sub.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
+            if info.get('requires_dialog'):
+                # Needs a per-image review dialog (e.g. periodic-noise removal
+                # - which peaks to remove is specific to one image's own
+                # spectrum) - doesn't make sense as a blind batch action, so
+                # it's left out of this multi-file quick-menu entirely.
+                continue
             prefix = "Add step: " if current_thumb_steps else ""
             act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", menu)
             if info.get('needs_gaussian') and not _gaussian_available():

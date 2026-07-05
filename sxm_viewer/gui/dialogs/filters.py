@@ -525,6 +525,12 @@ class CustomFilterDialog(QtWidgets.QDialog):
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
         self.filter_combo = QtWidgets.QComboBox()
         for key, info in FILTER_DEFINITIONS.items():
+            if info.get('requires_dialog'):
+                # Needs its own review dialog (which peaks to remove requires
+                # looking at the actual spectrum) - this generic combo has no
+                # way to expose that, so it's added via its own dedicated menu
+                # entry instead (see filter_controller.py).
+                continue
             self.filter_combo.addItem(info['label'], key)
         form.addRow("Filter", self.filter_combo)
         self.axis_combo = QtWidgets.QComboBox()

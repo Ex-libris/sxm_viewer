@@ -33,7 +33,9 @@ from ...processing.filters import (
     repair_bad_lines,
     remove_spikes,
 )
+from ...processing.periodic_noise import apply_mask_filter
 from ..dialogs.filters import CustomFilterDialog, SingleFilterDialog
+from ..dialogs.periodic_noise import PeriodicNoiseDialog
 from ..thumbnail_render import detect_valid_scan_region
 
 
@@ -157,6 +159,10 @@ class FilterController:
                 ratio = params.get('ratio', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_ratio', 25.0))
                 window = params.get('window', FILTER_DEFINITIONS.get('spike_removal', {}).get('default_window', 3))
                 return remove_spikes(arr, ratio=ratio, window=window)
+            if key == 'periodic_noise':
+                regions = params.get('regions', ())
+                taper = params.get('taper', FILTER_DEFINITIONS.get('periodic_noise', {}).get('default_taper', 0.01))
+                return apply_mask_filter(arr, regions, taper=taper)
         except Exception:
             pass
         return arr
@@ -439,6 +445,12 @@ class FilterController:
             filt_menu.addAction(status_act)
             filt_menu.addSeparator()
         for key, info in FILTER_DEFINITIONS.items():
+            if info.get("requires_dialog"):
+                # Needs a dedicated review dialog, not the generic slider-based
+                # SingleFilterDialog (e.g. periodic-noise removal, where which
+                # peaks to remove requires looking at the actual spectrum) -
+                # added as its own menu entry below instead.
+                continue
             prefix = "Add step: " if current_steps else ""
             act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", filt_menu)
             if info.get("needs_gaussian") and not _gaussian_available():
@@ -449,6 +461,7 @@ class FilterController:
         filt_menu.addSeparator()
         custom_label = "Edit custom pipeline..." if current_steps else "Custom pipeline..."
         filt_menu.addAction(custom_label, lambda: self._open_custom_filter_for_canvas(canvas))
+        filt_menu.addAction("Remove periodic noise...", lambda: self._open_periodic_noise_dialog_for_canvas(canvas))
         filt_menu.addAction("Clear filter", lambda: self._apply_filter_to_canvas(canvas, pipeline=[]))
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
@@ -592,6 +605,50 @@ class FilterController:
             label = dlg.pipeline_label()
             self._restore_filter_views_on_canvas(canvas, original_views)
             self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
+            return
+        self._restore_filter_views_on_canvas(canvas, original_views)
+
+    def _open_periodic_noise_dialog_for_canvas(self, canvas):
+        if not canvas or not getattr(canvas, "views", None):
+            return
+        original_views = self._clone_filter_source_views(canvas, canvas.views)
+        base_arr = self._base_filter_image_from_views(original_views)
+        if base_arr is None:
+            return
+        first_view = original_views[0] if original_views else None
+        header = None
+        try:
+            file_key = str((first_view or {}).get("path") or "")
+            header, _fds = (getattr(self.viewer, "headers", {}) or {}).get(file_key, (None, None))
+        except Exception:
+            header = None
+        existing_steps = self._canvas_filter_steps(canvas)
+        dialog_parent = None
+        try:
+            dialog_parent = canvas.window() if canvas is not None else None
+        except Exception:
+            dialog_parent = None
+        if dialog_parent is None:
+            dialog_parent = canvas or self.viewer
+        dlg = PeriodicNoiseDialog(
+            dialog_parent,
+            base_arr,
+            header=header,
+            preview_callback=self._build_canvas_filter_preview_callback(canvas, original_views),
+            preview_target_text=self.viewer._friendly_view_title(first_view, "current image"),
+        )
+        try:
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            pass
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            step = dlg.accepted_step()
+            self._restore_filter_views_on_canvas(canvas, original_views)
+            if step is not None:
+                steps = list(existing_steps) + [step]
+                label = self._filter_pipeline_label_from_steps(steps, default="Remove periodic noise")
+                self._apply_filter_to_canvas(canvas, pipeline=steps, label=label)
             return
         self._restore_filter_views_on_canvas(canvas, original_views)
 

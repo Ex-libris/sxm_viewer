@@ -537,6 +537,18 @@ FILTER_DEFINITIONS = {
         'default_ratio': 25.0,
         'default_window': 3,
     },
+    'periodic_noise': {
+        'label': 'Remove periodic noise (FFT)',
+        'needs_gaussian': False,
+        'default_taper': 0.01,
+        # Not a slider-based filter like the others above - params.regions is
+        # only ever populated by the dedicated review dialog
+        # (gui/dialogs/periodic_noise.py), never a plain default, since which
+        # frequency regions to remove is a decision that requires looking at
+        # the actual spectrum (see that dialog's docstring for why this
+        # stays manual).
+        'requires_dialog': True,
+    },
 }
 
 def _gaussian_available():
