@@ -1,3 +1,10 @@
+### 2026-07-05 UPDATES (auto-enhance and periodic-noise removal)
+Two new tools in the preview panel's Filters, aimed at quick cleanup of common scan problems:
+
+- a "Let the robot" button that diagnoses the current image (tilt, incomplete scans, glitched scan lines, isolated spike pixels, high-frequency noise, poor contrast) and applies whichever fixes actually apply, as ordinary steps in the same filter pipeline you'd build by hand - fully visible and editable afterward, not a hidden transform
+- a "Remove periodic noise..." dialog for scan-line banding and pump/mains-frequency vibration: shows the image's frequency spectrum, flags likely noise regions with a plain-language reason, and lets you draw your own regions (rectangle or ellipse) to remove or protect, since genuine surface structure can look similar to noise in frequency space and this always stays a manual, reviewed step
+- Nanonis scan-timing metadata (used to match noise against known pump/mains frequencies) is now read correctly - a bug meant it was previously never being picked up at all
+
 ### 2026-07-04 UPDATES (performance pass)
 A round of work aimed at the two things that show up most during everyday use: browsing thumbnails/previews and loading a folder for the first time.
 
