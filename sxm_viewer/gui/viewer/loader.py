@@ -2140,6 +2140,14 @@ def _scan_spectros(
                 continue
             if not spec_list:
                 stats['empty_files'] += 1
+                # Remember the empty outcome so the next folder load's bulk
+                # manifest path (see bulk_manifest_ready above) doesn't treat
+                # this file as "never scanned" and fall back to the slow
+                # per-file loop for the whole folder just because of it.
+                cache[norm_key] = {'mtime': mtime, 'data': [], 'empty': True}
+                if manifest_enabled:
+                    manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, [])
+                    manifest_changed = True
                 continue
             cache[norm_key] = {'mtime': mtime, 'data': [_clone_payload_spec_entry(spec) for spec in spec_list]}
             if disk_cache_dir:
