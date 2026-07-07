@@ -155,15 +155,29 @@ class ThumbnailController:
         viewer._refresh_thumb_selection_styles()
 
     def update_matrix_summary_banner(self):
+        """Always-on presence banner: as soon as a folder is scanned, it shows
+        what spectroscopy exists ("N spectra · M grid maps") without the user
+        having to enable or open anything; clicking it opens the Spectro
+        Browser. Historically this pill only counted matrix datasets."""
         viewer = self.viewer
         label = getattr(viewer, "matrix_summary_label", None)
         if label is None:
             return
-        matrix_count = len(getattr(viewer, "matrix_datasets", {}) or {})
-        if matrix_count <= 0:
+        spectros = list(getattr(viewer, "spectros", []) or [])
+        single_count = sum(1 for s in spectros if s.get("matrix_index") is None)
+        grid_count = len(getattr(viewer, "matrix_datasets", {}) or {})
+        if single_count <= 0 and grid_count <= 0:
             label.hide()
             return
-        noun = "Matrix dataset" if matrix_count == 1 else "Matrix datasets"
-        label.setText(f"{noun}: {matrix_count} · click to focus")
-        label.setToolTip("Click to jump to the first thumbnail containing a matrix spectroscopy grid.")
+        parts = []
+        if single_count:
+            parts.append("1 spectrum" if single_count == 1 else f"{single_count} spectra")
+        if grid_count:
+            parts.append(f"{grid_count} grid map" + ("" if grid_count == 1 else "s"))
+        label.setText("⚡ " + " · ".join(parts) + "  ·  click to browse")
+        label.setToolTip(
+            "This folder contains spectroscopy data. Click to open the Spectro Browser "
+            "(tree of images, positions, single spectra, and grid maps - including "
+            "spectra not linked to any image)."
+        )
         label.show()

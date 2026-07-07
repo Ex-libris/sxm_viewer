@@ -163,6 +163,9 @@ Marker interactions:
 - Clicking a spectroscopy badge opens the summary for that image.
 - `Spectroscopy -> What do these markers mean?` in the toolbar shows a legend of
   all marker symbols, rings, and badges.
+- A presence banner above the thumbnails appears automatically whenever the
+  folder contains spectroscopy ("N spectra | M grid maps"); click it to open
+  the Spectro Browser.
 
 Show on image:
 - Every spectroscopy window (single spectrum, comparison, grid map explorer) has

@@ -59,6 +59,7 @@ A round of workflow polish for spectroscopic data (single spectra, Z series at o
 - **Selection tray**: Shift+clicking markers no longer auto-opens a comparison window at the second selection; instead a small tray appears under the thumbnails ("N spectra selected - Compare | Clear") so you decide when to compare
 - **"With spectroscopy" view filter** (`Ctrl+Alt+P`, also in Display → Show only and the Filter dropdown): show only the images that have linked spectroscopy points; press again to show all
 - **Marker legend**: Spectroscopy toolbar → "What do these markers mean?" opens a legend rendered with your actual marker style/colors: single vs grid-map markers, the dashed low-confidence ring, the highlight glow, repeat/Z-series badges, and the per-image totals badge
+- **Always-on presence banner**: as soon as a folder is scanned, a pill above the thumbnails announces what spectroscopy exists ("⚡ 1655 spectra · 14 grid maps · click to browse") - no toggles or menus needed to know the data is there; clicking it opens the Spectro Browser, which also lists spectra that aren't linked to any image
 - **Scientist vocabulary**: window titles, tooltips, and summaries now say "Position 12.3/45.6 nm" instead of "site", "Z series" instead of "stack", and "Grid map" instead of "matrix" - e.g. "Z series (x5) - Position 12.3/45.6 nm" for a tip-height series
 
 ### 2026-07-07 UPDATES (starred favourites and quick view filters)

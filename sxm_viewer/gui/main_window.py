@@ -1157,7 +1157,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             " border: 1px solid rgba(120, 200, 255, 0.65); font-weight: 600;"
             "}"
         )
-        self.matrix_summary_label.mousePressEvent = lambda event: self._focus_first_matrix_dataset()
+        self.matrix_summary_label.mousePressEvent = lambda event: self.open_spectro_browser()
         thumbs_toolbar.addWidget(self.matrix_summary_label)
         thumbs_toolbar.addStretch(1)
         self.unit_display_cb = QtWidgets.QCheckBox("SI")
