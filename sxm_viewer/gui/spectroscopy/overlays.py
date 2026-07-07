@@ -331,8 +331,12 @@ def _render_spectroscopy_overlays(
     else:
         reveal_points = bool(reveal_points_override)
 
+    color_single = getattr(viewer, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
+    color_matrix = getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
+
     singles = []
     matrices = defaultdict(list)
+    grouped_keys = set()
     for s in specs:
         midx = s.get('matrix_index')
         is_matrix_file = is_matrix_file_entry(s)
@@ -342,11 +346,82 @@ def _render_spectroscopy_overlays(
         else:
             key = s.get('matrix_dataset') or str(s.get('path'))
             matrices[key].append(s)
+        if s.get('spectro_group_key'):
+            grouped_keys.add(str(s.get('spectro_group_key')))
 
     # When requested (e.g., matrix preview dialog), render matrix entries as points too.
     if matrix_as_points and matrices:
         for ms in matrices.values():
             singles.extend(ms)
+    total_singles = len(singles)  # true count, before group footprints remove members from `singles`
+
+    # Grid/line/cloud footprints for clustered loose .dat spectra (see
+    # _detect_spectro_groups): a summary shape instead of a marker swarm, same
+    # spirit as the matrix-file footprint below. Skipped when the caller wants
+    # raw points (matrix_as_points) or the user asked to reveal every point on
+    # this crowded thumbnail (reveal_points) - members then fall through to the
+    # normal single-marker rendering below since they were never excluded from
+    # `singles` in that case.
+    if viewer.show_single_markers and grouped_keys and not matrix_as_points and not reveal_points:
+        groups_here = {
+            g["group_key"]: g
+            for g in (getattr(viewer, "spectro_groups_by_image", {}) or {}).get(str(file_key), [])
+            if g["group_key"] in grouped_keys
+        }
+        drawn_group_keys = set()
+        for group_key, group in groups_here.items():
+            member_specs = [s for s in singles if s.get('spectro_group_key') == group_key]
+            if not member_specs:
+                continue
+            rect = viewer._matrix_bbox_pixels(
+                member_specs, header, xpix, ypix, w_scale, h_scale, file_key, thumb_crop=thumb_crop
+            )
+            if rect is None:
+                continue
+            kind = group.get("kind") or "cloud"
+            painter.save()
+            border = QtGui.QColor(color_single)
+            border.setAlpha(220)
+            shadow = QtGui.QColor(10, 10, 20, 70)
+            painter.setPen(QtGui.QPen(shadow, 1.2))
+            painter.drawRoundedRect(rect.translated(2, 2), 7, 7)
+            pen = QtGui.QPen(border, 2.0)
+            if kind == "cloud":
+                pen.setStyle(QtCore.Qt.DashLine)
+            elif kind == "line":
+                pen.setStyle(QtCore.Qt.DotLine)
+            painter.setPen(pen)
+            fill = QtGui.QBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 55))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, 7, 7)
+            if kind == "grid":
+                chip_text = f"{group.get('grid_cols')}x{group.get('grid_rows')}"
+            elif kind == "line":
+                chip_text = f"L:{group.get('point_count')}"
+            else:
+                chip_text = f"C:{group.get('point_count')}"
+            chip_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
+            painter.setFont(chip_font)
+            metrics = painter.fontMetrics()
+            chip_w = max(min(metrics.horizontalAdvance(chip_text) + 12, rect.width() - 8), 28)
+            chip_h = max(metrics.height() + 6, 16)
+            chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
+            painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 220))
+            painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.2))
+            painter.drawRoundedRect(chip_rect, 6, 6)
+            painter.drawText(chip_rect, QtCore.Qt.AlignCenter, chip_text)
+            painter.restore()
+            markers.append({
+                'rect': rect,
+                'spec': member_specs[0],
+                'label': 'spectro-group',
+                'kind': kind,
+                'group': group,
+                'tooltip': group.get("summary") or group.get("display"),
+            })
+            drawn_group_keys.add(group_key)
+        if drawn_group_keys:
+            singles = [s for s in singles if s.get('spectro_group_key') not in drawn_group_keys]
 
     # Matrix footprints (skip when explicitly rendering matrix entries as individual points)
     if viewer.show_matrix_markers and matrices and not matrix_as_points:
@@ -389,9 +464,6 @@ def _render_spectroscopy_overlays(
             if dims:
                 tooltip = f"{tooltip}\nGrid: {dims}"
             markers.append({'rect': rect, 'spec': m_specs[0], 'label': chip_text, 'kind': 'matrix', 'tooltip': tooltip})
-
-    color_single = getattr(viewer, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
-    color_matrix = getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
 
     # Single spectroscopies (customizable markers)
     if (viewer.show_single_markers or reveal_points or matrix_as_points) and singles:
@@ -446,7 +518,7 @@ def _render_spectroscopy_overlays(
             })
     # summary badge (S/M counts and matrix grid if available)
     try:
-        total_s = len(singles)
+        total_s = total_singles
         badge_w = 64
         bx = pixmap.width() - badge_w - 6
         by = 6
