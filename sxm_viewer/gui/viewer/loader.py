@@ -1131,6 +1131,7 @@ def _load_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None,
                 "payload_meta": meta_file.name,
                 "payload_data": data_file.name,
                 "cache_key": cache_key,
+                "stored_unusable": cache_meta.get("payload_usable") is False,
             }
         except Exception:
             continue
@@ -1149,6 +1150,10 @@ def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None
             "size": int(fsize),
             "cached_at": datetime.utcnow().isoformat(),
             "spec_count": len(specs or []),
+            # Recorded so cache reads can tell "this file genuinely has no
+            # drawable data" (serve from cache) apart from "a usable payload
+            # got corrupted" (re-parse to heal).
+            "payload_usable": bool(_payload_specs_usable(specs)),
             "relative_path": _spectro_relative_key(base_folder, filepath),
         }
         with open(meta_file, "w", encoding="utf-8") as handle:
@@ -1306,8 +1311,15 @@ def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_
     if cached and not cached.get("deferred"):
         try:
             if abs(float(cached.get("mtime", 0.0)) - float(mtime)) <= _SPECTRO_CACHE_MTIME_TOLERANCE:
+                if cached.get("empty") and not (cached.get("data") or []):
+                    # Cached negative result - the file has no drawable payload.
+                    return (None, "memory") if return_stage else None
                 candidate_specs = [_clone_payload_spec_entry(spec) for spec in (cached.get("data") or [])]
                 if _payload_specs_usable(candidate_specs):
+                    full_specs = candidate_specs
+                elif cached.get("usable") is False:
+                    # Stored straight from a parse that found no data arrays:
+                    # dataless is this file's true state, not cache corruption.
                     full_specs = candidate_specs
                 else:
                     viewer._spectro_cache.pop(norm_key, None)
@@ -1341,20 +1353,40 @@ def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_
     if full_specs is None:
         hydrate_stage = "disk"
         full_specs, payload_info = _load_spectro_disk_payload(disk_cache_dir, folder, filepath, mtime, fsize)
+        if full_specs is not None and len(full_specs) == 0:
+            # Cached negative result: this file is already known to contain no
+            # drawable payload - answer without re-parsing it.
+            viewer._spectro_cache[norm_key] = {"mtime": float(mtime), "data": [], "empty": True}
+            return (None, hydrate_stage) if return_stage else None
         if full_specs is not None and not _payload_specs_usable(full_specs):
-            full_specs = None
+            if (payload_info or {}).get("stored_unusable"):
+                # The payload was already dataless when it was stored, i.e. the
+                # file genuinely has no drawable data (metadata-only spectra).
+                # Serve it from cache instead of re-parsing on every request.
+                pass
+            else:
+                # Legacy or corrupted cache entry that should have had data -
+                # drop it and re-parse to heal.
+                full_specs = None
         if full_specs is None:
             hydrate_stage = "parse"
             full_specs, parse_error = _parse_spectro_file_payload(filepath, mtime)
             if parse_error is not None:
                 raise parse_error
             if not full_specs:
+                # Remember the empty outcome in both cache tiers. Without this,
+                # every payload-less .dat (e.g. aborted/limit-only KPFM curves)
+                # was re-parsed from scratch on every thumbnail repopulate -
+                # ~40 ms x hundreds of files froze the UI for over a minute.
+                viewer._spectro_cache[norm_key] = {"mtime": float(mtime), "data": [], "empty": True}
+                _store_spectro_disk_payload(disk_cache_dir, folder, filepath, mtime, fsize, [])
                 return (None, hydrate_stage) if return_stage else None
             payload_info = _store_spectro_disk_payload(disk_cache_dir, folder, filepath, mtime, fsize, full_specs)
         if full_specs:
             viewer._spectro_cache[norm_key] = {
                 "mtime": float(mtime),
                 "data": [_clone_payload_spec_entry(spec) for spec in full_specs],
+                "usable": bool(_payload_specs_usable(full_specs)),
             }
             if getattr(viewer, "spectro_manifest_cache_enabled", True):
                 manifest = getattr(viewer, "_spectro_manifest_entries", {}) or {}

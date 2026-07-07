@@ -1811,6 +1811,14 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         try:
+            # The manifest save is debounced on a QTimer that never fires while
+            # the UI thread is busy; without this flush, closing right after a
+            # long hydration pass silently drops the manifest and the next
+            # session re-parses every spectroscopy file from scratch.
+            self._flush_spectro_manifest_save()
+        except Exception:
+            pass
+        try:
             self._save_recovery_snapshot(reason="close")
         except Exception:
             pass
