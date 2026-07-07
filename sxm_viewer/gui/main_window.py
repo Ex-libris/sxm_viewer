@@ -644,6 +644,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectros_by_image = defaultdict(list)
         self.spectro_sites_by_image = defaultdict(list)
         self.spectro_site_index = {}
+        self.spectro_groups_by_image = defaultdict(list)
+        self.spectro_group_index = {}
         self._spectros_loaded = False
         self._spectros_loading = False
         self._spectros_pending = False
@@ -4813,6 +4815,8 @@ QLabel:hover {{
         self.spectros_by_image = defaultdict(list)
         self.spectro_sites_by_image = defaultdict(list)
         self.spectro_site_index = {}
+        self.spectro_groups_by_image = defaultdict(list)
+        self.spectro_group_index = {}
         self.files_with_matrix = set()
         self.files_with_spectra = set()
         self._spectros_loaded = False

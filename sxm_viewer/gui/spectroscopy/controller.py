@@ -733,6 +733,186 @@ def _build_spectro_sites(viewer):
     viewer.spectro_site_index = site_index
 
 
+# Cluster detection tuning: kept as module constants rather than viewer config
+# since these are geometry heuristics, not user preferences.
+_GROUP_CLUSTER_MIN_MEMBERS = 4  # below this a "shape" isn't visually distinct from plain markers
+_GROUP_CLUSTER_MAX_SITES = 400  # perf guard against the O(n^2) nearest-neighbor pass
+_GROUP_CLUSTER_NN_FACTOR = 3.0  # sites within (factor x median nearest-neighbor distance) join a cluster
+
+
+def _cluster_sites_by_proximity(sites):
+    """Group sites into spatial clusters via single-linkage on nearest-neighbor
+    distance, auto-scaled to this image's own spectrum spacing - a fixed nm
+    threshold can't generalize across wildly different scan ranges. Sites that
+    are each far from every other site stay singleton clusters, so a handful
+    of occasional points scattered across an otherwise empty image are left
+    alone rather than being forced into a group."""
+    n = len(sites)
+    if n < 2:
+        return [[i] for i in range(n)]
+    xs = [float(s["x_nm"]) for s in sites]
+    ys = [float(s["y_nm"]) for s in sites]
+    nn_dists = []
+    for i in range(n):
+        best = None
+        for j in range(n):
+            if i == j:
+                continue
+            d2 = (xs[i] - xs[j]) ** 2 + (ys[i] - ys[j]) ** 2
+            if best is None or d2 < best:
+                best = d2
+        if best is not None:
+            nn_dists.append(math.sqrt(best))
+    if not nn_dists:
+        return [[i] for i in range(n)]
+    nn_dists.sort()
+    median_nn = nn_dists[len(nn_dists) // 2]
+    threshold2 = max(median_nn * _GROUP_CLUSTER_NN_FACTOR, 1e-6) ** 2
+
+    parent = list(range(n))
+
+    def _find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            d2 = (xs[i] - xs[j]) ** 2 + (ys[i] - ys[j]) ** 2
+            if d2 <= threshold2:
+                _union(i, j)
+    clusters = defaultdict(list)
+    for i in range(n):
+        clusters[_find(i)].append(i)
+    return list(clusters.values())
+
+
+def _axis_bin_count(values):
+    """Number of distinct positions along one axis, after merging values that
+    are within a data-driven tolerance of each other (raster grid coordinates
+    are rarely bit-exact, but cluster tightly around a handful of steps)."""
+    uniq = sorted(set(values))
+    if len(uniq) <= 1:
+        return len(uniq)
+    gaps = sorted(uniq[i + 1] - uniq[i] for i in range(len(uniq) - 1))
+    median_gap = gaps[len(gaps) // 2]
+    tol = max(median_gap * 0.4, 1e-9)
+    bins = 1
+    for i in range(1, len(uniq)):
+        if uniq[i] - uniq[i - 1] > tol:
+            bins += 1
+    return bins
+
+
+def _classify_cluster_shape(member_sites):
+    """Classify a spatial cluster of sites as a raster grid, a line, or an
+    irregular cloud, purely from XY geometry (acquisition order is not used).
+    Grid detection: quantize x/y independently into columns/rows and check the
+    point count against columns x rows (allowing ~40% missing for aborted
+    grids). Line vs. cloud: a highly elongated bounding box reads as a line;
+    everything else is a cloud. Diagonal lines can still read as a cloud in
+    this v1 heuristic - an acceptable simplification, not a correctness bug."""
+    xs = [float(s["x_nm"]) for s in member_sites]
+    ys = [float(s["y_nm"]) for s in member_sites]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    dx = max(xmax - xmin, 1e-9)
+    dy = max(ymax - ymin, 1e-9)
+    n_cols = _axis_bin_count(xs)
+    n_rows = _axis_bin_count(ys)
+    total = len(member_sites)
+    if n_cols >= 2 and n_rows >= 2 and total >= 0.6 * n_cols * n_rows:
+        return "grid", n_rows, n_cols
+    if min(dx, dy) <= 0.2 * max(dx, dy):
+        return "line", None, None
+    return "cloud", None, None
+
+
+def _detect_spectro_groups(viewer):
+    """Cluster each image's non-grid-map (i.e. loose .dat) spectroscopy sites
+    into spatial groups - a manual NxM grid of separate files, a line of
+    positions, or a cloud concentrated in one area of the image - so the UI
+    can show at a glance WHERE spectra were acquired instead of an undifferentiated
+    scatter of markers. Isolated points with no nearby neighbors are left
+    ungrouped and keep rendering as plain single markers. Must run after
+    _build_spectro_sites (consumes viewer.spectro_sites_by_image)."""
+    sites_by_image = getattr(viewer, "spectro_sites_by_image", {}) or {}
+    groups_by_image = defaultdict(list)
+    group_index = {}
+    for spec in list(getattr(viewer, "spectros", []) or []):
+        spec.pop("spectro_group_key", None)
+        spec.pop("spectro_group_kind", None)
+        spec.pop("spectro_group_display", None)
+    for image_key, sites in sites_by_image.items():
+        usable = [
+            s for s in sites
+            if not s.get("has_matrix") and s.get("x_nm") is not None and s.get("y_nm") is not None
+        ]
+        if len(usable) < _GROUP_CLUSTER_MIN_MEMBERS or len(usable) > _GROUP_CLUSTER_MAX_SITES:
+            continue
+        clusters = _cluster_sites_by_proximity(usable)
+        group_idx = 0
+        for idx_list in clusters:
+            member_sites = [usable[i] for i in idx_list]
+            if len(member_sites) < _GROUP_CLUSTER_MIN_MEMBERS:
+                continue
+            kind, grid_rows, grid_cols = _classify_cluster_shape(member_sites)
+            xs = [float(s["x_nm"]) for s in member_sites]
+            ys = [float(s["y_nm"]) for s in member_sites]
+            members = [spec for s in member_sites for spec in s["members"]]
+            group_key = f"{image_key}::sgroup:{group_idx}"
+            group_idx += 1
+            point_count = len(member_sites)
+            if kind == "grid":
+                display = f"{grid_cols}x{grid_rows} grid ({point_count} points)"
+            elif kind == "line":
+                display = f"Line of {point_count} points"
+            else:
+                display = f"Cloud of {point_count} points"
+            channels = []
+            seen_ch = set()
+            for spec in members:
+                for name in list((spec.get("channels") or {}).keys()) + list(spec.get("available_channels") or []):
+                    name = str(name or "").strip()
+                    if name and name not in seen_ch:
+                        seen_ch.add(name)
+                        channels.append(name)
+            group = {
+                "group_key": group_key,
+                "image_key": image_key,
+                "kind": kind,
+                "site_keys": [s["key"] for s in member_sites],
+                "members": members,
+                "x_nm": sum(xs) / len(xs),
+                "y_nm": sum(ys) / len(ys),
+                "bbox_nm": (min(xs), max(xs), min(ys), max(ys)),
+                "grid_rows": grid_rows,
+                "grid_cols": grid_cols,
+                "point_count": point_count,
+                "trace_count": len(members),
+                "channels": channels,
+                "display": display,
+                "summary": (
+                    f"{display}\n{len(members)} spectra | "
+                    f"{len(channels)} channel" + ("" if len(channels) == 1 else "s")
+                ),
+            }
+            groups_by_image[image_key].append(group)
+            group_index[group_key] = group
+            for spec in members:
+                spec["spectro_group_key"] = group_key
+                spec["spectro_group_kind"] = kind
+                spec["spectro_group_display"] = display
+    viewer.spectro_groups_by_image = groups_by_image
+    viewer.spectro_group_index = group_index
+
+
 def _annotate_xy_stacks(viewer):
     originals = list(getattr(viewer, "spectros", []) or [])
     if not originals:
@@ -821,6 +1001,7 @@ def _annotate_xy_stacks(viewer):
             if ann:
                 spec.update(ann)
     _build_spectro_sites(viewer)
+    _detect_spectro_groups(viewer)
 
 
 def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=False):
