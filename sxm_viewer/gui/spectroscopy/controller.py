@@ -633,7 +633,8 @@ def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
     z_values = []
     z_label = None
     for spec in members:
-        has_matrix = has_matrix or bool(spec.get("matrix_index") is not None or is_matrix_file_entry(spec))
+        is_matrix_member = spec.get("matrix_index") is not None or is_matrix_file_entry(spec)
+        has_matrix = has_matrix or bool(is_matrix_member)
         has_z_stack = has_z_stack or bool(spec.get("xy_stack_z_varies"))
         for name in list((spec.get("channels") or {}).keys()) + list(spec.get("available_channels") or []):
             name = str(name or "").strip()
@@ -641,6 +642,14 @@ def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
                 continue
             channel_seen.add(name)
             channels.append(name)
+        if is_matrix_member:
+            # xy_stack_z_varies (checked above) is only ever set on non-matrix
+            # specs (_annotate_xy_stacks explicitly skips matrix entries), so
+            # a matrix member can never make has_z_stack true and its Z level
+            # is never read below - skip the (expensive, metadata-key-scanning)
+            # extraction entirely. On a grid-heavy folder this is thousands of
+            # wasted regex scans per site-building pass.
+            continue
         level, label, _unit = _extract_spec_z_level(spec)
         if level is not None:
             z_values.append(float(level))
@@ -1031,14 +1040,22 @@ def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=
 
     st = _spec_time_for_assignment(spec)
     sx = spec.get('x'); sy = spec.get('y')
+    # Computed once and reused by both the .dat-specific branch below and the
+    # generic fallback path further down - they used to run this same O(images)
+    # containment scan twice for any spec that matched neither (e.g. one whose
+    # position falls outside every image's extent), doubling the cost of the
+    # single most expensive part of assignment for no different result.
+    containment_candidates = None
+    if sx is not None and sy is not None:
+        containment_candidates = []
+        for img in images:
+            ext = image_extents.get(str(img['path']))
+            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
+                containment_candidates.append(img)
     if _is_dat_spec(spec):
         # Prefer spatial matching for .dat when coordinates are available.
         if sx is not None and sy is not None:
-            candidates = []
-            for img in images:
-                ext = image_extents.get(str(img['path']))
-                if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
-                    candidates.append(img)
+            candidates = containment_candidates
             if candidates:
                 timed_match = _image_before_spec_time(candidates, st)
                 if timed_match is not None:
@@ -1084,28 +1101,25 @@ def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=
                 "low",
                 "Assigned by a weak filename/session naming hint because stronger cues were unavailable.",
             )
-    candidates = []
     # First pass: images whose extents contain the point (with a small margin)
-    if sx is not None and sy is not None:
-        for img in images:
-            ext = image_extents.get(str(img['path']))
-            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
-                candidates.append(img)
-        if candidates:
-            timed_match = _image_before_spec_time(candidates, st)
-            if timed_match is not None:
-                return _result(
-                    timed_match,
-                    "xy_inside_extent_causal_time",
-                    "high",
-                    "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
-                )
+    # - already computed above as containment_candidates; a .dat spec that
+    # reaches this point already had its (empty) result, so no need to redo it.
+    candidates = containment_candidates or []
+    if sx is not None and sy is not None and candidates:
+        timed_match = _image_before_spec_time(candidates, st)
+        if timed_match is not None:
             return _result(
-                candidates[0],
-                "xy_inside_extent",
+                timed_match,
+                "xy_inside_extent_causal_time",
                 "high",
-                "Assigned to an image whose field of view contains the spectrum position.",
+                "Assigned to an image whose field of view contains the spectrum position, then resolved by acquisition order.",
             )
+        return _result(
+            candidates[0],
+            "xy_inside_extent",
+            "high",
+            "Assigned to an image whose field of view contains the spectrum position.",
+        )
     # Second pass: closest by space (even if slightly outside), then by time
     if sx is not None and sy is not None:
         scored = []

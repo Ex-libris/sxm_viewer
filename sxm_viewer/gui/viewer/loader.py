@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
 from ..._shared import (
     QtCore,
     QtGui,
@@ -1058,6 +1059,21 @@ def load_spectroscopy_files(viewer, files, folder_hint: Path | None = None, *, a
     return merged_specs
 
 
+@lru_cache(maxsize=4096)
+def _resolve_effective_mtime_cached(path_str: str) -> float:
+    path = Path(path_str)
+    try:
+        meta_path = path.parent / "meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            src_mtime = meta.get("mtime")
+            if src_mtime is not None:
+                return float(src_mtime)
+    except Exception:
+        pass
+    return path.stat().st_mtime
+
+
 def _resolve_effective_mtime(path: Path | str) -> float:
     """Real-world mtime for time-based image sorting/matching (used for
     'sort by file time' mode and as a tie-breaker for ambiguous header dates).
@@ -1070,18 +1086,15 @@ def _resolve_effective_mtime(path: Path | str) -> float:
     writes a sibling meta.json recording the ORIGINAL .sxm source file's
     mtime at conversion time (providers/nanonis/adapter.py); prefer that
     when present. Native (non-Nanonis) headers have no such sidecar and fall
-    through to the plain file mtime unchanged."""
-    path = Path(path)
-    try:
-        meta_path = path.parent / "meta.json"
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            src_mtime = meta.get("mtime")
-            if src_mtime is not None:
-                return float(src_mtime)
-    except Exception:
-        pass
-    return path.stat().st_mtime
+    through to the plain file mtime unchanged.
+
+    Cached: this is queried per-file on every thumbnail repopulate when
+    sorting by date (star/filter/tag changes, dialog closes, ...), so an
+    uncached version means re-reading and re-parsing meta.json off disk for
+    every image on every single repopulate. Nanonis cache paths already
+    embed a content hash, so a changed file gets a brand-new path rather than
+    reusing this one - a plain path-keyed cache is safe for the session."""
+    return _resolve_effective_mtime_cached(str(Path(path)))
 
 
 def _parse_header_datetime(viewer, header, path: Path | str | None = None):
