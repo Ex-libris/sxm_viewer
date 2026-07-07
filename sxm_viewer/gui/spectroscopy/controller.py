@@ -220,7 +220,23 @@ def _assign_spectros_to_images(viewer):
                     image_key=mapped,
                 )
         preset_key = spec.get('image_key')
-        if primary_match is None and preset_key:
+        # Trust a cached image_key only for matrix (.3ds/grid) points, whose
+        # single shared anchor is computed once by the dedicated matrix-
+        # anchoring pass at scan time (_assign_matrix_reference in loader.py) -
+        # re-running full per-point image matching wouldn't even apply the same
+        # logic to them. Plain single spectra always re-match below instead of
+        # trusting a preset: with nested overview/zoom scans (e.g. a 400 nm
+        # overview and dozens of few-nm close-ups), the overview's extent
+        # legitimately contains every zoomed-in position too, so "is this point
+        # inside the preset image" can't tell a stale/coarse assignment from a
+        # correct one - only the causal-time-aware matching below (which
+        # prefers the most specific, chronologically-appropriate image among
+        # ALL containing candidates) can, and it is cheap enough to redo on
+        # every load. A stale preset on a single spectrum would otherwise
+        # self-perpetuate forever, since every rescan re-persists whatever
+        # image_key a spec dict currently carries into the manifest/disk cache.
+        is_matrix_point = spec.get('matrix_index') is not None or is_matrix_file_entry(spec)
+        if primary_match is None and preset_key and is_matrix_point:
             mapped = image_paths_lower.get(str(preset_key).lower())
             if mapped:
                 primary_match = image_by_key.get(mapped)

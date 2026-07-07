@@ -1058,13 +1058,39 @@ def load_spectroscopy_files(viewer, files, folder_hint: Path | None = None, *, a
     return merged_specs
 
 
+def _resolve_effective_mtime(path: Path | str) -> float:
+    """Real-world mtime for time-based image sorting/matching (used for
+    'sort by file time' mode and as a tie-breaker for ambiguous header dates).
+
+    For a Nanonis-converted header, the header .txt file's own on-disk mtime
+    is when the conversion cache was last (re)written - completely unrelated
+    to acquisition time, and it changes every time the cache gets rebuilt
+    (e.g. after a cache-version bump or a stale/missing cache), which used to
+    make every converted image look like it was acquired "now". The converter
+    writes a sibling meta.json recording the ORIGINAL .sxm source file's
+    mtime at conversion time (providers/nanonis/adapter.py); prefer that
+    when present. Native (non-Nanonis) headers have no such sidecar and fall
+    through to the plain file mtime unchanged."""
+    path = Path(path)
+    try:
+        meta_path = path.parent / "meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            src_mtime = meta.get("mtime")
+            if src_mtime is not None:
+                return float(src_mtime)
+    except Exception:
+        pass
+    return path.stat().st_mtime
+
+
 def _parse_header_datetime(viewer, header, path: Path | str | None = None):
     """Return a sortable key (float timestamp) parsed from header Date/Time if possible; otherwise 0.0.
     Accepts common formats and uses file mtime as a tie-breaker for ambiguous day/month formats."""
     try:
         if path and getattr(viewer, "image_time_source", None) == "mtime":
             try:
-                return Path(path).stat().st_mtime
+                return _resolve_effective_mtime(path)
             except Exception:
                 pass
         date = str(header.get('Date', '') or '').strip()
@@ -1095,7 +1121,7 @@ def _parse_header_datetime(viewer, header, path: Path | str | None = None):
         file_dt = None
         if path:
             try:
-                file_dt = datetime.fromtimestamp(Path(path).stat().st_mtime)
+                file_dt = datetime.fromtimestamp(_resolve_effective_mtime(path))
             except Exception:
                 file_dt = None
         if file_dt:

@@ -6124,10 +6124,10 @@ QLabel:hover {{
         try:
             ts = float(self._parse_header_datetime(header or {}, path=path))
             if ts <= 0:
-                ts = Path(path).stat().st_mtime
+                ts = viewer_loader._resolve_effective_mtime(path)
             return datetime.fromtimestamp(ts)
         except Exception:
-            return datetime.fromtimestamp(Path(path).stat().st_mtime)
+            return datetime.fromtimestamp(viewer_loader._resolve_effective_mtime(path))
 
     def _build_image_timestamp_index(self):
         self.image_time_index = {}
