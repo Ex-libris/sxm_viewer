@@ -472,6 +472,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.config.get("preserve_profiles_on_channel_change", True)
         )
         self.tags = self.config.get("tags", {})  # persistent tags: {path: {"tag":"constant-height","abs_z_pm":int,...}}
+        self.starred = {str(k) for k in (self.config.get("starred") or [])}  # persistent favourites: file paths
         if not self.auto_detect_tags:
             self.tags = {
                 str(key): value
@@ -1137,7 +1138,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_toolbar.addSpacing(8)
         thumbs_toolbar.addWidget(QtWidgets.QLabel('Filter:'))
         self.thumb_filter_combo = QtWidgets.QComboBox()
-        self.thumb_filter_combo.addItems(['All', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
+        self.thumb_filter_combo.addItems(['All', 'Starred', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
         thumbs_toolbar.addWidget(self.thumb_filter_combo)
         self.clear_thumb_list_btn = QtWidgets.QPushButton("Clear thumbnails")
         self.clear_thumb_list_btn.setToolTip("Remove the current thumbnail session and start fresh")
@@ -3460,6 +3461,17 @@ QLabel:hover {{
                 self._spawn_preview_popup([self._copy_view_for_popup(v) for v in views], title="Preview copy")
                 event.accept()
                 return
+        if key == QtCore.Qt.Key_S and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.ShiftModifier)):
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if self._is_widget_in_thumbnail_area(focus_widget):
+                targets = set(str(p) for p in (self.thumb_multi_select or set()))
+                selected = getattr(self, 'selected_file_for_thumbs', None)
+                if selected:
+                    targets.add(str(selected))
+                if targets:
+                    self.toggle_star_for_paths(sorted(targets))
+                    event.accept()
+                    return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
@@ -5156,6 +5168,21 @@ QLabel:hover {{
                 painter.setPen(QtGui.QColor(255, 255, 255))
                 painter.drawText(6, 18, "CC")
             painter.end()
+        if str(file_key) in (getattr(self, 'starred', None) or set()):
+            # Gold favourite star, top-left; shifted right when a CH/CC label occupies the corner.
+            cx = 36 if (taginfo or {}).get('tag') else 14
+            cy = 14
+            pts = []
+            for i in range(10):
+                ang = -math.pi / 2 + i * math.pi / 5
+                r = 10.0 if i % 2 == 0 else 4.2
+                pts.append(QtCore.QPointF(cx + r * math.cos(ang), cy + r * math.sin(ang)))
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            painter.setBrush(QtGui.QColor(255, 200, 61))
+            painter.setPen(QtGui.QPen(QtGui.QColor(120, 82, 0), 1.4))
+            painter.drawPolygon(QtGui.QPolygonF(pts))
+            painter.end()
         if file_key in self.thumbnail_filters:
             steps = self._thumbnail_filter_steps(file_key)
             badge_text = self._filter_badge_text(steps)
@@ -6276,49 +6303,13 @@ QLabel:hover {{
             pass
         if not keys_to_refresh:
             return
-        try:
-            cmap_name = self.thumb_cmap_combo.currentText()
-        except Exception:
-            cmap_name = None
-        if not cmap_name:
-            cmap_name = getattr(self, 'thumb_cmap', 'viridis')
-        for file_key in keys_to_refresh:
-            label = labels.get(str(file_key))
-            if label is None:
-                continue
-            try:
-                thumb_dims = label.property("thumb_dims") or (0, 0)
-                channel_idx = int(label.property("channel_index") or 0)
-            except Exception:
-                continue
-            if not thumb_dims or thumb_dims[0] <= 0 or thumb_dims[1] <= 0:
-                continue
-            base_pix = viewer_thumb_ui._thumbnail_pixmap_for_file(
-                self, file_key, channel_idx, thumb_dims[0], thumb_dims[1], cmap_name
-            )
-            if base_pix is None:
-                continue
-            pix = base_pix.copy()
-            header, fds = self.headers.get(str(file_key), (None, None))
-            crop_info = None
-            try:
-                if fds and 0 <= channel_idx < len(fds):
-                    fd = fds[channel_idx]
-                    data_key = self._thumbnail_data_key(file_key, channel_idx, fd, thumb_dims[0], thumb_dims[1])
-                    with self._thumb_data_lock:
-                        crop_info = self._thumb_crop_cache.get(data_key)
-            except Exception:
-                crop_info = None
-            try:
-                markers = self._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds, thumb_crop=crop_info)
-            except Exception:
-                markers = []
-            label.setPixmap(pix)
-            label.setProperty("spec_markers", markers)
-            try:
-                label.setProperty("thumb_crop", crop_info)
-            except Exception:
-                pass
+        viewer_thumb_ui.redecorate_thumbnails(self, keys_to_refresh)
+
+    def toggle_star_for_paths(self, paths, animate=True):
+        return viewer_thumb_ui.toggle_star_for_paths(self, paths, animate=animate)
+
+    def set_thumb_filter_mode(self, label, *, toggle=False):
+        return viewer_thumb_ui.set_thumb_filter_mode(self, label, toggle=toggle)
 
     def _make_thumb_press_handler(self, label_widget):
         return viewer_thumb_ui._make_thumb_press_handler(self, label_widget)
@@ -9445,6 +9436,15 @@ QLabel:hover {{
         # If user has a multi-selection, operate on all of them (plus the clicked one)
         targets = sorted(set(self.thumb_multi_select or []) | {fp})
         menu = QtWidgets.QMenu(self)
+        all_starred = all(str(p) in self.starred for p in targets)
+        star_label = "Remove star" if all_starred else "★ Star"
+        if len(targets) > 1:
+            star_label += f" ({len(targets)} selected)"
+        star_act = QtWidgets.QAction(star_label, menu)
+        star_act.setToolTip("Mark as favourite (press S over the thumbnails); filter with Display → Show only → Starred")
+        star_act.triggered.connect(lambda _, paths=list(targets): self.toggle_star_for_paths(paths))
+        menu.addAction(star_act)
+        menu.addSeparator()
         current_thumb_steps = self._thumbnail_filter_steps(fp)
         current_thumb_summary = self._filter_pipeline_label_from_steps(current_thumb_steps)
         sub = menu.addMenu("Filters")

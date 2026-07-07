@@ -1,3 +1,10 @@
+### 2026-07-07 UPDATES (starred favourites and quick view filters)
+You can now star your favourite images and browse only those:
+
+- star/unstar thumbnails from the right-click menu ("★ Star") or by pressing `S` while the thumbnail area has focus; starred images show a gold star badge and a brief star animation plays when you star one
+- stars are remembered across sessions, so reopening a folder later still shows which images you starred
+- new `Display → Show only` menu filters the thumbnail grid to Starred (`Ctrl+Alt+F`), Constant height (`Ctrl+Alt+H`), or Constant current (`Ctrl+Alt+C`) images - press the same shortcut again to show everything (the thumbnail Filter dropdown reflects and controls the same state)
+
 ### 2026-07-05 UPDATES (auto-enhance and periodic-noise removal)
 Two new tools in the preview panel's Filters, aimed at quick cleanup of common scan problems:
 

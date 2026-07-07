@@ -86,6 +86,12 @@ Quick crop controls:
   ones.
 - `Ctrl+Shift+W` - close the latest quick-crop pop-out.
 
+View filters (also in `Display -> Show only`; press the same shortcut again to
+show all images):
+- `Ctrl+Alt+F` - show only starred favourites.
+- `Ctrl+Alt+H` - show only constant-height (CH) images.
+- `Ctrl+Alt+C` - show only constant-current (CC) images.
+
 General:
 - `Ctrl+S` - save the current session (prompts once if no session file exists yet).
 - `Ctrl+Z` - undo the focused canvas action; if no focused canvas action is
@@ -114,6 +120,10 @@ Rubber-band selection:
   selection instead of replacing it.
 
 Thumbnail actions:
+- `S` while focus is in the thumbnail area - star/unstar the selected
+  thumbnails (favourites). Starred thumbnails show a gold star badge; filter to
+  them with `Ctrl+Alt+F` or the `Starred` entry of the thumbnail filter
+  dropdown.
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.
@@ -121,6 +131,7 @@ Thumbnail actions:
 - Drag multiple selected thumbnails together into the canvas.
 
 Thumbnail context menu:
+- Star or unstar the selected files (favourites).
 - Apply a single filter or a custom pipeline to one or many selected files.
 - Clear filters for one or many selected files.
 - Copy selected thumbnails as SVG using the current rendered view.

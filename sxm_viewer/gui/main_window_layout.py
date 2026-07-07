@@ -206,6 +206,42 @@ def _ensure_display_menu(viewer):
     if getattr(viewer, "display_menu", None):
         return viewer.display_menu
     viewer.display_menu = QtWidgets.QMenu(viewer)
+    viewer.display_menu.setToolTipsVisible(True)
+    viewer.display_filter_menu = viewer.display_menu.addMenu("Show only")
+    viewer.display_filter_menu.setToolTipsVisible(True)
+    viewer.display_filter_group = QtWidgets.QActionGroup(viewer.display_filter_menu)
+    viewer.display_filter_group.setExclusive(True)
+    viewer.display_filter_actions = {}
+    for text, filt_label, shortcut, tip in (
+        ("All images", "All", None, "Show every image in the folder"),
+        ("Starred ★", "Starred", "Ctrl+Alt+F", "Show only starred favourites (press again to show all)"),
+        ("Constant height (CH)", "Constant height", "Ctrl+Alt+H", "Show only constant-height images (press again to show all)"),
+        ("Constant current (CC)", "Constant current", "Ctrl+Alt+C", "Show only constant-current images (press again to show all)"),
+    ):
+        act = viewer.display_filter_menu.addAction(text)
+        act.setCheckable(True)
+        act.setToolTip(tip)
+        if shortcut:
+            act.setShortcut(QtGui.QKeySequence(shortcut))
+            act.setShortcutContext(QtCore.Qt.ApplicationShortcut)
+        act.triggered.connect(lambda checked, lab=filt_label: viewer.set_thumb_filter_mode(lab, toggle=True))
+        viewer.display_filter_group.addAction(act)
+        viewer.display_filter_actions[filt_label] = act
+        # Register on the window so the shortcut fires while the menu is closed.
+        viewer.addAction(act)
+
+    def _sync_display_filter_actions():
+        combo = getattr(viewer, "thumb_filter_combo", None)
+        current = combo.currentText() if combo is not None else "All"
+        for lab, act in viewer.display_filter_actions.items():
+            act.blockSignals(True)
+            act.setChecked(lab == current)
+            act.blockSignals(False)
+
+    viewer._sync_display_filter_actions = _sync_display_filter_actions
+    viewer.display_menu.aboutToShow.connect(_sync_display_filter_actions)
+    _sync_display_filter_actions()
+    viewer.display_menu.addSeparator()
     viewer.display_units_si_act = viewer.display_menu.addAction("Show SI units")
     viewer.display_units_si_act.setCheckable(True)
     viewer.display_units_si_act.setChecked(bool(getattr(viewer, "display_units_si", False)))
