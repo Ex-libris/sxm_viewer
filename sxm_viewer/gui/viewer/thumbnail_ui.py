@@ -600,6 +600,8 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
         def include(path_str):
             tag = (viewer.tags.get(path_str, {}) or {}).get('tag', None)
+            if filt == 'Starred':
+                return path_str in (getattr(viewer, 'starred', None) or set())
             if filt == 'Constant height':
                 return tag == 'constant-height'
             if filt == 'Constant current':
@@ -1017,6 +1019,145 @@ def on_thumb_filter_changed(viewer, idx):
     except Exception:
         pass
     viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+
+
+def set_thumb_filter_mode(viewer, label, *, toggle=False):
+    """Switch the thumbnail filter combo to `label` (the single source of truth
+    for filtering). With toggle=True, selecting the already-active mode goes
+    back to 'All' - so one shortcut both enters and leaves a filtered view."""
+    combo = getattr(viewer, 'thumb_filter_combo', None)
+    if combo is None:
+        return
+    target = label
+    if toggle and combo.currentText() == label:
+        target = 'All'
+    idx = combo.findText(target)
+    if idx >= 0 and idx != combo.currentIndex():
+        combo.setCurrentIndex(idx)
+
+
+def toggle_star_for_paths(viewer, paths, animate=True):
+    """Star/unstar thumbnails. If any target is unstarred, star them all;
+    otherwise unstar them all. Returns True when files were starred."""
+    paths = [str(p) for p in (paths or []) if p]
+    if not paths:
+        return False
+    stars = getattr(viewer, 'starred', None)
+    if stars is None:
+        stars = set()
+        viewer.starred = stars
+    make_starred = any(p not in stars for p in paths)
+    newly_starred = []
+    for p in paths:
+        if make_starred:
+            if p not in stars:
+                stars.add(p)
+                newly_starred.append(p)
+        else:
+            stars.discard(p)
+    try:
+        viewer.config['starred'] = sorted(stars)
+        save_config(viewer.config)
+    except Exception:
+        pass
+    filt = viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All'
+    if filt == 'Starred' and not make_starred:
+        # Unstarred files must leave the filtered grid immediately.
+        viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+    else:
+        redecorate_thumbnails(viewer, paths)
+        if animate and make_starred:
+            for p in newly_starred:
+                _animate_star_pop(viewer, p)
+    return make_starred
+
+
+def redecorate_thumbnails(viewer, keys):
+    """Re-render the decoration layer (tag borders, star/filter badges,
+    spectroscopy markers) of already-loaded thumbnails without re-reading data."""
+    labels = getattr(viewer, '_thumb_labels', {}) or {}
+    try:
+        cmap_name = viewer.thumb_cmap_combo.currentText()
+    except Exception:
+        cmap_name = None
+    if not cmap_name:
+        cmap_name = getattr(viewer, 'thumb_cmap', 'viridis')
+    for file_key in keys:
+        label = labels.get(str(file_key))
+        if label is None:
+            continue
+        try:
+            thumb_dims = label.property("thumb_dims") or (0, 0)
+            channel_idx = int(label.property("channel_index") or 0)
+        except Exception:
+            continue
+        if not thumb_dims or thumb_dims[0] <= 0 or thumb_dims[1] <= 0:
+            continue
+        base_pix = _thumbnail_pixmap_for_file(
+            viewer, file_key, channel_idx, thumb_dims[0], thumb_dims[1], cmap_name
+        )
+        if base_pix is None:
+            continue
+        pix = base_pix.copy()
+        header, fds = viewer.headers.get(str(file_key), (None, None))
+        crop_info = None
+        try:
+            if fds and 0 <= channel_idx < len(fds):
+                fd = fds[channel_idx]
+                data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fd, thumb_dims[0], thumb_dims[1])
+                with viewer._thumb_data_lock:
+                    crop_info = viewer._thumb_crop_cache.get(data_key)
+        except Exception:
+            crop_info = None
+        try:
+            markers = viewer._decorate_thumbnail_pixmap(pix, file_key, channel_idx, header, fds, thumb_crop=crop_info)
+        except Exception:
+            markers = []
+        label.setPixmap(pix)
+        label.setProperty("spec_markers", markers)
+        try:
+            label.setProperty("thumb_crop", crop_info)
+        except Exception:
+            pass
+
+
+def _animate_star_pop(viewer, key):
+    """Brief celebratory star that scales up and fades out over the card."""
+    card = (getattr(viewer, 'thumb_widgets', {}) or {}).get(str(key))
+    if card is None:
+        return
+    try:
+        if not card.isVisible():
+            return
+        star = QtWidgets.QLabel("★", card)
+        star.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        star.setAlignment(QtCore.Qt.AlignCenter)
+        star.setStyleSheet("color: #ffc83d; background: transparent; border: none;")
+        effect = QtWidgets.QGraphicsOpacityEffect(star)
+        star.setGraphicsEffect(effect)
+        star.resize(card.size())
+        star.show()
+        star.raise_()
+        anim = QtCore.QVariantAnimation(card)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(600)
+        anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+
+        def _step(t, star=star, effect=effect):
+            try:
+                font = star.font()
+                font.setPointSizeF(12.0 + 40.0 * float(t))
+                star.setFont(font)
+                effect.setOpacity(max(0.0, 1.0 - float(t) ** 2))
+            except Exception:
+                pass
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(star.deleteLater)
+        anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+    except Exception:
+        pass
 
 
 def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cmap_name):
