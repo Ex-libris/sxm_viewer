@@ -59,6 +59,7 @@ You can now star your favourite images and browse only those:
 - an in-app guide explains all of this: `Display → Show only → How favourites & filters work...`, and the shortcuts panel lists the new keys
 - stars are remembered across sessions, so reopening a folder later still shows which images you starred
 - new `Display → Show only` menu filters the thumbnail grid to Starred (`Ctrl+Alt+F`), Constant height (`Ctrl+Alt+H`), or Constant current (`Ctrl+Alt+C`) images - press the same shortcut again to show everything (the thumbnail Filter dropdown reflects and controls the same state)
+- virtual copies follow their source image under these filters: a copy of a CH/CC image inherits the tag (and border badge), and a copy of a starred image starts out starred, so copies created while a filter is active stay visible instead of vanishing until you switch back to "All"
 
 ### 2026-07-05 UPDATES (auto-enhance and periodic-noise removal)
 Two new tools in the preview panel's Filters, aimed at quick cleanup of common scan problems:

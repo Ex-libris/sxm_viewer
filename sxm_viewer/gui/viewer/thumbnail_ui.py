@@ -599,7 +599,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     if filt and filt != 'All':
         matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
         def include(path_str):
-            tag = (viewer.tags.get(path_str, {}) or {}).get('tag', None)
+            tag = effective_tag(viewer, path_str)
             if filt == 'Starred':
                 return path_str in (getattr(viewer, 'starred', None) or set())
             if filt == 'Constant height':
@@ -638,7 +638,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         real_files_iter.sort(key=sort_key_date, reverse=rev)
     elif sort_mode.startswith('Tag'):
         order = {'constant-height': 0, 'constant-current': 1, None: 2}
-        real_files_iter.sort(key=lambda p: (order.get((viewer.tags.get(str(p), {}) or {}).get('tag', None), 2), Path(p).name.lower()))
+        real_files_iter.sort(key=lambda p: (order.get(effective_tag(viewer, str(p)), 2), Path(p).name.lower()))
 
     try:
         files_iter = viewer._ordered_virtual_thumbnail_files(real_files_iter, processed_files_iter)
@@ -1019,6 +1019,19 @@ def on_thumb_filter_changed(viewer, idx):
     except Exception:
         pass
     viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+
+
+def effective_tag(viewer, path_str):
+    """CH/CC tag for a thumbnail key. Virtual copies (processed keys) inherit
+    their source image's tag - a crop/copy of a constant-height scan is still
+    constant-height - so tag filters, badges, and tag-sorting treat them alike."""
+    key = str(path_str)
+    tag = (viewer.tags.get(key, {}) or {}).get('tag', None)
+    if tag is None and viewer._is_processed_key(key):
+        src = ((getattr(viewer, '_processed_views', {}) or {}).get(key) or {}).get('source')
+        if src:
+            tag = (viewer.tags.get(str(src), {}) or {}).get('tag', None)
+    return tag
 
 
 def set_thumb_filter_mode(viewer, label, *, toggle=False):

@@ -251,7 +251,13 @@ def _ensure_display_menu(viewer):
             "them automatically.</p>"
             "<p>This <i>Show only</i> menu, the <b>Filter</b> dropdown above the thumbnails, "
             "and the shortcuts all control the same filter, so you can use whichever is "
-            "most comfortable. The active filter is restored the next time you open the app.</p>",
+            "most comfortable. The active filter is restored the next time you open the app.</p>"
+            "<h3>Virtual copies</h3>"
+            "<p>Virtual copies follow the image they came from: a copy of a CH/CC-tagged "
+            "image counts as CH/CC too (and shows the same border badge), and a copy of a "
+            "starred image starts out starred. So copies created while a filter is active "
+            "stay visible in that view, and you can still star/unstar each copy "
+            "independently afterwards.</p>",
         )
 
     viewer.display_filter_menu.addSeparator()

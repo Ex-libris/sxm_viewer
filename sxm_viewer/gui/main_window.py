@@ -5149,9 +5149,8 @@ QLabel:hover {{
     def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds, thumb_crop=None):
         """Draw tag borders, filter badges, and spectroscopy markers."""
         marker_defs = []
-        taginfo = self.tags.get(str(file_key), {})
-        if taginfo:
-            tag = taginfo.get('tag')
+        tag = viewer_thumb_ui.effective_tag(self, str(file_key))
+        if tag:
             painter = QtGui.QPainter(pix)
             pen = QtGui.QPen()
             pen.setWidth(4)
@@ -5172,7 +5171,7 @@ QLabel:hover {{
             painter.end()
         if str(file_key) in (getattr(self, 'starred', None) or set()):
             # Gold favourite star, top-left; shifted right when a CH/CC label occupies the corner.
-            cx = 36 if (taginfo or {}).get('tag') else 14
+            cx = 36 if tag else 14
             cy = 14
             pts = []
             for i in range(10):
@@ -5352,6 +5351,18 @@ QLabel:hover {{
         ctr = getattr(self, "_virtual_counter", 0) + 1
         self._virtual_counter = ctr
         return f"processed_{stem}_{op}{chan}_{ctr}"
+
+    def _inherit_star_for_virtual_copy(self, new_key, source_key):
+        """A virtual copy of a starred image starts out starred itself, so it stays
+        visible when the 'Starred' view filter is active. It remains independently
+        un-starrable afterwards (S still toggles it like any other thumbnail)."""
+        try:
+            if str(source_key) in self.starred:
+                self.starred.add(str(new_key))
+                self.config['starred'] = sorted(self.starred)
+                save_config(self.config)
+        except Exception:
+            pass
 
     def _thumbnail_cmap_override(self, file_key: str, channel_idx: int, default_cmap: str | None = None):
         try:
@@ -5823,10 +5834,20 @@ QLabel:hover {{
         keys = {str(Path(p)) for p in paths if self._is_processed_key(str(p))}
         if not keys:
             return
+        starred_removed = False
         for k in keys:
             self._processed_views.pop(k, None)
             self.headers.pop(k, None)
             self.molecule_overlays.pop(k, None)
+            if k in self.starred:
+                self.starred.discard(k)
+                starred_removed = True
+        if starred_removed:
+            try:
+                self.config['starred'] = sorted(self.starred)
+                save_config(self.config)
+            except Exception:
+                pass
         self.files = [p for p in self.files if str(p) not in keys]
         self._channel_data_cache = OrderedDict()
         self._invalidate_thumbnail_cache(keys)
@@ -10403,6 +10424,7 @@ QLabel:hover {{
                     'source': orig,
                 }
                 self.headers[processed_key] = (header_new, fds_new)
+                self._inherit_star_for_virtual_copy(processed_key, orig)
                 if processed_key not in existing:
                     self.files.append(Path(processed_key))
                     existing.add(processed_key)
@@ -10525,6 +10547,7 @@ QLabel:hover {{
                     'op': 'channel',
                 }
                 self.headers[key] = (dict(header), fds_new)
+                self._inherit_star_for_virtual_copy(key, p)
                 self._insert_processed_after_source(key, p, insert_after_key=anchor_key)
                 if insert_after_key not in (None, "", VIRTUAL_COPY_INSERT_START):
                     anchor_key = key
@@ -10609,6 +10632,7 @@ QLabel:hover {{
                 "op": op_name,
             }
             self.headers[key] = (header_new, fds_new)
+            self._inherit_star_for_virtual_copy(key, path)
             self._insert_processed_after_source(key, path, insert_after_key=insert_after_key)
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
             return key
