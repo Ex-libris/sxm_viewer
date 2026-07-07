@@ -230,6 +230,35 @@ def _ensure_display_menu(viewer):
         # Register on the window so the shortcut fires while the menu is closed.
         viewer.addAction(act)
 
+    def _show_view_filter_help():
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Favourites & view filters",
+            "<h3>Starring favourites</h3>"
+            "<p>Select one or more thumbnails and press <b>S</b>, or right-click and choose "
+            "<b>★ Star</b>. A gold star badge marks starred images and a short star "
+            "animation plays when you star one.</p>"
+            "<p><b>Removing a star works the same way</b>: press <b>S</b> again on starred "
+            "images (S always toggles), or right-click → <b>Remove star</b>.</p>"
+            "<p>Stars are remembered across sessions — reopen the folder later and your "
+            "favourites are still marked.</p>"
+            "<h3>Showing only certain images</h3>"
+            "<p><b>Ctrl+Alt+F</b> shows only starred images, <b>Ctrl+Alt+H</b> only "
+            "constant-height (CH) images, and <b>Ctrl+Alt+C</b> only constant-current (CC) "
+            "images. Pressing the same shortcut a second time shows all images again.</p>"
+            "<p>The CH/CC views use the CH/CC tags — set them manually with the "
+            "<b>Tag as CH / Tag as CC</b> buttons, or enable <b>Auto CH/CC</b> to detect "
+            "them automatically.</p>"
+            "<p>This <i>Show only</i> menu, the <b>Filter</b> dropdown above the thumbnails, "
+            "and the shortcuts all control the same filter, so you can use whichever is "
+            "most comfortable. The active filter is restored the next time you open the app.</p>",
+        )
+
+    viewer.display_filter_menu.addSeparator()
+    viewer.display_filter_help_act = viewer.display_filter_menu.addAction("How favourites && filters work...")
+    viewer.display_filter_help_act.setToolTip("Explains starring favourites, removing stars, and the view-filter shortcuts")
+    viewer.display_filter_help_act.triggered.connect(_show_view_filter_help)
+
     def _sync_display_filter_actions():
         combo = getattr(viewer, "thumb_filter_combo", None)
         current = combo.currentText() if combo is not None else "All"

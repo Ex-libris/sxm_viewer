@@ -120,10 +120,12 @@ Rubber-band selection:
   selection instead of replacing it.
 
 Thumbnail actions:
-- `S` while focus is in the thumbnail area - star/unstar the selected
-  thumbnails (favourites). Starred thumbnails show a gold star badge; filter to
-  them with `Ctrl+Alt+F` or the `Starred` entry of the thumbnail filter
-  dropdown.
+- `S` while focus is in the thumbnail area - star the selected thumbnails
+  (favourites). `S` toggles: pressing it again on starred images removes the
+  star. Starred thumbnails show a gold star badge; filter to them with
+  `Ctrl+Alt+F` or the `Starred` entry of the thumbnail filter dropdown.
+  An in-app explanation lives at `Display -> Show only -> How favourites &
+  filters work...`.
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.

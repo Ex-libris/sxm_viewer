@@ -2666,6 +2666,8 @@ QLabel:hover {{
             "<li><b>Shift+Click</b> spectroscopy marker = multi-select</li>"
             "<li><b>Ctrl+Drag</b> thumbnails = reorder export selection</li>"
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
+            "<li><b>S</b> in thumbnails = star/unstar the selected images (favourites, gold badge)</li>"
+            "<li><b>Ctrl+Alt+F/H/C</b> = show only starred / CH / CC images; press the same shortcut again to show all</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Shift+drag rotates around Z, Ctrl+Shift+drag or middle-drag rotates in 3D, Ctrl+1/2/3 saved overlays</li>"
@@ -9437,11 +9439,11 @@ QLabel:hover {{
         targets = sorted(set(self.thumb_multi_select or []) | {fp})
         menu = QtWidgets.QMenu(self)
         all_starred = all(str(p) in self.starred for p in targets)
-        star_label = "Remove star" if all_starred else "★ Star"
+        star_label = "Remove star  (S)" if all_starred else "★ Star  (S)"
         if len(targets) > 1:
-            star_label += f" ({len(targets)} selected)"
+            star_label = ("Remove star" if all_starred else "★ Star") + f" ({len(targets)} selected)  (S)"
         star_act = QtWidgets.QAction(star_label, menu)
-        star_act.setToolTip("Mark as favourite (press S over the thumbnails); filter with Display → Show only → Starred")
+        star_act.setToolTip("Mark as favourite - S toggles the star on the selected thumbnails; view only starred images with Ctrl+Alt+F or Display → Show only → Starred")
         star_act.triggered.connect(lambda _, paths=list(targets): self.toggle_star_for_paths(paths))
         menu.addAction(star_act)
         menu.addSeparator()

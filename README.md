@@ -1,7 +1,8 @@
 ### 2026-07-07 UPDATES (starred favourites and quick view filters)
 You can now star your favourite images and browse only those:
 
-- star/unstar thumbnails from the right-click menu ("★ Star") or by pressing `S` while the thumbnail area has focus; starred images show a gold star badge and a brief star animation plays when you star one
+- star/unstar thumbnails from the right-click menu ("★ Star" / "Remove star") or by pressing `S` while the thumbnail area has focus - `S` toggles, so pressing it again removes the star; starred images show a gold star badge and a brief star animation plays when you star one
+- an in-app guide explains all of this: `Display → Show only → How favourites & filters work...`, and the shortcuts panel lists the new keys
 - stars are remembered across sessions, so reopening a folder later still shows which images you starred
 - new `Display → Show only` menu filters the thumbnail grid to Starred (`Ctrl+Alt+F`), Constant height (`Ctrl+Alt+H`), or Constant current (`Ctrl+Alt+C`) images - press the same shortcut again to show everything (the thumbnail Filter dropdown reflects and controls the same state)
 
