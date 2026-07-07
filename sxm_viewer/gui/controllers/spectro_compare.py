@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..._shared import QtCore, QtWidgets
 from ..spectroscopy import popups as spectro_popups
+from ..spectroscopy.controller import _format_position_nm
 
 
 class SpectroCompareController:
@@ -64,8 +65,6 @@ class SpectroCompareController:
         self.update_spec_selection_label()
         if not viewer._multi_spec_selection:
             viewer._multi_single_popup_anchor = None
-        if len(viewer._multi_spec_selection) >= 2:
-            self.open_multi_popup()
 
     def clear_multi_spec_selection(self):
         viewer = self.viewer
@@ -86,6 +85,23 @@ class SpectroCompareController:
         count = len(getattr(viewer, "_multi_spec_selection", []))
         if hasattr(viewer, 'spec_selection_label'):
             viewer.spec_selection_label.setText(f"Selected: {count}")
+        tray = getattr(viewer, "spec_selection_tray", None)
+        if tray is not None:
+            try:
+                tray.setVisible(count >= 1)
+                label = getattr(viewer, "spec_selection_tray_label", None)
+                if label is not None:
+                    label.setText("1 spectrum selected" if count == 1 else f"{count} spectra selected")
+                compare_btn = getattr(viewer, "spec_selection_tray_compare_btn", None)
+                if compare_btn is not None:
+                    compare_btn.setEnabled(count >= 2)
+                    compare_btn.setToolTip(
+                        "Open the selected spectra together in a comparison window"
+                        if count >= 2
+                        else "Shift+click a second marker to compare"
+                    )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     def prime_multi_selection_anchor(self, current_spec):
@@ -244,30 +260,18 @@ class SpectroCompareController:
 
     def _stack_popup_title(self, spec, count):
         display = str(spec.get("xy_stack_display") or "").strip() or f"x{count}"
-        x_val = spec.get("x")
-        y_val = spec.get("y")
-        try:
-            if x_val is not None and y_val is not None:
-                position = f" ({float(x_val):.1f}, {float(y_val):.1f}) nm"
-            else:
-                position = ""
-        except Exception:
-            position = ""
-        return f"Spectroscopy stack: {display}{position}"
+        position = _format_position_nm(spec.get("x"), spec.get("y"))
+        if position:
+            return f"Z series ({display}) - {position}"
+        return f"Z series ({display})"
 
     def _site_popup_title(self, spec, count):
         display = str(spec.get("site_display") or "").strip()
         if not display:
-            x_val = spec.get("x")
-            y_val = spec.get("y")
-            try:
-                if x_val is not None and y_val is not None:
-                    display = f"XY {float(x_val):.1f} / {float(y_val):.1f} nm"
-            except Exception:
-                display = ""
+            display = _format_position_nm(spec.get("x"), spec.get("y"))
         if display:
-            return f"Spectroscopy site: {display} ({count} traces)"
-        return f"Spectroscopy site ({count} traces)"
+            return f"{display} ({count} spectra)"
+        return f"Spectra at one position ({count})"
 
     def _configure_compare_popup(self, dlg, seed_spec, specs):
         if dlg is None:

@@ -596,8 +596,17 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         viewer.thumb_grid_columns = 1
 
     filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
+    if filt == 'With spectroscopy' and not getattr(viewer, '_spectros_loaded', False):
+        # The filter needs spec-to-image assignments; force the lazy load the
+        # same way the spectro-miniatures path above does.
+        try:
+            log_status("Loading spectroscopy references for the 'With spectroscopy' filter...")
+            viewer.ensure_spectros_loaded(refresh=False)
+        except Exception:
+            pass
     if filt and filt != 'All':
         matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
+        spectra_set = set(getattr(viewer, 'files_with_spectra', set()) or [])
         def include(path_str):
             tag = effective_tag(viewer, path_str)
             if filt == 'Starred':
@@ -606,10 +615,12 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                 return tag == 'constant-height'
             if filt == 'Constant current':
                 return tag == 'constant-current'
+            if filt == 'With spectroscopy':
+                return effective_spectra_key(viewer, path_str) in spectra_set
             if filt == 'Untagged':
                 return tag is None
             if filt == 'Matrix datasets':
-                return path_str in matrix_set
+                return effective_spectra_key(viewer, path_str) in matrix_set
             return True
         files_iter = [t for t in files_iter if include(str(t))]
 
@@ -1032,6 +1043,19 @@ def effective_tag(viewer, path_str):
         if src:
             tag = (viewer.tags.get(str(src), {}) or {}).get('tag', None)
     return tag
+
+
+def effective_spectra_key(viewer, path_str):
+    """Key used for per-image spectroscopy lookups (files_with_spectra /
+    files_with_matrix, which are keyed by real image paths). Virtual copies
+    resolve to their source image, same rationale as effective_tag: a crop/copy
+    of an image with spectra is still that surface."""
+    key = str(path_str)
+    if viewer._is_processed_key(key):
+        src = ((getattr(viewer, '_processed_views', {}) or {}).get(key) or {}).get('source')
+        if src:
+            return str(src)
+    return key
 
 
 def set_thumb_filter_mode(viewer, label, *, toggle=False):

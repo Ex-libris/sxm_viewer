@@ -640,6 +640,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectros = []
         self.matrix_spectros = []
         self.files_with_matrix = set()
+        self.files_with_spectra = set()
         self.spectros_by_image = defaultdict(list)
         self.spectro_sites_by_image = defaultdict(list)
         self.spectro_site_index = {}
@@ -1138,7 +1139,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         thumbs_toolbar.addSpacing(8)
         thumbs_toolbar.addWidget(QtWidgets.QLabel('Filter:'))
         self.thumb_filter_combo = QtWidgets.QComboBox()
-        self.thumb_filter_combo.addItems(['All', 'Starred', 'Constant height', 'Constant current', 'Untagged', 'Matrix datasets'])
+        self.thumb_filter_combo.addItems(['All', 'Starred', 'Constant height', 'Constant current', 'With spectroscopy', 'Untagged', 'Matrix datasets'])
         thumbs_toolbar.addWidget(self.thumb_filter_combo)
         self.clear_thumb_list_btn = QtWidgets.QPushButton("Clear thumbnails")
         self.clear_thumb_list_btn.setToolTip("Remove the current thumbnail session and start fresh")
@@ -1176,6 +1177,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         header_h.addStretch(1)
         thumbs_panel_layout.addLayout(header_h)
         thumbs_panel_layout.addWidget(self.scroll, 1)
+        thumbs_panel_layout.addWidget(main_window_layout.build_spec_selection_tray(self))
         thumbs_panel_layout.addLayout(thumbs_toolbar)
 
         # restore sort/filter from config if present
@@ -2284,6 +2286,12 @@ QLabel:hover {{
             self.ensure_spectros_loaded(refresh=False)
         return main_window_spectro.open_spectro_summary_for_site(self, spec, file_key=file_key, quiet=quiet)
 
+    def reveal_spectroscopy_source(self, spec, image_key=None):
+        return main_window_spectro.reveal_spectroscopy_source(self, spec, image_key=image_key)
+
+    def _show_spectro_marker_legend(self):
+        return spectro_overlays.show_marker_legend_dialog(self)
+
     def _open_matrix_explorer_for_file(self, file_key):
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
@@ -2663,11 +2671,11 @@ QLabel:hover {{
             "<li><b>Shift+Click</b> minimap frame = hide entry</li>"
             "<li><b>Show all frames</b> button resets minimap filters</li>"
             "<li><b>Ctrl+Wheel</b> over thumbnails = resize previews</li>"
-            "<li><b>Shift+Click</b> spectroscopy marker = multi-select</li>"
+            "<li><b>Shift+Click</b> spectroscopy marker = multi-select, then use the tray's <b>Compare</b> button under the thumbnails</li>"
             "<li><b>Ctrl+Drag</b> thumbnails = reorder export selection</li>"
             "<li><b>Ctrl+A</b> in thumbnails = select all visible thumbnails</li>"
             "<li><b>S</b> in thumbnails = star/unstar the selected images (favourites, gold badge)</li>"
-            "<li><b>Ctrl+Alt+F/H/C</b> = show only starred / CH / CC images; press the same shortcut again to show all</li>"
+            "<li><b>Ctrl+Alt+F/H/C/P</b> = show only starred / CH / CC / with-spectroscopy images; press the same shortcut again to show all</li>"
             "<li><b>Shift/Ctrl+Click</b> thumbnails + <b>Ctrl+C</b> = copy selected as separate PNG files</li>"
             "<li><b>Ctrl+C</b> over preview/popup = copy displayed PNG</li>"
             "<li><b>Popup canvas</b>: A auto contrast, 0 toggles relative-zero, Ctrl+Click profile, Ctrl+Alt+Click angle, click a molecule then X/Y/Z rotate it, Shift+X/Y/Z rotates opposite, Shift+drag rotates around Z, Ctrl+Shift+drag or middle-drag rotates in 3D, Ctrl+1/2/3 saved overlays</li>"
@@ -4798,6 +4806,7 @@ QLabel:hover {{
         self.spectro_sites_by_image = defaultdict(list)
         self.spectro_site_index = {}
         self.files_with_matrix = set()
+        self.files_with_spectra = set()
         self._spectros_loaded = False
         self._spectros_pending = False
         self.spectro_thumb_channel_by_path = {}
@@ -4890,7 +4899,7 @@ QLabel:hover {{
         site_key = str(spec.get("site_key") or "").strip()
         if site_summary or site_display or site_key:
             lines.append("")
-            lines.append("Site:")
+            lines.append("Position:")
             if site_display:
                 lines.append(f"  display: {site_display}")
             if site_key:
@@ -8692,6 +8701,12 @@ QLabel:hover {{
         except Exception:
             self.files_with_matrix = set()
         try:
+            self.files_with_spectra = {
+                key for key, entries in (self.spectros_by_image or {}).items() if entries
+            }
+        except Exception:
+            self.files_with_spectra = set()
+        try:
             QtCore.QTimer.singleShot(0, self.refresh_spectro_manifest)
         except Exception:
             pass
@@ -9311,14 +9326,14 @@ QLabel:hover {{
                     matrix_count = sum(1 for entry in entries if entry.get("matrix_index") is not None)
                     text = (
                         f"Spectroscopy summary\n"
-                        f"{len(entries)} spectra | {site_count} site" + ("" if site_count == 1 else "s") + "\n"
-                        f"Single {single_count} | Matrix {matrix_count}"
+                        f"{len(entries)} spectra | {site_count} position" + ("" if site_count == 1 else "s") + "\n"
+                        f"Single {single_count} | Grid {matrix_count}"
                     )
                     QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), text)
                     return True
                 if info.get('label') == 'stack-badge':
                     spec = info.get('spec') or {}
-                    site_summary = str(spec.get("site_summary") or spec.get("xy_stack_summary") or "Site summary").strip()
+                    site_summary = str(spec.get("site_summary") or spec.get("xy_stack_summary") or "Position summary").strip()
                     QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), site_summary)
                     return True
                 spec = info.get('spec') or {}
@@ -9336,7 +9351,7 @@ QLabel:hover {{
                         tooltip = f"{tooltip}\n{stack_summary}"
                     site_display = str(spec.get("site_display") or "").strip()
                     if site_display:
-                        tooltip = f"{tooltip}\nSite: {site_display}"
+                        tooltip = f"{tooltip}\n{site_display}"
                     assignment_summary = str(spec.get("assignment_summary") or "").strip()
                     assignment_conf = str(spec.get("assignment_confidence") or "").strip()
                     if assignment_summary:
@@ -9667,10 +9682,10 @@ QLabel:hover {{
         open_act = QtWidgets.QAction("Open spectroscopy", menu)
         open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
         menu.addAction(open_act)
-        site_act = QtWidgets.QAction("Open site summary", menu)
+        site_act = QtWidgets.QAction("Open position summary", menu)
         site_act.triggered.connect(lambda: self._open_spectro_summary_for_site(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or ""), quiet=True))
         menu.addAction(site_act)
-        compare_site_act = QtWidgets.QAction("Compare this site", menu)
+        compare_site_act = QtWidgets.QAction("Compare spectra at this position", menu)
         compare_site_act.triggered.connect(lambda: self.spectro_compare_controller.open_site_popup(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or "")))
         menu.addAction(compare_site_act)
         details_act = QtWidgets.QAction("Show metadata in Details", menu)

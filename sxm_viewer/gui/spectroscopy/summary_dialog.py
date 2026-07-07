@@ -76,7 +76,7 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         self._dialog_cmap = getattr(self.viewer, 'preview_cmap', 'viridis')
         self._spec_to_item = {}
         self._site_to_item = {}
-        self.setWindowTitle(f"Spectros: {Path(file_key).name}")
+        self.setWindowTitle(f"Spectroscopy at {Path(file_key).name} ({len(self._entries)} spectra)")
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
         n_total = len(self._entries)
@@ -84,10 +84,10 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         n_single = len(self._single_entries)
         site_count = len({str(s.get("site_key") or self.viewer._spec_identity_key(s) or id(s)) for s in self._active_entries})
         self.summary_label = QLabel(
-            f"<b>{n_total}</b> spectroscopies  Sites: {site_count}  Single: {n_single}  Matrix: {n_matrix}"
+            f"<b>{n_total}</b> spectra  Positions: {site_count}  Single: {n_single}  Grid map: {n_matrix}"
         )
         layout.addWidget(self.summary_label)
-        self.info_label = QLabel("Single-click to inspect. Double-click a site to compare it, or a trace to open it.")
+        self.info_label = QLabel("Single-click to inspect. Double-click a position to compare its spectra, or a single spectrum to open it.")
         self.info_label.setWordWrap(True)
         self.info_label.setStyleSheet("QLabel { color: #666; }")
         layout.addWidget(self.info_label)
@@ -279,9 +279,9 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
                 kind = str(payload.get("kind") or "")
                 if kind == "site":
                     spec = payload.get("spec")
-                    site_summary = str((spec or {}).get("site_summary") or (spec or {}).get("site_display") or "Site").strip()
+                    site_summary = str((spec or {}).get("site_summary") or (spec or {}).get("site_display") or "Position").strip()
                     count = len(list(payload.get("specs") or []))
-                    self.info_label.setText(f"{site_summary}\n{count} spectra at this site.")
+                    self.info_label.setText(f"{site_summary}\n{count} spectra at this position.")
                 elif kind == "spec":
                     spec = payload.get("spec")
                     if spec:
@@ -367,24 +367,24 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
 
     def _site_label(self, specs):
         first = specs[0]
-        display = str(first.get("site_display") or "Site").strip()
+        display = str(first.get("site_display") or "Position").strip()
         trace_count = len(specs)
         channel_count = int(first.get("site_channel_count") or 0)
         low_conf_count = sum(
             1 for spec in list(specs or [])
             if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
         )
-        extras = [f"{trace_count} trace" + ("" if trace_count == 1 else "s")]
+        extras = [f"{trace_count} spectrum" if trace_count == 1 else f"{trace_count} spectra"]
         if channel_count:
             extras.append(f"{channel_count} ch")
         if low_conf_count:
             extras.append(f"low conf {low_conf_count}")
         if first.get("site_has_z_stack"):
-            extras.append("Z-stack")
+            extras.append("Z series")
         elif int(first.get("xy_stack_count") or 0) > 1:
-            extras.append("same-XY")
+            extras.append("repeats")
         if first.get("site_has_matrix"):
-            extras.append("matrix")
+            extras.append("grid map")
         return f"{display}  [{' | '.join(extras)}]"
 
     def _spec_label(self, spec, index):

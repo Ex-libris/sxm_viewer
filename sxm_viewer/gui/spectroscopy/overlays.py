@@ -177,7 +177,11 @@ def _stack_badge_tooltip(spec):
     if text:
         return text
     label = _stack_badge_text(spec)
-    return f"Coincident spectra: {label}" if label else ""
+    if not label:
+        return ""
+    if spec.get("xy_stack_z_varies"):
+        return f"Z series ({label})"
+    return f"Repeated spectra ({label})"
 
 
 def _stack_badges_from_coords(coords):
@@ -221,6 +225,24 @@ def _draw_stack_badge(painter, x, y, label, *, tooltip=None):
     painter.drawText(rect, QtCore.Qt.AlignCenter, label)
     painter.restore()
     return rect
+
+
+def _draw_summary_badge(painter, bx, by, total_s, matrix_count, dims_hint="", dims_small=None):
+    """Per-image corner badge with the spectroscopy totals (S = single spectra,
+    M = grid maps). Shared by the real thumbnail overlay and the legend dialog
+    so the legend never drifts from what is actually drawn."""
+    badge_w = 64
+    badge_h = 18
+    painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+    painter.setBrush(QtGui.QColor(35, 35, 40, 200))
+    painter.drawRoundedRect(int(bx), int(by), badge_w, badge_h, 7, 7)
+    painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+    painter.setPen(QtGui.QColor(240, 240, 240))
+    painter.drawText(int(bx) + 6, int(by) + 12, f"S:{total_s} M:{matrix_count}{dims_hint}")
+    if dims_small:
+        painter.setFont(QtGui.QFont("Segoe UI", 7))
+        painter.drawText(int(bx) + badge_w - 32, int(by) + 12, dims_small)
+    return QtCore.QRectF(bx, by, badge_w, badge_h)
 
 
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
@@ -425,51 +447,140 @@ def _render_spectroscopy_overlays(
     # summary badge (S/M counts and matrix grid if available)
     try:
         total_s = len(singles)
-        total_m = sum(len(v) for v in matrices.values()) if matrices else 0
         badge_w = 64
-        badge_h = 18
         bx = pixmap.width() - badge_w - 6
         by = 6
-        painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
-        painter.setBrush(QtGui.QColor(35, 35, 40, 200))
-        painter.drawRoundedRect(bx, by, badge_w, badge_h, 7, 7)
-        painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
-        painter.setPen(QtGui.QColor(240, 240, 240))
         # include matrix grid hint if available
         dims_hint = ""
+        dims_small = None
         if matrices:
             try:
                 any_list = next(iter(matrices.values()))
                 gc = any_list[0].get('grid_cols'); gr = any_list[0].get('grid_rows')
                 if gc and gr:
                     dims_hint = f" ({gc}x{gr})"
+                    dims_small = f"{gc}x{gr}"
             except Exception:
                 dims_hint = ""
-        painter.drawText(bx + 6, by + 12, f"S:{total_s} M:{len(matrices)}{dims_hint}")
-        # optional matrix dims hint
-        if matrices:
-            dims = None
-            try:
-                m_any = next(iter(matrices.values()))
-                gc = m_any[0].get('grid_cols'); gr = m_any[0].get('grid_rows')
-                if gc and gr:
-                    dims = f"{gc}x{gr}"
-            except Exception:
-                dims = None
-            if dims:
-                painter.setFont(QtGui.QFont("Segoe UI", 7))
-                painter.drawText(bx + badge_w - 32, by + 12, dims)
-        markers.append({'rect': QtCore.QRectF(bx, by, badge_w, badge_h), 'spec': None, 'label': 'badge'})
+                dims_small = None
+        rect = _draw_summary_badge(painter, bx, by, total_s, len(matrices), dims_hint=dims_hint, dims_small=dims_small)
+        markers.append({'rect': rect, 'spec': None, 'label': 'badge'})
     except Exception:
         pass
 
     painter.end()
     return markers
+
+
+def _legend_pixmap(draw_callable, width=64, height=44):
+    """Render one legend icon by invoking the same drawing code the real
+    overlays use, so the legend always matches what is on screen."""
+    pix = QtGui.QPixmap(width, height)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pix)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    try:
+        draw_callable(painter, width, height)
+    except Exception:
+        pass
+    painter.end()
+    return pix
+
+
+def show_marker_legend_dialog(viewer):
+    """Non-modal 'what do these markers mean?' legend for the spectroscopy
+    overlays, rendered with the real drawing functions and the viewer's actual
+    marker style/colors."""
+    symbol = _normalized_symbol(viewer)
+    color_single = QtGui.QColor(getattr(viewer, "spectro_marker_color_single", None) or QtGui.QColor(255, 160, 0, 200))
+    color_matrix = QtGui.QColor(getattr(viewer, "spectro_marker_color_matrix", None) or QtGui.QColor(64, 200, 255, 200))
+
+    rows = [
+        (
+            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single),
+            "<b>Single spectrum</b> - one spectrum measured at this position. "
+            "Click it to open the spectrum; Shift+click to add it to the comparison selection.",
+        ),
+        (
+            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_matrix),
+            "<b>Grid map point</b> - one point of a grid (matrix/CITS) measurement. "
+            "Clicking it opens the Grid map explorer.",
+        ),
+        (
+            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single, low_conf=True),
+            "<b>Low-confidence link</b> - the dashed ring means the spectrum-to-image "
+            "assignment is a guess. Review it via Spectroscopy → Review low confidence, "
+            "or right-click the marker to assign it manually.",
+        ),
+        (
+            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single, highlight=True, pulse=1.0),
+            "<b>Highlight glow</b> - the spectrum you last opened or selected pulses "
+            "on its source image (toggle in Spectroscopy → Spectro highlight glow).",
+        ),
+        (
+            lambda p, w, h: _draw_stack_badge(p, w * 0.25, h * 0.75, "x3"),
+            "<b>Repeat badge</b> - several spectra at the same position: 'x3' means three "
+            "repeats, 'Zx3' a Z series (e.g. different tip heights). Click the badge for "
+            "the position summary.",
+        ),
+        (
+            lambda p, w, h: _draw_summary_badge(p, (w - 64) / 2, (h - 18) / 2, 4, 1, dims_hint=" (10x10)"),
+            "<b>Image totals badge</b> - corner badge with this image's spectroscopy "
+            "counts (S = single spectra, M = grid maps, with grid size). Click it to open "
+            "the per-image spectroscopy summary.",
+        ),
+    ]
+
+    dlg = QtWidgets.QDialog(viewer)
+    dlg.setWindowTitle("Spectroscopy markers explained")
+    dlg.setWindowModality(QtCore.Qt.NonModal)
+    dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+    layout = QtWidgets.QVBoxLayout(dlg)
+    intro = QtWidgets.QLabel(
+        "Markers drawn on thumbnails and previews, using your current marker style. "
+        "Reopen this window after changing marker style/colors to see the update."
+    )
+    intro.setWordWrap(True)
+    layout.addWidget(intro)
+    grid = QtWidgets.QGridLayout()
+    grid.setHorizontalSpacing(12)
+    grid.setVerticalSpacing(10)
+    for row_idx, (draw_fn, text) in enumerate(rows):
+        icon_lbl = QtWidgets.QLabel()
+        icon_lbl.setPixmap(_legend_pixmap(draw_fn))
+        icon_lbl.setFixedSize(68, 48)
+        icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        icon_lbl.setStyleSheet("background-color: rgba(90, 110, 140, 60); border-radius: 6px;")
+        grid.addWidget(icon_lbl, row_idx, 0)
+        text_lbl = QtWidgets.QLabel(text)
+        text_lbl.setWordWrap(True)
+        text_lbl.setTextFormat(QtCore.Qt.RichText)
+        grid.addWidget(text_lbl, row_idx, 1)
+    grid.setColumnStretch(1, 1)
+    layout.addLayout(grid)
+    close_btn = QtWidgets.QPushButton("Close")
+    close_btn.clicked.connect(dlg.close)
+    btn_row = QtWidgets.QHBoxLayout()
+    btn_row.addStretch(1)
+    btn_row.addWidget(close_btn)
+    layout.addLayout(btn_row)
+    dlg.resize(560, 460)
+    dlg.show()
+    try:
+        if hasattr(viewer, "_popup_refs"):
+            viewer._popup_refs.append(dlg)
+            dlg.finished.connect(lambda _: viewer._popup_refs.remove(dlg) if dlg in viewer._popup_refs else None)
+    except Exception:
+        pass
+    return dlg
+
+
 __all__ = [
     "_spectros_near_thumb_pos",
     "_render_spectroscopy_overlays",
     "_spread_overlapping_marker_coords",
     "_stack_badges_from_coords",
+    "show_marker_legend_dialog",
 ]
 
 

@@ -6,6 +6,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from .spectroscopy import browser as spectro_browser
 from .spectroscopy import overlays as spectro_overlays
+from .._shared import log_status
 
 
 def header_extent(viewer, header):
@@ -90,6 +91,61 @@ def open_single_spectro_popup(viewer, spectro):
         pass
 
 
+def reveal_spectroscopy_source(viewer, spec, image_key=None):
+    """Focus the main preview on the image a spectrum was acquired on, scroll its
+    thumbnail into view, and pulse its marker. Returns True when the image was found.
+
+    Used by the "Show on image" actions in the spectroscopy windows, so the
+    spectra -> image direction is as easy as the image -> spectra one."""
+    if spec is None and not image_key:
+        return False
+    try:
+        if not getattr(viewer, "_spectros_loaded", False):
+            viewer.ensure_spectros_loaded(refresh=False)
+    except Exception:
+        pass
+    target = str(image_key or "").strip()
+    if not target and spec:
+        # Deliberately NOT spec['path']: that is the .dat file, not an image.
+        target = str(spec.get("image_key") or spec.get("primary_image_key") or "").strip()
+    if not target:
+        log_status("Show on image: this spectrum is not linked to any image.")
+        return False
+    if target not in (getattr(viewer, "headers", {}) or {}):
+        log_status(f"Show on image: source image not loaded ({Path(target).name}).")
+        return False
+    label = (getattr(viewer, "_thumb_labels", {}) or {}).get(target)
+    if label is not None:
+        try:
+            channel_idx = int(label.property("channel_index") or 0)
+        except Exception:
+            channel_idx = viewer.channel_dropdown.currentIndex()
+    else:
+        channel_idx = viewer.channel_dropdown.currentIndex()
+    viewer.on_thumbnail_clicked(target, channel_idx)
+    viewer.last_thumb_anchor = str(target)
+    if target in (getattr(viewer, "thumb_widgets", {}) or {}):
+        viewer._scroll_to_thumbnail(target)
+    else:
+        try:
+            filt = viewer.thumb_filter_combo.currentText()
+        except Exception:
+            filt = ""
+        if filt and filt != "All":
+            log_status(f"Show on image: thumbnail hidden by the '{filt}' filter - set Filter to All to see it.")
+    if spec:
+        try:
+            viewer._highlight_spectrum_entry(spec)
+        except Exception:
+            pass
+    try:
+        viewer.raise_()
+        viewer.activateWindow()
+    except Exception:
+        pass
+    return True
+
+
 def open_spectro_summary_for_file(viewer, file_key, show_mode="single", quiet=False):
     entries = viewer.spectros_by_image.get(str(file_key), []) or []
     if show_mode == "single":
@@ -141,13 +197,13 @@ def open_spectro_summary_for_site(viewer, spec, file_key="", quiet=False):
         ]
     if not entries:
         if not quiet:
-            QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectroscopies found for this site.")
+            QtWidgets.QMessageBox.information(viewer, "Spectroscopy", "No spectra found at this position.")
         return
     header, fds = viewer.headers.get(str(image_key), (None, None))
     dlg = viewer.SpectroSummaryDialog(viewer, image_key, header, fds, entries, show_mode="matrix" if all(e.get("matrix_index") is not None for e in entries) else "single")
     try:
-        site_title = str(spec.get("site_display") or spec.get("site_summary") or "Site").splitlines()[0].strip()
-        dlg.setWindowTitle(f"Spectroscopy site: {site_title}")
+        site_title = str(spec.get("site_display") or spec.get("site_summary") or "Position").splitlines()[0].strip()
+        dlg.setWindowTitle(f"Spectroscopy at {site_title}")
         dlg.setWindowModality(QtCore.Qt.NonModal)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         dlg.move(viewer._next_popup_pos())

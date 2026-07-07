@@ -951,6 +951,8 @@ def load_files(
             viewer.matrix_spectros = []
             viewer.matrix_datasets = {}
             viewer.spectros_by_image = defaultdict(list)
+            viewer.files_with_matrix = set()
+            viewer.files_with_spectra = set()
             try:
                 viewer._clear_multi_spec_selection()
             except Exception:

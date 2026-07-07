@@ -598,6 +598,16 @@ def _site_key_for_spec(spec, *, image_key, xy_tol_nm=0.05):
     return f"{image_key}::spec:{identity}", None, None
 
 
+def _format_position_nm(x_nm, y_nm):
+    """User-facing name for an XY measurement position, e.g. 'Position 12.3/45.6 nm'."""
+    try:
+        if x_nm is None or y_nm is None:
+            return ""
+        return f"Position {float(x_nm):.1f}/{float(y_nm):.1f} nm"
+    except Exception:
+        return ""
+
+
 def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
     member_count = len(members)
     channels = []
@@ -622,23 +632,23 @@ def _derive_site_payload(site_key, image_key, members, x_nm, y_nm):
                 z_label = str(label)
     channel_count = len(channels)
     if x_nm is not None and y_nm is not None:
-        display = f"XY {x_nm:.1f} / {y_nm:.1f} nm"
+        display = _format_position_nm(x_nm, y_nm) or f"Position {site_key.split('::')[-1]}"
     elif has_matrix and member_count == 1:
         spec0 = members[0]
-        display = f"Matrix site {spec0.get('grid_row', '?')}/{spec0.get('grid_col', '?')}"
+        display = f"Grid point {spec0.get('grid_row', '?')}/{spec0.get('grid_col', '?')}"
     else:
-        display = f"Site {site_key.split('::')[-1]}"
+        display = f"Position {site_key.split('::')[-1]}"
     parts = [f"{member_count} " + ("spectrum" if member_count == 1 else "spectra")]
     if channel_count:
         parts.append(f"{channel_count} channel" + ("" if channel_count == 1 else "s"))
     if has_matrix:
-        parts.append("matrix-backed")
+        parts.append("grid map")
     if has_z_stack and z_values:
         z_min = min(z_values)
         z_max = max(z_values)
-        parts.append(f"{z_label or 'Z'} {z_min:.3f} to {z_max:.3f} nm")
+        parts.append(f"{z_label or 'Z'} series {z_min:.3f}-{z_max:.3f} nm")
     elif has_z_stack:
-        parts.append("varying Z")
+        parts.append("Z series")
     summary = f"{display}\n" + " | ".join(parts)
     payload = {
         "site_key": site_key,
@@ -780,10 +790,10 @@ def _annotate_xy_stacks(viewer):
         z_min = min(z_values) if z_values else None
         z_max = max(z_values) if z_values else None
         if z_varies and z_min is not None and z_max is not None:
-            summary = f"Z-stack: {len(members)} spectra at one XY\n{z_label or 'Z'} {z_min:.3f} to {z_max:.3f} nm"
+            summary = f"Z series: {len(members)} spectra at one position\n{z_label or 'Z'} {z_min:.3f}-{z_max:.3f} nm"
             display = f"Zx{len(members)}"
         else:
-            summary = f"Coincident spectra: {len(members)} at one XY"
+            summary = f"Repeated spectra: {len(members)} at one position"
             display = f"x{len(members)}"
         for spec in members:
             identity = _spec_identity_key(spec)

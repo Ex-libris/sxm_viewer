@@ -63,30 +63,30 @@ def _spec_leaf_label(spec, index=None):
 
 def _site_tree_label(site_specs):
     first = site_specs[0]
-    display = str(first.get("site_display") or "Site").strip()
+    display = str(first.get("site_display") or "Position").strip()
     trace_count = int(first.get("site_trace_count") or len(site_specs) or 0)
     channel_count = int(first.get("site_channel_count") or 0)
     low_conf_count = sum(
         1 for spec in list(site_specs or [])
         if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
     )
-    extras = [f"{trace_count} trace" + ("" if trace_count == 1 else "s")]
+    extras = [f"{trace_count} spectrum" if trace_count == 1 else f"{trace_count} spectra"]
     if channel_count:
         extras.append(f"{channel_count} ch")
     if low_conf_count:
         extras.append(f"low conf {low_conf_count}")
     if first.get("site_has_z_stack"):
-        extras.append("Z-stack")
+        extras.append("Z series")
     elif int(first.get("xy_stack_count") or 0) > 1:
-        extras.append("same-XY")
+        extras.append("repeats")
     if first.get("site_has_matrix"):
-        extras.append("matrix")
+        extras.append("grid map")
     return f"{display}  [{' | '.join(extras)}]"
 
 
 def _image_tree_label(image_key, specs, site_count):
     name = Path(str(image_key or "")).name if image_key else "Unassigned spectra"
-    return f"{name}  [{site_count} site" + ("" if site_count == 1 else "s") + f" | {len(specs)} spectra]"
+    return f"{name}  [{site_count} position" + ("" if site_count == 1 else "s") + f" | {len(specs)} spectra]"
 
 
 def _spec_search_blob(spec):
@@ -328,7 +328,7 @@ def _ensure_spectro_dock(viewer):
     viewer.spectro_list.setUniformRowHeights(False)
     viewer.spectro_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
     v.addWidget(viewer.spectro_list, 1)
-    viewer.spectro_preview_lbl = QLabel("Select a spectroscopy site or trace")
+    viewer.spectro_preview_lbl = QLabel("Select a position or spectrum")
     viewer.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
     viewer.spectro_preview_lbl.setMinimumHeight(120)
     viewer.spectro_preview_lbl.setStyleSheet("QLabel { color: #999; }")
@@ -479,7 +479,7 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         site_summary = ""
         if first:
             site_summary = str(first.get("site_summary") or first.get("site_display") or "").strip()
-        lines = [site_summary or "Site"]
+        lines = [site_summary or "Position"]
         if specs:
             lines.append(f"{len(specs)} spectra")
         _set_browser_preview_to_image(viewer, image_key, "\n".join(line for line in lines if line))

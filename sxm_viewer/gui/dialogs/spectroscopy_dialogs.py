@@ -385,10 +385,10 @@ def _spectro_site_text(spec: dict | None) -> str:
         return ""
     summary = str(spec.get("site_summary") or "").strip()
     if summary:
-        return f"Site: {summary}"
+        return summary
     display = str(spec.get("site_display") or "").strip()
     if display:
-        return f"Site: {display}"
+        return display
     return ""
 
 
@@ -409,7 +409,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         super().__init__(parent)
         self.spec = spec
         self.viewer = parent
-        self.setWindowTitle(f"Spectroscopy: {Path(spec['path']).name}")
+        self.setWindowTitle(f"Spectrum - {Path(spec['path']).name}")
         self.resize(860, 640)
         self._toggle_buttons = []
         self._advanced_controls_visible = False
@@ -616,6 +616,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         button_row = QtWidgets.QHBoxLayout()
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(6)
+        self.show_on_image_btn = QtWidgets.QPushButton("Show on image")
+        self.show_on_image_btn.setToolTip("Focus the main preview on the image this spectrum was acquired on and pulse its marker")
+        self.show_on_image_btn.clicked.connect(self._on_show_on_image)
+        if not hasattr(self.viewer, "reveal_spectroscopy_source"):
+            self.show_on_image_btn.setVisible(False)
+        button_row.addWidget(self.show_on_image_btn)
         self.copy_all_btn = QtWidgets.QPushButton("Copy all")
         self.copy_all_btn.clicked.connect(self._copy_all_traces_to_clipboard)
         button_row.addWidget(self.copy_all_btn)
@@ -1535,6 +1541,15 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._apply_font_scale()
         self.canvas.draw_idle()
 
+    def _on_show_on_image(self):
+        viewer = self.viewer
+        if viewer is None or not hasattr(viewer, "reveal_spectroscopy_source"):
+            return
+        try:
+            viewer.reveal_spectroscopy_source(self.spec)
+        except Exception:
+            pass
+
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
         preset_menu = menu.addMenu("Figure preset")
@@ -1555,6 +1570,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         save_png_600_act = save_menu.addAction("PNG 600 dpi...")
         save_svg_act = save_menu.addAction("SVG (vector)...")
         save_pdf_act = save_menu.addAction("PDF (vector)...")
+        if hasattr(self.viewer, "reveal_spectroscopy_source"):
+            menu.addAction("Show on image", self._on_show_on_image)
         add_source_file_menu(menu, self.spec.get("path"), self)
         add_font_menu_action(
             menu,
@@ -2695,7 +2712,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 pass
         self._resolve_anchor_path()
         base_name = self._matrix_file_name()
-        self.setWindowTitle(f"Matrix Explorer - {base_name}")
+        self.setWindowTitle(f"Grid map - {base_name}")
         self.resize(1100, 720)
         root = QtWidgets.QVBoxLayout(self)
 
@@ -2744,6 +2761,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         left_layout.addWidget(self.fit_matrix_btn)
         self.reset_view_btn = QtWidgets.QPushButton("Reset view")
         left_layout.addWidget(self.reset_view_btn)
+        self.show_on_image_btn = QtWidgets.QPushButton("Show on image")
+        self.show_on_image_btn.setToolTip("Focus the main preview on the image this grid map was acquired on")
+        self.show_on_image_btn.clicked.connect(self._on_show_on_image)
+        if not hasattr(self.viewer, "reveal_spectroscopy_source"):
+            self.show_on_image_btn.setVisible(False)
+        left_layout.addWidget(self.show_on_image_btn)
         self.matrix_info_label = QtWidgets.QLabel("")
         self.matrix_info_label.setWordWrap(True)
         left_layout.addWidget(self.matrix_info_label)
@@ -3168,6 +3191,16 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._clear_selection()
         self._draw_image_layer()
 
+    def _on_show_on_image(self):
+        viewer = self.viewer
+        if viewer is None or not hasattr(viewer, "reveal_spectroscopy_source"):
+            return
+        try:
+            spec = self.specs[0] if self.specs else None
+            viewer.reveal_spectroscopy_source(spec, image_key=self.anchor_path)
+        except Exception:
+            pass
+
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
 
@@ -3207,10 +3240,15 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         edge_act.triggered.connect(functools.partial(self._choose_position_marker_color, "edgecolor"))
 
         menu.addSeparator()
+        show_image_act = None
+        if hasattr(self.viewer, "reveal_spectroscopy_source"):
+            show_image_act = menu.addAction("Show on image")
         clear_act = menu.addAction("Clear selections")
         reset_act = menu.addAction("Reset view")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if action == clear_act:
+        if show_image_act is not None and action == show_image_act:
+            self._on_show_on_image()
+        elif action == clear_act:
             self._clear_selection()
         elif action == reset_act:
             self._reset_matrix_view()
@@ -3963,7 +4001,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._lcpd_line_info = {}
         self._delta_selection = []
         self._delta_annotation_artists = []
-        self.setWindowTitle("Spectroscopy comparison")
+        self.setWindowTitle("Compare spectra")
         self.resize(1400, 700)  # Increased size for better layout
         try:
             self.setWindowFlag(QtCore.Qt.MSWindowsFixedSizeDialogHint, False)
@@ -4987,6 +5025,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         copy_row.addWidget(self.copy_table_btn)
         actions_layout.addLayout(copy_row)
 
+        self.show_on_image_btn = QtWidgets.QPushButton("Show on image")
+        self.show_on_image_btn.setToolTip("Focus the main preview on the image the selected spectrum was acquired on")
+        self.show_on_image_btn.clicked.connect(self._on_show_on_image)
+        if not hasattr(self.viewer, "reveal_spectroscopy_source"):
+            self.show_on_image_btn.setVisible(False)
+        actions_layout.addWidget(self.show_on_image_btn)
+
         clear_row = QtWidgets.QHBoxLayout()
         self.clear_sel_btn = QtWidgets.QPushButton(self._get_icon("edit-clear"), "Clear selected")
         self.clear_sel_btn.setToolTip("Remove selected spectra from list")
@@ -5545,7 +5590,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         # Open a twin dialog with converted data
         twin = SpectroscopyCompareDialog(new_specs, parent=self.parent(), palette_name=self._palette_name)
-        twin.setWindowTitle("Spectroscopy comparison (force)")
+        twin.setWindowTitle("Compare spectra (force-converted)")
         twin.show()
         self._popup_refs.append(twin)
 
@@ -6213,12 +6258,40 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         menu = QtWidgets.QMenu(self)
         act = menu.addAction("Open popup")
+        show_image_act = None
+        if hasattr(self.viewer, "reveal_spectroscopy_source"):
+            show_image_act = menu.addAction("Show on image")
         copy_act = menu.addAction("Copy selected to clipboard")
         chosen = menu.exec_(self.spec_list.mapToGlobal(pos))
         if chosen == act:
             self._show_popup_for_spec(item.data(0, QtCore.Qt.UserRole))
+        elif show_image_act is not None and chosen == show_image_act:
+            self._on_show_on_image(item.data(0, QtCore.Qt.UserRole))
         elif chosen == copy_act:
             self._copy_selected_to_clipboard()
+
+    def _on_show_on_image(self, spec=None):
+        viewer = self.viewer
+        if viewer is None or not hasattr(viewer, "reveal_spectroscopy_source"):
+            return
+        if not isinstance(spec, dict) or not spec:
+            spec = None
+            try:
+                item = self.spec_list.currentItem()
+                if item is not None:
+                    data = item.data(0, QtCore.Qt.UserRole)
+                    if isinstance(data, dict):
+                        spec = data
+            except Exception:
+                spec = None
+            if spec is None and self.specs:
+                spec = self.specs[0]
+        if not spec:
+            return
+        try:
+            viewer.reveal_spectroscopy_source(spec)
+        except Exception:
+            pass
 
     def _on_table_context_menu(self, pos):
         row = self.results_table.indexAt(pos).row()

@@ -91,6 +91,7 @@ show all images):
 - `Ctrl+Alt+F` - show only starred favourites.
 - `Ctrl+Alt+H` - show only constant-height (CH) images.
 - `Ctrl+Alt+C` - show only constant-current (CC) images.
+- `Ctrl+Alt+P` - show only images with linked spectroscopy points.
 
 General:
 - `Ctrl+S` - save the current session (prompts once if no session file exists yet).
@@ -154,9 +155,20 @@ Thumbnail navigation:
 
 Marker interactions:
 - `Left click` a spectroscopy marker - open or select that spectroscopy entry.
-- `Shift+Click` - multi-select spectroscopy entries for comparison.
+- `Shift+Click` - multi-select spectroscopy entries for comparison. A selection
+  tray appears under the thumbnails ("N spectra selected - Compare | Clear");
+  press its `Compare` button to open the comparison window (the old behavior of
+  auto-opening it at the second selection is gone).
 - `Ctrl+Click` - toggle a spectroscopy entry in the current selection.
 - Clicking a spectroscopy badge opens the summary for that image.
+- `Spectroscopy -> What do these markers mean?` in the toolbar shows a legend of
+  all marker symbols, rings, and badges.
+
+Show on image:
+- Every spectroscopy window (single spectrum, comparison, grid map explorer) has
+  a `Show on image` button (also in its right-click menu) that focuses the main
+  preview on the source image, scrolls its thumbnail into view, and pulses the
+  marker of that spectrum.
 
 Context menu:
 - Open spectroscopy popup.

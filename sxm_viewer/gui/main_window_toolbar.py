@@ -222,7 +222,7 @@ def create_main_toolbar(viewer):
     viewer.toolbar_spectro_menu = QtWidgets.QMenu(viewer.toolbar_spectro_btn)
     viewer.toolbar_spectro_menu.setToolTipsVisible(True)
     viewer.toolbar_spectro_menu.addAction("Open browser", lambda: viewer.open_spectro_browser())
-    viewer.toolbar_spectro_menu.addAction("Open current site", viewer.on_open_current_spectro_site)
+    viewer.toolbar_spectro_menu.addAction("Open current position", viewer.on_open_current_spectro_site)
     viewer.toolbar_spectro_review_low_conf_act = viewer.toolbar_spectro_menu.addAction("Review low confidence")
     viewer.toolbar_spectro_review_low_conf_act.setToolTip("Open the spectroscopy browser filtered to low-confidence image assignments")
     viewer.toolbar_spectro_review_low_conf_act.triggered.connect(viewer.on_review_low_conf_spectros)
@@ -278,6 +278,9 @@ def create_main_toolbar(viewer):
     marker_menu = viewer.toolbar_spectro_menu.addMenu("Marker style")
     if hasattr(viewer, "_populate_marker_style_menu"):
         viewer._populate_marker_style_menu(marker_menu)
+    viewer.toolbar_spectro_marker_legend_act = viewer.toolbar_spectro_menu.addAction("What do these markers mean?")
+    viewer.toolbar_spectro_marker_legend_act.setToolTip("Show a legend of the spectroscopy marker symbols, rings, and badges")
+    viewer.toolbar_spectro_marker_legend_act.triggered.connect(viewer._show_spectro_marker_legend)
     viewer.toolbar_spectro_menu.addSeparator()
     viewer.toolbar_spectro_grid_as_matrix_act = viewer.toolbar_spectro_menu.addAction("NxN singles as matrix")
     viewer.toolbar_spectro_grid_as_matrix_act.setCheckable(True)

@@ -170,14 +170,52 @@ def build_measure_context_page(viewer):
     return page
 
 
+def build_spec_selection_tray(viewer):
+    """Small pill-shaped bar under the thumbnails that appears while spectroscopy
+    markers are Shift+click-selected: "N spectra selected - Compare | Clear".
+    Replaces the old behavior of auto-opening the comparison window as soon as a
+    second spectrum was selected."""
+    tray = QtWidgets.QFrame()
+    tray.setObjectName("specSelectionTray")
+    tray.setStyleSheet(
+        "#specSelectionTray {"
+        " border-radius: 12px;"
+        " background-color: rgba(255, 170, 60, 0.16);"
+        " border: 1px solid rgba(255, 190, 90, 0.65);"
+        "}"
+    )
+    row = QtWidgets.QHBoxLayout(tray)
+    row.setContentsMargins(10, 3, 6, 3)
+    row.setSpacing(8)
+    viewer.spec_selection_tray_label = QtWidgets.QLabel("")
+    viewer.spec_selection_tray_label.setStyleSheet("font-weight: 600; background: transparent; border: none;")
+    row.addWidget(viewer.spec_selection_tray_label)
+    row.addStretch(1)
+    viewer.spec_selection_tray_compare_btn = _configure_compact_control(QtWidgets.QPushButton("Compare"))
+    viewer.spec_selection_tray_compare_btn.setToolTip("Open the selected spectra together in a comparison window")
+    viewer.spec_selection_tray_compare_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+    viewer.spec_selection_tray_compare_btn.clicked.connect(
+        lambda: viewer.spectro_compare_controller.open_multi_popup()
+    )
+    row.addWidget(viewer.spec_selection_tray_compare_btn)
+    viewer.spec_selection_tray_clear_btn = _configure_compact_control(QtWidgets.QPushButton("Clear"))
+    viewer.spec_selection_tray_clear_btn.setToolTip("Clear the spectroscopy selection")
+    viewer.spec_selection_tray_clear_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+    viewer.spec_selection_tray_clear_btn.clicked.connect(viewer.on_clear_spec_selection)
+    row.addWidget(viewer.spec_selection_tray_clear_btn)
+    tray.setVisible(False)
+    viewer.spec_selection_tray = tray
+    return tray
+
+
 def build_spectro_context_page(viewer):
     page = QtWidgets.QWidget()
     layout = QtWidgets.QHBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(6)
     viewer.show_spectra_cb = None
-    viewer.open_current_site_btn = _configure_compact_control(QtWidgets.QPushButton("Current site"))
-    viewer.open_current_site_btn.setToolTip("Open the site summary for the currently highlighted or selected spectroscopy point")
+    viewer.open_current_site_btn = _configure_compact_control(QtWidgets.QPushButton("Current position"))
+    viewer.open_current_site_btn.setToolTip("Open the position summary for the currently highlighted or selected spectroscopy point")
     viewer.review_low_conf_btn = _configure_compact_control(QtWidgets.QPushButton("Review low conf"))
     viewer.review_low_conf_btn.setToolTip("Open the spectroscopy browser focused on low-confidence image assignments")
     viewer.clear_spec_selection_btn = _configure_compact_control(QtWidgets.QPushButton("Clear selection"))
@@ -191,7 +229,7 @@ def build_spectro_context_page(viewer):
     viewer.spec_selection_label.setFont(font_small)
     viewer.spec_selection_label.setMinimumWidth(0)
     viewer.spec_selection_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    viewer.spectro_mode_hint_label = QtWidgets.QLabel("Toolbar `Spectroscopy` controls markers and miniatures. Use `Current site` and `Review low conf` to inspect linked spectra.")
+    viewer.spectro_mode_hint_label = QtWidgets.QLabel("Toolbar `Spectroscopy` controls markers and miniatures. Use `Current position` and `Review low conf` to inspect linked spectra.")
     viewer.spectro_mode_hint_label.setFont(font_small)
     layout.addWidget(viewer.spectro_mode_hint_label)
     layout.addWidget(viewer.open_current_site_btn)
@@ -217,6 +255,7 @@ def _ensure_display_menu(viewer):
         ("Starred ★", "Starred", "Ctrl+Alt+F", "Show only starred favourites (press again to show all)"),
         ("Constant height (CH)", "Constant height", "Ctrl+Alt+H", "Show only constant-height images (press again to show all)"),
         ("Constant current (CC)", "Constant current", "Ctrl+Alt+C", "Show only constant-current images (press again to show all)"),
+        ("With spectroscopy", "With spectroscopy", "Ctrl+Alt+P", "Show only images with linked spectroscopy points (press again to show all)"),
     ):
         act = viewer.display_filter_menu.addAction(text)
         act.setCheckable(True)
@@ -244,8 +283,9 @@ def _ensure_display_menu(viewer):
             "favourites are still marked.</p>"
             "<h3>Showing only certain images</h3>"
             "<p><b>Ctrl+Alt+F</b> shows only starred images, <b>Ctrl+Alt+H</b> only "
-            "constant-height (CH) images, and <b>Ctrl+Alt+C</b> only constant-current (CC) "
-            "images. Pressing the same shortcut a second time shows all images again.</p>"
+            "constant-height (CH) images, <b>Ctrl+Alt+C</b> only constant-current (CC) "
+            "images, and <b>Ctrl+Alt+P</b> only images with linked spectroscopy points. "
+            "Pressing the same shortcut a second time shows all images again.</p>"
             "<p>The CH/CC views use the CH/CC tags — set them manually with the "
             "<b>Tag as CH / Tag as CC</b> buttons, or enable <b>Auto CH/CC</b> to detect "
             "them automatically.</p>"

@@ -52,6 +52,15 @@ See the full installation guide in the MkDocs site for the Windows installer hel
 
 
 
+### 2026-07-07 UPDATES (spectroscopy UX pass)
+A round of workflow polish for spectroscopic data (single spectra, Z series at one position, and grid/CITS maps), aimed at making the spectra ↔ image navigation symmetric and the click behavior predictable:
+
+- **Show on image**: every spectroscopy window (single spectrum, comparison, grid map explorer) now has a "Show on image" button (also in its right-click menu) that focuses the main preview on the image the spectrum was acquired on, scrolls its thumbnail into view, and pulses its marker
+- **Selection tray**: Shift+clicking markers no longer auto-opens a comparison window at the second selection; instead a small tray appears under the thumbnails ("N spectra selected - Compare | Clear") so you decide when to compare
+- **"With spectroscopy" view filter** (`Ctrl+Alt+P`, also in Display → Show only and the Filter dropdown): show only the images that have linked spectroscopy points; press again to show all
+- **Marker legend**: Spectroscopy toolbar → "What do these markers mean?" opens a legend rendered with your actual marker style/colors: single vs grid-map markers, the dashed low-confidence ring, the highlight glow, repeat/Z-series badges, and the per-image totals badge
+- **Scientist vocabulary**: window titles, tooltips, and summaries now say "Position 12.3/45.6 nm" instead of "site", "Z series" instead of "stack", and "Grid map" instead of "matrix" - e.g. "Z series (x5) - Position 12.3/45.6 nm" for a tip-height series
+
 ### 2026-07-07 UPDATES (starred favourites and quick view filters)
 You can now star your favourite images and browse only those:
 
