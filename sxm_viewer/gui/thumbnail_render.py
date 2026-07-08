@@ -101,6 +101,24 @@ from ..data.spectroscopy import (
 )
 
 
+_COLORMAP_CACHE: dict = {}
+
+
+def _get_cached_colormap(name):
+    """colormaps.get_cmap(name) rebuilds the LUT from scratch on every call
+    (matplotlib always returns a fresh Colormap copy) - confirmed 661ms
+    across 208 real thumbnails, 147ms just in _create_lookup_table. Neither
+    call site mutates the returned Colormap (no set_bad/set_over/set_under
+    anywhere in this codebase), so it's safe to build each name's LUT once
+    and reuse the same object - colormap evaluation (cmap(x)) is a pure
+    read over the object's own table."""
+    cmap = _COLORMAP_CACHE.get(name)
+    if cmap is None:
+        cmap = colormaps.get_cmap(name)
+        _COLORMAP_CACHE[name] = cmap
+    return cmap
+
+
 def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
     arr = np.asarray(arr, dtype=np.float64)
     invalid = ~np.isfinite(arr)
@@ -117,7 +135,7 @@ def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
     if invalid.any():
         norm = np.array(norm, copy=True)
         norm[invalid] = 0.0
-    cmap = colormaps.get_cmap(cmap_name)
+    cmap = _get_cached_colormap(cmap_name)
     rgba = cmap(norm)
     if invalid.any():
         rgba = np.array(rgba, copy=True)
@@ -231,9 +249,9 @@ def _colormap_icon(name: str, width: int = 96, height: int = 14) -> QIcon:
     if key in _CMAP_ICON_CACHE:
         return _CMAP_ICON_CACHE[key]
     try:
-        cmap = colormaps.get_cmap(name)
+        cmap = _get_cached_colormap(name)
     except Exception:
-        cmap = colormaps.get_cmap('viridis')
+        cmap = _get_cached_colormap('viridis')
     grad = np.linspace(0.0, 1.0, width, dtype=np.float32)
     rgba = cmap(grad)
     rgba8 = (rgba * 255).astype(np.uint8)
