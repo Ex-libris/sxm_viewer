@@ -16,6 +16,7 @@ from .config_defaults import (
 from .config_io import (
     load_config,
     save_config,
+    flush_pending_config_save,
     load_header_cache,
     save_header_cache,
     load_collections_index,
@@ -35,6 +36,7 @@ __all__ = [
     "THUMB_DISK_CACHE_DIR",
     "load_config",
     "save_config",
+    "flush_pending_config_save",
     "load_header_cache",
     "save_header_cache",
     "load_collections_index",

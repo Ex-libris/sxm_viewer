@@ -1,7 +1,10 @@
 """Configuration persistence helpers for the SXM viewer."""
 from __future__ import annotations
 
+import copy
 import json
+
+from PyQt5 import QtCore
 
 from .config_defaults import (
     CONFIG_PATH,
@@ -11,9 +14,59 @@ from .config_defaults import (
     COLLECTIONS_INDEX_VERSION,
 )
 
+# save_config is called from 90+ GUI call sites (essentially every UI toggle:
+# thumb sort/filter, tags, starring, ...), each historically doing a
+# synchronous ~50ms full rewrite of the whole config dict (dominated by
+# `tags`/`starred`, measured ~787KB on a real profile) on the GUI thread with
+# no debounce. Debounced here the same way the spectro manifest already is
+# (see main_window.py's _schedule_spectro_manifest_save): the write is
+# delayed and coalesced, but the LATEST value is held in-memory immediately
+# so load_config() never returns stale data even before the delayed write
+# lands. That matters concretely: gui/dialogs/spectroscopy_dialogs.py and
+# gui/canvases/detail_preview_canvas.py both do a direct
+# read-modify-write against this file (load_config() -> mutate one key ->
+# save_config()) independent of the viewer's own in-memory config - a naive
+# "just delay the write" debounce would let those read stale disk data and
+# clobber a pending change once the delayed write eventually landed.
+_pending_cfg = None
+_save_timer = None
+
+
+def _flush_pending_write():
+    global _pending_cfg
+    if _pending_cfg is None:
+        return
+    cfg = _pending_cfg
+    _pending_cfg = None
+    try:
+        # Not meant to be human-read; measured 5x faster to dump compact vs
+        # pretty-printed on this codebase's other big JSON caches.
+        CONFIG_PATH.write_text(json.dumps(cfg, separators=(',', ':')), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def flush_pending_config_save():
+    """Force any debounced save_config() write to happen immediately.
+    Call before the app exits so a change right before quitting isn't
+    silently dropped (this exact failure mode already happened once for the
+    similarly-debounced spectro manifest before its own close-time flush was
+    added)."""
+    global _save_timer
+    if _save_timer is not None:
+        _save_timer.stop()
+    _flush_pending_write()
+
 
 def load_config():
-    """Load persisted viewer configuration from disk."""
+    """Load persisted viewer configuration from disk - or the latest
+    not-yet-flushed value if save_config() ran more recently than the
+    debounced write has landed. Returns an independent copy either way, so
+    callers mutating the result (a common pattern: load_config(), set one
+    key, save_config()) never accidentally mutate the pending/shared state
+    out from under a concurrent caller."""
+    if _pending_cfg is not None:
+        return copy.deepcopy(_pending_cfg)
     try:
         s = CONFIG_PATH.read_text(encoding="utf-8")
         return json.loads(s)
@@ -22,15 +75,14 @@ def load_config():
 
 
 def save_config(cfg):
-    """Persist configuration dictionary to disk."""
-    try:
-        # Not meant to be human-read; measured 5x faster to dump compact vs
-        # pretty-printed on this codebase's other big JSON caches, and this
-        # file (dominated by `tags`/`starred`) gets rewritten in full on
-        # essentially every UI toggle.
-        CONFIG_PATH.write_text(json.dumps(cfg, separators=(',', ':')), encoding="utf-8")
-    except Exception:
-        pass
+    """Persist configuration dictionary to disk, debounced ~400ms."""
+    global _pending_cfg, _save_timer
+    _pending_cfg = cfg
+    if _save_timer is None:
+        _save_timer = QtCore.QTimer()
+        _save_timer.setSingleShot(True)
+        _save_timer.timeout.connect(_flush_pending_write)
+    _save_timer.start(400)
 
 
 def load_header_cache():
@@ -90,6 +142,7 @@ def save_collections_index(index):
 __all__ = [
     "load_config",
     "save_config",
+    "flush_pending_config_save",
     "load_header_cache",
     "save_header_cache",
     "load_collections_index",

@@ -36,6 +36,7 @@ from ..config import (
     FILTERED_CACHE_LIMIT,
     load_config,
     save_config,
+    flush_pending_config_save,
     load_header_cache,
     save_header_cache,
     load_collections_index,
@@ -1833,6 +1834,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             window = getattr(self, "collection_tray_window", None)
             if window is not None:
                 window.hide()
+        except Exception:
+            pass
+        try:
+            # save_config() is debounced the same way the spectro manifest
+            # is (see the comment above); flush last, after every other
+            # closeEvent step that might itself call save_config, so this
+            # captures the truly final state before quitting.
+            flush_pending_config_save()
         except Exception:
             pass
         super().closeEvent(event)
