@@ -8047,14 +8047,35 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _apply_font_scale(self):
         scale = getattr(self, '_font_scale', 1.0)
-        self.ax.tick_params(labelsize=8 * scale)
+        style = _style_kwargs(self._font_style_state())
         self.ax.xaxis.label.set_fontsize(10 * scale)
         self.ax.yaxis.label.set_fontsize(10 * scale)
-        style = _style_kwargs(self._font_style_state())
         apply_text_style(self.ax.xaxis.label, family=self._plot_font_family, **style)
         apply_text_style(self.ax.yaxis.label, family=self._plot_font_family, **style)
-        for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
-            apply_text_style(text, family=self._plot_font_family, **style)
+        if style["bold"] or style["italic"] or style["underline"]:
+            # Rare path (user has bold/italic/underline enabled): tick_params
+            # only supports family, not weight/style/underline, so fall back
+            # to the original per-label loop, which is the only way to reach
+            # every property apply_text_style can set.
+            self.ax.tick_params(labelsize=8 * scale)
+            for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
+                apply_text_style(text, family=self._plot_font_family, **style)
+        else:
+            # Common path (no bold/italic/underline - _plot_font_bold/italic/
+            # underline default to False): tick_params(labelfontfamily=...)
+            # sets the family for every tick label - including ones not yet
+            # materialized - without needing get_xticklabels()/
+            # get_yticklabels(), which force a full tick materialization pass
+            # internally. Confirmed 234ms of a real dialog's ~727ms open cost,
+            # and this runs on every _update_plot (channel switch, waterfall
+            # toggle), not just at open - ax.clear() precedes it there, so
+            # the tick labels are genuinely freshly-created defaults each
+            # time and do need restyling; this just does it the cheap way.
+            family = normalize_font_family(self._plot_font_family) if self._plot_font_family else None
+            if family:
+                self.ax.tick_params(labelsize=8 * scale, labelfontfamily=family)
+            else:
+                self.ax.tick_params(labelsize=8 * scale)
         if self.ax.get_title():
             apply_text_style(self.ax.title, family=self._plot_font_family, **style)
         if self.ax.get_legend():
