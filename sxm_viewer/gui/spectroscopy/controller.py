@@ -347,6 +347,7 @@ def _assign_spectros_to_images(viewer):
             s.get('display_time') or s.get('time') or datetime.min,
             s.get('order_idx') or 0,
         ))
+    _reassign_split_measurement_series(viewer)
     _annotate_xy_stacks(viewer)
 
     # Debug log for nanonis 3ds assignments
@@ -938,6 +939,116 @@ def _detect_spectro_groups(viewer):
     viewer.spectro_group_index = group_index
 
 
+def _reassign_split_measurement_series(viewer):
+    """Fix up repeated-measurement (XY-stack/Z-stack) series that got split
+    across multiple images by the per-spec causal-time assignment above.
+
+    That assignment operates per-file: each spectrum is attached to "the
+    most recent image acquired before it". A series of repeats at one
+    physical site is normally taken in quick succession (seconds apart),
+    but if a new reference image happens to get captured partway through
+    the series, the repeats before that image and the repeats after it
+    resolve to two different images - even though they're all one
+    measurement. Confirmed on real data: a 41-repeat Z-stack split into
+    "1 spec on image A" + "40 specs on image B" because one new image was
+    captured 8 seconds after the first repeat and 14 seconds before the
+    second.
+
+    Fix: after the causal-time pass, regroup by physical site (matching
+    _annotate_xy_stacks's own site definition: rounded XY position, no
+    per-image scoping) and majority-vote - reassign every member of a
+    split site onto whichever image already holds the most of its repeats,
+    so _annotate_xy_stacks (right after this) sees one consistent owner
+    and produces one combined "Zx41" label instead of two fragments.
+    Matrix/grid entries are excluded (matches _annotate_xy_stacks's own
+    exclusion) - those are anchored as a whole grid by a separate,
+    dedicated pass, not per-point, so they can't be split this way.
+    """
+    specs = list(getattr(viewer, "spectros", []) or [])
+    if not specs:
+        return
+    xy_tol_nm = 0.05  # matches _annotate_xy_stacks's own site tolerance
+    groups = OrderedDict()
+    for spec in specs:
+        # is_matrix_file_entry alone only catches Omicron/Anfatec matrix
+        # .dat files (by filename); Nanonis .3ds grid points are flagged via
+        # matrix_index instead - matching the is_matrix_point pattern used
+        # above in _assign_spectros_to_images (both checks are needed to
+        # exclude every matrix/grid spec). Confirmed the hard way: without
+        # the matrix_index check, grid files that happen to share raster-
+        # aligned XY coordinates (common - multiple grids scanning the same
+        # sample region with similar pixel pitch) got treated as "split
+        # sites" and shuffled between images by the thousands.
+        if spec.get('matrix_index') is not None or is_matrix_file_entry(spec):
+            continue
+        try:
+            sx = float(spec.get("x"))
+            sy = float(spec.get("y"))
+        except Exception:
+            continue
+        qx = int(round(sx / xy_tol_nm))
+        qy = int(round(sy / xy_tol_nm))
+        groups.setdefault((qx, qy), []).append(spec)
+
+    for members in groups.values():
+        if len(members) <= 1:
+            continue
+        counts = {}
+        for spec in members:
+            key = str(spec.get("image_key") or "")
+            counts[key] = counts.get(key, 0) + 1
+        if len(counts) <= 1:
+            continue  # not split - every member already agrees
+        max_count = max(counts.values())
+        candidates = [key for key, cnt in counts.items() if cnt == max_count]
+        if len(candidates) == 1:
+            majority_key = candidates[0]
+        else:
+            # Deterministic tie-break: prefer whichever candidate image
+            # holds the earliest-timestamped member of this site, rather
+            # than relying on dict iteration order.
+            first_time_by_key = {}
+            for spec in members:
+                key = str(spec.get("image_key") or "")
+                if key not in candidates:
+                    continue
+                t = spec.get("time") or spec.get("display_time")
+                if t is not None and (key not in first_time_by_key or t < first_time_by_key[key]):
+                    first_time_by_key[key] = t
+            majority_key = min(candidates, key=lambda k: first_time_by_key.get(k) or datetime.max)
+        if not majority_key:
+            continue
+
+        for spec in members:
+            old_key = str(spec.get("image_key") or "")
+            if old_key == majority_key:
+                continue
+            bucket = viewer.spectros_by_image.get(old_key)
+            if bucket is not None:
+                try:
+                    bucket.remove(spec)
+                except ValueError:
+                    pass
+            spec["image_key"] = majority_key
+            spec["primary_image_key"] = majority_key
+            if spec.get("shared_image_keys") == [old_key]:
+                spec["shared_image_keys"] = [majority_key]
+            spec["assignment_reason"] = "zstack_series_majority"
+            spec["assignment_confidence"] = "high"
+            spec["assignment_summary"] = (
+                "Consolidated onto the image most of this repeated-measurement "
+                "series belongs to (the series was split across images because "
+                "a new reference image was captured mid-series)."
+            )
+            viewer.spectros_by_image.setdefault(majority_key, []).append(spec)
+
+    for k in list(viewer.spectros_by_image.keys()):
+        viewer.spectros_by_image[k].sort(key=lambda s: (
+            s.get('display_time') or s.get('time') or datetime.min,
+            s.get('order_idx') or 0,
+        ))
+
+
 def _annotate_xy_stacks(viewer):
     originals = list(getattr(viewer, "spectros", []) or [])
     if not originals:
@@ -961,7 +1072,14 @@ def _annotate_xy_stacks(viewer):
     z_tol_nm = 1e-3
     groups = OrderedDict()
     for spec in originals:
-        if is_matrix_file_entry(spec):
+        # Both checks needed - is_matrix_file_entry alone only catches
+        # Omicron/Anfatec matrix .dat files, not Nanonis .3ds grid points
+        # (flagged via matrix_index instead). See
+        # _reassign_split_measurement_series's comment for how this gap
+        # manifests if left unfixed: grid files sharing raster-aligned XY
+        # coordinates and the same image owner would get merged into one
+        # bogus "Zx" xy-stack.
+        if spec.get('matrix_index') is not None or is_matrix_file_entry(spec):
             continue
         try:
             sx = float(spec.get("x"))
