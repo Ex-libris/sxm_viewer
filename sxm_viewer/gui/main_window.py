@@ -646,6 +646,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.spectro_site_index = {}
         self.spectro_groups_by_image = defaultdict(list)
         self.spectro_group_index = {}
+        self._spec_extent_cache = {}
         self._spectros_loaded = False
         self._spectros_loading = False
         self._spectros_pending = False
@@ -4817,6 +4818,7 @@ QLabel:hover {{
         self.spectro_site_index = {}
         self.spectro_groups_by_image = defaultdict(list)
         self.spectro_group_index = {}
+        self._spec_extent_cache = {}
         self.files_with_matrix = set()
         self.files_with_spectra = set()
         self._spectros_loaded = False
@@ -9066,15 +9068,34 @@ QLabel:hover {{
         if not file_key:
             return None
         entries = self.spectros_by_image.get(str(file_key), [])
-        xs = [s.get('x') for s in entries if s.get('x') is not None]
-        ys = [s.get('y') for s in entries if s.get('y') is not None]
-        if not xs or not ys:
-            return None
-        try:
-            xmin, xmax = float(min(xs)), float(max(xs))
-            ymin, ymax = float(min(ys)), float(max(ys))
-        except Exception:
-            return None
+        cache = getattr(self, '_spec_extent_cache', None)
+        if cache is None:
+            cache = {}
+            self._spec_extent_cache = cache
+        key = str(file_key)
+        cached = cache.get(key)
+        # Rebuilding this bounding box is an O(len(entries)) scan; called once
+        # per spec whenever the header extent is degenerate (routine for grid
+        # files), so an uncached version is O(n^2) in the grid's point count -
+        # measured 5-9+ seconds opening/interacting with a real 2400-point
+        # .3ds grid. `entries` is a list object owned by spectros_by_image
+        # that gets replaced wholesale (not appended-to) on every rescan, so
+        # identity + length is a cheap, correct staleness check: a real
+        # rescan always produces a new list object, and a same-object length
+        # change (e.g. a manual reassignment) still invalidates the cache.
+        if cached is not None and cached[0] is entries and cached[1] == len(entries):
+            xmin, xmax, ymin, ymax = cached[2]
+        else:
+            xs = [s.get('x') for s in entries if s.get('x') is not None]
+            ys = [s.get('y') for s in entries if s.get('y') is not None]
+            if not xs or not ys:
+                return None
+            try:
+                xmin, xmax = float(min(xs)), float(max(xs))
+                ymin, ymax = float(min(ys)), float(max(ys))
+            except Exception:
+                return None
+            cache[key] = (entries, len(entries), (xmin, xmax, ymin, ymax))
         # pad spans to avoid zero division
         span_x = xmax - xmin
         span_y = ymax - ymin

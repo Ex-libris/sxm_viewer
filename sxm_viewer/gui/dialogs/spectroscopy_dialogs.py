@@ -2699,6 +2699,16 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.image_entry = image_entry
         self.specs = list(specs)
         self.viewer = parent
+        # spec identity -> pixel coords, shared across _build_stat_metric/
+        # _build_integral_metric/_build_peak_metric and across every
+        # map_mode_combo switch: position depends only on spec + anchor
+        # geometry, never on which metric is displayed, so recomputing it
+        # per point on every switch was purely wasted (measured 5-9+ seconds
+        # on a real 2400-point grid). self._channel_specs (built once below)
+        # keeps every spec/list referenced for the dialog's lifetime, so
+        # id()-keying here is safe - nothing can be garbage-collected and
+        # have its id reused while this cache is alive.
+        self._pixel_coords_cache = {}
         self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(self.viewer, "_plot_font_bold", False))
         self._plot_font_italic = bool(getattr(self.viewer, "_plot_font_italic", False))
@@ -3431,15 +3441,30 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     label = next(iter(channels.keys()))
         return label or Path(key).name
 
+    def _mapped_pixel_coords(self, channel_specs, header, file_key, xpix, ypix):
+        """Pixel positions for channel_specs, cached per spec identity - see
+        self._pixel_coords_cache docstring in __init__."""
+        cache = self._pixel_coords_cache.setdefault(id(channel_specs), {})
+        coords_list = []
+        for spec in channel_specs:
+            spec_key = id(spec)
+            if spec_key in cache:
+                coords = cache[spec_key]
+            else:
+                coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+                cache[spec_key] = coords
+            coords_list.append(coords)
+        return coords_list
+
     def _build_stat_metric(self, fn, channel_specs, header, file_key):
         if not channel_specs:
             return None
         xpix = int(header.get('xPixel', 128) if header else 128)
         ypix = int(header.get('yPixel', 128) if header else 128)
         grid = np.full((ypix, xpix), np.nan, dtype=float)
-        for spec in channel_specs:
+        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
+        for spec, coords in zip(channel_specs, coords_list):
             data = spec.get('data')
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
             if data is None or coords is None:
                 continue
             try:
@@ -3455,9 +3480,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         xpix = int(header.get('xPixel', 128) if header else 128)
         ypix = int(header.get('yPixel', 128) if header else 128)
         grid = np.full((ypix, xpix), np.nan, dtype=float)
-        for spec in channel_specs:
+        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
+        for spec, coords in zip(channel_specs, coords_list):
             data = spec.get('data')
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
             if data is None or coords is None:
                 continue
             try:
@@ -3474,9 +3499,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         xpix = int(header.get('xPixel', 128) if header else 128)
         ypix = int(header.get('yPixel', 128) if header else 128)
         grid = np.full((ypix, xpix), np.nan, dtype=float)
-        for spec in channel_specs:
+        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
+        for spec, coords in zip(channel_specs, coords_list):
             data = spec.get('data')
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
             if data is None or coords is None:
                 continue
             try:
