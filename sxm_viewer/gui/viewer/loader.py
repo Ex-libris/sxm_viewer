@@ -518,7 +518,24 @@ def _spec_metadata_list(specs):
 
 
 def _restore_spec_metadata(entry):
-    spec = dict(_deserialize_cache_value(entry or {}))
+    # Mirrors _spec_metadata_entry's fast path on the save side (see its
+    # docstring): most values are already plain, cache-safe scalars needing
+    # no conversion - _deserialize_cache_value's own body is a no-op for
+    # those (falls through dict/list checks straight to `return value`), so
+    # skipping the call for them entirely is exactly equivalent, just
+    # without the isinstance checks and recursive-call overhead repeated
+    # ~54x per spec. Only dict/list values (site_channels, AxisChoices, the
+    # {"__datetime__": ...} markers on time/display_time, etc.) need the
+    # real recursive pass. This was the dominant remaining cost of loading a
+    # folder's spectroscopy manifest (measured ~54 recursive calls/spec on a
+    # real 17885-spec manifest).
+    entry = entry or {}
+    spec = {}
+    for key, value in entry.items():
+        if isinstance(value, _SPEC_METADATA_SIMPLE_SCALAR_TYPES):
+            spec[key] = value
+        else:
+            spec[key] = _deserialize_cache_value(value)
     spec["_payload_hydrated"] = bool(spec.get("_payload_hydrated", False))
     return spec
 
