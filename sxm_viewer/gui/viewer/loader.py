@@ -1,6 +1,7 @@
 """Loader helpers for SXMGridViewer."""
 from __future__ import annotations
 
+import copy
 import time
 from functools import lru_cache
 from ..._shared import (
@@ -89,7 +90,7 @@ from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_s
 from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
-_SPECTRO_MANIFEST_VERSION = 4
+_SPECTRO_MANIFEST_VERSION = 5
 _SPECTRO_CACHE_MTIME_TOLERANCE = 2.0
 _SPECTRO_MANIFEST_FILE = "manifest_v2.json"
 _SPECTRO_METADATA_ARRAY_KEYS = {
@@ -538,6 +539,28 @@ def _restore_spec_metadata(entry):
             spec[key] = _deserialize_cache_value(value)
     spec["_payload_hydrated"] = bool(spec.get("_payload_hydrated", False))
     return spec
+
+
+def _restore_spec_metadata_list(entry):
+    """Restore a manifest entry's "specs" list, merging back any
+    per-file-constant fields hoisted out into "file_meta" at write time
+    (see _hoist_constant_spec_fields - a real .3ds grid entry had ~51% of
+    its per-spec bytes exactly this kind of duplication: image_key,
+    image_path, channel_name, AxisLabel, grid_rows/grid_cols, etc. repeated
+    identically on every single grid point). Each returned spec is a fully
+    independent dict - file_meta's contribution is deep-copied per spec so
+    a mutable field (e.g. shared_image_keys, a list) can never be silently
+    shared and mutated across every point in a grid."""
+    entry = entry or {}
+    spec_entries = entry.get("specs") or []
+    file_meta = entry.get("file_meta")
+    if not file_meta:
+        return [_restore_spec_metadata(spec_entry) for spec_entry in spec_entries]
+    restored_file_meta = _restore_spec_metadata(file_meta)
+    return [
+        {**copy.deepcopy(restored_file_meta), **_restore_spec_metadata(spec_entry)}
+        for spec_entry in spec_entries
+    ]
 
 
 def _restore_spectro_payload_specs(entries):
@@ -1242,8 +1265,49 @@ def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None
         return None
 
 
+def _hoist_constant_spec_fields(spec_entries):
+    """Split a list of already-serialized (_serialize_cache_value'd) spec
+    metadata dicts into (file_meta, trimmed_specs): any key whose value is
+    identical across every spec in the file gets pulled out once into
+    file_meta and removed from each individual spec dict, instead of being
+    duplicated once per point. Real .3ds grid files had ~51% of their
+    per-spec manifest bytes be exactly this kind of duplication (image_key,
+    image_path, channel_name, AxisLabel, grid_rows/grid_cols, ...
+    identical on every grid point). Equality is checked explicitly per key
+    (not assumed from a hardcoded list) so a field that happens to vary for
+    some file - e.g. site_key, which encodes each point's own XY position -
+    is never incorrectly hoisted; reconstruction (_restore_spec_metadata_list)
+    is correct by construction regardless of which keys end up hoisted.
+    No-ops (returns ({}, spec_entries) unchanged) for 0-1 spec entries,
+    where hoisting has no benefit."""
+    if len(spec_entries) < 2:
+        return {}, spec_entries
+    common_keys = None
+    for spec in spec_entries:
+        keys = set(spec.keys())
+        common_keys = keys if common_keys is None else (common_keys & keys)
+    if not common_keys:
+        return {}, spec_entries
+    first = spec_entries[0]
+    rest = spec_entries[1:]
+    constant_keys = {
+        key for key in common_keys
+        if all(spec[key] == first[key] for spec in rest)
+    }
+    if not constant_keys:
+        return {}, spec_entries
+    file_meta = {key: first[key] for key in constant_keys}
+    trimmed = [
+        {key: value for key, value in spec.items() if key not in constant_keys}
+        for spec in spec_entries
+    ]
+    return file_meta, trimmed
+
+
 def _build_manifest_entry(base_folder: Path | None, filepath: Path, mtime: float, fsize: int, specs, payload_info=None):
     info = payload_info or {}
+    serialized_specs = [_serialize_cache_value(spec) for spec in _spec_metadata_list(specs or [])]
+    file_meta, trimmed_specs = _hoist_constant_spec_fields(serialized_specs)
     return {
         "relpath": _spectro_relative_key(base_folder, filepath),
         "filename": filepath.name,
@@ -1255,7 +1319,8 @@ def _build_manifest_entry(base_folder: Path | None, filepath: Path, mtime: float
         "cache_key": info.get("cache_key"),
         "spec_count": len(specs or []),
         "source_type": str((specs or [{}])[0].get("source") or ""),
-        "specs": [_serialize_cache_value(spec) for spec in _spec_metadata_list(specs or [])],
+        "file_meta": file_meta,
+        "specs": trimmed_specs,
     }
 
 
@@ -2044,7 +2109,7 @@ def _scan_spectros(
                 stats['dat_files'] += 1
             seen_keys.add(norm_key)
             entry = manifest_entries.get(record["rel_key"]) or {}
-            spec_list = [_restore_spec_metadata(spec_entry) for spec_entry in (entry.get("specs") or [])]
+            spec_list = _restore_spec_metadata_list(entry)
             specs.extend(spec_list)
             stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
         stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
@@ -2140,7 +2205,7 @@ def _scan_spectros(
         if viewer.spectro_eager_limit and idx > viewer.spectro_eager_limit:
             if manifest_entry and _manifest_entry_valid(manifest_entry, mtime=mtime, fsize=fsize):
                 t_manifest = time.perf_counter()
-                spec_list = [_restore_spec_metadata(entry) for entry in (manifest_entry.get("specs") or [])]
+                spec_list = _restore_spec_metadata_list(manifest_entry)
                 stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
                 stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
             elif disk_cache_dir:
@@ -2166,7 +2231,7 @@ def _scan_spectros(
         else:
             if manifest_entry and _manifest_entry_valid(manifest_entry, mtime=mtime, fsize=fsize):
                 t_manifest = time.perf_counter()
-                spec_list = [_restore_spec_metadata(entry) for entry in (manifest_entry.get("specs") or [])]
+                spec_list = _restore_spec_metadata_list(manifest_entry)
                 stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
                 stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
             elif disk_cache_dir:
