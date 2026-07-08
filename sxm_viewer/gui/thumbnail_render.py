@@ -1,6 +1,8 @@
 """Thumbnail rendering, caching and export helpers."""
 from __future__ import annotations
 
+import warnings
+
 from .._shared import (
     QtCore,
     QtGui,
@@ -314,26 +316,41 @@ def detect_valid_scan_region(arr, tolerance=1e-10):
     rows, cols = a.shape
     if rows == 0 or cols == 0:
         return None
-    first_valid = None
-    for i in range(rows):
-        row = a[i, :]
-        finite = row[np.isfinite(row)]
-        if finite.size < 2:
-            continue
-        if np.ptp(finite) > tolerance or np.std(finite) > tolerance:
-            first_valid = i
-            break
-    if first_valid is None:
+    # Per-row ptp/std computed once across the whole array (vectorized)
+    # instead of one np.isfinite/np.ptp/np.std call per row - measured
+    # 712ms across 208 real thumbnails from ~47k small per-row numpy calls,
+    # each dominated by Python/dispatch overhead rather than actual work.
+    # np.where(...,np.nan) replaces non-finite entries (NaN *and* +-inf, to
+    # match np.isfinite's original semantics exactly) before the nan-aware
+    # reductions, since nanmax/nanmin/nanstd only skip NaN, not inf.
+    finite_mask = np.isfinite(a)
+    finite_count = finite_mask.sum(axis=1)
+    masked = np.where(finite_mask, a, np.nan)
+    # All-NaN rows are common here (aborted-scan padding) and are already
+    # excluded below via finite_count >= 2 regardless of what nanmax/nanmin/
+    # nanstd compute for them - np.errstate doesn't cover their "All-NaN
+    # slice"/"Degrees of freedom <= 0" RuntimeWarnings (raised via Python's
+    # warnings module, not the floating-point error state), so silence
+    # those specifically rather than let them spam real usage.
+    with warnings.catch_warnings(), np.errstate(all='ignore'):
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        row_ptp = np.nanmax(masked, axis=1) - np.nanmin(masked, axis=1)
+        row_std = np.nanstd(masked, axis=1)
+    has_variation = (finite_count >= 2) & ((row_ptp > tolerance) | (row_std > tolerance))
+
+    valid_idx = np.flatnonzero(has_variation)
+    if valid_idx.size == 0:
         return None
+    first_valid = int(valid_idx[0])
+
+    empty_row = finite_count < 2
     last_valid = first_valid
     for i in range(first_valid + 1, rows):
-        row = a[i, :]
-        finite = row[np.isfinite(row)]
-        if finite.size < 2:
+        if empty_row[i]:
             if i > first_valid + 5:
                 break
             continue
-        if np.ptp(finite) > tolerance or np.std(finite) > tolerance:
+        if has_variation[i]:
             last_valid = i
         else:
             break
