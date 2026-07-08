@@ -39,6 +39,7 @@ from ..config import (
     flush_pending_config_save,
     load_header_cache,
     save_header_cache,
+    flush_pending_header_cache_save,
     load_collections_index,
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
@@ -1842,6 +1843,10 @@ class SXMGridViewer(QtWidgets.QWidget):
             # closeEvent step that might itself call save_config, so this
             # captures the truly final state before quitting.
             flush_pending_config_save()
+        except Exception:
+            pass
+        try:
+            flush_pending_header_cache_save()
         except Exception:
             pass
         super().closeEvent(event)

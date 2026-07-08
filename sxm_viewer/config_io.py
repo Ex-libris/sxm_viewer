@@ -86,7 +86,11 @@ def save_config(cfg):
 
 
 def load_header_cache():
-    """Load cached headers parsed in previous sessions."""
+    """Load cached headers parsed in previous sessions - or the latest
+    not-yet-flushed value if save_header_cache() ran more recently than the
+    debounced write has landed (see save_header_cache's docstring)."""
+    if _pending_header_cache is not None:
+        return copy.deepcopy(_pending_header_cache)
     try:
         # Explicit encoding matters here beyond correctness: without it,
         # read_text()/write_text() fall back to the locale-default encoding
@@ -105,13 +109,49 @@ def load_header_cache():
         return {}
 
 
-def save_header_cache(cache):
-    """Persist header cache (used to speed up future loads)."""
+_pending_header_cache = None
+_header_cache_save_timer = None
+
+
+def _flush_pending_header_cache_write():
+    global _pending_header_cache
+    if _pending_header_cache is None:
+        return
+    cache = _pending_header_cache
+    _pending_header_cache = None
     try:
         payload = {"_version": HEADER_CACHE_VERSION, "entries": cache}
         HEADER_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
         pass
+
+
+def flush_pending_header_cache_save():
+    """Force any debounced save_header_cache() write to happen immediately -
+    call before the app exits, same reasoning as flush_pending_config_save()."""
+    global _header_cache_save_timer
+    if _header_cache_save_timer is not None:
+        _header_cache_save_timer.stop()
+    _flush_pending_header_cache_write()
+
+
+def save_header_cache(cache):
+    """Persist header cache (used to speed up future loads), debounced
+    ~400ms - this file accumulates every folder ever opened and can reach
+    tens of MB, so a synchronous rewrite (confirmed 630ms on a real 34MB/
+    2971-entry cache) is worth keeping off the immediate call path,
+    especially if the user opens several folders in quick succession. Same
+    read-through design as save_config/load_config (see save_config's
+    docstring) even though load_header_cache currently has only one,
+    startup-time caller - keeps both header-cache functions safe against a
+    future mid-session caller being added without anyone re-auditing this."""
+    global _pending_header_cache, _header_cache_save_timer
+    _pending_header_cache = cache
+    if _header_cache_save_timer is None:
+        _header_cache_save_timer = QtCore.QTimer()
+        _header_cache_save_timer.setSingleShot(True)
+        _header_cache_save_timer.timeout.connect(_flush_pending_header_cache_write)
+    _header_cache_save_timer.start(400)
 
 
 def load_collections_index():
@@ -145,6 +185,7 @@ __all__ = [
     "flush_pending_config_save",
     "load_header_cache",
     "save_header_cache",
+    "flush_pending_header_cache_save",
     "load_collections_index",
     "save_collections_index",
 ]

@@ -19,6 +19,7 @@ from .config_io import (
     flush_pending_config_save,
     load_header_cache,
     save_header_cache,
+    flush_pending_header_cache_save,
     load_collections_index,
     save_collections_index,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "flush_pending_config_save",
     "load_header_cache",
     "save_header_cache",
+    "flush_pending_header_cache_save",
     "load_collections_index",
     "save_collections_index",
 ]
