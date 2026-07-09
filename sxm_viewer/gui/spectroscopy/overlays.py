@@ -124,6 +124,129 @@ def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False
     return path.boundingRect().adjusted(-1.5, -1.5, 1.5, 1.5)
 
 
+# --- Type icons -------------------------------------------------------------
+# One glyph per spectroscopy "kind" (single / z-stack / grid / loose
+# cluster), drawn the same way wherever that kind shows up - corner badge,
+# footprint chip, or floating icon - so the shape itself is identifiable
+# without reading an abbreviation ("S:"/"M:"/"L:"/"C:").
+
+def _draw_grid_icon(painter, cx, cy, *, cell=2.2, gap=1.3, color=None):
+    """3x3 dot grid marking a matrix/grid dataset."""
+    color = QtGui.QColor(color) if color is not None else QtGui.QColor(20, 20, 24)
+    painter.save()
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.setBrush(QtGui.QBrush(color))
+    step = cell + gap
+    start = -step
+    for row in range(3):
+        for col in range(3):
+            x = cx + start + col * step
+            y = cy + start + row * step
+            painter.drawEllipse(QtCore.QPointF(x, y), cell / 2.0, cell / 2.0)
+    painter.restore()
+
+
+def _draw_cluster_icon(painter, cx, cy, kind, *, size=7.0, color=None):
+    """Three dots in a row for a 'line' cluster, three scattered dots for a
+    'cloud' - the loose (non-grid-file) point groupings from
+    _detect_spectro_groups."""
+    color = QtGui.QColor(color) if color is not None else QtGui.QColor(20, 20, 24)
+    painter.save()
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.setBrush(QtGui.QBrush(color))
+    r = size * 0.15
+    if kind == "line":
+        pts = [(-size * 0.36, 0.0), (0.0, 0.0), (size * 0.36, 0.0)]
+    else:
+        pts = [(-size * 0.32, size * 0.22), (size * 0.06, -size * 0.28), (size * 0.32, size * 0.16)]
+    for dx, dy in pts:
+        painter.drawEllipse(QtCore.QPointF(cx + dx, cy + dy), r, r)
+    painter.restore()
+
+
+def _draw_stack_icon(painter, x, y, count, *, color=None):
+    """Icon for a Z-stack / repeated-measurement site: a few stacked bars
+    with the trace count on a small numeral tag. Replaces the old floating
+    'Zx44' text badge - the shape reads as 'a stack of traces' on its own,
+    the number just says how many."""
+    color = QtGui.QColor(color) if color is not None else QtGui.QColor(165, 141, 242, 235)
+    bar_w = 15.0
+    bar_h = 2.8
+    gap = 1.6
+    total_h = bar_h * 3 + gap * 2
+    top = y - total_h - 6.0
+    widths = (1.0, 0.76, 0.55)
+    painter.save()
+    painter.setPen(QtCore.Qt.NoPen)
+    for i, w in enumerate(widths):
+        c = QtGui.QColor(color)
+        c.setAlpha(max(110, color.alpha() - i * 40))
+        painter.setBrush(QtGui.QBrush(c))
+        bw = bar_w * w
+        rect = QtCore.QRectF(x - bw / 2.0, top + i * (bar_h + gap), bw, bar_h)
+        painter.drawRoundedRect(rect, bar_h / 2.0, bar_h / 2.0)
+    label = str(int(count)) if count else ""
+    font = QtGui.QFont("Segoe UI", 7, QtGui.QFont.Bold)
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    tag_w = max(14, metrics.horizontalAdvance(label) + 7)
+    tag_h = max(12, metrics.height())
+    tag_rect = QtCore.QRectF(x + bar_w / 2.0 - 2.0, top - tag_h * 0.6, tag_w, tag_h)
+    painter.setBrush(QtGui.QBrush(color))
+    painter.setPen(QtGui.QPen(QtGui.QColor(18, 12, 28), 1.0))
+    painter.drawRoundedRect(tag_rect, tag_h / 2.0, tag_h / 2.0)
+    painter.setPen(QtGui.QPen(QtGui.QColor(18, 12, 28)))
+    painter.drawText(tag_rect, QtCore.Qt.AlignCenter, label)
+    painter.restore()
+    return QtCore.QRectF(x - bar_w / 2.0 - 2, top - tag_h, bar_w + tag_w * 0.5 + 4, total_h + tag_h + 4)
+
+
+def _draw_footprint(painter, rect, *, kind, color, count, dims=None):
+    """Shared drawing for a summary footprint (matrix file, or a detected
+    grid/line/cloud group of loose points): solid border + translucent fill
+    + a small icon-and-count chip in the corner. All footprint kinds share
+    this one look now (they used to differ only by a dashed/dotted border
+    style, which doesn't read at thumbnail scale) - the icon in the chip is
+    what tells them apart."""
+    color = QtGui.QColor(color)
+    painter.save()
+    shadow = QtGui.QColor(10, 10, 20, 75)
+    painter.setPen(QtGui.QPen(shadow, 1.3))
+    painter.setBrush(QtCore.Qt.NoBrush)
+    painter.drawRoundedRect(rect.translated(2, 2), 7, 7)
+    border = QtGui.QColor(color)
+    border.setAlpha(235)
+    painter.setPen(QtGui.QPen(border, 2.2))
+    fill = QtGui.QColor(color.red(), color.green(), color.blue(), 55)
+    painter.setBrush(QtGui.QBrush(fill))
+    painter.drawRoundedRect(rect, 7, 7)
+
+    chip_text = f"{count} pt" + ("s" if count != 1 else "") if count else (dims or "")
+    icon_w = 13.0
+    chip_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
+    painter.setFont(chip_font)
+    metrics = painter.fontMetrics()
+    text_w = metrics.horizontalAdvance(chip_text)
+    chip_w = max(min(text_w + icon_w + 16, rect.width() - 8), 34)
+    chip_h = max(metrics.height() + 6, 17)
+    chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
+    painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 230))
+    painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.1))
+    painter.drawRoundedRect(chip_rect, 6, 6)
+    icon_cx = chip_rect.left() + icon_w / 2.0 + 4.0
+    icon_cy = chip_rect.center().y()
+    dark = QtGui.QColor(18, 14, 10)
+    if kind == "matrix" or kind == "grid":
+        _draw_grid_icon(painter, icon_cx, icon_cy, color=dark)
+    elif kind in ("line", "cloud"):
+        _draw_cluster_icon(painter, icon_cx, icon_cy, kind, color=dark)
+    text_rect = QtCore.QRectF(chip_rect.left() + icon_w + 6, chip_rect.top(), chip_rect.width() - icon_w - 8, chip_rect.height())
+    painter.setPen(QtGui.QPen(QtCore.Qt.white))
+    painter.drawText(text_rect, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, chip_text)
+    painter.restore()
+    return chip_rect
+
+
 def _spread_overlapping_marker_coords(coords, *, marker_size=5.0, cluster_tol=0.5):
     """Fan out spectra that land on the same pixel so coincident points stay visible."""
     if not coords or len(coords) < 2:
@@ -161,37 +284,34 @@ def _spread_overlapping_marker_coords(coords, *, marker_size=5.0, cluster_tol=0.
     return spread
 
 
-def _stack_badge_text(spec):
+def _stack_badge_count(spec):
     try:
         count = int(spec.get("xy_stack_count") or 0)
     except Exception:
         count = 0
-    if count <= 1:
-        return ""
-    label = str(spec.get("xy_stack_display") or "").strip()
-    return label or f"x{count}"
+    return count if count > 1 else 0
 
 
 def _stack_badge_tooltip(spec):
     text = str(spec.get("xy_stack_summary") or "").strip()
     if text:
         return text
-    label = _stack_badge_text(spec)
-    if not label:
+    count = _stack_badge_count(spec)
+    if not count:
         return ""
     if spec.get("xy_stack_z_varies"):
-        return f"Z series ({label})"
-    return f"Repeated spectra ({label})"
+        return f"Z series (x{count})"
+    return f"Repeated spectra (x{count})"
 
 
 def _stack_badges_from_coords(coords):
     groups = OrderedDict()
     for spec, col, row in coords or []:
-        label = _stack_badge_text(spec)
-        if not label:
+        count = _stack_badge_count(spec)
+        if not count:
             continue
         key = str(spec.get("xy_stack_key") or f"{round(float(col), 3)}:{round(float(row), 3)}")
-        groups.setdefault(key, {"spec": spec, "coords": [], "label": label})
+        groups.setdefault(key, {"spec": spec, "coords": [], "count": count})
         groups[key]["coords"].append((float(col), float(row)))
     badges = []
     for group in groups.values():
@@ -204,45 +324,98 @@ def _stack_badges_from_coords(coords):
             "spec": group["spec"],
             "col": cx,
             "row": cy,
-            "label": group["label"],
+            "count": group["count"],
             "tooltip": _stack_badge_tooltip(group["spec"]),
         })
     return badges
 
 
-def _draw_stack_badge(painter, x, y, label, *, tooltip=None):
-    font = QtGui.QFont("Segoe UI", 7, QtGui.QFont.Bold)
+def _summarize_remaining_singles(specs):
+    """Split the final (post-footprint) single-spectrum list into Z-stack /
+    repeated-measurement sites vs. plain standalone points, for the
+    corner-badge summary text. Each spec counts toward exactly one bucket."""
+    seen_stack_keys = set()
+    stack_sites = 0
+    stack_traces = 0
+    plain_points = 0
+    for spec in specs or []:
+        count = _stack_badge_count(spec)
+        if count:
+            key = str(spec.get("xy_stack_key") or id(spec))
+            if key in seen_stack_keys:
+                continue
+            seen_stack_keys.add(key)
+            stack_sites += 1
+            stack_traces += count
+        else:
+            plain_points += 1
+    return stack_sites, stack_traces, plain_points
+
+
+def _summary_badge_text(matrices, drawn_groups, remaining_singles):
+    """Plain-language replacement for the old 'S:132 M:1 (36x24)' shorthand -
+    describes what's actually on the image (grids, clusters, sites, points)
+    instead of internal single/matrix counts."""
+    parts = []
+    if matrices:
+        if len(matrices) == 1:
+            m_specs = next(iter(matrices.values()))
+            gc = m_specs[0].get('grid_cols')
+            gr = m_specs[0].get('grid_rows')
+            parts.append(f"{gc}×{gr} grid" if gc and gr else "1 grid")
+        else:
+            parts.append(f"{len(matrices)} grids")
+    grid_like = sum(1 for g in drawn_groups if (g.get('kind') or '') == 'grid')
+    cluster_like = len(drawn_groups) - grid_like
+    if grid_like:
+        parts.append(f"{grid_like} grid" + ("s" if grid_like != 1 else ""))
+    if cluster_like:
+        parts.append(f"{cluster_like} cluster" + ("s" if cluster_like != 1 else ""))
+    stack_sites, stack_traces, plain_points = _summarize_remaining_singles(remaining_singles)
+    if stack_sites and not plain_points:
+        if stack_sites == 1:
+            parts.append(f"1 site · {stack_traces} traces")
+        else:
+            parts.append(f"{stack_sites} sites · {stack_traces} traces")
+    elif stack_sites:
+        parts.append(f"{stack_sites + plain_points} points ({stack_sites} sites)")
+    elif plain_points:
+        parts.append(f"{plain_points} point" + ("s" if plain_points != 1 else ""))
+    return " · ".join(parts) if parts else "No spectroscopy"
+
+
+def _draw_summary_badge(painter, bx, by, text, *, icon_kind=None, height=18):
+    """Per-image corner badge describing what's on the image in plain
+    language (see _summary_badge_text). Shared by the real thumbnail
+    overlay and the legend dialog so the legend never drifts from what is
+    actually drawn."""
+    icon_w = 15.0 if icon_kind else 0.0
+    font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
     painter.save()
     painter.setFont(font)
     metrics = painter.fontMetrics()
-    badge_w = max(18, metrics.horizontalAdvance(label) + 10)
-    badge_h = max(14, metrics.height() + 2)
-    rect = QtCore.QRectF(x + 7.0, y - badge_h - 2.0, badge_w, badge_h)
-    painter.setPen(QtGui.QPen(QtGui.QColor(255, 240, 180), 1.0))
-    painter.setBrush(QtGui.QColor(40, 30, 18, 220))
-    painter.drawRoundedRect(rect, 5, 5)
-    painter.setPen(QtGui.QPen(QtGui.QColor(255, 228, 120), 1.0))
-    painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+    text_w = metrics.horizontalAdvance(text)
+    pad = 8
+    badge_w = text_w + icon_w + pad * 2
+    badge_h = max(height, metrics.height() + 6)
+    rect = QtCore.QRectF(bx, by, badge_w, badge_h)
+    painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+    painter.setBrush(QtGui.QColor(24, 26, 34, 215))
+    painter.drawRoundedRect(rect, 8, 8)
+    text_left = rect.left() + pad
+    if icon_kind:
+        icon_cx = text_left + icon_w / 2.0 - 2.0
+        icon_cy = rect.center().y()
+        if icon_kind == "grid":
+            _draw_grid_icon(painter, icon_cx, icon_cy, color=QtGui.QColor(235, 237, 244))
+        elif icon_kind in ("line", "cloud"):
+            _draw_cluster_icon(painter, icon_cx, icon_cy, icon_kind, color=QtGui.QColor(235, 237, 244))
+        text_left += icon_w
+    text_rect = QtCore.QRectF(text_left, rect.top(), rect.right() - text_left - pad / 2.0, rect.height())
+    painter.setPen(QtGui.QColor(240, 240, 240))
+    painter.drawText(text_rect, QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, text)
     painter.restore()
     return rect
-
-
-def _draw_summary_badge(painter, bx, by, total_s, matrix_count, dims_hint="", dims_small=None):
-    """Per-image corner badge with the spectroscopy totals (S = single spectra,
-    M = grid maps). Shared by the real thumbnail overlay and the legend dialog
-    so the legend never drifts from what is actually drawn."""
-    badge_w = 64
-    badge_h = 18
-    painter.setPen(QtGui.QPen(QtCore.Qt.NoPen))
-    painter.setBrush(QtGui.QColor(35, 35, 40, 200))
-    painter.drawRoundedRect(int(bx), int(by), badge_w, badge_h, 7, 7)
-    painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
-    painter.setPen(QtGui.QColor(240, 240, 240))
-    painter.drawText(int(bx) + 6, int(by) + 12, f"S:{total_s} M:{matrix_count}{dims_hint}")
-    if dims_small:
-        painter.setFont(QtGui.QFont("Segoe UI", 7))
-        painter.drawText(int(bx) + badge_w - 32, int(by) + 12, dims_small)
-    return QtCore.QRectF(bx, by, badge_w, badge_h)
 
 
 def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: QtCore.QPoint, thumb_dims):
@@ -333,6 +506,8 @@ def _render_spectroscopy_overlays(
 
     color_single = getattr(viewer, 'spectro_marker_color_single', QtGui.QColor(255, 160, 0, 200))
     color_matrix = getattr(viewer, 'spectro_marker_color_matrix', QtGui.QColor(64, 200, 255, 200))
+    color_stack = getattr(viewer, 'spectro_marker_color_stack', QtGui.QColor(165, 141, 242, 235))
+    color_cloud = getattr(viewer, 'spectro_marker_color_cloud', QtGui.QColor(95, 191, 147, 210))
 
     singles = []
     matrices = defaultdict(list)
@@ -358,7 +533,6 @@ def _render_spectroscopy_overlays(
     if matrix_as_points and matrices:
         for ms in matrices.values():
             singles.extend(ms)
-    total_singles = len(singles)  # true count, before group footprints remove members from `singles`
 
     # Grid/line/cloud footprints for clustered loose .dat spectra (see
     # _detect_spectro_groups): a summary shape instead of a marker swarm, same
@@ -374,6 +548,7 @@ def _render_spectroscopy_overlays(
             if g["group_key"] in grouped_keys
         }
         drawn_group_keys = set()
+        drawn_groups = []
         for group_key, group in groups_here.items():
             member_specs = [s for s in singles if s.get('spectro_group_key') == group_key]
             if not member_specs:
@@ -384,38 +559,8 @@ def _render_spectroscopy_overlays(
             if rect is None:
                 continue
             kind = group.get("kind") or "cloud"
-            painter.save()
-            border = QtGui.QColor(color_single)
-            border.setAlpha(220)
-            shadow = QtGui.QColor(10, 10, 20, 70)
-            painter.setPen(QtGui.QPen(shadow, 1.2))
-            painter.drawRoundedRect(rect.translated(2, 2), 7, 7)
-            pen = QtGui.QPen(border, 2.0)
-            if kind == "cloud":
-                pen.setStyle(QtCore.Qt.DashLine)
-            elif kind == "line":
-                pen.setStyle(QtCore.Qt.DotLine)
-            painter.setPen(pen)
-            fill = QtGui.QBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 55))
-            painter.setBrush(fill)
-            painter.drawRoundedRect(rect, 7, 7)
-            if kind == "grid":
-                chip_text = f"{group.get('grid_cols')}x{group.get('grid_rows')}"
-            elif kind == "line":
-                chip_text = f"L:{group.get('point_count')}"
-            else:
-                chip_text = f"C:{group.get('point_count')}"
-            chip_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
-            painter.setFont(chip_font)
-            metrics = painter.fontMetrics()
-            chip_w = max(min(metrics.horizontalAdvance(chip_text) + 12, rect.width() - 8), 28)
-            chip_h = max(metrics.height() + 6, 16)
-            chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
-            painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 220))
-            painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.2))
-            painter.drawRoundedRect(chip_rect, 6, 6)
-            painter.drawText(chip_rect, QtCore.Qt.AlignCenter, chip_text)
-            painter.restore()
+            footprint_color = color_matrix if kind == "grid" else color_cloud
+            chip_rect = _draw_footprint(painter, rect, kind=kind, color=footprint_color, count=len(member_specs))
             markers.append({
                 'rect': rect,
                 'spec': member_specs[0],
@@ -425,8 +570,11 @@ def _render_spectroscopy_overlays(
                 'tooltip': group.get("summary") or group.get("display"),
             })
             drawn_group_keys.add(group_key)
+            drawn_groups.append(group)
         if drawn_group_keys:
             singles = [s for s in singles if s.get('spectro_group_key') not in drawn_group_keys]
+    else:
+        drawn_groups = []
 
     # Matrix footprints (skip when explicitly rendering matrix entries as individual points)
     if viewer.show_matrix_markers and matrices and not matrix_as_points:
@@ -437,38 +585,17 @@ def _render_spectroscopy_overlays(
             )
             if rect is None:
                 continue
-            painter.save()
-            border = QtGui.QColor(matrix_color)
-            border.setAlpha(235)
-            shadow = QtGui.QColor(10, 10, 20, 80)
-            painter.setPen(QtGui.QPen(shadow, 1.5))
-            painter.drawRoundedRect(rect.translated(2, 2), 8, 8)
-            painter.setPen(QtGui.QPen(border, 2.4))
-            fill = QtGui.QBrush(QtGui.QColor(matrix_color.red(), matrix_color.green(), matrix_color.blue(), 70))
-            painter.setBrush(fill)
-            painter.drawRoundedRect(rect, 8, 8)
             try:
                 grid_cols = m_specs[0].get('grid_cols')
                 grid_rows = m_specs[0].get('grid_rows')
-                dims = f"{grid_cols}x{grid_rows}" if grid_cols and grid_rows else None
+                dims = f"{grid_cols}×{grid_rows}" if grid_cols and grid_rows else None
             except Exception:
                 dims = None
-            chip_text = dims or "MATRIX"
-            chip_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold)
-            painter.setFont(chip_font)
-            metrics = painter.fontMetrics()
-            chip_w = max(min(metrics.horizontalAdvance(chip_text) + 12, rect.width() - 8), 28)
-            chip_h = max(metrics.height() + 6, 16)
-            chip_rect = QtCore.QRectF(rect.left() + 6, rect.top() + 6, chip_w, chip_h)
-            painter.setBrush(QtGui.QColor(border.red(), border.green(), border.blue(), 220))
-            painter.setPen(QtGui.QPen(QtCore.Qt.white, 1.2))
-            painter.drawRoundedRect(chip_rect, 6, 6)
-            painter.drawText(chip_rect, QtCore.Qt.AlignCenter, chip_text)
-            painter.restore()
+            chip_rect = _draw_footprint(painter, rect, kind="matrix", color=matrix_color, count=len(m_specs), dims=dims)
             tooltip = Path(m_specs[0].get('path', '')).name
             if dims:
                 tooltip = f"{tooltip}\nGrid: {dims}"
-            markers.append({'rect': rect, 'spec': m_specs[0], 'label': chip_text, 'kind': 'matrix', 'tooltip': tooltip})
+            markers.append({'rect': rect, 'spec': m_specs[0], 'label': dims or 'grid', 'kind': 'matrix', 'tooltip': tooltip})
 
     # Single spectroscopies (customizable markers)
     if (viewer.show_single_markers or reveal_points or matrix_as_points) and singles:
@@ -514,33 +641,24 @@ def _render_spectroscopy_overlays(
         for badge in badge_defs:
             bx = float(badge["col"]) * w_scale
             by = float(badge["row"]) * h_scale
-            rect = _draw_stack_badge(painter, bx, by, badge["label"], tooltip=badge.get("tooltip"))
+            rect = _draw_stack_icon(painter, bx, by, badge["count"], color=color_stack)
             markers.append({
                 'rect': rect,
                 'spec': badge.get("spec"),
                 'label': 'stack-badge',
                 'tooltip': badge.get("tooltip"),
             })
-    # summary badge (S/M counts and matrix grid if available)
+    # summary badge: plain-language description of what's on the image
+    # (grids, clusters, sites, points) instead of the old "S:132 M:1" shorthand
     try:
-        total_s = total_singles
-        badge_w = 64
-        bx = pixmap.width() - badge_w - 6
+        text = _summary_badge_text(matrices, drawn_groups, singles)
+        icon_kind = "grid" if (matrices or any((g.get('kind') or '') == 'grid' for g in drawn_groups)) else None
+        icon_w = 15.0 if icon_kind else 0.0
+        metrics = QtGui.QFontMetrics(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+        badge_w = metrics.horizontalAdvance(text) + icon_w + 16
         by = 6
-        # include matrix grid hint if available
-        dims_hint = ""
-        dims_small = None
-        if matrices:
-            try:
-                any_list = next(iter(matrices.values()))
-                gc = any_list[0].get('grid_cols'); gr = any_list[0].get('grid_rows')
-                if gc and gr:
-                    dims_hint = f" ({gc}x{gr})"
-                    dims_small = f"{gc}x{gr}"
-            except Exception:
-                dims_hint = ""
-                dims_small = None
-        rect = _draw_summary_badge(painter, bx, by, total_s, len(matrices), dims_hint=dims_hint, dims_small=dims_small)
+        bx = pixmap.width() - badge_w - 6
+        rect = _draw_summary_badge(painter, bx, by, text, icon_kind=icon_kind)
         markers.append({'rect': rect, 'spec': None, 'label': 'badge'})
     except Exception:
         pass
@@ -571,17 +689,29 @@ def show_marker_legend_dialog(viewer):
     symbol = _normalized_symbol(viewer)
     color_single = QtGui.QColor(getattr(viewer, "spectro_marker_color_single", None) or QtGui.QColor(255, 160, 0, 200))
     color_matrix = QtGui.QColor(getattr(viewer, "spectro_marker_color_matrix", None) or QtGui.QColor(64, 200, 255, 200))
+    color_stack = QtGui.QColor(getattr(viewer, "spectro_marker_color_stack", None) or QtGui.QColor(165, 141, 242, 235))
+    color_cloud = QtGui.QColor(getattr(viewer, "spectro_marker_color_cloud", None) or QtGui.QColor(95, 191, 147, 210))
 
     rows = [
         (
             lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single),
-            "<b>Single spectrum</b> - one spectrum measured at this position. "
+            "<b>Single point</b> - one spectrum measured at this position, standing alone. "
             "Click it to open the spectrum; Shift+click to add it to the comparison selection.",
         ),
         (
-            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_matrix),
-            "<b>Grid map point</b> - one point of a grid (matrix/CITS) measurement. "
-            "Clicking it opens the Grid map explorer.",
+            lambda p, w, h: _draw_footprint(p, QtCore.QRectF(6, 6, w - 12, h - 12), kind="grid", color=color_matrix, count=0, dims="4×4"),
+            "<b>Grid / matrix</b> - a .3ds map or dense point-grid, shown as one footprint "
+            "with its point count instead of a marker per pixel. Click it to open the Grid map explorer.",
+        ),
+        (
+            lambda p, w, h: _draw_stack_icon(p, w / 2, h * 0.82, 3, color=color_stack),
+            "<b>Z-stack / repeated site</b> - several traces measured at the same position "
+            "(e.g. a Z series). The number on the stack is how many. Click it for the position summary.",
+        ),
+        (
+            lambda p, w, h: _draw_footprint(p, QtCore.QRectF(6, 6, w - 12, h - 12), kind="cloud", color=color_cloud, count=5),
+            "<b>Loose cluster</b> - points that group by position but aren't a formal grid "
+            "file, shown as one footprint (dotted icon vs. the grid's dot-grid icon).",
         ),
         (
             lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single, low_conf=True),
@@ -595,16 +725,10 @@ def show_marker_legend_dialog(viewer):
             "on its source image (toggle in Spectroscopy → Spectro highlight glow).",
         ),
         (
-            lambda p, w, h: _draw_stack_badge(p, w * 0.25, h * 0.75, "x3"),
-            "<b>Repeat badge</b> - several spectra at the same position: 'x3' means three "
-            "repeats, 'Zx3' a Z series (e.g. different tip heights). Click the badge for "
-            "the position summary.",
-        ),
-        (
-            lambda p, w, h: _draw_summary_badge(p, (w - 64) / 2, (h - 18) / 2, 4, 1, dims_hint=" (10x10)"),
-            "<b>Image totals badge</b> - corner badge with this image's spectroscopy "
-            "counts (S = single spectra, M = grid maps, with grid size). Click it to open "
-            "the per-image spectroscopy summary.",
+            lambda p, w, h: _draw_summary_badge(p, (w - 90) / 2, (h - 18) / 2, "4×4 grid · 3 points", icon_kind="grid"),
+            "<b>Image summary badge</b> - corner badge describing what's on this image in "
+            "plain words (grids, clusters, sites, points). Click it to open the per-image "
+            "spectroscopy summary.",
         ),
     ]
 
