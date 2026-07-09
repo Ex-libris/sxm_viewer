@@ -2744,9 +2744,30 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.channel_combo = QtWidgets.QComboBox()
         controls.addWidget(self.channel_combo, 1)
         self.map_mode_combo = QtWidgets.QComboBox()
-        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral"])
+        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value"])
         controls.addWidget(self.map_mode_combo)
         left_layout.addLayout(controls)
+
+        # "Slice at value" mode: instead of an aggregate statistic over each
+        # pixel's whole curve, show the channel's value at one specific
+        # sweep-axis point (e.g. Frequency Shift at Bias = -0.5 V) - a CITS-
+        # style slice through the grid. Hidden unless that mode is active.
+        self.slice_controls = QtWidgets.QWidget()
+        slice_row = QtWidgets.QHBoxLayout(self.slice_controls)
+        slice_row.setContentsMargins(0, 0, 0, 0)
+        slice_row.addWidget(QtWidgets.QLabel("Slice:"))
+        self.slice_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slice_slider.setRange(0, 199)
+        self.slice_slider.setValue(0)
+        slice_row.addWidget(self.slice_slider, 1)
+        self.slice_value_label = QtWidgets.QLabel("--")
+        self.slice_value_label.setMinimumWidth(90)
+        slice_row.addWidget(self.slice_value_label)
+        left_layout.addWidget(self.slice_controls)
+        self.slice_controls.setVisible(False)
+        self._slice_axis_min = 0.0
+        self._slice_axis_max = 1.0
+        self._slice_axis_unit = ""
 
         ref_controls = QtWidgets.QHBoxLayout()
         ref_controls.addWidget(QtWidgets.QLabel("Reference image:"))
@@ -2855,8 +2876,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._populate_channels()
         self._populate_image_channels()
         self.channel_combo.currentIndexChanged.connect(self._on_channel_combo_changed)
-        self.map_mode_combo.currentIndexChanged.connect(self._draw_image_layer)
+        self.map_mode_combo.currentIndexChanged.connect(self._on_map_mode_changed)
         self.image_channel_combo.currentIndexChanged.connect(self._draw_image_layer)
+        self.slice_slider.valueChanged.connect(self._on_slice_slider_changed)
         self.fit_matrix_btn.clicked.connect(self._on_fit_matrix)
         self.reset_view_btn.clicked.connect(self._reset_matrix_view)
         self.export_csv_btn.clicked.connect(self._on_export_selection)
@@ -2872,6 +2894,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_combo.blockSignals(False)
         self.selection_table.itemSelectionChanged.connect(self._update_curve_from_selection)
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+        self._update_slice_axis_range()
         self._draw_image_layer()
         self._update_matrix_info_label()
 
@@ -3225,7 +3248,54 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
     def _on_channel_combo_changed(self):
         self._clear_selection()
+        self._update_slice_axis_range()
         self._draw_image_layer()
+
+    def _on_map_mode_changed(self):
+        is_slice = self.map_mode_combo.currentText() == "Slice at value"
+        self.slice_controls.setVisible(is_slice)
+        if is_slice:
+            self._update_slice_axis_range()
+        self._draw_image_layer()
+
+    def _on_slice_slider_changed(self, _value=None):
+        self._update_slice_value_label()
+        if self.map_mode_combo.currentText() == "Slice at value":
+            self._draw_image_layer()
+
+    def _current_slice_value(self):
+        span = self._slice_axis_max - self._slice_axis_min
+        frac = self.slice_slider.value() / max(1, self.slice_slider.maximum())
+        return self._slice_axis_min + frac * span
+
+    def _update_slice_value_label(self):
+        value = self._current_slice_value()
+        unit = f" {self._slice_axis_unit}" if self._slice_axis_unit else ""
+        self.slice_value_label.setText(f"{value:.4g}{unit}")
+
+    def _update_slice_axis_range(self):
+        """Recompute the slider's value range from the current channel's
+        real sweep axis (e.g. Bias), so it scrubs across the actual
+        measured range instead of an arbitrary placeholder."""
+        channel_specs = self._current_channel_specs()
+        label = self._channel_label_for_path(self.channel_combo.currentData())
+        axis = None
+        axis_unit = ""
+        for spec in channel_specs[:5]:  # a handful of samples is enough; the axis is shared across the grid
+            xs, ys = self._extract_pixel_series(spec, label)
+            if xs is not None and xs.size >= 2:
+                axis = xs
+                axis_unit = spec.get("AxisUnit") or ""
+                break
+        if axis is None:
+            self._slice_axis_min, self._slice_axis_max = 0.0, 1.0
+        else:
+            lo, hi = float(np.nanmin(axis)), float(np.nanmax(axis))
+            if lo == hi:
+                hi = lo + 1.0
+            self._slice_axis_min, self._slice_axis_max = lo, hi
+        self._slice_axis_unit = axis_unit
+        self._update_slice_value_label()
 
     def _on_show_on_image(self):
         viewer = self.viewer
@@ -3385,6 +3455,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             metric = self._build_integral_metric(channel_specs, header_map, file_key, channel_label=channel_label)
         elif agg_mode == "Peak position":
             metric = self._build_peak_metric(channel_specs, header_map, file_key, channel_label=channel_label)
+        elif agg_mode == "Slice at value":
+            metric = self._build_slice_metric(channel_specs, header_map, file_key, channel_label, self._current_slice_value())
         metric_valid = metric is not None and np.isfinite(metric).any()
         if metric_valid:
             self.ax.imshow(metric, cmap='inferno', origin='upper')
@@ -3479,8 +3551,16 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         return label or Path(key).name
 
     def _mapped_pixel_coords(self, channel_specs, header, file_key, xpix, ypix):
-        """Pixel positions for channel_specs, cached per spec identity - see
-        self._pixel_coords_cache docstring in __init__."""
+        """Integer (col, row) grid-cell positions for channel_specs, cached
+        per spec identity - see self._pixel_coords_cache docstring in
+        __init__. viewer._map_spec_to_pixels returns continuous float
+        positions (needed for precise marker placement elsewhere in the
+        app); the metric grids built from these are indexed with them
+        directly, and numpy (>=1.24) raises IndexError on float indices -
+        silently caught by each metric builder's try/except, which made
+        every per-pixel metric grid come back entirely empty and fall back
+        to showing the reference topography image instead. Round once here
+        instead of duplicating the cast in every metric-builder function."""
         cache = self._pixel_coords_cache.setdefault(id(channel_specs), {})
         coords_list = []
         for spec in channel_specs:
@@ -3488,7 +3568,13 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             if spec_key in cache:
                 coords = cache[spec_key]
             else:
-                coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+                raw = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
+                if raw is None:
+                    coords = None
+                else:
+                    col = min(max(int(round(raw[0])), 0), max(xpix - 1, 0))
+                    row = min(max(int(round(raw[1])), 0), max(ypix - 1, 0))
+                    coords = (col, row)
                 cache[spec_key] = coords
             coords_list.append(coords)
         return coords_list
@@ -3571,6 +3657,33 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             try:
                 idx = int(np.nanargmax(ys))
                 grid[coords[1], coords[0]] = xs[idx]
+            except Exception:
+                continue
+        return grid
+
+    def _build_slice_metric(self, channel_specs, header, file_key, channel_label, slice_value):
+        """A CITS-style slice: the selected channel's value at one specific
+        sweep-axis point (e.g. Frequency Shift at Bias = -0.5 V) for every
+        pixel, linearly interpolated between the nearest measured points -
+        as opposed to the other modes, which each collapse a pixel's whole
+        curve into a single aggregate statistic."""
+        if not channel_specs:
+            return None
+        xpix = int(header.get('xPixel', 128) if header else 128)
+        ypix = int(header.get('yPixel', 128) if header else 128)
+        grid = np.full((ypix, xpix), np.nan, dtype=float)
+        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
+        for spec, coords in zip(channel_specs, coords_list):
+            if coords is None:
+                continue
+            xs, ys = self._extract_pixel_series(spec, channel_label)
+            if xs is None or ys is None or xs.size < 2:
+                continue
+            try:
+                if xs[0] > xs[-1]:
+                    xs = xs[::-1]
+                    ys = ys[::-1]
+                grid[coords[1], coords[0]] = np.interp(slice_value, xs, ys)
             except Exception:
                 continue
         return grid
