@@ -2900,7 +2900,19 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         controls.addWidget(self.channel_combo, 1)
         controls.addWidget(QtWidgets.QLabel("Colormap:"))
         self.cmap_combo = QtWidgets.QComboBox()
-        self.cmap_combo.addItems(["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "gray", "hot", "coolwarm", "RdBu"])
+        # Same full colormap set + gradient-swatch icons as the Thumb/Preview
+        # cmap pickers in main_window.py, instead of a hand-picked shortlist
+        # with no visual cue of what each name actually looks like.
+        try:
+            _cmap_names = sorted(colormaps.keys())
+        except Exception:
+            _cmap_names = ["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "gray", "hot", "coolwarm", "RdBu"]
+        for _cmap_name in _cmap_names:
+            try:
+                _icon = _colormap_icon(_cmap_name, width=96, height=14)
+            except Exception:
+                _icon = QIcon()
+            self.cmap_combo.addItem(_icon, _cmap_name)
         controls.addWidget(self.cmap_combo)
         left_layout.addLayout(controls)
         self._metric_cmap = "inferno"
