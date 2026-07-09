@@ -3011,6 +3011,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         }
         self._aggregate_mode = False
         self._focused_key = None
+        # Hover-preview: scrub the curve plot to whatever pixel is under the
+        # cursor without clicking, so exploring the grid doesn't spam popups
+        # or clutter the real selection. Debounced via a timer so fast mouse
+        # movement doesn't force a full curve redraw on every motion event.
+        self._hover_spec_key = None
+        self._hover_marker_artist = None
+        self._pending_hover_spec = None
+        self._hover_timer = QtCore.QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(35)
+        self._hover_timer.timeout.connect(self._apply_pending_hover_preview)
         # Guard against palette_name not being provided by callers
         palette_choice = palette_name or getattr(self.viewer, "spectro_color_cycle", DEFAULT_COLOR_CYCLE)
         self.palette_name = palette_choice
@@ -3681,6 +3692,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         channel_specs = self._current_channel_specs()
         self.ax.clear()
         self._selection_artists = []
+        # ax.clear() just wiped any hover-preview ring along with everything
+        # else; drop the tracked key too so hovering back onto the same
+        # pixel after a channel/mode switch re-draws it instead of being
+        # skipped as "already showing this one."
+        self._hover_marker_artist = None
+        self._hover_spec_key = None
         agg_mode = self.map_mode_combo.currentText()
         channel_label = self._channel_label_for_path(self.channel_combo.currentData())
 
@@ -4006,6 +4023,15 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_click(self, event):
         if event.inaxes != self.ax or event.button != MouseButton.LEFT:
             return
+        # A real click always supersedes whatever the hover-preview was
+        # showing - drop the pending/applied hover state so a later hover
+        # back over this same pixel doesn't skip re-drawing (its key would
+        # otherwise still match) and the hover ring doesn't linger under
+        # the real selection marker this click is about to add.
+        self._hover_timer.stop()
+        self._pending_hover_spec = None
+        self._hover_spec_key = None
+        self._remove_hover_marker(redraw=False)
         # Pick from whatever set of positions is actually drawn (see
         # show_positions_cb handling in _draw_image_layer) - the full
         # dataset when "Show all spectroscopy positions" is checked, or
@@ -4264,16 +4290,100 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_canvas_hover(self, event):
         if event.inaxes != self.ax or self._current_image_arr is None:
             self.image_value_label.setText("Value: --")
+            self._clear_hover_preview()
             return
         val = self._sample_current_image(event.xdata, event.ydata)
         if val is None:
             self.image_value_label.setText("Value: --")
+        else:
+            unit = self._current_image_unit or ''
+            txt = f"Value: {val:.4g}"
+            if unit:
+                txt += f" {unit}"
+            self.image_value_label.setText(txt)
+
+        # Scrub the embedded curve plot to whichever pixel is under the
+        # cursor, mirroring _on_click's own picking logic, so hovering finds
+        # the same point a click there would. This never touches
+        # self._selection/_curve_entries - it's a disposable preview only.
+        pickable_specs = self.specs if getattr(self.show_positions_cb, "isChecked", lambda: True)() else self._current_channel_specs()
+        spec = self._pick_spec_from_point(event.xdata, event.ydata, pickable_specs)
+        if not spec:
+            self._clear_hover_preview()
             return
-        unit = self._current_image_unit or ''
-        txt = f"Value: {val:.4g}"
+        key = self._selection_key(spec)
+        if key == self._hover_spec_key:
+            return
+        self._pending_hover_spec = spec
+        self._hover_timer.start()
+
+    def _apply_pending_hover_preview(self):
+        spec = self._pending_hover_spec
+        if not spec:
+            return
+        self._hover_spec_key = self._selection_key(spec)
+        self._draw_hover_preview(spec)
+
+    def _draw_hover_preview(self, spec):
+        self.curve_ax.clear()
+        channel_label = self._channel_label_for_path(self.channel_combo.currentData())
+        xs, ys, unit, resolved_label, x_unit = self._extract_channel_data(spec, channel_label)
+        if xs is None or ys is None:
+            self.curve_canvas.draw_idle()
+            return
+        preview_color = "#9aa0a6"
+        self.curve_ax.plot(xs, ys, '-', color=preview_color, lw=1.6, alpha=0.9)
+        xlabel = f"Bias ({x_unit})" if x_unit else "Bias"
+        axis_label = resolved_label or "Signal"
         if unit:
-            txt += f" {unit}"
-        self.image_value_label.setText(txt)
+            axis_label = f"{axis_label} ({unit})"
+        self.curve_ax.set_xlabel(xlabel)
+        self.curve_ax.set_ylabel(axis_label)
+        self.curve_ax.grid(True, alpha=0.25, linestyle=':')
+        title = "Hover preview - click to keep"
+        nm = (spec.get('x'), spec.get('y'))
+        if nm[0] is not None and nm[1] is not None:
+            title += f" @ ({nm[0]:.1f}, {nm[1]:.1f} nm)"
+        self.curve_ax.set_title(title, fontsize=9, color=preview_color, style='italic')
+        self.curve_canvas.draw_idle()
+        self._draw_hover_marker(spec)
+
+    def _clear_hover_preview(self):
+        had_state = self._hover_spec_key is not None or self._pending_hover_spec is not None
+        self._hover_timer.stop()
+        self._pending_hover_spec = None
+        self._hover_spec_key = None
+        self._remove_hover_marker()
+        if not had_state:
+            return
+        # Restore whatever the real click-based selection was showing before
+        # the hover preview took over the curve plot.
+        if self._aggregate_mode:
+            self._update_curve_plot()
+        else:
+            self._update_curve_plot(self._selection[-1] if self._selection else None)
+
+    def _draw_hover_marker(self, spec):
+        self._remove_hover_marker(redraw=False)
+        x, y = spec.get('x'), spec.get('y')
+        if x is None or y is None:
+            return
+        self._hover_marker_artist = self.ax.scatter(
+            [x], [y], s=90, facecolors='none', edgecolors='#ffffff',
+            linewidths=1.6, zorder=40,
+        )
+        self.canvas.draw_idle()
+
+    def _remove_hover_marker(self, redraw=True):
+        if self._hover_marker_artist is None:
+            return
+        try:
+            self._hover_marker_artist.remove()
+        except Exception:
+            pass
+        self._hover_marker_artist = None
+        if redraw:
+            self.canvas.draw_idle()
 
     def _sample_current_image(self, x, y):
         """Value of self._current_image_arr at real (x, y) nm, given
