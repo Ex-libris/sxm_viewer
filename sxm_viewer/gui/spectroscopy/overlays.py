@@ -440,19 +440,25 @@ def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: 
     frac_y = py / float(rows)
     u = frac_x - 0.5
     v = 0.5 - frac_y
+    # Un-normalize by width/height *before* rotating (real nm, isotropic) -
+    # this is the exact inverse of _map_spec_to_pixels's rotate-then-normalize
+    # order, and must use the inverse (-theta) rotation to undo that
+    # function's +theta forward rotation. Mirrors the fix applied there.
+    u_nm = u * xspan
+    v_nm = v * yspan
     angle_deg = viewer._header_scan_angle(header) if header is not None and hasattr(viewer, "_header_scan_angle") else 0.0
     if angle_deg:
         theta = math.radians(angle_deg)
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
-        u_rot = u * cos_t - v * sin_t
-        v_rot = u * sin_t + v * cos_t
+        dx = u_nm * cos_t + v_nm * sin_t
+        dy = -u_nm * sin_t + v_nm * cos_t
     else:
-        u_rot, v_rot = u, v
+        dx, dy = u_nm, v_nm
     cx = 0.5 * (x0 + x1)
     cy = 0.5 * (y0 + y1)
-    sx = cx + u_rot * xspan
-    sy = cy + v_rot * yspan
+    sx = cx + dx
+    sy = cy + dy
     hits = []
     for s in entries:
         sx_e = s.get('x'); sy_e = s.get('y')

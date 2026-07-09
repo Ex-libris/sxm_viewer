@@ -9051,29 +9051,29 @@ QLabel:hover {{
             return None
         cx = 0.5 * (x0 + x1)
         cy = 0.5 * (y0 + y1)
-        dx_norm = (x - cx) / xspan
-        dy_norm = (y - cy) / yspan
+        dx = x - cx
+        dy = y - cy
         angle_deg = self._header_scan_angle(header)
         if angle_deg:
             theta = math.radians(angle_deg)
             cos_t = math.cos(theta)
             sin_t = math.sin(theta)
-            # Rotate the spec's absolute-frame offset by +theta (not -theta)
-            # to land it in the image's own local/pixel frame. The old
-            # -theta formula was empirically confirmed backwards: sampling
-            # each spec's mapped pixel against its own image's real channel
-            # array, specs should land preferentially on bright/elevated
-            # features (they're usually placed there on purpose) - the old
-            # formula scored 0.05 on a 0-1 brightness scale (i.e. specs
-            # landed almost exclusively in the *darkest* pixels, the
-            # signature of a mirrored/inverted mapping), while this one scores
-            # ~0.55, matching the near-neutral-to-favorable score expected
-            # from real feature-targeted spectroscopy (baseline ~0.50).
-            u = dx_norm * cos_t - dy_norm * sin_t
-            v = dx_norm * sin_t + dy_norm * cos_t
+            # Rotate the spec's absolute-frame offset (still in real nm,
+            # isotropic) by +theta *before* normalizing by width/height - the
+            # +theta direction was empirically confirmed via brightness
+            # correlation (see git history). Rotating first matters whenever
+            # Width != Height (e.g. a 2.5nm x 7.5nm scan): normalizing by two
+            # different divisors ahead of a rotation mixes non-uniformly
+            # scaled components inside the rotation matrix, which shears the
+            # result instead of rotating it - invisible on square scans, but
+            # it visibly smeared/distorted the point cloud on elongated ones.
+            u_nm = dx * cos_t - dy * sin_t
+            v_nm = dx * sin_t + dy * cos_t
         else:
-            u = dx_norm
-            v = dy_norm
+            u_nm = dx
+            v_nm = dy
+        u = u_nm / xspan
+        v = v_nm / yspan
         frac_x = (u + 0.5)
         frac_y = (0.5 - v)
         if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
