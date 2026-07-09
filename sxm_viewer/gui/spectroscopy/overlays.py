@@ -79,7 +79,48 @@ def _marker_path(symbol: str, center: QtCore.QPointF, size: float) -> QtGui.QPai
     return path
 
 
-def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False, pulse=1.0, low_conf=False):
+_OFF_FRAME_DIRECTION_ANGLES = {
+    "N": -90, "S": 90, "E": 0, "W": 180,
+    "NE": -45, "NW": -135, "SE": 45, "SW": 135,
+}
+_OFF_FRAME_CHEVRON_COLOR = QtGui.QColor(255, 140, 0, 235)
+
+
+def _draw_off_frame_chevron(painter, x, y, direction, size):
+    """Small outward-pointing chevron beside a marker whose real position
+    lies outside every image (assignment_reason == 'xy_nearest_extent') -
+    points toward the true position's actual direction past the frame edge,
+    so an edge-clamped marker reads as "off-frame, real spot is this way"
+    instead of looking like an ordinary in-frame point."""
+    angle_deg = _OFF_FRAME_DIRECTION_ANGLES.get(direction, -90)
+    theta = math.radians(angle_deg)
+    perp = theta + math.pi / 2
+    chevron_len = max(3.0, size * 1.05)
+    base_offset = chevron_len * 0.6
+    tip = QtCore.QPointF(x + chevron_len * math.cos(theta), y + chevron_len * math.sin(theta))
+    b1 = QtCore.QPointF(
+        x + base_offset * math.cos(theta) + chevron_len * 0.4 * math.cos(perp),
+        y + base_offset * math.sin(theta) + chevron_len * 0.4 * math.sin(perp),
+    )
+    b2 = QtCore.QPointF(
+        x + base_offset * math.cos(theta) - chevron_len * 0.4 * math.cos(perp),
+        y + base_offset * math.sin(theta) - chevron_len * 0.4 * math.sin(perp),
+    )
+    path = QtGui.QPainterPath()
+    path.moveTo(b1)
+    path.lineTo(tip)
+    path.lineTo(b2)
+    painter.save()
+    pen = QtGui.QPen(_OFF_FRAME_CHEVRON_COLOR, max(1.6, size * 0.34))
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(QtCore.Qt.NoBrush)
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False, pulse=1.0, low_conf=False, off_frame_direction=None):
     center = QtCore.QPointF(x, y)
     path = _marker_path(symbol, center, size)
     stroke_color = QtGui.QColor(base_color)
@@ -100,6 +141,8 @@ def _draw_marker_symbol(painter, x, y, symbol, size, base_color, highlight=False
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.setPen(warn_pen)
         painter.drawEllipse(center, size * 1.55, size * 1.55)
+    if off_frame_direction:
+        _draw_off_frame_chevron(painter, x, y, off_frame_direction, size)
     if highlight:
         glow_scale = 2.15 + 0.65 * pulse
         halo_size = size * glow_scale
@@ -638,6 +681,7 @@ def _render_spectroscopy_overlays(
             is_matrix_spec = viewer._is_matrix_spec(spec)
             base_color = color_matrix if is_matrix_spec else color_single
             low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+            off_frame_direction = spec.get("off_frame_direction")
             rect = _draw_marker_symbol(
                 painter,
                 x,
@@ -648,6 +692,7 @@ def _render_spectroscopy_overlays(
                 highlight=highlight,
                 pulse=pulse if highlight else 1.0,
                 low_conf=low_conf,
+                off_frame_direction=off_frame_direction,
             )
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
         for badge in badge_defs:
@@ -730,6 +775,13 @@ def show_marker_legend_dialog(viewer):
             "<b>Low-confidence link</b> - the dashed ring means the spectrum-to-image "
             "assignment is a guess. Review it via Spectroscopy → Review low confidence, "
             "or right-click the marker to assign it manually.",
+        ),
+        (
+            lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single, off_frame_direction="NE"),
+            "<b>Off-frame</b> - the orange chevron means this spectrum's real position falls "
+            "outside every image (often a reference point taken off to the side on purpose); "
+            "the marker sits clamped to the nearest edge, pointing the way the real spot lies. "
+            "Review these via Spectroscopy → Review off-frame spectroscopies.",
         ),
         (
             lambda p, w, h: _draw_marker_symbol(p, w / 2, h / 2, symbol, 6.0, color_single, highlight=True, pulse=1.0),

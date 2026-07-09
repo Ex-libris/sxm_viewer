@@ -8932,12 +8932,13 @@ QLabel:hover {{
         shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
         return image_key in shared_keys
 
-    def _set_spectro_browser_filters(self, *, current_image_only=None, low_conf_only=None, z_stacks_only=None, matrix_only=None):
+    def _set_spectro_browser_filters(self, *, current_image_only=None, low_conf_only=None, z_stacks_only=None, matrix_only=None, off_frame_only=None):
         for attr, value in (
             ("spectro_filter_current_image_cb", current_image_only),
             ("spectro_filter_low_conf_cb", low_conf_only),
             ("spectro_filter_z_stack_cb", z_stacks_only),
             ("spectro_filter_matrix_cb", matrix_only),
+            ("spectro_filter_off_frame_cb", off_frame_only),
         ):
             widget = getattr(self, attr, None)
             if widget is None or value is None:
@@ -9006,6 +9007,42 @@ QLabel:hover {{
         scope_label = "current image" if current_image_only else "folder"
         log_status(f"[Spectro] Reviewing {len(low_entries)} low-confidence assignment(s) in the {scope_label}")
 
+    def on_review_off_frame_spectros(self, current_image_only=False):
+        if not self._spectros_loaded:
+            self.ensure_spectros_loaded(refresh=False)
+        entries = list(getattr(self, "spectros", []) or [])
+        if current_image_only:
+            image_key = self._current_spectro_assignment_target_image_key()
+            entries = [spec for spec in entries if self._spec_matches_image_key(spec, image_key)]
+        off_frame_entries = [spec for spec in entries if spec.get("off_frame_direction")]
+        if not off_frame_entries:
+            scope = " for the current image" if current_image_only else ""
+            QtWidgets.QMessageBox.information(self, "Spectroscopy", f"No off-frame spectroscopies were found{scope}.")
+            return
+        self.open_spectro_browser(list(getattr(self, "spectros", []) or []))
+        self._set_spectro_browser_filters(
+            current_image_only=bool(current_image_only),
+            off_frame_only=True,
+        )
+        search = getattr(self, "spectro_search", None)
+        if search is not None:
+            try:
+                search.blockSignals(True)
+                search.clear()
+                search.blockSignals(False)
+            except Exception:
+                pass
+        self._filter_spectro_browser()
+        try:
+            main_window_spectro.select_first_spectro_browser_match(
+                self,
+                predicate=lambda payload: str(payload.get("kind") or "") in {"site", "spec"},
+            )
+        except Exception:
+            pass
+        scope_label = "current image" if current_image_only else "folder"
+        log_status(f"[Spectro] Reviewing {len(off_frame_entries)} off-frame spectroscop{'y' if len(off_frame_entries) == 1 else 'ies'} in the {scope_label}")
+
     def _choose_image_for_spec(self, spec, images, image_extents, *, image_angles=None, with_details=False):
         return spectro_controller._choose_image_for_spec(self, spec, images, image_extents, image_angles=image_angles, with_details=with_details)
 
@@ -9014,6 +9051,9 @@ QLabel:hover {{
 
     def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05, angle_deg=0.0):
         return spectro_controller._spec_within_extent(self, sx, sy, extent, margin_frac=margin_frac, angle_deg=angle_deg)
+
+    def _spec_frame_offset_info(self, sx, sy, extent, angle_deg=0.0):
+        return spectro_controller._spec_frame_offset_info(self, sx, sy, extent, angle_deg=angle_deg)
 
     def _match_spec_to_image_by_hint(self, spec, images, with_score=False):
         return spectro_controller._match_spec_to_image_by_hint(self, spec, images, with_score=with_score)

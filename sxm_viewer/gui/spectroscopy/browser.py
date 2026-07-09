@@ -48,6 +48,8 @@ def _spec_leaf_label(spec, index=None):
     bits = []
     if index is not None:
         bits.append(f"{index}.")
+    if _spec_is_off_frame(spec):
+        bits.append("⚠️")
     bits.append(Path(spec.get("path", "")).name)
     channel = str(spec.get("channel_name") or "").strip()
     if channel:
@@ -58,6 +60,8 @@ def _spec_leaf_label(spec, index=None):
     stack = str(spec.get("xy_stack_display") or "").strip()
     if stack:
         bits.append(f"[{stack}]")
+    if _spec_is_off_frame(spec):
+        bits.append("[off-frame]")
     return " ".join(bit for bit in bits if bit)
 
 
@@ -70,11 +74,14 @@ def _site_tree_label(site_specs):
         1 for spec in list(site_specs or [])
         if str(spec.get("assignment_confidence") or "").strip().lower() == "low"
     )
+    off_frame_count = sum(1 for spec in list(site_specs or []) if _spec_is_off_frame(spec))
     extras = [f"{trace_count} spectrum" if trace_count == 1 else f"{trace_count} spectra"]
     if channel_count:
         extras.append(f"{channel_count} ch")
     if low_conf_count:
         extras.append(f"low conf {low_conf_count}")
+    if off_frame_count:
+        extras.append(f"⚠️ off-frame {off_frame_count}")
     if first.get("site_has_z_stack"):
         extras.append("Z series")
     elif int(first.get("xy_stack_count") or 0) > 1:
@@ -104,12 +111,17 @@ def _spec_search_blob(spec):
     return " ".join(v for v in values if v).lower()
 
 
+def _spec_is_off_frame(spec):
+    return bool(spec.get("off_frame_direction"))
+
+
 def _browser_filter_flags(viewer):
     return {
         "current_image_only": bool(getattr(getattr(viewer, "spectro_filter_current_image_cb", None), "isChecked", lambda: False)()),
         "z_stacks_only": bool(getattr(getattr(viewer, "spectro_filter_z_stack_cb", None), "isChecked", lambda: False)()),
         "matrix_only": bool(getattr(getattr(viewer, "spectro_filter_matrix_cb", None), "isChecked", lambda: False)()),
         "low_conf_only": bool(getattr(getattr(viewer, "spectro_filter_low_conf_cb", None), "isChecked", lambda: False)()),
+        "off_frame_only": bool(getattr(getattr(viewer, "spectro_filter_off_frame_cb", None), "isChecked", lambda: False)()),
     }
 
 
@@ -119,6 +131,8 @@ def _spec_passes_browser_filters(viewer, spec, flags):
     if flags.get("z_stacks_only") and not bool(spec.get("site_has_z_stack") or spec.get("xy_stack_z_varies")):
         return False
     if flags.get("low_conf_only") and str(spec.get("assignment_confidence") or "").strip().lower() != "low":
+        return False
+    if flags.get("off_frame_only") and not _spec_is_off_frame(spec):
         return False
     if flags.get("current_image_only"):
         try:
@@ -264,6 +278,7 @@ def _update_spectro_stats_label(viewer, stats=None):
         1 for s in (getattr(viewer, "spectros", []) or [])
         if str(s.get("assignment_confidence") or "").strip().lower() == "low"
     )
+    off_frame_count = sum(1 for s in (getattr(viewer, "spectros", []) or []) if _spec_is_off_frame(s))
     xy_stack_count = len({
         str(s.get("xy_stack_key"))
         for s in (getattr(viewer, "spectros", []) or [])
@@ -282,12 +297,14 @@ def _update_spectro_stats_label(viewer, stats=None):
     elif matrix_count == 0:
         matrix_desc = ""
     viewer.spectro_stats_label.setText(
-        f"Spectra {total} | Sites {site_count} | Single {single_count} | Low conf {low_conf_count} | XY stacks {xy_stack_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
+        f"Spectra {total} | Sites {site_count} | Single {single_count} | Low conf {low_conf_count} | "
+        f"Off-frame {off_frame_count} | XY stacks {xy_stack_count} | Matrix {matrix_count}{matrix_desc}\n{mode_text}"
     )
     viewer.spectro_stats_label.setToolTip(
         f"Loaded spectroscopy entries: {total}. Single traces: {single_count}. "
         f"Image-relative sites: {site_count}. "
         f"Low-confidence assignments: {low_conf_count}. "
+        f"Off-frame (real position outside every image): {off_frame_count}. "
         f"Same-XY stacks: {xy_stack_count}. "
         f"Matrix datasets: {matrix_count}{matrix_desc}. "
         "Thumbnail markers draw clickable points on image thumbnails. "
@@ -316,10 +333,17 @@ def _ensure_spectro_dock(viewer):
     viewer.spectro_filter_z_stack_cb = QtWidgets.QCheckBox("Z-stacks")
     viewer.spectro_filter_matrix_cb = QtWidgets.QCheckBox("Matrix")
     viewer.spectro_filter_low_conf_cb = QtWidgets.QCheckBox("Low confidence")
+    viewer.spectro_filter_off_frame_cb = QtWidgets.QCheckBox("Off-frame")
+    viewer.spectro_filter_off_frame_cb.setToolTip(
+        "Show only spectra whose real position falls outside every image - "
+        "assigned to the nearest plausible image as a fallback (often reference "
+        "points acquired deliberately off to the side)."
+    )
     filter_row.addWidget(viewer.spectro_filter_current_image_cb)
     filter_row.addWidget(viewer.spectro_filter_z_stack_cb)
     filter_row.addWidget(viewer.spectro_filter_matrix_cb)
     filter_row.addWidget(viewer.spectro_filter_low_conf_cb)
+    filter_row.addWidget(viewer.spectro_filter_off_frame_cb)
     filter_row.addStretch(1)
     v.addLayout(filter_row)
     viewer.spectro_list = QTreeWidget()
@@ -341,6 +365,7 @@ def _ensure_spectro_dock(viewer):
     viewer.spectro_filter_z_stack_cb.toggled.connect(viewer._filter_spectro_browser)
     viewer.spectro_filter_matrix_cb.toggled.connect(viewer._filter_spectro_browser)
     viewer.spectro_filter_low_conf_cb.toggled.connect(viewer._filter_spectro_browser)
+    viewer.spectro_filter_off_frame_cb.toggled.connect(viewer._filter_spectro_browser)
     viewer.spectro_list.currentItemChanged.connect(viewer._on_spectro_browser_selection)
     viewer.spectro_list.itemDoubleClicked.connect(viewer._on_spectro_browser_activate)
     if hasattr(viewer, "_on_spectro_browser_context_menu"):

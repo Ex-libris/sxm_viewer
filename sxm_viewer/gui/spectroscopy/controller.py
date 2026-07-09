@@ -150,7 +150,7 @@ def _assign_spec_to_image_bucket(viewer, spec, image_key, image_time_index, *, s
     specs_for_image.append(spec)
 
 
-def _assignment_payload(reason, confidence, summary, *, image_key=None):
+def _assignment_payload(reason, confidence, summary, *, image_key=None, off_frame_offset=None):
     reason_labels = {
         "manual_override": "Manual override",
         "preset_image_key": "Preset image reference",
@@ -163,13 +163,23 @@ def _assignment_payload(reason, confidence, summary, *, image_key=None):
         "first_image_fallback": "First-image fallback",
         "unknown": "Unknown",
     }
-    return {
+    payload = {
         "assignment_reason": str(reason or ""),
         "assignment_reason_label": str(reason_labels.get(str(reason or ""), str(reason or "").replace("_", " ").strip())),
         "assignment_confidence": str(confidence or ""),
         "assignment_summary": str(summary or ""),
         "assignment_image_key": str(image_key or ""),
     }
+    # off_frame_direction/off_frame_distance_nm let overlays.py and the
+    # spectroscopy browser show/filter off-frame markers without
+    # recomputing the geometry (_spec_frame_offset_info) on every render.
+    if off_frame_offset:
+        payload["off_frame_direction"] = off_frame_offset.get("direction")
+        payload["off_frame_distance_nm"] = off_frame_offset.get("distance_nm")
+    else:
+        payload["off_frame_direction"] = None
+        payload["off_frame_distance_nm"] = None
+    return payload
 
 
 def _assign_spectros_to_images(viewer):
@@ -305,6 +315,30 @@ def _assign_spectros_to_images(viewer):
             image_key=image_key,
         )
         spec.update(assignment_meta)
+        # Off-frame status is computed against the FINAL assigned image
+        # regardless of which path chose it - _choose_image_for_spec's own
+        # "xy_nearest_extent" reason only fires when nothing else claimed
+        # the spec first, but for .dat singles the causal_time fallback
+        # almost always wins before that geometric pass is even reached, so
+        # relying on assignment_reason alone silently misses the common
+        # real case (a reference spectrum acquired off to the side, whose
+        # nearest image in time still doesn't actually contain it).
+        if not is_matrix_point:
+            ext = image_extents.get(image_key)
+            angle = image_angles.get(image_key) or 0.0
+            offset = viewer._spec_frame_offset_info(spec.get('x'), spec.get('y'), ext, angle_deg=angle) if ext else None
+            if offset:
+                spec['off_frame_direction'] = offset.get('direction')
+                spec['off_frame_distance_nm'] = offset.get('distance_nm')
+                distance_txt = _off_frame_distance_text(offset)
+                if distance_txt and 'off-frame' not in (spec.get('assignment_summary') or '').lower():
+                    spec['assignment_summary'] = (
+                        f"{spec.get('assignment_summary') or ''} Real position is {distance_txt} - "
+                        "likely a reference point acquired off-frame, not a placement error."
+                    ).strip()
+            else:
+                spec.setdefault('off_frame_direction', None)
+                spec.setdefault('off_frame_distance_nm', None)
         target_keys = [image_key]
         if share_repeat_scans:
             target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
@@ -1265,12 +1299,16 @@ def _choose_image_for_spec(viewer, spec, images, image_extents, *, image_angles=
             ext = image_extents.get(str(best['path']))
             angle = (image_angles or {}).get(str(best['path'])) or 0.0
             if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=1.0, angle_deg=angle):
-                return _result(
-                    best,
-                    "xy_nearest_extent",
-                    "medium",
-                    "Assigned to the nearest plausible image footprint because the spectrum fell outside all image bounds.",
-                )
+                offset = viewer._spec_frame_offset_info(sx, sy, ext, angle_deg=angle)
+                distance_txt = _off_frame_distance_text(offset)
+                summary = "Assigned to the nearest plausible image footprint because the spectrum fell outside all image bounds."
+                if distance_txt:
+                    summary = f"{summary} Real position is {distance_txt} - likely a reference point acquired off-frame, not a placement error."
+                image_key = str(best.get("path") or "")
+                details = _assignment_payload("xy_nearest_extent", "medium", summary, image_key=image_key, off_frame_offset=offset)
+                if with_details:
+                    return best, details
+                return best
     # Fallback: time-ordered + name hints
     if st:
         try:
@@ -1366,6 +1404,71 @@ def _spec_within_extent(viewer, sx, sy, extent, margin_frac=0.05, angle_deg=0.0)
         return -bound <= u <= bound and -bound <= v <= bound
     except Exception:
         return False
+
+
+def _spec_frame_offset_info(viewer, sx, sy, extent, angle_deg=0.0):
+    """How far (sx, sy) sits outside an image's own footprint, and in which
+    direction - a diagnostic companion to _spec_within_extent (same rotate-
+    then-normalize convention, kept as a deliberate second copy since this
+    computes a distance/direction rather than a yes/no, and the assignment
+    path this feeds is cold - run once per spec at scan time, not per-frame
+    render). Returns None if (sx, sy) is inside the footprint, or geometry
+    is degenerate.
+    """
+    try:
+        x0, x1, y1, y0 = extent
+        xspan = x1 - x0
+        yspan = y1 - y0
+        if xspan <= 0 or yspan <= 0:
+            return None
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        dx = float(sx) - cx
+        dy = float(sy) - cy
+        if angle_deg:
+            theta = math.radians(angle_deg)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            u_nm = dx * cos_t - dy * sin_t
+            v_nm = dx * sin_t + dy * cos_t
+        else:
+            u_nm, v_nm = dx, dy
+        u = u_nm / xspan
+        v = v_nm / yspan
+    except Exception:
+        return None
+    if -0.5 <= u <= 0.5 and -0.5 <= v <= 0.5:
+        return None
+    over_x_nm = max(0.0, abs(u) - 0.5) * xspan
+    over_y_nm = max(0.0, abs(v) - 0.5) * yspan
+    parts = []
+    if over_y_nm > 1e-9:
+        parts.append("N" if v > 0 else "S")
+    if over_x_nm > 1e-9:
+        parts.append("E" if u > 0 else "W")
+    return {
+        "u": u,
+        "v": v,
+        "over_x_nm": over_x_nm,
+        "over_y_nm": over_y_nm,
+        "distance_nm": math.hypot(over_x_nm, over_y_nm),
+        "direction": "".join(parts) or None,
+    }
+
+
+def _off_frame_distance_text(offset):
+    if not offset:
+        return ""
+    distance = offset.get("distance_nm")
+    direction = offset.get("direction")
+    if distance is None:
+        return ""
+    dir_names = {
+        "N": "north", "S": "south", "E": "east", "W": "west",
+        "NE": "northeast", "NW": "northwest", "SE": "southeast", "SW": "southwest",
+    }
+    where = dir_names.get(direction, "of frame")
+    return f"≈{distance:.2f} nm {where} of the frame edge"
 
 
 def _match_spec_to_image_by_hint(viewer, spec, images, *, with_score=False):
