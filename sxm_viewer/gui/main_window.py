@@ -2333,6 +2333,14 @@ QLabel:hover {{
             QtWidgets.QMessageBox.information(self, "Matrix explorer", "No matrix spectroscopies available for this image.")
             return
 
+        # dataset_specs may still be metadata-only (lazy payload: no
+        # 'channels'/'V' arrays) if this grid hasn't been individually
+        # opened/hydrated yet this session - without this, the map/plot/fit
+        # below silently has no per-pixel data to work with. All specs here
+        # share one .3ds file, so this is a single re-parse, not per-pixel.
+        if any(not spec.get("channels") for spec in dataset_specs):
+            self.hydrate_spectro_entries(dataset_specs)
+
         entry = {'path': Path(file_key)}
         try:
             entry['time'] = Path(file_key).stat().st_mtime

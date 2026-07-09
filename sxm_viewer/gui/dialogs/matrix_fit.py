@@ -395,12 +395,19 @@ class MatrixFitDialog(QtWidgets.QDialog):
         channel_name = payload.get('channel_name', 'channel')
         for line in logs:
             self.logs.append(line)
-        if maps:
+        any_finite = maps and any(np.isfinite(arr).any() for arr in maps.values())
+        if any_finite:
             self._render_maps(maps, channel_name)
             self.save_btn.setEnabled(True)
             self.export_xyz_btn.setEnabled(True)
         else:
             self.map_value_label.setText("Value: --")
+            # A blank plot with no visible explanation reads as "the fit
+            # button did nothing" - every point failed, so say so plainly
+            # instead of leaving the user to notice the small log box.
+            reason = logs[0] if logs else "no spectra could be fit"
+            self.info_label.setText(f"Fit failed for every point: {reason}")
+            self.info_label.setStyleSheet("color: #d9534f;")
         self.run_btn.setEnabled(True)
         self._worker = None
 

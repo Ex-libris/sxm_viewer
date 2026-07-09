@@ -2932,6 +2932,32 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     if len(chs) == 1:
                         label = next(iter(chs.keys()))
                 self._channel_labels_map[key] = label or Path(key).name
+        # A Nanonis .3ds grid is one file holding every channel for every
+        # pixel (spec['channels'] = {name: array, ...}), unlike the older
+        # Omicron/Anfatec layout this dialog was originally built for (one
+        # file - and one spec object - per channel per pixel, so grouping
+        # by path already separates channels). Detect that single-file,
+        # multi-channel case and expand it into one pseudo-group per real
+        # channel name instead of collapsing to a single group keyed by the
+        # filename - otherwise there is nothing for the "Channel map"
+        # dropdown to select besides the file itself.
+        self._channel_mode = "path"
+        if len(mapping) == 1:
+            only_specs = next(iter(mapping.values()))
+            channel_names = []
+            for spec in only_specs:
+                for name in (spec.get('channels') or {}).keys():
+                    if name not in channel_names:
+                        channel_names.append(name)
+                if channel_names:
+                    break
+            if len(channel_names) > 1:
+                self._channel_mode = "bundled"
+                mapping = defaultdict(list)
+                self._channel_labels_map = {}
+                for name in channel_names:
+                    mapping[name] = only_specs
+                    self._channel_labels_map[name] = name
         return mapping
 
     def _reset_color_cycle(self):
@@ -3352,17 +3378,19 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         agg_mode = self.map_mode_combo.currentText()
         metric = None
         file_key = str(path)
+        channel_label = self._channel_label_for_path(self.channel_combo.currentData())
         if agg_mode == "Max amplitude":
-            metric = self._build_stat_metric(np.nanmax, channel_specs, header_map, file_key)
+            metric = self._build_stat_metric(np.nanmax, channel_specs, header_map, file_key, channel_label=channel_label)
         elif agg_mode == "Integral":
-            metric = self._build_integral_metric(channel_specs, header_map, file_key)
+            metric = self._build_integral_metric(channel_specs, header_map, file_key, channel_label=channel_label)
         elif agg_mode == "Peak position":
-            metric = self._build_peak_metric(channel_specs, header_map, file_key)
+            metric = self._build_peak_metric(channel_specs, header_map, file_key, channel_label=channel_label)
         metric_valid = metric is not None and np.isfinite(metric).any()
         if metric_valid:
             self.ax.imshow(metric, cmap='inferno', origin='upper')
             self._current_image_arr = metric
-            self._current_image_unit = ''
+            sample_spec = channel_specs[0] if channel_specs else None
+            self._current_image_unit = self._channel_unit_for_spec(sample_spec, channel_label) if sample_spec else ''
         elif header and fds:
             try:
                 idx = self.image_channel_combo.currentData()
@@ -3418,7 +3446,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         path = self.channel_combo.currentData()
         if not path:
             return []
-        return self._channel_specs.get(self._normalize_path(path), [])
+        return self._channel_specs.get(self._channel_key(path), [])
 
     def _normalize_path(self, path):
         try:
@@ -3426,8 +3454,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         except Exception:
             return str(path)
 
+    def _channel_key(self, path_or_name):
+        # In "bundled" mode (a single Nanonis .3ds file holding every
+        # channel), channel_combo's data is already the real channel name,
+        # not a filesystem path - normalizing it through Path() is
+        # unnecessary and, for the general case, incorrect.
+        if getattr(self, "_channel_mode", "path") == "bundled":
+            return str(path_or_name)
+        return self._normalize_path(path_or_name)
+
     def _channel_label_for_path(self, path):
-        key = self._normalize_path(path)
+        key = self._channel_key(path)
         label = self._channel_labels_map.get(key)
         if label:
             return label
@@ -3456,7 +3493,31 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             coords_list.append(coords)
         return coords_list
 
-    def _build_stat_metric(self, fn, channel_specs, header, file_key):
+    def _extract_pixel_series(self, spec, channel_label):
+        """Return (xs, ys) for one grid pixel, for the metric-builder
+        helpers below. Handles both the older Omicron/Anfatec layout (one
+        spec object per channel per pixel, data in spec['data'] as an
+        (xs, ys) tuple) and the Nanonis .3ds "bundled" layout (one spec per
+        pixel holding every channel in spec['channels'], sharing the axis
+        in spec['V'])."""
+        data = spec.get('data')
+        if data is not None:
+            try:
+                return np.asarray(data[0], dtype=float), np.asarray(data[1], dtype=float)
+            except Exception:
+                return None, None
+        channels = spec.get('channels') or {}
+        if channel_label and channel_label in channels:
+            try:
+                xs = np.asarray(spec.get('V', []), dtype=float)
+                ys = np.asarray(channels[channel_label], dtype=float)
+                if xs.size and xs.size == ys.size:
+                    return xs, ys
+            except Exception:
+                pass
+        return None, None
+
+    def _build_stat_metric(self, fn, channel_specs, header, file_key, channel_label=None):
         if not channel_specs:
             return None
         xpix = int(header.get('xPixel', 128) if header else 128)
@@ -3464,17 +3525,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         grid = np.full((ypix, xpix), np.nan, dtype=float)
         coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
         for spec, coords in zip(channel_specs, coords_list):
-            data = spec.get('data')
-            if data is None or coords is None:
+            if coords is None:
+                continue
+            _xs, ys = self._extract_pixel_series(spec, channel_label)
+            if ys is None:
                 continue
             try:
-                values = np.asarray(data[1], dtype=float)
-                grid[coords[1], coords[0]] = fn(values)
+                grid[coords[1], coords[0]] = fn(ys)
             except Exception:
                 continue
         return grid
 
-    def _build_integral_metric(self, channel_specs, header, file_key):
+    def _build_integral_metric(self, channel_specs, header, file_key, channel_label=None):
         if not channel_specs:
             return None
         xpix = int(header.get('xPixel', 128) if header else 128)
@@ -3482,18 +3544,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         grid = np.full((ypix, xpix), np.nan, dtype=float)
         coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
         for spec, coords in zip(channel_specs, coords_list):
-            data = spec.get('data')
-            if data is None or coords is None:
+            if coords is None:
+                continue
+            xs, ys = self._extract_pixel_series(spec, channel_label)
+            if xs is None or ys is None:
                 continue
             try:
-                xs = np.asarray(data[0], dtype=float)
-                ys = np.asarray(data[1], dtype=float)
                 grid[coords[1], coords[0]] = np.trapz(ys, xs)
             except Exception:
                 continue
         return grid
 
-    def _build_peak_metric(self, channel_specs, header, file_key):
+    def _build_peak_metric(self, channel_specs, header, file_key, channel_label=None):
         if not channel_specs:
             return None
         xpix = int(header.get('xPixel', 128) if header else 128)
@@ -3501,13 +3563,13 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         grid = np.full((ypix, xpix), np.nan, dtype=float)
         coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
         for spec, coords in zip(channel_specs, coords_list):
-            data = spec.get('data')
-            if data is None or coords is None:
+            if coords is None:
+                continue
+            xs, ys = self._extract_pixel_series(spec, channel_label)
+            if xs is None or ys is None:
                 continue
             try:
-                ys = np.asarray(data[1], dtype=float)
                 idx = int(np.nanargmax(ys))
-                xs = np.asarray(data[0], dtype=float)
                 grid[coords[1], coords[0]] = xs[idx]
             except Exception:
                 continue
@@ -3696,7 +3758,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if matrix_index is None:
             return []
         entries = []
-        selected = self._normalize_path(self.channel_combo.currentData())
+        selected = self._channel_key(self.channel_combo.currentData())
         for path, specs in self._channel_specs.items():
             if selected and path != selected:
                 continue
@@ -3724,8 +3786,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         dlg = MatrixFitDialog(self.viewer, self.specs, parent=self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
         self._fit_dialogs.append(dlg)
         dlg.finished.connect(lambda _: self._cleanup_fit_dialog(dlg))
+        # Start the fit immediately instead of leaving the user to notice
+        # and click this dialog's own separate "Run fits" button - clicking
+        # "Fit matrix parabolas..." here should mean "fit now."
+        dlg._start_fit()
 
     def _cleanup_fit_dialog(self, dlg):
         try:
