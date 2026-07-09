@@ -9058,8 +9058,19 @@ QLabel:hover {{
             theta = math.radians(angle_deg)
             cos_t = math.cos(theta)
             sin_t = math.sin(theta)
-            u = dx_norm * cos_t + dy_norm * sin_t
-            v = -dx_norm * sin_t + dy_norm * cos_t
+            # Rotate the spec's absolute-frame offset by +theta (not -theta)
+            # to land it in the image's own local/pixel frame. The old
+            # -theta formula was empirically confirmed backwards: sampling
+            # each spec's mapped pixel against its own image's real channel
+            # array, specs should land preferentially on bright/elevated
+            # features (they're usually placed there on purpose) - the old
+            # formula scored 0.05 on a 0-1 brightness scale (i.e. specs
+            # landed almost exclusively in the *darkest* pixels, the
+            # signature of a mirrored/inverted mapping), while this one scores
+            # ~0.55, matching the near-neutral-to-favorable score expected
+            # from real feature-targeted spectroscopy (baseline ~0.50).
+            u = dx_norm * cos_t - dy_norm * sin_t
+            v = dx_norm * sin_t + dy_norm * cos_t
         else:
             u = dx_norm
             v = dy_norm

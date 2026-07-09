@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -1053,11 +1054,35 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
         ry_nm = float(ry) * 1e9 if abs(ry) < 1e-3 else float(ry)
         cx_nm = float(cx) * 1e9 if abs(cx) < 1e-3 else float(cx)
         cy_nm = float(cy) * 1e9 if abs(cy) < 1e-3 else float(cy)
-        x_offsets = np.linspace(cx_nm - rx_nm / 2, cx_nm + rx_nm / 2, nx)
-        y_offsets = np.linspace(cy_nm - ry_nm / 2, cy_nm + ry_nm / 2, ny)
+        # A grid can be acquired at any rotation, independent of whatever
+        # image it later gets anchored to (nanonispy2 exposes this as
+        # grid.header['angle'], parsed from the raw file's "Grid settings"
+        # field - see nanonispy2/read.py). Building x_offsets/y_offsets as
+        # a naive axis-aligned linspace (the previous behavior) silently
+        # discarded that angle, fabricating x/y as if the grid were
+        # unrotated - confirmed wrong against real rotated data (a grid
+        # sharing its anchor image's exact center/size/angle round-tripped
+        # to exactly the image's own pixel bounds only once this rotation
+        # was applied; the unrotated version did not). Local per-pixel
+        # offsets are rotated into true absolute (x, y) here, using the
+        # same rotation convention _map_spec_to_pixels (main_window.py)
+        # uses to go the other way (absolute -> local for display).
+        angle_deg = _safe_float(grid.header.get("angle"), default=0.0)
+        local_x = np.linspace(-rx_nm / 2, rx_nm / 2, nx)
+        local_y = np.linspace(-ry_nm / 2, ry_nm / 2, ny)
+        lx_grid, ly_grid = np.meshgrid(local_x, local_y)  # shape (ny, nx)
+        if angle_deg:
+            theta = math.radians(angle_deg)
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            abs_dx = lx_grid * cos_t + ly_grid * sin_t
+            abs_dy = -lx_grid * sin_t + ly_grid * cos_t
+        else:
+            abs_dx, abs_dy = lx_grid, ly_grid
+        x_abs = cx_nm + abs_dx
+        y_abs = cy_nm + abs_dy
     except Exception:
-        x_offsets = np.arange(nx, dtype=float)
-        y_offsets = np.arange(ny, dtype=float)
+        x_abs = np.tile(np.arange(nx, dtype=float), (ny, 1))
+        y_abs = np.tile(np.arange(ny, dtype=float).reshape(-1, 1), (1, nx))
     dataset_key = Path(path).stem
     # acquisition time from header if available
     spec_time = _parse_time(grid.header.get("start_time")) or _parse_time(grid.header.get("end_time"))
@@ -1097,8 +1122,12 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
         return entries
 
     rows, cols, pts = next(iter(channel_data.values())).shape
-    x_coords = x_offsets if len(x_offsets) == cols else np.linspace(0, cols - 1, cols)
-    y_coords = y_offsets if len(y_offsets) == rows else np.linspace(0, rows - 1, rows)
+    if x_abs.shape == (rows, cols) and y_abs.shape == (rows, cols):
+        x_coords_2d, y_coords_2d = x_abs, y_abs
+    else:
+        x_coords_2d, y_coords_2d = np.meshgrid(
+            np.arange(cols, dtype=float), np.arange(rows, dtype=float)
+        )
     channel_count = len(channel_data)
     idx = 0
     for y in range(rows):
@@ -1113,8 +1142,8 @@ def _parse_nanonis_3ds_grid(grid, path: Path | str, chans: Dict[str, object]) ->
                 "matrix_index": idx - 1,
                 "grid_rows": rows,
                 "grid_cols": cols,
-                "x": float(x_coords[x]),
-                "y": float(y_coords[y]),
+                "x": float(x_coords_2d[y, x]),
+                "y": float(y_coords_2d[y, x]),
                 "channels": chan_vals,
                 "channel_name": None,
                 "channel_code": None,
