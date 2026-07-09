@@ -2325,7 +2325,8 @@ QLabel:hover {{
     def _open_matrix_explorer_for_file(self, file_key):
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
-        image_specs = [s for s in self.spectros_by_image.get(str(file_key), []) if s.get('matrix_index') is not None]
+        all_image_specs = list(self.spectros_by_image.get(str(file_key), []))
+        image_specs = [s for s in all_image_specs if s.get('matrix_index') is not None]
         dataset_specs = list(image_specs)
         dataset = None
         dataset_key = image_specs[0].get('matrix_dataset') if image_specs else None
@@ -2346,6 +2347,18 @@ QLabel:hover {{
         if any(not spec.get("channels") for spec in dataset_specs):
             self.hydrate_spectro_entries(dataset_specs)
 
+        # A Z-stack or a handful of single point spectra can be anchored to
+        # the same image as this grid (e.g. a few individually-taken
+        # spectra alongside a .3ds map). Surface them here too - previously
+        # they were silently excluded, which meant "Show all spectroscopy
+        # positions" had nothing distinct to toggle (this dialog's own
+        # per-pixel grid points were the only thing it was ever given) and
+        # co-located Z-stacks/singles were unreachable from the Grid Map
+        # Explorer entirely.
+        co_located_specs = [s for s in all_image_specs if s.get('matrix_index') is None]
+        if co_located_specs and any(not spec.get("channels") for spec in co_located_specs):
+            self.hydrate_spectro_entries(co_located_specs)
+
         entry = {'path': Path(file_key)}
         try:
             entry['time'] = Path(file_key).stat().st_mtime
@@ -2355,7 +2368,7 @@ QLabel:hover {{
         dlg = MatrixSpectroViewer(
             self,
             entry,
-            dataset_specs,
+            dataset_specs + co_located_specs,
             dataset=dataset,
             palette_name=getattr(self, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
         )

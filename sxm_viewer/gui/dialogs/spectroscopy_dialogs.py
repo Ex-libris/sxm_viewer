@@ -3134,47 +3134,58 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             pass
 
     def _group_specs_by_channel(self):
-        mapping = defaultdict(list)
-        self._channel_labels_map = {}
+        raw_mapping = defaultdict(list)
         for spec in self.specs:
             path = spec.get('path')
             if not path:
                 continue
             key = self._normalize_path(path)
-            mapping[key].append(spec)
-            if key not in self._channel_labels_map:
-                label = spec.get('channel_name') or spec.get('channel_code')
-                if not label:
-                    chs = spec.get('channels') or {}
-                    if len(chs) == 1:
-                        label = next(iter(chs.keys()))
-                self._channel_labels_map[key] = label or Path(key).name
+            raw_mapping[key].append(spec)
+
         # A Nanonis .3ds grid is one file holding every channel for every
         # pixel (spec['channels'] = {name: array, ...}), unlike the older
         # Omicron/Anfatec layout this dialog was originally built for (one
         # file - and one spec object - per channel per pixel, so grouping
-        # by path already separates channels). Detect that single-file,
-        # multi-channel case and expand it into one pseudo-group per real
-        # channel name instead of collapsing to a single group keyed by the
-        # filename - otherwise there is nothing for the "Channel map"
-        # dropdown to select besides the file itself.
-        self._channel_mode = "path"
-        if len(mapping) == 1:
-            only_specs = next(iter(mapping.values()))
+        # by path already separates channels). Expand that case into one
+        # pseudo-group per real channel name - otherwise there is nothing
+        # for the "Channel map" dropdown to select besides the file itself.
+        #
+        # Expansion is restricted to matrix-derived groups (matrix_index is
+        # not None) specifically. A co-located Z-stack/single .dat file is
+        # *also* often multi-channel bundled, but its channel names (Bias_V,
+        # Current_A, ...) routinely collide with the grid's own - the same
+        # instrument, same naming convention - so expanding it the same way
+        # would silently overwrite the grid's 700+-point channel groups with
+        # a single stray point sharing that name. Any non-matrix group (or
+        # a matrix group with only one channel) instead collapses to one
+        # plain, file-keyed entry, exactly like the pre-existing behavior
+        # for any non-bundled file.
+        mapping = {}
+        self._channel_labels_map = {}
+        self._bundled_channel_keys = set()
+        for path_key, group_specs in raw_mapping.items():
+            is_matrix_group = any(spec.get('matrix_index') is not None for spec in group_specs)
             channel_names = []
-            for spec in only_specs:
-                for name in (spec.get('channels') or {}).keys():
-                    if name not in channel_names:
-                        channel_names.append(name)
-                if channel_names:
-                    break
+            if is_matrix_group:
+                for spec in group_specs:
+                    for name in (spec.get('channels') or {}).keys():
+                        if name not in channel_names:
+                            channel_names.append(name)
+                    if channel_names:
+                        break
             if len(channel_names) > 1:
-                self._channel_mode = "bundled"
-                mapping = defaultdict(list)
-                self._channel_labels_map = {}
                 for name in channel_names:
-                    mapping[name] = only_specs
+                    mapping[name] = group_specs
                     self._channel_labels_map[name] = name
+                    self._bundled_channel_keys.add(name)
+            else:
+                label = group_specs[0].get('channel_name') or group_specs[0].get('channel_code')
+                if not label:
+                    chs = group_specs[0].get('channels') or {}
+                    if len(chs) == 1:
+                        label = next(iter(chs.keys()))
+                mapping[path_key] = group_specs
+                self._channel_labels_map[path_key] = label or Path(path_key).name
         return mapping
 
     def _reset_color_cycle(self):
@@ -3587,6 +3598,22 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_canvas_context_menu(self, pos):
         menu = QtWidgets.QMenu(self)
 
+        # The channel/slice map is real experimental data - it's a per-
+        # pixel measurement, just laid out over the grid's positions
+        # instead of the image's - so it gets the same copy/export options
+        # as any other plot in this app (SpectroscopyPopup's canvas menu),
+        # not just the position-marker/typography controls this menu
+        # already had.
+        copy_data_act = menu.addAction("Copy channel map data")
+        copy_png_act = menu.addAction("Copy plot as PNG (300 dpi)")
+        copy_png_600_act = menu.addAction("Copy plot as PNG (600 dpi)")
+        copy_svg_act = menu.addAction("Copy plot as SVG")
+        save_menu = menu.addMenu("Save plot")
+        save_png_300_act = save_menu.addAction("PNG 300 dpi...")
+        save_png_600_act = save_menu.addAction("PNG 600 dpi...")
+        save_svg_act = save_menu.addAction("SVG (vector)...")
+        save_pdf_act = save_menu.addAction("PDF (vector)...")
+        menu.addSeparator()
         add_font_menu_action(
             menu,
             self,
@@ -3633,12 +3660,56 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             menu.addSeparator()
             add_source_file_menu(menu, grid_path, self, title="Grid file")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
-        if show_image_act is not None and action == show_image_act:
+        if action == copy_data_act:
+            self._copy_map_data_to_clipboard()
+        elif action == copy_png_act:
+            self._copy_map_plot_as_png(dpi=300)
+        elif action == copy_png_600_act:
+            self._copy_map_plot_as_png(dpi=600)
+        elif action == copy_svg_act:
+            self._copy_map_plot_as_svg()
+        elif action == save_png_300_act:
+            self._save_map_plot_export("png", dpi=300)
+        elif action == save_png_600_act:
+            self._save_map_plot_export("png", dpi=600)
+        elif action == save_svg_act:
+            self._save_map_plot_export("svg")
+        elif action == save_pdf_act:
+            self._save_map_plot_export("pdf")
+        elif show_image_act is not None and action == show_image_act:
             self._on_show_on_image()
         elif action == clear_act:
             self._clear_selection()
         elif action == reset_act:
             self._reset_matrix_view()
+
+    def _copy_map_data_to_clipboard(self):
+        arr = self._current_image_arr
+        if arr is None:
+            QtWidgets.QMessageBox.information(self, "Copy channel map", "No map data to copy.")
+            return
+        agg_mode = self.map_mode_combo.currentText()
+        channel_label = self._channel_label_for_path(self.channel_combo.currentData())
+        lines = [f"Mode\t{agg_mode}", f"Channel\t{channel_label or ''}", ""]
+        for row in np.asarray(arr, dtype=float):
+            lines.append("\t".join("" if not np.isfinite(v) else f"{float(v):.6g}" for v in row))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Channel map copied", self)
+
+    def _copy_map_plot_as_png(self, *, dpi=300):
+        try:
+            copy_figure_to_clipboard(self, self.canvas.figure, "png", dpi=dpi)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy PNG: {exc}")
+
+    def _copy_map_plot_as_svg(self):
+        try:
+            copy_figure_to_clipboard(self, self.canvas.figure, "svg")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Copy plot", f"Unable to copy SVG: {exc}")
+
+    def _save_map_plot_export(self, fmt, *, dpi=300):
+        save_figure_with_dialog(self, self.canvas.figure, default_stem="grid_map", fmt=fmt, dpi=dpi)
 
     def _font_style_state(self):
         return {
@@ -3840,11 +3911,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             return str(path)
 
     def _channel_key(self, path_or_name):
-        # In "bundled" mode (a single Nanonis .3ds file holding every
-        # channel), channel_combo's data is already the real channel name,
-        # not a filesystem path - normalizing it through Path() is
-        # unnecessary and, for the general case, incorrect.
-        if getattr(self, "_channel_mode", "path") == "bundled":
+        # For a "bundled" entry (a Nanonis .3ds file's own channel, or any
+        # other multi-channel source), channel_combo's data is already the
+        # real channel name, not a filesystem path - normalizing it through
+        # Path() is unnecessary and, for the general case, incorrect. Which
+        # combo entries are bundled is tracked per-key (not one global
+        # mode) since a single dialog can now hold both a grid's per-
+        # channel entries and separate single-channel Z-stack/single files.
+        if path_or_name in getattr(self, "_bundled_channel_keys", ()):
             return str(path_or_name)
         return self._normalize_path(path_or_name)
 
@@ -4132,11 +4206,30 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 except Exception:
                     pass
         else:
-            # Pass the color this click just claimed from the grid map's
-            # own color cycle so the popup that opens doesn't independently
-            # default to its own SCIENCE_PALETTE[0] - the two would almost
-            # never coincide, so the marker and its trace looked unrelated.
-            self.viewer._open_spectroscopy_popup(spec, initial_color=color)
+            controller = getattr(self.viewer, "spectro_compare_controller", None)
+            stack_count = int(spec.get("xy_stack_count") or 0)
+            is_stack_member = bool(spec.get('xy_stack_key')) and stack_count > 1 and spec.get('matrix_index') is None
+            opened_stack = False
+            if is_stack_member and controller is not None and hasattr(controller, "open_stack_popup"):
+                # A non-shift click on a Z-stack/repeated-measurement point
+                # (e.g. one co-located with this grid on the same image)
+                # should open its full Z-series - all traces at that site -
+                # matching how Z-stack markers are activated everywhere
+                # else in the app. Without this, clicking such a point here
+                # could only ever open one isolated trace with no way to
+                # reach the rest of the stack from this dialog.
+                try:
+                    controller.open_stack_popup(spec, file_key=str(spec.get('image_key') or ''))
+                    opened_stack = True
+                except Exception:
+                    opened_stack = False
+            if not opened_stack:
+                # Pass the color this click just claimed from the grid
+                # map's own color cycle so the popup that opens doesn't
+                # independently default to its own SCIENCE_PALETTE[0] - the
+                # two would almost never coincide, so the marker and its
+                # trace looked unrelated.
+                self.viewer._open_spectroscopy_popup(spec, initial_color=color)
         max_sel = 24
         if len(self._selection) > max_sel:
             overflow = len(self._selection) - max_sel
