@@ -754,6 +754,19 @@ def _try_parse_datetime(text: str) -> Optional[datetime]:
     return None
 
 
+# Threshold above which an embedded spectroscopy "Start time" is treated as
+# implausible and the file's own disk mtime is trusted instead. Confirmed on
+# real data: every single-spectrum .dat file in one dataset had its embedded
+# Start time running a consistent ~58-59 minutes *ahead* of its own disk
+# mtime (spanning files from different days, so not a one-off DST fluke),
+# while every image in the same folder had an embedded time matching its
+# own file's mtime exactly (0.0 min difference) - proving mtime is reliable
+# in that environment and the embedded field is specifically wrong for
+# spectroscopy. A real acquisition's file write happens seconds after the
+# measurement finishes, so any large gap is a red flag, not normal jitter.
+_SPEC_TIME_SANITY_THRESHOLD_S = 600
+
+
 def _nanonis_spec_metadata(header: Dict[str, str], path: Path) -> Dict[str, object]:
     meta: Dict[str, object] = {}
     date_txt = (
@@ -768,6 +781,13 @@ def _nanonis_spec_metadata(header: Dict[str, str], path: Path) -> Dict[str, obje
         dt = _try_parse_datetime(date_txt) or _try_parse_datetime(time_txt)
     if dt is not None:
         meta["time"] = dt
+        try:
+            mtime = datetime.fromtimestamp(Path(path).stat().st_mtime)
+            if abs((dt - mtime).total_seconds()) > _SPEC_TIME_SANITY_THRESHOLD_S:
+                meta["time"] = mtime
+                meta["time_source_fallback"] = "mtime_sanity_check"
+        except Exception:
+            pass
     x_nm = _meters_to_nm_value(header.get("X (m)"))
     y_nm = _meters_to_nm_value(header.get("Y (m)"))
     if x_nm is not None:
