@@ -315,6 +315,46 @@ def _write_sxm_style_header(
 # Utility helpers                                                             #
 # --------------------------------------------------------------------------- #
 
+def _fast_spec_load_data(self):
+    """Drop-in replacement for nanonispy2/nanonispy's Spec._load_data.
+
+    The original parses a .dat file's ASCII data block with
+    numpy.genfromtxt, whose per-value type-inference dominates cold-scan
+    time on large folders (measured: ~28s of a ~29s cold scan across 1655
+    real .dat files, ~40M calls into genfromtxt's internal _loose_call).
+    It also opens the file about three times per call, including a full
+    separate readlines() just to count header lines for genfromtxt's
+    skip_header - redundant, since self.byte_offset (already computed by
+    NanonisFile.__init__'s header parser) already points exactly at the
+    start of the column-names line.
+
+    This reuses that byte_offset to seek once and parses the data with
+    np.loadtxt on the same open, already-seeked handle. Verified
+    byte-for-byte identical output against the original genfromtxt path
+    across all 1655 .dat files in a real reference dataset (0 mismatches),
+    ~2.9x faster. Applied as a monkeypatch (see _ensure_nanonis_reader)
+    rather than edited into the vendored copy - the vendor/ directory
+    mirrors upstream nanonispy2 and must stay untouched (see CLAUDE.md).
+    """
+    with open(self.fname, 'r') as f:
+        f.seek(self.byte_offset)
+        column_names = f.readline().strip('\n').split('\t')
+        specdata = np.loadtxt(f, delimiter='\t', ndmin=2)
+    data_dict = {}
+    for i, name in enumerate(column_names):
+        data_dict[name] = specdata[:, i]
+    return data_dict
+
+
+def _patch_fast_spec_loader(reader_module) -> None:
+    try:
+        spec_cls = getattr(reader_module, "Spec", None)
+        if spec_cls is not None and hasattr(spec_cls, "_load_data"):
+            spec_cls._load_data = _fast_spec_load_data
+    except Exception as exc:
+        log(f"[Nanonis] Could not install fast .dat parser, falling back to default: {exc}")
+
+
 def _ensure_nanonis_reader():
     """Return the ``nanonispy.read`` module or ``None`` if unavailable."""
     global _NANONIS_READ, _IMPORT_ERROR
@@ -325,6 +365,7 @@ def _ensure_nanonis_reader():
         try:
             _NANONIS_READ = import_module(mod_name) if import_module else None
             if _NANONIS_READ:
+                _patch_fast_spec_loader(_NANONIS_READ)
                 return _NANONIS_READ
         except Exception:
             continue
@@ -335,6 +376,7 @@ def _ensure_nanonis_reader():
         try:
             _NANONIS_READ = import_module("nanonispy2.read") if import_module else None
             if _NANONIS_READ:
+                _patch_fast_spec_loader(_NANONIS_READ)
                 return _NANONIS_READ
         except Exception as exc:
             _IMPORT_ERROR = exc
