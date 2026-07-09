@@ -3613,6 +3613,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         save_png_600_act = save_menu.addAction("PNG 600 dpi...")
         save_svg_act = save_menu.addAction("SVG (vector)...")
         save_pdf_act = save_menu.addAction("PDF (vector)...")
+        save_wsxm_act = save_menu.addAction("WSxM XYZ...")
+        save_wsxm_act.setToolTip(
+            "Export this channel/slice map's real per-pixel values as a "
+            "WSxM ASCII XYZ file - any map here (Slice at value, Max "
+            "amplitude, ...) is real measured data, not just a preview."
+        )
         menu.addSeparator()
         add_font_menu_action(
             menu,
@@ -3676,6 +3682,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._save_map_plot_export("svg")
         elif action == save_pdf_act:
             self._save_map_plot_export("pdf")
+        elif action == save_wsxm_act:
+            self._export_map_wsxm_xyz()
         elif show_image_act is not None and action == show_image_act:
             self._on_show_on_image()
         elif action == clear_act:
@@ -3710,6 +3718,30 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
     def _save_map_plot_export(self, fmt, *, dpi=300):
         save_figure_with_dialog(self, self.canvas.figure, default_stem="grid_map", fmt=fmt, dpi=dpi)
+
+    def _export_map_wsxm_xyz(self):
+        arr = self._current_image_arr
+        extent = self._current_image_extent
+        if arr is None or extent is None:
+            QtWidgets.QMessageBox.information(self, "Export WSxM XYZ", "No map data to export.")
+            return
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select folder for WSxM XYZ export")
+        if not folder:
+            return
+        arr = np.asarray(arr, dtype=float)
+        ny, nx = arr.shape
+        x0, x1, y_bottom, y_top = [float(v) for v in extent]
+        # extent's 4th value is where row 0 sits (origin='upper' throughout
+        # this dialog - see _draw_image_layer), so the y axis must run
+        # top-to-bottom to stay aligned with arr's own row order.
+        x_vals = np.linspace(x0, x1, nx) if nx > 1 else np.array([x0])
+        y_vals = np.linspace(y_top, y_bottom, ny) if ny > 1 else np.array([y_top])
+        agg_mode = self.map_mode_combo.currentText()
+        channel_label = self._channel_label_for_path(self.channel_combo.currentData()) or "channel"
+        unit = self._current_image_unit or "a.u."
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{channel_label}_{agg_mode}").strip("_") or "grid_map"
+        save_wsxm_xyz(folder, arr, x_vals, y_vals, safe_name, z_unit=unit)
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved WSxM XYZ to {folder}", self)
 
     def _font_style_state(self):
         return {
