@@ -2487,7 +2487,7 @@ QLabel:hover {{
                 canvas._colorbar_orientation = orient if orient in ("vertical", "horizontal") else "vertical"
                 canvas._show_title = bool(display.get("show_title", getattr(canvas, "_show_title", True)))
                 canvas._show_acquisition_overlay = bool(display.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False)))
-                canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True)))
+                canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False)))
                 canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
                 canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
                 canvas.show_molecules = bool(display.get("show_molecules", getattr(canvas, "show_molecules", True)))
@@ -11280,7 +11280,7 @@ QLabel:hover {{
             "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical").strip().lower(),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
-            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", True)),
+            "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", False)),
             "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
             "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
             "show_molecules": bool(getattr(canvas, "show_molecules", True)),
@@ -11316,7 +11316,7 @@ QLabel:hover {{
                 "colorbar_orientation": str(options.get("colorbar_orientation", "vertical") or "vertical").strip().lower(),
                 "show_title": bool(options.get("show_title", True)),
                 "show_acquisition_overlay": bool(options.get("show_acquisition_overlay", False)),
-                "show_shortcut_hint": bool(options.get("show_shortcut_hint", True)),
+                "show_shortcut_hint": bool(options.get("show_shortcut_hint", False)),
                 "show_profile_overlays": bool(options.get("show_profile_overlays", True)),
                 "show_angle_overlays": bool(options.get("show_angle_overlays", True)),
                 "show_molecules": bool(options.get("show_molecules", True)),

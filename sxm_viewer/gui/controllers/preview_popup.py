@@ -314,7 +314,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._view_layout = str(getattr(source_canvas, "_view_layout", "grid") or "grid")
             canvas._show_profile_overlays = bool(getattr(source_canvas, "_show_profile_overlays", True))
             canvas._show_angle_overlays = bool(getattr(source_canvas, "_show_angle_overlays", True))
-            canvas._show_shortcut_hint = bool(getattr(source_canvas, "_show_shortcut_hint", True))
+            canvas._show_shortcut_hint = bool(getattr(source_canvas, "_show_shortcut_hint", False))
             canvas._show_molecule_gizmo = bool(getattr(source_canvas, "_show_molecule_gizmo", getattr(owner, "show_molecule_gizmo", False)))
             canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
             canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
@@ -372,7 +372,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         try:
             canvas.set_show_profile_overlays(getattr(source_canvas, "_show_profile_overlays", True))
             canvas.set_show_angle_overlays(getattr(source_canvas, "_show_angle_overlays", True))
-            canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", True))
+            canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", False))
         except Exception:
             pass
         try:

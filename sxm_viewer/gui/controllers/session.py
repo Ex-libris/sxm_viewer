@@ -1777,7 +1777,7 @@ class SessionController:
                             "colorbar_orientation": str(snapshot.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical"),
                             "show_title": bool(snapshot.get("show_title", getattr(canvas, "_show_title", True))),
                             "show_acquisition_overlay": bool(snapshot.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
-                            "show_shortcut_hint": bool(snapshot.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", True))),
+                            "show_shortcut_hint": bool(snapshot.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False))),
                             "show_profile_overlays": bool(snapshot.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True))),
                             "show_angle_overlays": bool(snapshot.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True))),
                             "show_molecules": bool(snapshot.get("show_molecules", getattr(canvas, "show_molecules", True))),

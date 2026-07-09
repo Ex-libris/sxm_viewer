@@ -284,7 +284,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_acquisition_overlay = False
         self._show_profile_overlays = True
         self._show_angle_overlays = True
-        self._show_shortcut_hint = True
+        self._show_shortcut_hint = False
         self._show_image_size_overlay = False
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
