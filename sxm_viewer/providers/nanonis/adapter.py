@@ -239,6 +239,16 @@ def _extract_scan_channels(scan, cache_dir: Path) -> List[ChannelExport]:
     # include calibration/offset. Integer formats require manual scaling.
     data_dtype = np.dtype(getattr(scan, "data_format", np.float32))
     needs_calibration = data_dtype.kind in ("i", "u")
+    # A scan's slow-axis "Direction" header (up/down) records which way the
+    # tip physically swept while acquiring lines, and rows are stored in
+    # acquisition order - for direction='up' the tip starts at the bottom of
+    # the frame, so row 0 is the *south*-most line, not the north-most one
+    # our origin='upper' display (and _map_spec_to_pixels's row-0-is-north
+    # convention) expects. Confirmed on real data (K1030, Direction=up):
+    # spectroscopy points independently verified against Nanonis's own
+    # viewer landed on the wrong blobs without this flip. direction='down'
+    # already starts at the top, so it needs no flip.
+    scan_dir = str((scan.header or {}).get("scan_dir", "")).strip().lower()
     for idx in range(total):
         name = str(names[idx]).strip()
         unit = str(units[idx]).strip()
@@ -258,6 +268,8 @@ def _extract_scan_channels(scan, cache_dir: Path) -> List[ChannelExport]:
                 continue
             if needs_calibration:
                 arr = arr * scale + offset
+            if scan_dir == "up":
+                arr = np.flipud(arr)
             # Store converted channels as native float32 arrays to avoid the
             # expensive ASCII round-trip on subsequent viewer loads.
             arr = np.asarray(arr, dtype=np.float32)
