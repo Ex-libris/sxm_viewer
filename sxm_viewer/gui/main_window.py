@@ -9117,15 +9117,28 @@ QLabel:hover {{
         frac_x = (u + 0.5)
         frac_y = (0.5 - v)
         if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
-            # try spectroscopy cloud extent before clamping/grid
-            fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
-            if fallback is not None:
-                col, row = fallback
-                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
-            grid_pt = self._map_spec_by_grid(spec, xpix, ypix)
-            if grid_pt is not None:
-                col, row = grid_pt
-                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+            # A spec already confirmed off-frame at assignment time (see
+            # _assign_spectros_to_images/_spec_frame_offset_info) should
+            # land exactly on the real frame's nearest edge/vertex, not get
+            # remapped into the spec-cloud's bounding box - that fallback
+            # exists for grid/matrix points whose true extent can slightly
+            # exceed the header's nominal extent, but for a genuinely
+            # off-frame single spectrum it produces a plausible-looking
+            # interior position (stretching to include the outlier) that's
+            # indistinguishable from a normal in-frame point - exactly the
+            # "invisible off-frame marker" complaint this branch used to
+            # cause. Matrix/grid points never carry off_frame_direction
+            # (see _assign_spectros_to_images's is_matrix_point guard), so
+            # they keep using the cloud/grid fallback below unaffected.
+            if not spec.get('off_frame_direction'):
+                fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
+                if fallback is not None:
+                    col, row = fallback
+                    return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+                grid_pt = self._map_spec_by_grid(spec, xpix, ypix)
+                if grid_pt is not None:
+                    col, row = grid_pt
+                    return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
             frac_x = min(max(frac_x, 0.0), 1.0)
             frac_y = min(max(frac_y, 0.0), 1.0)
         cols = max(1, int(xpix) - 1)

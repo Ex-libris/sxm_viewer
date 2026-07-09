@@ -83,40 +83,50 @@ _OFF_FRAME_DIRECTION_ANGLES = {
     "N": -90, "S": 90, "E": 0, "W": 180,
     "NE": -45, "NW": -135, "SE": 45, "SW": 135,
 }
-_OFF_FRAME_CHEVRON_COLOR = QtGui.QColor(255, 140, 0, 235)
+_OFF_FRAME_FLAG_COLOR = QtGui.QColor(255, 140, 0, 255)
+_OFF_FRAME_FLAG_OUTLINE = QtGui.QColor(20, 12, 0, 235)
 
 
 def _draw_off_frame_chevron(painter, x, y, direction, size):
-    """Small outward-pointing chevron beside a marker whose real position
-    lies outside every image (assignment_reason == 'xy_nearest_extent') -
-    points toward the true position's actual direction past the frame edge,
-    so an edge-clamped marker reads as "off-frame, real spot is this way"
-    instead of looking like an ordinary in-frame point."""
+    """Outward-pointing flag/pin beside a marker whose real position lies
+    outside every image - points toward the true position's actual
+    direction past the frame edge. Deliberately bold (filled triangle +
+    dark outline + connecting stem, ~2x the plain marker's size) rather
+    than a thin decorative accent: the marker itself is now clamped exactly
+    onto the frame's real edge/vertex (see _map_spec_to_pixels), so this is
+    the primary visual cue that a point is off-frame at all, not a subtle
+    addition to an otherwise-ordinary-looking interior marker."""
     angle_deg = _OFF_FRAME_DIRECTION_ANGLES.get(direction, -90)
     theta = math.radians(angle_deg)
     perp = theta + math.pi / 2
-    chevron_len = max(3.0, size * 1.05)
-    base_offset = chevron_len * 0.6
-    tip = QtCore.QPointF(x + chevron_len * math.cos(theta), y + chevron_len * math.sin(theta))
+    stem_len = max(2.0, size * 0.9)
+    flag_len = max(4.0, size * 1.4)
+    flag_width = max(3.0, size * 1.1)
+    stem_end = QtCore.QPointF(x + stem_len * math.cos(theta), y + stem_len * math.sin(theta))
+    tip = QtCore.QPointF(x + (stem_len + flag_len) * math.cos(theta), y + (stem_len + flag_len) * math.sin(theta))
     b1 = QtCore.QPointF(
-        x + base_offset * math.cos(theta) + chevron_len * 0.4 * math.cos(perp),
-        y + base_offset * math.sin(theta) + chevron_len * 0.4 * math.sin(perp),
+        stem_end.x() + flag_width * 0.5 * math.cos(perp),
+        stem_end.y() + flag_width * 0.5 * math.sin(perp),
     )
     b2 = QtCore.QPointF(
-        x + base_offset * math.cos(theta) - chevron_len * 0.4 * math.cos(perp),
-        y + base_offset * math.sin(theta) - chevron_len * 0.4 * math.sin(perp),
+        stem_end.x() - flag_width * 0.5 * math.cos(perp),
+        stem_end.y() - flag_width * 0.5 * math.sin(perp),
     )
-    path = QtGui.QPainterPath()
-    path.moveTo(b1)
-    path.lineTo(tip)
-    path.lineTo(b2)
+    flag = QtGui.QPainterPath()
+    flag.moveTo(b1)
+    flag.lineTo(tip)
+    flag.lineTo(b2)
+    flag.closeSubpath()
     painter.save()
-    pen = QtGui.QPen(_OFF_FRAME_CHEVRON_COLOR, max(1.6, size * 0.34))
-    pen.setJoinStyle(QtCore.Qt.RoundJoin)
-    pen.setCapStyle(QtCore.Qt.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(QtCore.Qt.NoBrush)
-    painter.drawPath(path)
+    stem_pen = QtGui.QPen(_OFF_FRAME_FLAG_OUTLINE, max(1.4, size * 0.28))
+    stem_pen.setCapStyle(QtCore.Qt.RoundCap)
+    painter.setPen(stem_pen)
+    painter.drawLine(QtCore.QPointF(x, y), stem_end)
+    outline_pen = QtGui.QPen(_OFF_FRAME_FLAG_OUTLINE, max(1.1, size * 0.22))
+    outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    painter.setPen(outline_pen)
+    painter.setBrush(QtGui.QBrush(_OFF_FRAME_FLAG_COLOR))
+    painter.drawPath(flag)
     painter.restore()
 
 
@@ -682,6 +692,25 @@ def _render_spectroscopy_overlays(
             base_color = color_matrix if is_matrix_spec else color_single
             low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
             off_frame_direction = spec.get("off_frame_direction")
+            if off_frame_direction:
+                # _map_spec_to_pixels intentionally returns the TRUE clamped
+                # edge/vertex position for an off-frame spec. But the flag
+                # glyph drawn below points further outward from there
+                # (~2.5x marker_size) - left at the literal edge, that flag
+                # would extend past the pixmap's own boundary and get
+                # silently clipped by the canvas, which is exactly why it
+                # was invisible in practice. Pull the draw position in just
+                # enough, only along the axis/axes the direction actually
+                # points, to leave room for the flag on-canvas.
+                clearance = marker_size * 2.6
+                if "E" in off_frame_direction:
+                    x = min(x, pixmap.width() - clearance)
+                elif "W" in off_frame_direction:
+                    x = max(x, clearance)
+                if "N" in off_frame_direction:
+                    y = max(y, clearance)
+                elif "S" in off_frame_direction:
+                    y = min(y, pixmap.height() - clearance)
             rect = _draw_marker_symbol(
                 painter,
                 x,
