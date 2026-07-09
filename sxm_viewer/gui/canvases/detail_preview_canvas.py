@@ -3143,6 +3143,8 @@ class MultiPreviewCanvas(FigureCanvas):
         stack_badges = list(view.get("stack_badges") or [])
         marker_symbol = _MPL_SPEC_MARKER_CODES.get(str(view.get('marker_symbol') or 'circle').lower(), 'o')
 
+        seen_stack_keys = set()
+
         def _route_point(x, y, spec):
             # Matrix/grid points are grouped into one footprint rectangle
             # per dataset below instead of being scattered as individual
@@ -3155,6 +3157,19 @@ class MultiPreviewCanvas(FigureCanvas):
                 dataset_key = spec.get('matrix_dataset') or str(spec.get('path') or '')
                 matrix_groups.setdefault(dataset_key, []).append((x, y, spec))
                 return
+            # A Z-stack/repeated-measurement site's traces all share
+            # (almost) the same position by definition - scattering every
+            # one individually used to get fanned into a visible ring by
+            # marker-overlap spreading upstream (spread_overlapping_marker_
+            # coords in preview.py), which just reads as a meaningless
+            # circle of dots. Keep one representative marker per site and
+            # let the stack_badges loop below label it with the real count.
+            stack_key = spec.get('xy_stack_key')
+            stack_count = spec.get('xy_stack_count') or 0
+            if stack_key and stack_count > 1:
+                if stack_key in seen_stack_keys:
+                    return
+                seen_stack_keys.add(stack_key)
             if highlight_key is not None and _spec_identity(spec) == highlight_key:
                 highlight_xs.append(x); highlight_ys.append(y)
             else:
@@ -3231,9 +3246,14 @@ class MultiPreviewCanvas(FigureCanvas):
             for badge in stack_badges:
                 try:
                     bx, by = _axis_from_pixel(float(badge.get("col")), float(badge.get("row")))
-                    label = str(badge.get("label") or "").strip()
-                    if not label:
+                    # _stack_badges_from_coords (gui/spectroscopy/overlays.py)
+                    # returns a "count" field, not "label" - this used to
+                    # read the old (removed) key and so silently drew no
+                    # badge text at all since that redesign landed.
+                    count = badge.get("count")
+                    if not count:
                         continue
+                    label = f"×{int(count)}"
                     ax.text(
                         bx,
                         by,
