@@ -141,6 +141,138 @@ from ..thumbnail_render import (
 from .matrix_fit import MatrixFitDialog
 from ..spectroscopy import overlays as spectro_overlays
 
+_INSET_MARKER_SYMBOLS = ("circle", "square", "triangle", "diamond")
+_INSET_MPL_MARKER_BY_SYMBOL = {"circle": "o", "square": "s", "triangle": "^", "diamond": "D"}
+_INSET_RESIZE_HANDLE_PX = 10
+_INSET_MIN_SIZE = 0.10
+_INSET_MAX_SIZE = 0.85
+
+
+def _near_resize_handle(bbox, x, y):
+    """True when (x, y) - in the same display-pixel space as bbox - is near
+    the inset's bottom-right corner (its resize grip)."""
+    try:
+        return abs(x - bbox.x1) <= _INSET_RESIZE_HANDLE_PX and abs(y - bbox.y0) <= _INSET_RESIZE_HANDLE_PX
+    except Exception:
+        return False
+
+
+def _resize_inset_bbox(parent_ax, resize_start, event_x, event_y):
+    """Compute a new [x0, y0, w, h] inset bbox (axes-fraction units) from a
+    bottom-right-corner drag. `resize_start` is (start_event_x,
+    start_event_y, start_bbox) captured on mouse press."""
+    if not resize_start:
+        return None
+    start_x, start_y, start_bbox = resize_start
+    try:
+        inv = parent_ax.transAxes.inverted()
+        p0 = inv.transform((start_x, start_y))
+        p1 = inv.transform((event_x, event_y))
+    except Exception:
+        return None
+    dw = p1[0] - p0[0]
+    dh = p0[1] - p1[1]  # bbox y grows downward from its bottom-left origin
+    x0, y0, w0, h0 = start_bbox
+    new_w = min(max(w0 + dw, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - x0)
+    new_h = min(max(h0 + dh, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - y0)
+    return [x0, y0, new_w, new_h]
+
+
+def _draw_inset_resize_handle(inset_ax):
+    """Draw a small grip glyph in the inset's bottom-right corner marking
+    the drag-to-resize hotspot."""
+    try:
+        inset_ax.plot(
+            [1.0], [0.0],
+            marker=(3, 0, -135),
+            markersize=7,
+            markerfacecolor="#ffffff",
+            markeredgecolor="#00000080",
+            markeredgewidth=0.6,
+            transform=inset_ax.transAxes,
+            clip_on=False,
+            zorder=6,
+            alpha=0.85,
+        )
+    except Exception:
+        pass
+
+
+def _preview_channel_cmap_for_file(viewer, file_key):
+    """Resolve the (channel_idx, cmap_name) the main Preview canvas is
+    currently showing for `file_key`, so the Position inset can be a
+    faithful copy of what's on screen rather than defaulting to whatever
+    the independent thumbnail-grid channel/cmap selectors happen to be set
+    to.
+    """
+    file_key = str(file_key)
+    channel_idx = None
+    cmap = None
+    canvas = getattr(viewer, "preview_canvas", None)
+    for view in (getattr(canvas, "views", None) or []):
+        try:
+            if str(view.get("path")) == file_key:
+                channel_idx = int(view.get("channel_idx"))
+                cmap = view.get("cmap")
+                break
+        except Exception:
+            continue
+    if channel_idx is None:
+        last_preview = getattr(viewer, "last_preview", None)
+        if last_preview and str(last_preview[0]) == file_key:
+            try:
+                channel_idx = int(last_preview[1])
+            except Exception:
+                channel_idx = None
+    if channel_idx is None:
+        try:
+            channel_idx = int(viewer.channel_dropdown.currentIndex()) if hasattr(viewer, "channel_dropdown") else 0
+        except Exception:
+            channel_idx = 0
+    if not cmap:
+        try:
+            cmap = (getattr(viewer, "per_file_channel_cmap", {}) or {}).get((file_key, int(channel_idx)))
+        except Exception:
+            cmap = None
+    if not cmap:
+        cmap = getattr(viewer, "preview_cmap", None) or getattr(viewer, "thumb_cmap", "viridis")
+    return int(channel_idx or 0), str(cmap)
+
+
+def _render_inset_background(viewer, file_key, width, height):
+    """Render the Position inset's background as a faithful color copy of
+    whatever channel/cmap the main Preview is currently showing for this
+    file (falling back sanely when the file isn't open in the Preview),
+    instead of the thumbnail grid's own channel/cmap desaturated to gray.
+
+    Returns (rgb array in [0,1] shaped (h,w,3), crop_info dict-or-None).
+    """
+    if not viewer or not file_key:
+        return None, None
+    channel_idx, cmap = _preview_channel_cmap_for_file(viewer, file_key)
+    try:
+        thumb = viewer._thumbnail_pixmap_for_file(str(file_key), channel_idx, width, height, cmap)
+    except Exception:
+        thumb = None
+    if thumb is None:
+        return None, None
+    crop_info = None
+    try:
+        header, fds = viewer.headers.get(str(file_key), (None, None))
+        if header is not None and fds and 0 <= channel_idx < len(fds):
+            data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fds[channel_idx], width, height)
+            with viewer._thumb_data_lock:
+                crop_info = viewer._thumb_crop_cache.get(data_key)
+    except Exception:
+        crop_info = None
+    qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
+    ptr = qimg.bits()
+    ptr.setsize(qimg.byteCount())
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape((qimg.height(), qimg.width(), 4))
+    rgb = np.clip(arr[..., :3].astype(np.float64) / 255.0, 0.0, 1.0)
+    return rgb, crop_info
+
+
 def _spec_display_coords(viewer, spec, header, file_key, disp_w, disp_h, crop_info=None):
     """Map a spec's position onto a *displayed* (possibly downsampled and
     row-cropped) thumbnail image of size (disp_w, disp_h).
@@ -601,6 +733,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
         self._suppress_drag_until_release = False
+        self._inset_show_other_points = True
+        self._inset_marker_symbol = "circle"
+        self._inset_marker_size = 52.0
+        self._inset_marker_color_override = None
+        self._inset_resizing = None
+        self._inset_resize_start = None
         # Resolve the real viewer so thumbnail/header lookups work even when
         # this popup is spawned from a comparison dialog.
         self.viewer = None
@@ -736,6 +874,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.filters_menu.aboutToShow.connect(self._populate_filter_menu)
         self.filters_btn.setMenu(self.filters_menu)
         tools_row.addWidget(self.filters_btn)
+        self.inset_settings_btn = QtWidgets.QToolButton(self)
+        self.inset_settings_btn.setText("Inset")
+        self.inset_settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.inset_settings_btn.setToolTip("Show/hide other points and change the position marker's style")
+        self.inset_settings_menu = QtWidgets.QMenu(self.inset_settings_btn)
+        self.inset_settings_menu.aboutToShow.connect(self._populate_inset_settings_menu)
+        self.inset_settings_btn.setMenu(self.inset_settings_menu)
+        tools_row.addWidget(self.inset_settings_btn)
         tools_row.addStretch(1)
         advanced_layout.addLayout(tools_row)
         controls_layout.addWidget(self._advanced_controls_widget)
@@ -1105,6 +1251,78 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _set_legend_border(self, enabled):
         self._legend_border = bool(enabled)
         self._plot_selected_channel()
+
+    def _populate_inset_settings_menu(self, menu=None):
+        menu = menu or getattr(self, "inset_settings_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        show_others_act = QtWidgets.QAction("Show other points", menu, checkable=True, checked=self._inset_show_other_points)
+        show_others_act.setToolTip("Show markers for the other traces plotted in this popup, not just the currently selected one")
+        show_others_act.toggled.connect(self._set_inset_show_other_points)
+        menu.addAction(show_others_act)
+        menu.addSeparator()
+        symbol_widget = QtWidgets.QWidget()
+        symbol_h = QtWidgets.QHBoxLayout(symbol_widget)
+        symbol_h.setContentsMargins(6, 2, 6, 2)
+        symbol_combo = QtWidgets.QComboBox()
+        for sym in _INSET_MARKER_SYMBOLS:
+            symbol_combo.addItem(sym.capitalize(), sym)
+        idx = symbol_combo.findData(self._inset_marker_symbol)
+        symbol_combo.setCurrentIndex(max(0, idx))
+        symbol_h.addWidget(QtWidgets.QLabel("Marker"))
+        symbol_h.addWidget(symbol_combo, 1)
+        symbol_act = QtWidgets.QWidgetAction(menu)
+        symbol_act.setDefaultWidget(symbol_widget)
+        menu.addAction(symbol_act)
+        symbol_combo.currentIndexChanged.connect(lambda i: self._set_inset_marker_symbol(symbol_combo.itemData(i)))
+        size_widget = QtWidgets.QWidget()
+        size_h = QtWidgets.QHBoxLayout(size_widget)
+        size_h.setContentsMargins(6, 2, 6, 2)
+        size_spin = QtWidgets.QSpinBox()
+        size_spin.setRange(15, 200)
+        size_spin.setValue(int(self._inset_marker_size))
+        size_h.addWidget(QtWidgets.QLabel("Size"))
+        size_h.addWidget(size_spin)
+        size_act = QtWidgets.QWidgetAction(menu)
+        size_act.setDefaultWidget(size_widget)
+        menu.addAction(size_act)
+        size_spin.valueChanged.connect(self._set_inset_marker_size)
+        color_act = QtWidgets.QAction("Marker color...", menu)
+        color_act.triggered.connect(self._pick_inset_marker_color)
+        menu.addAction(color_act)
+        reset_color_act = QtWidgets.QAction("Use trace color", menu, checkable=True, checked=self._inset_marker_color_override is None)
+        reset_color_act.setToolTip("Color each marker with its own trace color instead of a fixed override")
+        reset_color_act.triggered.connect(lambda: self._set_inset_marker_color(None))
+        menu.addAction(reset_color_act)
+
+    def _set_inset_show_other_points(self, enabled):
+        self._inset_show_other_points = bool(enabled)
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_symbol(self, symbol):
+        if not symbol:
+            return
+        self._inset_marker_symbol = str(symbol)
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_size(self, size):
+        self._inset_marker_size = float(size)
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_color(self, color):
+        self._inset_marker_color_override = color
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def _pick_inset_marker_color(self):
+        initial = QtGui.QColor(self._inset_marker_color_override or "#ff3b6a")
+        col = QtWidgets.QColorDialog.getColor(initial, self, "Select Position Marker Color")
+        if col.isValid():
+            self._set_inset_marker_color(col.name())
 
     def _apply_data_filters(self, x_vals, y_vals, y_unit, x_unit):
         return _apply_signal_filter_chain(x_vals, y_vals, y_unit, x_unit, self._filter_cfg)
@@ -2298,43 +2516,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         file_key = file_key or str(self.spec.get("image_key") or "")
         if not viewer or not file_key:
             return None, None
-        thumb = None
-        crop_info = None
-        label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
-        if label is not None and label.pixmap():
-            thumb = label.pixmap()
-            try:
-                crop_info = label.property("thumb_crop")
-            except Exception:
-                crop_info = None
-        if thumb is None:
-            try:
-                width = int(getattr(viewer, "thumb_size_px", 160))
-                height = max(48, int(round(width * 0.75)))
-                cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
-                cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
-                channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
-                thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
-                header, fds = viewer.headers.get(str(file_key), (None, None))
-                if header is not None and fds and 0 <= channel_idx < len(fds):
-                    try:
-                        data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fds[channel_idx], width, height)
-                        with viewer._thumb_data_lock:
-                            crop_info = viewer._thumb_crop_cache.get(data_key)
-                    except Exception:
-                        crop_info = None
-            except Exception:
-                return None, None
-        if thumb is None:
-            return None, None
-        qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
-        ptr = qimg.bits()
-        ptr.setsize(qimg.byteCount())
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((qimg.height(), qimg.width(), 4))
-        arr = arr[..., :3] / 255.0
-        gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
-        tinted = np.stack([gray, gray, gray], axis=-1)
-        return tinted, crop_info
+        width = int(getattr(viewer, "thumb_size_px", 160))
+        height = max(48, int(round(width * 0.75)))
+        return _render_inset_background(viewer, file_key, width, height)
 
     def _spec_thumbnail_coords(self, spec=None, file_key=None, dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
@@ -2384,22 +2568,28 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._position_inset_ax.set_xticks([])
         self._position_inset_ax.set_yticks([])
         self._position_inset_ax.set_title("Position", fontsize=7.5 * self._font_scale)
-        for color, coords in markers:
+        marker_shape = _INSET_MPL_MARKER_BY_SYMBOL.get(self._inset_marker_symbol, "o")
+        for color, coords, is_current in markers:
             try:
                 self._position_inset_ax.scatter(
                     coords[0],
                     coords[1],
-                    s=52,
+                    s=self._inset_marker_size,
+                    marker=marker_shape,
                     facecolors="none",
-                    edgecolors=color,
-                    linewidths=1.7,
+                    edgecolors=self._inset_marker_color_override or color,
+                    linewidths=2.0 if is_current else 1.3,
+                    alpha=1.0 if is_current else 0.55,
+                    zorder=5 if is_current else 3,
                 )
             except Exception:
                 continue
+        _draw_inset_resize_handle(self._position_inset_ax)
         self._install_inset_drag_handlers()
 
     def _install_inset_drag_handlers(self):
-        """Install matplotlib callbacks so the inset can be dragged."""
+        """Install matplotlib callbacks so the inset can be dragged and,
+        via the bottom-right corner handle, resized."""
         self._remove_inset_drag_handlers()
         if not self.canvas:
             return
@@ -2412,14 +2602,28 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             bbox = self._position_inset_ax.bbox
             if bbox is None:
                 return
+            if _near_resize_handle(bbox, event.x, event.y):
+                self._inset_resizing = True
+                self._inset_resize_start = (event.x, event.y, list(self._inset_bbox or [0.04, 0.04, 0.28, 0.28]))
+                return
             if bbox.contains(event.x, event.y):
                 self._inset_dragging = True
                 self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
 
         def on_motion(event):
-            if not self._inset_dragging or self._position_inset_ax is None:
+            if self._position_inset_ax is None:
                 return
             if event.x is None or event.y is None:
+                return
+            if self._inset_resizing:
+                new_bbox = _resize_inset_bbox(self.ax, self._inset_resize_start, event.x, event.y)
+                if new_bbox is None:
+                    return
+                self._inset_bbox = new_bbox
+                self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+                self.canvas.draw_idle()
+                return
+            if not self._inset_dragging:
                 return
             bbox = self._position_inset_ax.bbox
             if bbox is None:
@@ -2447,6 +2651,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             if event.button != MouseButton.LEFT:
                 return
             self._inset_dragging = False
+            self._inset_resizing = False
+            self._inset_resize_start = None
 
         self._inset_drag_cids = [
             self.canvas.mpl_connect("button_press_event", on_press),
@@ -2465,16 +2671,22 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_drag_cids = []
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
+        self._inset_resizing = False
+        self._inset_resize_start = None
         self._suppress_drag_until_release = False
 
     def _collect_inset_markers(self, image_key, image_dims=None, crop_info=None):
+        """Return a list of (color, coords, is_current) tuples. `is_current`
+        marks the trace currently selected in the curve list, so callers can
+        optionally hide every other marker when `_inset_show_other_points`
+        is off."""
         markers = []
         if not self._curve_entries:
             coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
-                markers.append(("#ff3b6a", coords))
+                markers.append(("#ff3b6a", coords, True))
             return markers
-        for entry in self._curve_entries:
+        for idx, entry in enumerate(self._curve_entries):
             if image_key and entry.get("image_key") and entry.get("image_key") != image_key:
                 continue
             color = entry.get("color", "#ff3b6a")
@@ -2490,11 +2702,13 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                     if coords:
                         entry["coords"] = coords
             if coords is not None:
-                markers.append((color, coords))
+                markers.append((color, coords, idx == self._selected_curve_index))
         if not markers:
             coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
-                markers.append(("#ff3b6a", coords))
+                markers.append(("#ff3b6a", coords, True))
+        if not self._inset_show_other_points and any(m[2] for m in markers):
+            markers = [m for m in markers if m[2]]
         return markers
 
     def _qt_pos_hits_inset(self, pos):
@@ -5083,6 +5297,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._show_position_inset = True
         self._position_inset_ax = None
         self._inset_bbox = None
+        self._inset_show_other_points = True
+        self._inset_marker_symbol = "circle"
+        self._inset_marker_size = 50.0
+        self._inset_marker_color_override = None
+        self._inset_resizing = None
+        self._inset_resize_start = None
         self._minima_artists = []
         self._inset_dragging = False
         self._inset_drag_offset = (0.0, 0.0)
@@ -5903,6 +6123,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.position_inset_cb.setChecked(True)
         self.position_inset_cb.toggled.connect(self._on_visual_toggle)
         vis_row.addWidget(self.position_inset_cb)
+
+        self.inset_settings_btn = QtWidgets.QToolButton(self)
+        self.inset_settings_btn.setText("Inset settings")
+        self.inset_settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.inset_settings_btn.setToolTip("Show/hide other points and change the position marker's style")
+        self.inset_settings_menu = QtWidgets.QMenu(self.inset_settings_btn)
+        self.inset_settings_menu.aboutToShow.connect(self._populate_inset_settings_menu)
+        self.inset_settings_btn.setMenu(self.inset_settings_menu)
+        vis_row.addWidget(self.inset_settings_btn)
 
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
@@ -6861,13 +7090,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         viewer = getattr(self, "viewer", None)
         if not viewer or not file_key:
             return None, None
+        width = int(getattr(viewer, "thumb_size_px", 160))
+        height = max(48, int(round(width * 0.75)))
         cache_key = None
         try:
-            width = int(getattr(viewer, "thumb_size_px", 160))
-            height = max(48, int(round(width * 0.75)))
-            cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
-            cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
-            channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
+            channel_idx, cmap = _preview_channel_cmap_for_file(viewer, file_key)
             cache_key = (str(file_key), width, height, str(cmap), int(channel_idx))
             cached = self._compare_inset_image_cache.get(cache_key)
             if cached is not None:
@@ -6876,42 +7103,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 return np.array(tinted_cached, copy=True), crop_info_cached
         except Exception:
             cache_key = None
-        thumb = None
-        crop_info = None
-        label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
-        if label is not None and label.pixmap():
-            thumb = label.pixmap()
-            try:
-                crop_info = label.property("thumb_crop")
-            except Exception:
-                crop_info = None
-        if thumb is None:
-            try:
-                thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
-                header, fds = viewer.headers.get(str(file_key), (None, None))
-                if header is not None and fds and 0 <= channel_idx < len(fds):
-                    try:
-                        data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fds[channel_idx], width, height)
-                        with viewer._thumb_data_lock:
-                            crop_info = viewer._thumb_crop_cache.get(data_key)
-                    except Exception:
-                        crop_info = None
-            except Exception:
-                return None, None
-        if thumb is None:
+        rgb, crop_info = _render_inset_background(viewer, file_key, width, height)
+        if rgb is None:
             return None, None
-        qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
-        ptr = qimg.bits()
-        ptr.setsize(qimg.byteCount())
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((qimg.height(), qimg.width(), 4))
-        arr = arr[..., :3] / 255.0
-        gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
-        tinted = np.stack([gray, gray, gray], axis=-1)
         if cache_key is not None:
-            self._compare_inset_image_cache[cache_key] = (np.array(tinted, copy=True), crop_info)
+            self._compare_inset_image_cache[cache_key] = (np.array(rgb, copy=True), crop_info)
             while len(self._compare_inset_image_cache) > 6:
                 self._compare_inset_image_cache.popitem(last=False)
-        return tinted, crop_info
+        return rgb, crop_info
 
     def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
@@ -6934,7 +7133,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             height = max(48, int(round(width * 0.75)))
         return _spec_display_coords(viewer, spec, header, file_key, width, height, crop_info=crop_info)
 
-    def _collect_inset_markers_compare(self, base_key, image_dims=None, crop_info=None):
+    def _collect_inset_markers_compare(self, base_key, image_dims=None, crop_info=None, current_spec_id=None):
         viewer = getattr(self, "viewer", None)
         if not viewer or not base_key:
             return []
@@ -6964,7 +7163,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec_id = self._spec_id(spec)
             line = self._line_map.get(spec_id)
             color = line.get_color() if line else "#d65f5f"
-            markers.append({"color": color, "coords": coords, "spec": spec})
+            markers.append({"color": color, "coords": coords, "spec": spec, "is_current": spec_id == current_spec_id})
+        if not self._inset_show_other_points and any(m["is_current"] for m in markers):
+            markers = [m for m in markers if m["is_current"]]
         return markers
 
     def _update_position_inset_compare(self):
@@ -6982,6 +7183,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         base_spec = items[0].data(0, QtCore.Qt.UserRole)
         base_key = str(base_spec.get("image_key") or "") if base_spec else ""
+        current_spec_id = self._spec_id(base_spec) if base_spec else None
         image, crop_info = self._load_thumbnail_array_for_inset(base_key)
         image_dims = None
         if image is not None:
@@ -6989,7 +7191,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 image_dims = (int(image.shape[1]), int(image.shape[0]))
             except Exception:
                 image_dims = None
-        markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims, crop_info=crop_info)
+        markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims, crop_info=crop_info, current_spec_id=current_spec_id)
         if image is None or not markers:
             return
         if self._inset_bbox is None:
@@ -7000,23 +7202,29 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._position_inset_ax.set_xticks([])
         self._position_inset_ax.set_yticks([])
         self._position_inset_ax.set_title("Position", fontsize=7.5 * getattr(self, "_font_scale", 1.0))
+        marker_shape = _INSET_MPL_MARKER_BY_SYMBOL.get(self._inset_marker_symbol, "o")
         raw_coords = []
         for marker in markers:
             color = marker.get("color")
             coords = marker.get("coords")
             spec = marker.get("spec")
+            is_current = bool(marker.get("is_current"))
             try:
                 raw_coords.append((spec, float(coords[0]), float(coords[1])))
                 self._position_inset_ax.scatter(
                     coords[0],
                     coords[1],
-                    s=50,
+                    s=self._inset_marker_size,
+                    marker=marker_shape,
                     facecolors="none",
-                    edgecolors=color,
-                    linewidths=1.5,
+                    edgecolors=self._inset_marker_color_override or color,
+                    linewidths=2.0 if is_current else 1.3,
+                    alpha=1.0 if is_current else 0.55,
+                    zorder=5 if is_current else 3,
                 )
             except Exception:
                 continue
+        _draw_inset_resize_handle(self._position_inset_ax)
         for badge in spectro_overlays._stack_badges_from_coords(raw_coords):
             try:
                 self._position_inset_ax.text(
@@ -7041,14 +7249,31 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         bbox = self._position_inset_ax.bbox
         if bbox is None:
             return
+        if _near_resize_handle(bbox, event.x, event.y):
+            self._inset_resizing = True
+            self._inset_resize_start = (event.x, event.y, list(self._inset_bbox or [0.04, 0.04, 0.26, 0.26]))
+            return
         if bbox.contains(event.x, event.y):
             self._inset_dragging = True
             self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
 
     def _on_inset_motion(self, event):
-        if not self._inset_dragging or self._position_inset_ax is None:
+        if self._position_inset_ax is None:
             return
         if event.x is None or event.y is None:
+            return
+        if self._inset_resizing:
+            new_bbox = _resize_inset_bbox(self.ax, self._inset_resize_start, event.x, event.y)
+            if new_bbox is None:
+                return
+            self._inset_bbox = new_bbox
+            try:
+                self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
+            except Exception:
+                pass
+            self.canvas.draw_idle()
+            return
+        if not self._inset_dragging:
             return
         bbox = self._position_inset_ax.bbox
         if bbox is None:
@@ -7077,6 +7302,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if event is None or event.button != MouseButton.LEFT:
             return
         self._inset_dragging = False
+        self._inset_resizing = False
+        self._inset_resize_start = None
 
     def _validate_log_axes(self):
         if not getattr(self, "_plot_x_log", False) and not getattr(self, "_plot_y_log", False):
@@ -8615,6 +8842,78 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _on_offset_changed(self, value):
         self._record_user_action(f"Waterfall offset → {value:.3g}")
         self._request_plot_update(delay_ms=20)
+
+    def _populate_inset_settings_menu(self, menu=None):
+        menu = menu or getattr(self, "inset_settings_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        show_others_act = QtWidgets.QAction("Show other points", menu, checkable=True, checked=self._inset_show_other_points)
+        show_others_act.setToolTip("Show markers for the other checked/selected spectra, not just the primary one")
+        show_others_act.toggled.connect(self._set_inset_show_other_points)
+        menu.addAction(show_others_act)
+        menu.addSeparator()
+        symbol_widget = QtWidgets.QWidget()
+        symbol_h = QtWidgets.QHBoxLayout(symbol_widget)
+        symbol_h.setContentsMargins(6, 2, 6, 2)
+        symbol_combo = QtWidgets.QComboBox()
+        for sym in _INSET_MARKER_SYMBOLS:
+            symbol_combo.addItem(sym.capitalize(), sym)
+        idx = symbol_combo.findData(self._inset_marker_symbol)
+        symbol_combo.setCurrentIndex(max(0, idx))
+        symbol_h.addWidget(QtWidgets.QLabel("Marker"))
+        symbol_h.addWidget(symbol_combo, 1)
+        symbol_act = QtWidgets.QWidgetAction(menu)
+        symbol_act.setDefaultWidget(symbol_widget)
+        menu.addAction(symbol_act)
+        symbol_combo.currentIndexChanged.connect(lambda i: self._set_inset_marker_symbol(symbol_combo.itemData(i)))
+        size_widget = QtWidgets.QWidget()
+        size_h = QtWidgets.QHBoxLayout(size_widget)
+        size_h.setContentsMargins(6, 2, 6, 2)
+        size_spin = QtWidgets.QSpinBox()
+        size_spin.setRange(15, 200)
+        size_spin.setValue(int(self._inset_marker_size))
+        size_h.addWidget(QtWidgets.QLabel("Size"))
+        size_h.addWidget(size_spin)
+        size_act = QtWidgets.QWidgetAction(menu)
+        size_act.setDefaultWidget(size_widget)
+        menu.addAction(size_act)
+        size_spin.valueChanged.connect(self._set_inset_marker_size)
+        color_act = QtWidgets.QAction("Marker color...", menu)
+        color_act.triggered.connect(self._pick_inset_marker_color)
+        menu.addAction(color_act)
+        reset_color_act = QtWidgets.QAction("Use trace color", menu, checkable=True, checked=self._inset_marker_color_override is None)
+        reset_color_act.setToolTip("Color each marker with its own trace color instead of a fixed override")
+        reset_color_act.triggered.connect(lambda: self._set_inset_marker_color(None))
+        menu.addAction(reset_color_act)
+
+    def _set_inset_show_other_points(self, enabled):
+        self._inset_show_other_points = bool(enabled)
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_symbol(self, symbol):
+        if not symbol:
+            return
+        self._inset_marker_symbol = str(symbol)
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_size(self, size):
+        self._inset_marker_size = float(size)
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_color(self, color):
+        self._inset_marker_color_override = color
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def _pick_inset_marker_color(self):
+        initial = QtGui.QColor(self._inset_marker_color_override or "#d65f5f")
+        col = QtWidgets.QColorDialog.getColor(initial, self, "Select Position Marker Color")
+        if col.isValid():
+            self._set_inset_marker_color(col.name())
 
     def _undo_last_action(self):
         if not self._undo_stack:
