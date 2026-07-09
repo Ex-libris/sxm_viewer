@@ -38,6 +38,7 @@ from ..._shared import (
 )
 from ...config import save_config
 from ..palettes import get_color_cycle, DEFAULT_COLOR_CYCLE
+from ..thumbnail_render import array_to_qimage
 
 
 def _safe_set_property(widget, name, value):
