@@ -557,6 +557,11 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.spectro_marker_color_matrix = QtGui.QColor(c_matrix)
         else:
             self.spectro_marker_color_matrix = QtGui.QColor(64, 200, 255, 200)
+        c_stack = self.config.get('spectro_marker_color_stack')
+        if c_stack:
+            self.spectro_marker_color_stack = QtGui.QColor(c_stack)
+        else:
+            self.spectro_marker_color_stack = QtGui.QColor(165, 141, 242, 235)
         self.spectro_color_cycle = self.config.get('spectro_color_cycle', DEFAULT_COLOR_CYCLE)
         self.spectro_marker_symbol = self.config.get('spectro_marker_symbol', 'circle')
         self.spectro_marker_size = float(self.config.get('spectro_marker_size', 5.0))
@@ -10803,6 +10808,18 @@ QLabel:hover {{
             self._schedule_marker_refresh()
             self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
 
+    def on_pick_spectro_stack_color(self):
+        current = getattr(self, 'spectro_marker_color_stack', None) or QtGui.QColor(165, 141, 242, 235)
+        col = QtWidgets.QColorDialog.getColor(current, self, "Select Z-Stack Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
+        if col.isValid():
+            self.spectro_marker_color_stack = col
+            self.config['spectro_marker_color_stack'] = col.name(QtGui.QColor.HexArgb)
+            save_config(self.config)
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            if self.last_preview:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            self._schedule_marker_refresh()
+
     def set_spectro_color_cycle(self, name: str):
         cycle = name or DEFAULT_COLOR_CYCLE
         if cycle == self.spectro_color_cycle:
@@ -10838,6 +10855,8 @@ QLabel:hover {{
     def _populate_marker_style_menu(self, menu):
         col_single = menu.addAction("Single marker color...")
         col_single.triggered.connect(self.on_pick_spectro_single_color)
+        col_stack = menu.addAction("Z-stack marker color...")
+        col_stack.triggered.connect(self.on_pick_spectro_stack_color)
         col_matrix = menu.addAction("Matrix marker color...")
         col_matrix.triggered.connect(self.on_pick_spectro_matrix_color)
         menu.addSeparator()

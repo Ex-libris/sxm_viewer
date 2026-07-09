@@ -3129,8 +3129,10 @@ class MultiPreviewCanvas(FigureCanvas):
             x_axis = ex0 if cols == 0 else ex0 + (col / float(cols)) * (ex1 - ex0)
             y_axis = ey0 if rows == 0 else ey0 + (row_use / float(rows)) * (ey1 - ey0)
             return x_axis, y_axis
-        normal_xs = []
-        normal_ys = []
+        normal_single_xs = []
+        normal_single_ys = []
+        normal_stack_xs = []
+        normal_stack_ys = []
         highlight_xs = []
         highlight_ys = []
         points = []
@@ -3142,6 +3144,14 @@ class MultiPreviewCanvas(FigureCanvas):
         pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
         stack_badges = list(view.get("stack_badges") or [])
         marker_symbol = _MPL_SPEC_MARKER_CODES.get(str(view.get('marker_symbol') or 'circle').lower(), 'o')
+        # spectro_marker_size is a "radius-ish" preference shared with the
+        # thumbnail overlay renderer (overlays.py); scatter's own `s` kwarg
+        # is marker area in points^2, so square it to get a comparable
+        # visual size instead of drawing every size preset identically.
+        marker_scatter_size = max(4.0, float(view.get('marker_size') or 5.0) ** 2)
+        color_single, alpha_single = view.get('marker_color_single') or ('#ffa000', 0.784)
+        color_stack, alpha_stack = view.get('marker_color_stack') or ('#a58df2', 0.922)
+        color_matrix, _ = view.get('marker_color_matrix') or ('#40c8ff', 0.784)
 
         seen_stack_keys = set()
 
@@ -3166,14 +3176,17 @@ class MultiPreviewCanvas(FigureCanvas):
             # let the stack_badges loop below label it with the real count.
             stack_key = spec.get('xy_stack_key')
             stack_count = spec.get('xy_stack_count') or 0
-            if stack_key and stack_count > 1:
+            is_stack = bool(stack_key and stack_count > 1)
+            if is_stack:
                 if stack_key in seen_stack_keys:
                     return
                 seen_stack_keys.add(stack_key)
             if highlight_key is not None and _spec_identity(spec) == highlight_key:
                 highlight_xs.append(x); highlight_ys.append(y)
+            elif is_stack:
+                normal_stack_xs.append(x); normal_stack_ys.append(y)
             else:
-                normal_xs.append(x); normal_ys.append(y)
+                normal_single_xs.append(x); normal_single_ys.append(y)
 
         for idx, s in enumerate(specs):
             coords = pixel_lookup.get(id(s))
@@ -3197,12 +3210,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 fy = y0 + (r + 0.5) * dy
                 points.append((fx, fy, spec))
                 _route_point(fx, fy, spec)
-        if not (normal_xs or highlight_xs or matrix_groups):
+        if not (normal_single_xs or normal_stack_xs or highlight_xs or matrix_groups):
             self._spectra_points[ax] = []
             return
         try:
-            if normal_xs:
-                ax.scatter(normal_xs, normal_ys, s=28, marker=marker_symbol, facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
+            if normal_single_xs:
+                ax.scatter(normal_single_xs, normal_single_ys, s=marker_scatter_size, marker=marker_symbol, facecolor=color_single, edgecolor='#1a1a1a', linewidths=0.7, alpha=alpha_single, zorder=35)
+            if normal_stack_xs:
+                ax.scatter(normal_stack_xs, normal_stack_ys, s=marker_scatter_size, marker=marker_symbol, facecolor=color_stack, edgecolor='#1a1a1a', linewidths=0.7, alpha=alpha_stack, zorder=35)
             if highlight_xs:
                 outer = 260 * (0.9 + 0.3 * pulse)
                 core = 140 * (0.7 + 0.3 * pulse)
@@ -3220,9 +3235,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     (rx_hi - rx_lo) + 2 * pad_x,
                     (ry_hi - ry_lo) + 2 * pad_y,
                     fill=True,
-                    facecolor='#40c8ff',
+                    facecolor=color_matrix,
                     alpha=0.12,
-                    edgecolor='#40c8ff',
+                    edgecolor=color_matrix,
                     linewidth=1.6,
                     zorder=34,
                 )

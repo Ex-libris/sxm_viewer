@@ -46,6 +46,19 @@ from ..thumbnail_render import detect_valid_scan_region
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)
 
 
+def _qcolor_to_mpl(color, default_hex, default_alpha=0.9):
+    """(hex_rgb, alpha) pair matplotlib scatter/patch calls can consume
+    directly - QColor.name(HexArgb) puts alpha first ('#AARRGGBB'), which
+    matplotlib doesn't accept, so the RGB and alpha channels are split out
+    and passed as separate kwargs instead of one combined hex string."""
+    try:
+        if color is not None:
+            return color.name(QtGui.QColor.HexRgb), float(color.alphaF())
+    except Exception:
+        pass
+    return default_hex, default_alpha
+
+
 def _resolve_view_clim(viewer, file_key, channel_idx, arr, *, relative_zero: bool = False):
     helper = getattr(viewer, "_resolve_preview_clim", None)
     if callable(helper):
@@ -648,6 +661,10 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "spec_pixels": list(spec_pixels),
         "stack_badges": list(stack_badges),
         "marker_symbol": str(getattr(viewer, "spectro_marker_symbol", "circle") or "circle"),
+        "marker_size": float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+        "marker_color_single": _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_single", None), "#ffa000", 0.784),
+        "marker_color_stack": _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_stack", None), "#a58df2", 0.922),
+        "marker_color_matrix": _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_matrix", None), "#40c8ff", 0.784),
     }
     clim = _resolve_view_clim(
         viewer,
@@ -839,6 +856,10 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'spec_pixels': list(spec_pixels),
         'stack_badges': list(stack_badges),
         'marker_symbol': str(getattr(viewer, "spectro_marker_symbol", "circle") or "circle"),
+        'marker_size': float(getattr(viewer, "spectro_marker_size", 5.0) or 5.0),
+        'marker_color_single': _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_single", None), "#ffa000", 0.784),
+        'marker_color_stack': _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_stack", None), "#a58df2", 0.922),
+        'marker_color_matrix': _qcolor_to_mpl(getattr(viewer, "spectro_marker_color_matrix", None), "#40c8ff", 0.784),
     }
     # A filter pipeline applied while this file was previously shown (via the
     # quick-menu or "Let the robot") is persisted to thumbnail_filters and
