@@ -3983,9 +3983,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._current_image_arr = None
             self._current_image_extent = None
 
-        # Position markers - plotted directly in real (x, y) nm, the same
-        # coordinate system as both possible backgrounds above, so they are
-        # always correctly aligned regardless of which one is showing.
+        # Position markers - see _spec_display_xy: grid-native metric maps
+        # use a spec's raw (x, y) directly (correct, since the map's own
+        # axes are built from that same real coordinate system), but
+        # "Reference image" mode needs each spec rotated into the topo
+        # image's local display frame first, exactly like the main preview
+        # and the Position insets already do, or markers land wherever the
+        # scan's Angle happens to put them relative to true north instead of
+        # relative to the image on screen.
         # "Show markers" is a separate, all-or-nothing toggle from "Show all
         # spectroscopy positions" (which only decides *which* specs count
         # once markers are on) - unchecking it lets the channel/slice map be
@@ -3997,8 +4002,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             overlay_specs = channel_specs
         else:
             overlay_specs = []
-        xs = [float(s['x']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
-        ys = [float(s['y']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
+        xs = []
+        ys = []
+        for s in (overlay_specs or []):
+            sx, sy = self._spec_display_xy(s)
+            if sx is None or sy is None:
+                continue
+            xs.append(sx)
+            ys.append(sy)
         if xs and ys:
             cfg = self._position_marker_config
             self.ax.scatter(
@@ -4236,17 +4247,71 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 continue
         return grid
 
+    def _spec_display_xy(self, spec):
+        """Real (x, y) nm position to actually draw/pick this spec at.
+
+        Grid-native metric maps (Slice at value, Max amplitude, ...) build
+        their own axes directly from specs' real x/y (see _grid_axes), so
+        plotting a spec's raw x/y against them is already correct - both
+        stay in the same absolute frame.
+
+        "Reference image" mode is different: the background there is a
+        real topo image, displayed at its own *local* extent (_header_extent
+        is a simple, non-rotated bounding box) exactly like the main preview
+        and the Position insets do - and both of those already convert a
+        spec's absolute (x, y) into that image's local frame via
+        _map_spec_to_pixels before placing it. Plotting raw (x, y) directly
+        here instead, as this method used to, skips that conversion - fine
+        when the scan's Angle header is 0, but a real, measurable error
+        otherwise (confirmed ~0.3/7.4 nm x/y offset on this app's own real
+        42.4-degree-rotated test data, not a hypothetical corner case).
+        Route through the same _map_spec_to_pixels used elsewhere so the
+        grid map's own markers land exactly where the inset/preview would
+        put them, instead of a third, disagreeing convention.
+        """
+        x = spec.get('x')
+        y = spec.get('y')
+        if x is None or y is None:
+            return None, None
+        x = float(x)
+        y = float(y)
+        if self.map_mode_combo.currentText() != "Reference image":
+            return x, y
+        arr = self._current_image_arr
+        extent = self._current_image_extent
+        if arr is None or extent is None:
+            return x, y
+        try:
+            ypix, xpix = arr.shape[:2]
+        except Exception:
+            return x, y
+        anchor = self.anchor_path or self.image_entry.get('path')
+        if not anchor:
+            return x, y
+        header, _fds = self.viewer.headers.get(str(anchor), (None, None))
+        if header is None:
+            return x, y
+        try:
+            coords = self.viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key=str(anchor))
+        except Exception:
+            coords = None
+        if coords is None:
+            return x, y
+        col, row = coords
+        x0, x1, y1, y0 = extent
+        disp_x = x0 + (col / max(1, xpix - 1)) * (x1 - x0)
+        disp_y = y1 - (row / max(1, ypix - 1)) * (y1 - y0)
+        return disp_x, disp_y
+
     def _pick_spec_from_point(self, x, y, channel_specs, file_key=None):
-        """Nearest spec to a click, by real (x, y) nm distance - the canvas
-        now displays real coordinates directly (see _draw_image_layer), so
-        this no longer needs any pixel-space mapping."""
+        """Nearest spec to a click, by displayed (x, y) nm distance - see
+        _spec_display_xy for why this isn't always a spec's raw x/y."""
         if x is None or y is None:
             return None
         best = None
         best_dist = None
         for spec in channel_specs:
-            sx = spec.get('x')
-            sy = spec.get('y')
+            sx, sy = self._spec_display_xy(spec)
             if sx is None or sy is None:
                 continue
             dist = (sx - x) ** 2 + (sy - y) ** 2
@@ -4275,7 +4340,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         spec = self._pick_spec_from_point(event.xdata, event.ydata, pickable_specs)
         if not spec:
             return
-        coords = (spec.get('x'), spec.get('y'))
+        # coords is the *displayed* position (drives the selection ring
+        # drawn on the map, so it must match _spec_display_xy's rotation
+        # handling in Reference image mode); nm_coords below stays the
+        # spec's real, unrotated position since that's used for text/labels
+        # (selection table, popup titles), not drawing.
+        coords = self._spec_display_xy(spec)
         key = self._selection_key(spec)
         mods = self._event_modifiers(event)
         shift = bool(mods & QtCore.Qt.ShiftModifier)
@@ -4619,7 +4689,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
     def _draw_hover_marker(self, spec):
         self._remove_hover_marker(redraw=False)
-        x, y = spec.get('x'), spec.get('y')
+        x, y = self._spec_display_xy(spec)
         if x is None or y is None:
             return
         self._hover_marker_artist = self.ax.scatter(
