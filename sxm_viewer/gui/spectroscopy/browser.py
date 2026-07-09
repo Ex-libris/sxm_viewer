@@ -33,6 +33,7 @@ from ..._shared import (
     matplotlib,
 )
 from PyQt5.QtWidgets import QLabel, QTreeWidget, QTreeWidgetItem
+from . import popups as spectro_popups
 
 
 def _spec_position_text(spec):
@@ -42,6 +43,42 @@ def _spec_position_text(spec):
     except Exception:
         pass
     return ""
+
+
+def _spec_detail_rows(spec):
+    """Compact "Position / Channels / Assignment" detail lines for a solo
+    (single-spectrum) entry's expandable children - the information that
+    used to live in the now-removed "Position X/Y nm [...]" wrapper row,
+    relocated under the file-name-first row it described."""
+    rows = []
+    pos = _spec_position_text(spec)
+    if pos:
+        rows.append(f"Position: {pos} nm")
+    channel_count = spec.get("site_channel_count") or 0
+    channels = list(spec.get("site_channels") or spec.get("available_channels") or [])
+    if channel_count or channels:
+        n = int(channel_count or len(channels))
+        label = f"{n} channel" + ("" if n == 1 else "s")
+        if channels:
+            label = f"{label}: {', '.join(str(c) for c in channels[:6])}" + (", ..." if len(channels) > 6 else "")
+        rows.append(label)
+    assignment_summary = str(spec.get("assignment_summary") or "").strip()
+    assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+    if assignment_summary:
+        rows.append(f"Assignment ({assignment_conf or 'n/a'} confidence): {assignment_summary}")
+    return rows
+
+
+def _add_spec_detail_children(item, spec, image_key, site_key):
+    for row_text in _spec_detail_rows(spec):
+        child = QTreeWidgetItem([row_text])
+        child.setData(0, QtCore.Qt.UserRole, {
+            "kind": "spec",
+            "image_key": image_key,
+            "site_key": site_key,
+            "spec": spec,
+        })
+        item.addChild(child)
 
 
 def _spec_leaf_label(spec, index=None):
@@ -62,6 +99,28 @@ def _spec_leaf_label(spec, index=None):
     if stack:
         bits.append(f"[{stack}]")
     return " ".join(bit for bit in bits if bit)
+
+
+def _site_common_name(site_specs):
+    """Longest common filename prefix across a multi-member site's traces
+    (stripped of a trailing run-number/index), e.g. "Z-Spectroscopy" for
+    Z-Spectroscopy00001.dat..00016.dat - used so a Z-stack/grid cluster's
+    group row still leads with something name-like, matching how a user
+    would recognize the series in a folder explorer, rather than only a
+    position value."""
+    import re as _re
+    stems = [Path(s.get("path", "")).stem for s in site_specs if s.get("path")]
+    stems = [_re.sub(r"[\d_\-]+$", "", stem) for stem in stems]
+    stems = [s for s in stems if s]
+    if not stems:
+        return ""
+    common = stems[0]
+    for stem in stems[1:]:
+        n = 0
+        while n < len(common) and n < len(stem) and common[n] == stem[n]:
+            n += 1
+        common = common[:n]
+    return common.strip(" _-")
 
 
 def _site_tree_label(site_specs):
@@ -87,7 +146,9 @@ def _site_tree_label(site_specs):
         extras.append("repeats")
     if first.get("site_has_matrix"):
         extras.append("grid map")
-    return f"{display}  [{' | '.join(extras)}]"
+    name = _site_common_name(site_specs)
+    title = f"{name} series" if name else display
+    return f"{title}  [{display} | {' | '.join(extras)}]"
 
 
 def _image_tree_label(image_key, specs, site_count):
@@ -277,7 +338,7 @@ def _update_browser_preview_image(viewer, image_key):
             channel_idx = 0
         cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
         cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
-        size = lbl.width() or 120
+        size = max(200, min(lbl.width() or 200, lbl.height() or 200))
         pix = viewer._thumbnail_pixmap_for_file(str(image_key), channel_idx, size, size, cmap)
         if pix is None:
             lbl.clear()
@@ -322,15 +383,34 @@ def _open_browser_item(viewer, item):
         return
     kind = str(payload.get("kind") or "")
     if kind == "spec":
+        # Previously called viewer._show_spectro_popup, a method that is
+        # never defined anywhere in the codebase - every hasattr() guard on
+        # it was always False, so "Open"/double-click on an individual
+        # spectrum silently did nothing. _open_spectroscopy_popup is the
+        # real function (used by every other click-to-open path in the app)
+        # that actually opens the "Spectrum" trace window.
         spec = payload.get("spec")
-        if spec is not None and hasattr(viewer, "_show_spectro_popup"):
-            viewer._show_spectro_popup(spec)
+        if spec is not None:
+            spectro_popups._open_spectroscopy_popup(viewer, spec)
         return
     if kind == "site":
-        spec = payload.get("spec")
-        image_key = str(payload.get("image_key") or "")
-        if spec is not None and hasattr(viewer, "_open_spectro_summary_for_site"):
-            viewer._open_spectro_summary_for_site(spec, file_key=image_key, quiet=True)
+        # A genuine multi-member group (Z-stack/grid cluster at one
+        # position - single-spectrum sites no longer create a "site" node,
+        # see _filter_spectro_browser). Open all of them together as a
+        # comparison window (or the single "Spectrum" popup if it turns out
+        # to be just one) instead of the older "Spectroscopy at position..."
+        # summary dialog, which read as a disconnected, out-of-place UI
+        # relative to the rest of the click-to-open experience.
+        specs = list(payload.get("specs") or [])
+        first = payload.get("spec") or (specs[0] if specs else None)
+        if not specs and first is not None:
+            specs = [first]
+        if specs:
+            title = None
+            site_display = str((first or {}).get("site_display") or "").strip()
+            if site_display:
+                title = f"Spectrum comparison - {site_display}"
+            spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
         return
     if kind == "image":
         image_key = str(payload.get("image_key") or "")
@@ -522,7 +602,6 @@ def _ensure_spectro_dock(viewer):
     viewer.spectro_list.setIconSize(QtCore.QSize(_BROWSER_ICON_SIZE, _BROWSER_ICON_SIZE))
     viewer.spectro_list.setAlternatingRowColors(True)
     viewer.spectro_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-    v.addWidget(viewer.spectro_list, 1)
 
     preview_frame = QtWidgets.QFrame()
     preview_frame.setObjectName("spectroPreviewFrame")
@@ -532,14 +611,28 @@ def _ensure_spectro_dock(viewer):
     preview_layout.setSpacing(8)
     viewer.spectro_preview_img_lbl = QLabel()
     viewer.spectro_preview_img_lbl.setAlignment(QtCore.Qt.AlignCenter)
-    viewer.spectro_preview_img_lbl.setFixedSize(120, 120)
+    # Fixed-size (120x120) made the reference-image miniature too small to
+    # read clearly, and gave the user no way to see it bigger. Use a taller
+    # minimum instead of a fixed size, and put the tree/preview in a
+    # splitter (below) so the user can drag the divider to grow the preview
+    # well past its default - same "let the user resize it" spirit as the
+    # Position inset's corner-drag resize handle.
+    viewer.spectro_preview_img_lbl.setMinimumSize(200, 200)
+    viewer.spectro_preview_img_lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
     viewer.spectro_preview_img_lbl.setScaledContents(False)
     preview_layout.addWidget(viewer.spectro_preview_img_lbl)
     viewer.spectro_preview_lbl = QLabel("Select a position or spectrum")
-    viewer.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+    viewer.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
     viewer.spectro_preview_lbl.setWordWrap(True)
     preview_layout.addWidget(viewer.spectro_preview_lbl, 1)
-    v.addWidget(preview_frame)
+
+    splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+    splitter.addWidget(viewer.spectro_list)
+    splitter.addWidget(preview_frame)
+    splitter.setStretchFactor(0, 3)
+    splitter.setStretchFactor(1, 2)
+    splitter.setSizes([420, 260])
+    v.addWidget(splitter, 1)
 
     container.setLayout(v)
     dock.setWidget(container)
@@ -649,6 +742,40 @@ def _filter_spectro_browser(viewer):
 
         for site_key, site_specs in visible_sites:
             first = site_specs[0]
+            if len(site_specs) == 1:
+                # The overwhelming majority of positions are one file, one
+                # trace. Wrapping each of those in a "Position X/Y nm
+                # [1 spectrum]" parent + a near-duplicate "name.dat ..."
+                # child was pure redundancy - two rows and a click to reveal
+                # one file - and buried the filename (the thing users
+                # actually recognize from Explorer) inside brackets on the
+                # child. Collapse to one name-first row per file; position/
+                # channel/assignment detail becomes its expandable children.
+                global_index += 1
+                spec = first
+                solo_item = QTreeWidgetItem([_spec_leaf_label(spec, index=global_index)])
+                solo_item.setIcon(0, _browser_type_icon(_site_kind(site_specs)))
+                low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+                off_frame = _spec_is_off_frame(spec)
+                status_icon = _browser_status_icon(low_conf=low_conf, off_frame=off_frame)
+                if status_icon is not None:
+                    solo_item.setIcon(0, status_icon)
+                site_summary = str(first.get("site_summary") or first.get("site_display") or "").strip()
+                tip_lines = [Path(spec.get("path", "")).name] + _spec_detail_rows(spec)
+                if site_summary:
+                    tip_lines.append(site_summary)
+                solo_item.setToolTip(0, "\n".join(line for line in tip_lines if line))
+                solo_item.setData(0, QtCore.Qt.UserRole, {
+                    "kind": "spec",
+                    "image_key": image_key,
+                    "site_key": site_key,
+                    "spec": spec,
+                })
+                _add_spec_detail_children(solo_item, spec, image_key, site_key)
+                image_item.addChild(solo_item)
+                solo_item.setExpanded(False)
+                continue
+
             site_item = QTreeWidgetItem([_site_tree_label(site_specs)])
             site_item.setIcon(0, _browser_type_icon(_site_kind(site_specs)))
             site_summary = str(first.get("site_summary") or first.get("site_display") or "").strip()
