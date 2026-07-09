@@ -2729,14 +2729,58 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.image_value_label = QtWidgets.QLabel("Value: --")
         left_layout.addWidget(self.image_value_label)
 
+        # View-mode row: "Slice at value" and "Reference image" are the two
+        # views people actually reach for; the three aggregate statistics
+        # are occasionally useful but shouldn't visually compete with them.
+        # A row of toggle buttons (vs. a plain dropdown) makes picking a
+        # view a one-click, visually obvious action; the two primary modes
+        # get an accent color, the three secondary ones stay neutral.
+        mode_row = QtWidgets.QHBoxLayout()
+        # map_mode_combo stays a real (but hidden) QComboBox rather than a
+        # custom stand-in - _draw_image_layer, _reset_matrix_view, the
+        # legend dialog etc. all already read its currentText()/count(),
+        # and keeping it real means none of that has to change; the button
+        # row below just drives it instead of the user seeing it directly.
+        self.map_mode_combo = QtWidgets.QComboBox()
+        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value", "Reference image"])
+        self.map_mode_combo.setVisible(False)
+        self._mode_buttons = {}
+        self._mode_group = QtWidgets.QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+        primary_modes = {"Slice at value", "Reference image"}
+        for i in range(self.map_mode_combo.count()):
+            mode_name = self.map_mode_combo.itemText(i)
+            btn = QtWidgets.QPushButton(mode_name)
+            btn.setCheckable(True)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            if mode_name in primary_modes:
+                btn.setStyleSheet(
+                    "QPushButton { font-weight: 600; padding: 6px 10px; border-radius: 5px; }"
+                    "QPushButton:checked { background: #3f8fd1; color: white; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton { padding: 4px 8px; color: palette(mid); }"
+                    "QPushButton:checked { background: palette(midlight); color: palette(text); font-weight: 600; }"
+                )
+            btn.clicked.connect(lambda _checked, name=mode_name: self._set_map_mode(name))
+            self._mode_group.addButton(btn)
+            self._mode_buttons[mode_name] = btn
+            mode_row.addWidget(btn)
+        self._mode_buttons["Max amplitude"].setChecked(True)
+        left_layout.addLayout(mode_row)
+
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel("Channel map:"))
         self.channel_combo = QtWidgets.QComboBox()
         controls.addWidget(self.channel_combo, 1)
-        self.map_mode_combo = QtWidgets.QComboBox()
-        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value", "Reference image"])
-        controls.addWidget(self.map_mode_combo)
+        controls.addWidget(QtWidgets.QLabel("Colormap:"))
+        self.cmap_combo = QtWidgets.QComboBox()
+        self.cmap_combo.addItems(["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "gray", "hot", "coolwarm", "RdBu"])
+        controls.addWidget(self.cmap_combo)
         left_layout.addLayout(controls)
+        self._metric_cmap = "inferno"
+        self._reference_cmap = "gray"
 
         # "Slice at value" mode: instead of an aggregate statistic over each
         # pixel's whole curve, show the channel's value at one specific
@@ -2771,6 +2815,10 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         for name in list_color_cycles():
             self.palette_combo.addItem(name)
         palette_controls.addWidget(self.palette_combo, 1)
+        self.palette_swatch = QtWidgets.QLabel()
+        self.palette_swatch.setFixedSize(96, 16)
+        self.palette_swatch.setToolTip("Preview of this color cycle's colors")
+        palette_controls.addWidget(self.palette_swatch)
         left_layout.addLayout(palette_controls)
 
         self.show_positions_cb = QtWidgets.QCheckBox("Show all spectroscopy positions")
@@ -2778,16 +2826,29 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.show_positions_cb.toggled.connect(self._draw_image_layer)
         left_layout.addWidget(self.show_positions_cb)
 
-        self.fit_matrix_btn = QtWidgets.QPushButton("Fit matrix parabolas...")
-        left_layout.addWidget(self.fit_matrix_btn)
+        # A compact, single row of small flat buttons - these are useful
+        # secondary actions, not the dialog's main controls, and previously
+        # took up three full-width rows that gave them outsized visual
+        # weight relative to how often they're actually used.
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.setSpacing(6)
+        button_style = "QPushButton { padding: 3px 8px; }"
+        self.fit_matrix_btn = QtWidgets.QPushButton("Fit parabolas...")
+        self.fit_matrix_btn.setStyleSheet(button_style)
+        self.fit_matrix_btn.setToolTip("Fit KPFM df(V) parabolas for every point in the matrix")
+        action_row.addWidget(self.fit_matrix_btn)
         self.reset_view_btn = QtWidgets.QPushButton("Reset view")
-        left_layout.addWidget(self.reset_view_btn)
+        self.reset_view_btn.setStyleSheet(button_style)
+        action_row.addWidget(self.reset_view_btn)
         self.show_on_image_btn = QtWidgets.QPushButton("Show on image")
+        self.show_on_image_btn.setStyleSheet(button_style)
         self.show_on_image_btn.setToolTip("Focus the main preview on the image this grid map was acquired on")
         self.show_on_image_btn.clicked.connect(self._on_show_on_image)
         if not hasattr(self.viewer, "reveal_spectroscopy_source"):
             self.show_on_image_btn.setVisible(False)
-        left_layout.addWidget(self.show_on_image_btn)
+        action_row.addWidget(self.show_on_image_btn)
+        action_row.addStretch(1)
+        left_layout.addLayout(action_row)
         self.matrix_info_label = QtWidgets.QLabel("")
         self.matrix_info_label.setWordWrap(True)
         left_layout.addWidget(self.matrix_info_label)
@@ -2868,6 +2929,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.channel_combo.currentIndexChanged.connect(self._on_channel_combo_changed)
         self.map_mode_combo.currentIndexChanged.connect(self._on_map_mode_changed)
         self.image_channel_combo.currentIndexChanged.connect(self._draw_image_layer)
+        self.cmap_combo.setCurrentText(self._metric_cmap)
+        self.cmap_combo.currentTextChanged.connect(self._on_cmap_changed)
         self.slice_slider.valueChanged.connect(self._on_slice_slider_changed)
         self.fit_matrix_btn.clicked.connect(self._on_fit_matrix)
         self.reset_view_btn.clicked.connect(self._reset_matrix_view)
@@ -2884,6 +2947,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_combo.blockSignals(False)
         self.selection_table.itemSelectionChanged.connect(self._update_curve_from_selection)
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+        self._update_palette_swatch()
         self._update_slice_axis_range()
         self._draw_image_layer()
         self._update_matrix_info_label()
@@ -3214,6 +3278,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_name = self.palette_combo.currentText() or DEFAULT_COLOR_CYCLE
         self._color_palette = get_color_cycle(self.palette_name)
         self._reset_color_cycle()
+        self._update_palette_swatch()
         if hasattr(self.viewer, "set_spectro_color_cycle"):
             self.viewer.set_spectro_color_cycle(self.palette_name)
         if self._selection:
@@ -3221,6 +3286,25 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._refresh_selection_table()
         else:
             self._update_selection_markers()
+
+    def _update_palette_swatch(self):
+        """Paint a strip of swatches for the current color cycle next to
+        its dropdown - picking "Warm" or "Cool" by name alone means
+        guessing what it actually looks like until you've committed to it."""
+        colors = self._color_palette or get_color_cycle(self.palette_name)
+        w, h = self.palette_swatch.width(), self.palette_swatch.height()
+        pix = QtGui.QPixmap(max(w, 1), max(h, 1))
+        pix.fill(QtCore.Qt.transparent)
+        if colors:
+            painter = QtGui.QPainter(pix)
+            n = len(colors)
+            seg_w = w / float(n)
+            for i, color in enumerate(colors):
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(QtGui.QColor(color))
+                painter.drawRect(QtCore.QRectF(i * seg_w, 0, seg_w + 0.5, h))
+            painter.end()
+        self.palette_swatch.setPixmap(pix)
 
     def _apply_palette_to_selection(self):
         self._reset_color_cycle()
@@ -3274,11 +3358,41 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             entry["unit"] = self._channel_unit_for_spec(spec, primary_label)
         self._refresh_selection_table()
 
+    def _on_cmap_changed(self, name):
+        # Reference image and the channel/slice map keep independent
+        # colormap preferences (a grayscale reference image and an inferno
+        # heatmap are both reasonable defaults, and switching modes
+        # shouldn't clobber whichever one you picked for the other).
+        if self.map_mode_combo.currentText() == "Reference image":
+            self._reference_cmap = name
+        else:
+            self._metric_cmap = name
+        self._draw_image_layer()
+
+    def _set_map_mode(self, mode_name):
+        """Driven by the view-mode button row - keeps the (hidden)
+        map_mode_combo as the single source of truth so every other method
+        that reads it keeps working unchanged."""
+        idx = self.map_mode_combo.findText(mode_name)
+        if idx >= 0:
+            self.map_mode_combo.setCurrentIndex(idx)
+        btn = self._mode_buttons.get(mode_name)
+        if btn is not None:
+            btn.setChecked(True)
+
     def _on_map_mode_changed(self):
-        is_slice = self.map_mode_combo.currentText() == "Slice at value"
+        current = self.map_mode_combo.currentText()
+        btn = self._mode_buttons.get(current)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
+        is_slice = current == "Slice at value"
         self.slice_controls.setVisible(is_slice)
         if is_slice:
             self._update_slice_axis_range()
+        is_reference = current == "Reference image"
+        self.cmap_combo.blockSignals(True)
+        self.cmap_combo.setCurrentText(self._reference_cmap if is_reference else self._metric_cmap)
+        self.cmap_combo.blockSignals(False)
         self._draw_image_layer()
 
     def _on_slice_slider_changed(self, _value=None):
@@ -3501,7 +3615,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
         view_extent = grid_extent
         if agg_mode != "Reference image" and metric_valid:
-            self.ax.imshow(metric, cmap='inferno', origin='upper', extent=grid_extent, aspect='equal')
+            self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
             self._current_image_arr = metric
             self._current_image_extent = grid_extent
             sample_spec = channel_specs[0] if channel_specs else None
@@ -3514,7 +3628,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 fd = fds[idx]
                 arr = self.viewer._get_channel_array(str(path), idx, header, fd)
                 ref_extent = self.viewer._header_extent(header)
-                self.ax.imshow(arr, cmap='gray', origin='upper', extent=ref_extent, aspect='equal')
+                self.ax.imshow(arr, cmap=self._reference_cmap, origin='upper', extent=ref_extent, aspect='equal')
                 self._current_image_arr = np.asarray(arr, dtype=float)
                 self._current_image_extent = ref_extent
                 self._current_image_unit = fd.get('PhysUnit', '')
