@@ -2957,10 +2957,22 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         palette_controls.addWidget(self.palette_swatch)
         left_layout.addLayout(palette_controls)
 
+        positions_row = QtWidgets.QHBoxLayout()
         self.show_positions_cb = QtWidgets.QCheckBox("Show all spectroscopy positions")
         self.show_positions_cb.setChecked(True)
         self.show_positions_cb.toggled.connect(self._draw_image_layer)
-        left_layout.addWidget(self.show_positions_cb)
+        positions_row.addWidget(self.show_positions_cb)
+        self.show_position_markers_cb = QtWidgets.QCheckBox("Show markers")
+        self.show_position_markers_cb.setChecked(True)
+        self.show_position_markers_cb.setToolTip(
+            "Hide every position marker/badge so the channel/slice map is "
+            "visible on its own - useful before copying or exporting it as "
+            "a plain image."
+        )
+        self.show_position_markers_cb.toggled.connect(self._on_show_position_markers_toggled)
+        positions_row.addWidget(self.show_position_markers_cb)
+        positions_row.addStretch(1)
+        left_layout.addLayout(positions_row)
 
         # A compact, single row of small flat buttons - these are useful
         # secondary actions, not the dialog's main controls, and previously
@@ -3474,6 +3486,13 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         for entry in self._selection:
             entry["color"] = self._next_color()
 
+    def _on_show_position_markers_toggled(self, checked):
+        # "Show all spectroscopy positions" only matters once markers are
+        # actually being drawn - keep it visibly disabled rather than just
+        # inert, so it doesn't look like a second, redundant "on" toggle.
+        self.show_positions_cb.setEnabled(bool(checked))
+        self._draw_image_layer()
+
     def _reset_matrix_view(self):
         self._clear_selection()
         if self.channel_combo.count():
@@ -3910,10 +3929,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # Position markers - plotted directly in real (x, y) nm, the same
         # coordinate system as both possible backgrounds above, so they are
         # always correctly aligned regardless of which one is showing.
-        if getattr(self.show_positions_cb, "isChecked", lambda: True)():
+        # "Show markers" is a separate, all-or-nothing toggle from "Show all
+        # spectroscopy positions" (which only decides *which* specs count
+        # once markers are on) - unchecking it lets the channel/slice map be
+        # viewed/copied on its own, with no marker points at all.
+        show_markers = getattr(self.show_position_markers_cb, "isChecked", lambda: True)()
+        if show_markers and getattr(self.show_positions_cb, "isChecked", lambda: True)():
             overlay_specs = self.specs
-        else:
+        elif show_markers:
             overlay_specs = channel_specs
+        else:
+            overlay_specs = []
         xs = [float(s['x']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
         ys = [float(s['y']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
         if xs and ys:
@@ -3937,7 +3963,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         style = _style_kwargs(self._font_style_state())
         for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
             apply_text_style(text, family=self._plot_font_family, **style)
-        self._update_selection_markers(redraw=False)
+        if show_markers:
+            self._update_selection_markers(redraw=False)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
             self.image_value_label.setText("Value: --")
