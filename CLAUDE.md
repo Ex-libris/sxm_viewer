@@ -330,6 +330,121 @@ dialog to open:
   "sites"/"stacks" before `SpectroCompareController` opens a popup for them.
 - `gui/spectroscopy/overlays.py` — marker/badge drawing (see Overlays above).
 
+### Spectroscopy position mapping (rotation/frame gotchas)
+This bug class ate an entire session before being nailed down, across three
+distinct-but-related failure modes. All of it flows from one function:
+
+**`_map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None,
+thumb_crop=None)`** (`main_window.py`, ~9021) is the canonical transform
+from a spec's absolute `(x, y)` in nm to a fractional/pixel `(col, row)`
+inside a given image's raster, honoring the image's `Angle`/`ScanAngle`
+header field. **The load-bearing invariant: rotate the spec's real-nm
+offset by the header's scan angle FIRST, then normalize by width/height
+SEPARATELY per axis.** Doing it in the other order (normalize each axis by
+its own span, then rotate) is mathematically wrong whenever `Width != Height`
+— normalizing by two different divisors ahead of a rotation mixes
+non-uniformly-scaled components inside the rotation matrix, which **shears**
+the result instead of rotating it. This is invisible on square scans (which
+is why it shipped unnoticed) and only showed up as visibly smeared/distorted
+point clouds on an elongated real scan (2.5nm × 7.5nm).
+
+Three other places independently reimplement pieces of this same rotate-
+then-normalize convention, on purpose (not shared via a common helper, for
+locality/perf reasons) — if any of them drifts out of sync with
+`_map_spec_to_pixels`, the exact shearing/mirroring bug class comes back:
+- `gui/spectroscopy/overlays.py`'s `_spectros_near_thumb_pos` — the
+  **inverse** transform (pixel click → nm) for thumbnail hit-testing; must
+  un-rotate and un-normalize in the mirrored order.
+- `gui/spectroscopy/controller.py`'s `_spec_within_extent` — a
+  containment-only check (is a spec inside an image's rotated footprint,
+  with a margin) reducing to a plain axis-aligned bbox check when angle=0.
+- `gui/spectroscopy/controller.py`'s `_spec_frame_offset_info` — computes
+  how far *outside* a footprint a spec sits (direction + distance in nm),
+  used for the off-frame flagging described below.
+
+**Nanonis row-order gotcha**: `.sxm` scans store rows in acquisition order,
+and the header's `Direction: up` vs `Direction: down` changes which end of
+the frame row 0 represents — `down` starts at the top (north), `up` starts
+at the bottom (south), since the tip physically swept upward. `providers/
+nanonis/adapter.py`'s `_extract_scan_channels` flips rows for `Direction:
+up` scans so every converted image lands on the same "row 0 = north"
+convention `_map_spec_to_pixels` assumes. A single real folder can (and did)
+contain a genuine mix of `up`/`down` scans, so this must stay a per-image
+conditional flip, never a blanket one.
+
+**Thumbnail-crop-awareness gotcha**: `detect_valid_scan_region`
+(`thumbnail_render.py`) trims blank/aborted rows off a thumbnail before
+display. Anything that overlays a spec's mapped position onto a *rendered*
+thumbnail (not the raw header-pixel grid) must thread that crop through
+`_map_spec_to_pixels`'s `thumb_crop` param, then rescale into the final
+on-screen pixmap using **separate** x/y scale factors (only rows get
+cropped, not columns) — see `_render_spectroscopy_overlays`'s
+`w_scale`/`h_scale` in `overlays.py` for the reference implementation.
+Skipping this produces a plausible-*looking* but wrong marker position;
+it doesn't crash or obviously misbehave, which is what let it slip into the
+Spectrum popup's "Position" inset panel undetected initially.
+
+**Off-frame specs** (real position outside every loaded image's footprint —
+common for reference points deliberately acquired off to the side) still
+need to render *somewhere*, and the established approach has two rules:
+- **Don't** let them fall into the `_map_spec_by_spec_extent` "spec-cloud
+  bounding box" fallback (meant for degenerate/zero header extents) — for a
+  genuinely off-frame point on an otherwise-valid image, that fallback
+  stretches a synthetic bounding box to include the outlier and places it
+  at a plausible-*looking*-but-wrong interior position, making it
+  indistinguishable from a normal in-frame point.
+- **Do** clamp it to the true nearest edge/vertex and flag it explicitly:
+  `spec['off_frame_direction']`/`spec['off_frame_distance_nm']`, computed
+  once in `_assign_spectros_to_images` (`gui/spectroscopy/controller.py`)
+  right after the *final* image is chosen — deliberately **not** tied to
+  which assignment path/reason picked that image, because the common
+  `causal_time` fallback path for `.dat` singles almost always wins before
+  the geometric `xy_nearest_extent` check is ever reached, so relying on
+  `assignment_reason == "xy_nearest_extent"` alone silently missed most
+  real off-frame specs. Any decorative glyph drawn pointing further outward
+  from an edge-clamped marker (e.g. the off-frame flag in `overlays.py`)
+  also needs a rendering-side inset, or it draws past the pixmap's own
+  boundary and gets silently clipped by Qt — invisible, not merely subtle.
+
+### Spectroscopy browser (`gui/spectroscopy/browser.py`)
+Follows the same module-function convention as `gui/viewer/*.py` (plain
+functions taking `viewer` first, shimmed onto `SXMGridViewer` as one-liners)
+rather than a real class. The floating "Spectro Browser" dock groups specs
+per image into three distinct row kinds, each with its own click-to-open
+route via `_open_browser_item`:
+- **`matrix_dataset`** — one row per `.3ds`/matrix *file* (not one per grid
+  point — a 32×32 grid is 1024 points, so per-point rows were never
+  viable), grouped by `spec['matrix_dataset']` since one image can host
+  several distinct grids at once. Opens `main_window.py`'s
+  `_open_matrix_explorer_for_file(image_key, dataset_key=...)` — the
+  `dataset_key` param exists specifically so the browser can pick *which*
+  grid when an image hosts more than one (previously always silently used
+  whichever grid was first in the list).
+- **`spec`** (solo) — a single-spectrum position (the majority case).
+  Name-first row (matches how users recognize files in Explorer); position/
+  channel/assignment detail lives in expandable child rows
+  (`_spec_detail_rows`) rather than a separate parent wrapper. Opens
+  `gui/spectroscopy/popups.py`'s `_open_spectroscopy_popup` (the "Spectrum"
+  trace window).
+- **`site`** — a genuine multi-member group (Z-stack / grid-adjacent
+  cluster sharing one physical position). Opens
+  `_open_spectroscopy_compare_popup` (falls back to a single Spectrum popup
+  if it turns out to hold only one spec after all).
+
+**Lesson learned the hard way**: `_open_browser_item`'s spec-open path used
+to call `viewer._show_spectro_popup(spec)` behind a `hasattr(viewer,
+"_show_spectro_popup")` guard — that method is not defined *anywhere* in
+the codebase, so the guard was always `False` and every "Open"/double-click
+on an individual spectrum silently did nothing, for the browser's entire
+lifetime. A `hasattr` guard passing is not evidence the referenced method
+exists correctly — grep for the actual `def` before trusting one,
+especially on a code path nothing exercises in normal manual testing.
+
+Status flags (low-confidence assignment, off-frame) render as small
+`QPainter`-drawn icons (`_browser_type_icon`/`_browser_status_icon`,
+module-level cache) instead of bracketed text tags, reusing the same accent
+colors as the on-thumbnail marker overlays for visual consistency.
+
 ### Fitting workflows
 Both single-spectrum fitting (`SpectroscopyPopup._on_fit_clicked`) and batch
 fitting (`_SpectroFitWorker.run`, feeding `KPFMFitTrendDialog`) call a shared
@@ -353,3 +468,22 @@ pattern rather than `QRunnable`.
   `FILTERED_CACHE_LIMIT`) and versioned (`HEADER_CACHE_VERSION`) — bump the
   version constant when changing the cached data shape so stale caches are
   invalidated rather than misread.
+- Sibling modules under `gui/spectroscopy/*.py` (`browser.py`,
+  `controller.py`, `overlays.py`, `popups.py`, `summary_dialog.py`) import
+  each other directly as plain Python modules (e.g. `from . import popups
+  as spectro_popups`) rather than only going through a `viewer.*` shim —
+  this is safe and already established (`gui/controllers/spectro_compare.py`
+  does the same) since none of them import `main_window.py`, so there's no
+  circular-import risk; prefer this over adding a new phantom
+  `viewer._method` shim that nothing defines (see the browser's dead
+  `_show_spectro_popup` lesson above).
+- Assignment/position metadata computed once during spec-to-image
+  assignment (`_assign_spectros_to_images` in `gui/spectroscopy/
+  controller.py`) — `assignment_reason`, `assignment_confidence`,
+  `assignment_summary`, `off_frame_direction`, `off_frame_distance_nm` —
+  is written directly onto each spec dict and treated as authoritative
+  everywhere downstream (overlays, the browser, tooltips, filters) rather
+  than being recomputed per call site. When adding a new derived
+  per-spec flag, prefer this same pattern (compute once at assignment
+  time, read everywhere else) over recomputing it from geometry on every
+  render.

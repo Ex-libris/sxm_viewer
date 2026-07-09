@@ -52,6 +52,69 @@ See the full installation guide in the MkDocs site for the Windows installer hel
 
 
 
+### 2026-07-10 UPDATES (spectroscopy position accuracy & browser overhaul)
+A deep pass on where spectroscopy points actually land and how you find
+them — this was the biggest correctness fix to spectroscopy in a while,
+plus a full redesign of the Spectro Browser:
+
+**Position accuracy fixes:**
+- Spectroscopy markers on rotated and non-square (elongated) scans could
+  land visibly off from their true acquired position, sometimes badly
+  smeared across the image — fixed a shearing bug in the position-mapping
+  math that only showed up on non-square scans
+- Some Nanonis scans were displaying upside-down/mirrored relative to their
+  real acquisition direction (and therefore so were their spectroscopy
+  markers) — fixed the row-order handling for the `Direction: up` scan
+  convention, which a real folder can mix with `Direction: down` scans
+  file-by-file
+- The Spectrum window's "Position" inset (the small reference-image
+  thumbnail with the marker) could show the marker in a completely wrong
+  spot, or even outside the visible thumbnail entirely, on any scan that
+  had blank/aborted rows trimmed off for display — fixed
+
+**Off-frame spectroscopy points**, common for reference spectra
+deliberately acquired off to the side of the scanned area:
+- these now render with a distinct orange flag pointing toward their real
+  direction, clamped to the nearest edge of the image, instead of being
+  invisibly misplaced somewhere inside the frame
+- new "Off-frame" filter in the Spectro Browser, with a live count, and a
+  Spectroscopy → "Review off-frame spectroscopies" menu action that jumps
+  straight to them
+
+**Position inset (Spectrum window) improvements:**
+- now a faithful color copy of whatever channel/cmap the main Preview is
+  showing, instead of always desaturating to gray
+- resizable by dragging its corner, and bigger by default
+- new "Inset settings" menu: show/hide the other plotted points, and
+  change the position marker's symbol/size/color
+
+**Spectro Browser redesign** — it was a dense wall of small text before;
+now:
+- small colored icons per row (single point / grid / Z-series, plus
+  low-confidence and off-frame flags) instead of bracketed text tags
+- large position groups (a 512-point grid, a big Z-series) collapse by
+  default instead of dumping hundreds of rows open at once
+- rows lead with the file name first (matching how you'd recognize files
+  in a folder explorer), with position/channel/assignment info tucked into
+  an expandable detail underneath, instead of a redundant "Position X/Y nm"
+  wrapper around every single spectrum
+- a grid/matrix scan (which can be 1000+ individual points) now collapses
+  to one row for the whole grid, showing its dimensions, point count,
+  channel count, and acquisition time — double-click or right-click → Open
+  jumps straight into the Grid Map Explorer instead of drilling through
+  individual points
+- fixed "Open" on an individual spectrum doing nothing at all (a leftover
+  broken hook from an earlier version of the browser) — it now reliably
+  opens the Spectrum trace window
+- opening a Z-series/cluster now opens a proper multi-trace comparison
+  window instead of an older, disconnected summary dialog
+- live counts on every filter checkbox, and a "Showing X of Y spectra"
+  line so filtering never silently empties the list with no explanation
+- the preview panel now shows an actual colored image of the spectrum's
+  source scan with its position marked, not just text; the tree and
+  preview panel are now in a resizable split so you can drag the preview
+  bigger
+
 ### 2026-07-07 UPDATES (spectroscopy UX pass)
 A round of workflow polish for spectroscopic data (single spectra, Z series at one position, and grid/CITS maps), aimed at making the spectra ↔ image navigation symmetric and the click behavior predictable:
 
