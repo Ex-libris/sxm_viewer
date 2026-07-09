@@ -38,7 +38,7 @@ from ..._shared import (
 from ...data.spectroscopy import is_matrix_file_entry
 
 
-def _shared_repeat_spec_targets(viewer, spec, primary_key, repeat_groups, image_extents):
+def _shared_repeat_spec_targets(viewer, spec, primary_key, repeat_groups, image_extents, image_angles=None):
     primary_key = str(primary_key or "")
     group_keys = list(repeat_groups.get(primary_key) or [primary_key])
     if len(group_keys) <= 1:
@@ -49,7 +49,8 @@ def _shared_repeat_spec_targets(viewer, spec, primary_key, repeat_groups, image_
     if sx is not None and sy is not None:
         for key in group_keys:
             ext = image_extents.get(str(key))
-            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.04):
+            angle = (image_angles or {}).get(str(key)) or 0.0
+            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.04, angle_deg=angle):
                 shared.append(str(key))
     if not shared:
         shared = [str(key) for key in group_keys]
@@ -179,15 +180,20 @@ def _assign_spectros_to_images(viewer):
     if not images or not specs:
         return
     image_time_index = {str(img.get("path")): img.get("time") for img in images}
-    # precompute extents for images
+    # precompute extents (and rotation angles, for a rotation-aware containment
+    # check) for images
     image_extents = {}
+    image_angles = {}
     for img in images:
         try:
             header, _fds = viewer.headers.get(str(img['path']), (None, None))
             extent = viewer._header_extent(header or {}) if header is not None else None
+            angle = viewer._header_scan_angle(header or {}) if header is not None else 0.0
         except Exception:
             extent = None
+            angle = 0.0
         image_extents[str(img['path'])] = extent
+        image_angles[str(img['path'])] = angle
     try:
         images.sort(key=lambda img: img.get('time') or datetime.min)
     except Exception:
@@ -252,7 +258,7 @@ def _assign_spectros_to_images(viewer):
                     debug_nanonis["missing"] += 1
         match = primary_match
         if match is None:
-            match, assignment_meta = viewer._choose_image_for_spec(spec, images, image_extents, with_details=True)
+            match, assignment_meta = viewer._choose_image_for_spec(spec, images, image_extents, image_angles=image_angles, with_details=True)
         if not match and images:
             # Fallback: pick closest by time, otherwise first image to avoid dropping markers.
             st = _spec_time_for_assignment(spec)
@@ -326,7 +332,7 @@ def _assign_spectros_to_images(viewer):
         for idx, spec in enumerate(specs, 1):
             target_keys = [image_key]
             if share_repeat_scans:
-                target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)
+                target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents, image_angles)
             spec.update(_assignment_payload(
                 "first_image_fallback",
                 "low",
@@ -1147,7 +1153,7 @@ def _annotate_xy_stacks(viewer):
     _detect_spectro_groups(viewer)
 
 
-def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=False):
+def _choose_image_for_spec(viewer, spec, images, image_extents, *, image_angles=None, with_details=False):
     """Pick the best image for a spectroscopy based on extent containment first, then time/hint."""
     def _result(match, reason, confidence, summary):
         image_key = str(match.get("path") or "") if match else ""
@@ -1168,7 +1174,8 @@ def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=
         containment_candidates = []
         for img in images:
             ext = image_extents.get(str(img['path']))
-            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02):
+            angle = (image_angles or {}).get(str(img['path'])) or 0.0
+            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=0.02, angle_deg=angle):
                 containment_candidates.append(img)
     if _is_dat_spec(spec):
         # Prefer spatial matching for .dat when coordinates are available.
@@ -1256,7 +1263,8 @@ def _choose_image_for_spec(viewer, spec, images, image_extents, *, with_details=
             best = scored[0][1]
             # ensure distance is not absurdly large compared to image span
             ext = image_extents.get(str(best['path']))
-            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=1.0):
+            angle = (image_angles or {}).get(str(best['path'])) or 0.0
+            if ext and viewer._spec_within_extent(sx, sy, ext, margin_frac=1.0, angle_deg=angle):
                 return _result(
                     best,
                     "xy_nearest_extent",
@@ -1321,15 +1329,41 @@ def _extent_center(viewer, extent):
         return 0.0, 0.0
 
 
-def _spec_within_extent(viewer, sx, sy, extent, margin_frac=0.05):
+def _spec_within_extent(viewer, sx, sy, extent, margin_frac=0.05, angle_deg=0.0):
+    """Check whether (sx, sy) falls inside an image's footprint.
+
+    Rotates the offset into the image's own local frame (same convention as
+    _map_spec_to_pixels) before testing against its half-width/half-height,
+    instead of a plain axis-aligned bbox check - a rotated scan's real
+    footprint extends beyond its unrotated x/y range, so the old
+    axis-aligned check wrongly rejected legitimate in-frame points on any
+    meaningfully-rotated image (confirmed on a real 42.77deg scan: a spectrum
+    clearly inside the image, per Nanonis's own viewer, fell outside the
+    naive bbox and got assigned to a neighboring image instead). Reduces to
+    the exact old axis-aligned check when angle_deg is 0.
+    """
     try:
         x0, x1, y1, y0 = extent
-        xmin, xmax = sorted((x0, x1))
-        ymin, ymax = sorted((y0, y1))
-        mx = (xmax - xmin) * margin_frac
-        my = (ymax - ymin) * margin_frac
-        xmin -= mx; xmax += mx; ymin -= my; ymax += my
-        return xmin <= float(sx) <= xmax and ymin <= float(sy) <= ymax
+        xspan = x1 - x0
+        yspan = y1 - y0
+        if xspan <= 0 or yspan <= 0:
+            return False
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        dx = float(sx) - cx
+        dy = float(sy) - cy
+        if angle_deg:
+            theta = math.radians(angle_deg)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            u_nm = dx * cos_t - dy * sin_t
+            v_nm = dx * sin_t + dy * cos_t
+        else:
+            u_nm, v_nm = dx, dy
+        u = u_nm / xspan
+        v = v_nm / yspan
+        bound = 0.5 + margin_frac
+        return -bound <= u <= bound and -bound <= v <= bound
     except Exception:
         return False
 

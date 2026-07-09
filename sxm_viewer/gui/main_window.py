@@ -9006,14 +9006,14 @@ QLabel:hover {{
         scope_label = "current image" if current_image_only else "folder"
         log_status(f"[Spectro] Reviewing {len(low_entries)} low-confidence assignment(s) in the {scope_label}")
 
-    def _choose_image_for_spec(self, spec, images, image_extents, *, with_details=False):
-        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents, with_details=with_details)
+    def _choose_image_for_spec(self, spec, images, image_extents, *, image_angles=None, with_details=False):
+        return spectro_controller._choose_image_for_spec(self, spec, images, image_extents, image_angles=image_angles, with_details=with_details)
 
     def _extent_center(self, extent):
         return spectro_controller._extent_center(self, extent)
 
-    def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05):
-        return spectro_controller._spec_within_extent(self, sx, sy, extent, margin_frac=margin_frac)
+    def _spec_within_extent(self, sx, sy, extent, margin_frac=0.05, angle_deg=0.0):
+        return spectro_controller._spec_within_extent(self, sx, sy, extent, margin_frac=margin_frac, angle_deg=angle_deg)
 
     def _match_spec_to_image_by_hint(self, spec, images, with_score=False):
         return spectro_controller._match_spec_to_image_by_hint(self, spec, images, with_score=with_score)
