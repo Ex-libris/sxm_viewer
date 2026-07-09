@@ -38,7 +38,6 @@ from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
 from ...data.io import parse_header
 from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging, header_indicates_constant
 from ...data.io import normalize_unit_and_data
-from ...data.spectroscopy import is_matrix_file_entry
 from ...utils.units import _auto_display_unit, _safe_float
 from ..spectroscopy import overlays as spectro_overlays
 from ..thumbnail_render import detect_valid_scan_region
@@ -582,12 +581,12 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         if viewer.show_single_markers:
             overlay_specs.extend([
                 s for s in spec_entries
-                if s.get("matrix_index") is None or not is_matrix_file_entry(s)
+                if not viewer._is_matrix_spec(s)
             ])
         if viewer.show_matrix_markers:
             overlay_specs.extend([
                 s for s in spec_entries
-                if s.get("matrix_index") is not None and is_matrix_file_entry(s)
+                if viewer._is_matrix_spec(s)
             ])
 
     caption = fd.get("Caption", fd.get("FileName", ""))
@@ -756,12 +755,12 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         if viewer.show_single_markers:
             overlay_specs.extend([
                 s for s in spec_entries
-                if s.get('matrix_index') is None or not is_matrix_file_entry(s)
+                if not viewer._is_matrix_spec(s)
             ])
         if viewer.show_matrix_markers:
             overlay_specs.extend([
                 s for s in spec_entries
-                if s.get('matrix_index') is not None and is_matrix_file_entry(s)
+                if viewer._is_matrix_spec(s)
             ])
     _mark_perf("spectra")
 

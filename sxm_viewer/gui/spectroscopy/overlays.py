@@ -339,7 +339,12 @@ def _render_spectroscopy_overlays(
     grouped_keys = set()
     for s in specs:
         midx = s.get('matrix_index')
-        is_matrix_file = is_matrix_file_entry(s)
+        # is_matrix_file_entry alone only recognizes Omicron/Anfatec matrix
+        # .dat files by filename - it misses Nanonis .3ds grid points, which
+        # would otherwise force real grid points into `singles` and render
+        # them as a dense raw-point swarm instead of one matrix footprint.
+        # _is_matrix_spec additionally checks matrix_dataset/matrix_index.
+        is_matrix_file = viewer._is_matrix_spec(s)
         force_points = matrix_as_points or not is_matrix_file
         if midx is None or force_points:
             singles.append(s)
@@ -491,7 +496,7 @@ def _render_spectroscopy_overlays(
                     highlight = True
             except Exception:
                 highlight = False
-            is_matrix_spec = is_matrix_file_entry(spec)
+            is_matrix_spec = viewer._is_matrix_spec(spec)
             base_color = color_matrix if is_matrix_spec else color_single
             low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
             rect = _draw_marker_symbol(

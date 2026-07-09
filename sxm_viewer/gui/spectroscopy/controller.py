@@ -606,7 +606,7 @@ def _site_key_for_spec(spec, *, image_key, xy_tol_nm=0.05):
         return f"{image_key}::xy:{qx}:{qy}", sx, sy
     except Exception:
         pass
-    if is_matrix_file_entry(spec):
+    if spec.get('matrix_index') is not None or is_matrix_file_entry(spec):
         row = spec.get("grid_row")
         col = spec.get("grid_col")
         if row is not None and col is not None:
