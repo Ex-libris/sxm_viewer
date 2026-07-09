@@ -3110,7 +3110,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._channel_labels_map[path] = label
             added.add(path)
         if self.channel_combo.count():
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentIndex(self._default_channel_index())
+
+    def _default_channel_index(self):
+        """Prefer a Current channel as the default map - the alphabetically-
+        first channel (often the sweep axis itself, e.g. "Bias_V") is
+        essentially never what a user wants a Max amplitude/Integral/Slice
+        map of. Falls back to the first entry when no Current channel
+        exists."""
+        for i in range(self.channel_combo.count()):
+            if "current" in self.channel_combo.itemText(i).lower():
+                return i
+        return 0
 
     def _populate_image_channels(self):
         anchor = self.anchor_path or self.image_entry.get('path')
@@ -3220,7 +3231,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._clear_selection()
         if self.channel_combo.count():
             self.channel_combo.blockSignals(True)
-            self.channel_combo.setCurrentIndex(0)
+            self.channel_combo.setCurrentIndex(self._default_channel_index())
             self.channel_combo.blockSignals(False)
         if self.map_mode_combo.count():
             self.map_mode_combo.setCurrentIndex(0)
@@ -3237,9 +3248,31 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._draw_image_layer()
 
     def _on_channel_combo_changed(self):
-        self._clear_selection()
         self._update_slice_axis_range()
+        self._resync_selection_to_current_channel()
         self._draw_image_layer()
+
+    def _resync_selection_to_current_channel(self):
+        """Re-resolve every currently-selected point's plotted channel to
+        the Channel map dropdown's new selection, instead of leaving
+        already-selected spectra frozen on whatever channel was active
+        when they were clicked - previously this cleared the whole
+        selection outright, so switching channels looked like it "did
+        nothing" to the plot on the right (it just silently emptied it)."""
+        if not self._selection:
+            return
+        primary_label = self._channel_label_for_path(self.channel_combo.currentData())
+        for entry in self._selection:
+            spec = entry.get("spec")
+            if spec is None:
+                continue
+            multi = self._gather_multi_channel_specs(spec.get('matrix_index')) or [(primary_label, spec)]
+            if primary_label:
+                multi.sort(key=lambda item: 0 if item[0] == primary_label else 1)
+            entry["multi"] = multi
+            entry["label"] = primary_label
+            entry["unit"] = self._channel_unit_for_spec(spec, primary_label)
+        self._refresh_selection_table()
 
     def _on_map_mode_changed(self):
         is_slice = self.map_mode_combo.currentText() == "Slice at value"
@@ -3468,7 +3501,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
         view_extent = grid_extent
         if agg_mode != "Reference image" and metric_valid:
-            self.ax.imshow(metric, cmap='inferno', origin='upper', extent=grid_extent, aspect='auto')
+            self.ax.imshow(metric, cmap='inferno', origin='upper', extent=grid_extent, aspect='equal')
             self._current_image_arr = metric
             self._current_image_extent = grid_extent
             sample_spec = channel_specs[0] if channel_specs else None
@@ -3481,7 +3514,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 fd = fds[idx]
                 arr = self.viewer._get_channel_array(str(path), idx, header, fd)
                 ref_extent = self.viewer._header_extent(header)
-                self.ax.imshow(arr, cmap='gray', origin='upper', extent=ref_extent, aspect='auto')
+                self.ax.imshow(arr, cmap='gray', origin='upper', extent=ref_extent, aspect='equal')
                 self._current_image_arr = np.asarray(arr, dtype=float)
                 self._current_image_extent = ref_extent
                 self._current_image_unit = fd.get('PhysUnit', '')
