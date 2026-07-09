@@ -2995,6 +2995,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if not hasattr(self.viewer, "reveal_spectroscopy_source"):
             self.show_on_image_btn.setVisible(False)
         action_row.addWidget(self.show_on_image_btn)
+        self.virtual_copy_btn = QtWidgets.QPushButton("Virtual copy")
+        self.virtual_copy_btn.setStyleSheet(button_style)
+        self.virtual_copy_btn.setToolTip(
+            "Turn the current channel/slice map into its own virtual-copy "
+            "thumbnail - a real image the rest of the app can treat like "
+            "any other: crop, measure, add molecule overlays, etc."
+        )
+        self.virtual_copy_btn.clicked.connect(self._create_virtual_copy_of_map)
+        if not hasattr(self.viewer, "_create_virtual_view_copy"):
+            self.virtual_copy_btn.setVisible(False)
+        action_row.addWidget(self.virtual_copy_btn)
         action_row.addStretch(1)
         left_layout.addLayout(action_row)
         self.matrix_info_label = QtWidgets.QLabel("")
@@ -3486,6 +3497,42 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         for entry in self._selection:
             entry["color"] = self._next_color()
 
+    def _create_virtual_copy_of_map(self):
+        """Turn the current channel/slice map into a real virtual-copy
+        thumbnail via the same mechanism popups/preview use for their own
+        "virtual copy" action - once it exists as a thumbnail, it's a real
+        image as far as the rest of the app is concerned, so it picks up
+        the main preview's full feature set (context menu, crop, molecule
+        overlays, distance measurement, export, ...) for free instead of
+        this dialog needing its own parallel implementation of any of it."""
+        viewer = getattr(self, "viewer", None)
+        if viewer is None or not hasattr(viewer, "_create_virtual_view_copy"):
+            return
+        arr = self._current_image_arr
+        extent = self._current_image_extent
+        anchor = self.anchor_path or self.image_entry.get('path')
+        if arr is None or extent is None or not anchor:
+            QtWidgets.QMessageBox.information(self, "Virtual copy", "No map data to copy yet.")
+            return
+        agg_mode = self.map_mode_combo.currentText()
+        channel_label = self._channel_label_for_path(self.channel_combo.currentData()) or "channel"
+        view = {
+            "path": str(anchor),
+            "arr": np.asarray(arr, dtype=float),
+            "channel_idx": 0,
+            "extent_raw": tuple(float(v) for v in extent),
+            "title": f"{channel_label} [{agg_mode}]",
+        }
+        key = viewer._create_virtual_view_copy(view, tag=f"[{agg_mode}]", op="grid_slice")
+        if not key:
+            QtWidgets.QMessageBox.warning(self, "Virtual copy", "Could not create a virtual copy of this map.")
+            return
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Virtual copy created", self)
+        try:
+            viewer.show_file_channel(key, 0)
+        except Exception:
+            pass
+
     def _on_show_position_markers_toggled(self, checked):
         # "Show all spectroscopy positions" only matters once markers are
         # actually being drawn - keep it visibly disabled rather than just
@@ -3650,6 +3697,14 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             "WSxM ASCII XYZ file - any map here (Slice at value, Max "
             "amplitude, ...) is real measured data, not just a preview."
         )
+        virtual_copy_act = None
+        if hasattr(self.viewer, "_create_virtual_view_copy"):
+            virtual_copy_act = menu.addAction("Create virtual copy...")
+            virtual_copy_act.setToolTip(
+                "Turn this map into its own virtual-copy thumbnail - a real "
+                "image you can crop, measure, add molecule overlays to, "
+                "etc. in the main preview."
+            )
         menu.addSeparator()
         add_font_menu_action(
             menu,
@@ -3721,6 +3776,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._clear_selection()
         elif action == reset_act:
             self._reset_matrix_view()
+        elif virtual_copy_act is not None and action == virtual_copy_act:
+            self._create_virtual_copy_of_map()
 
     def _copy_map_data_to_clipboard(self):
         arr = self._current_image_arr
