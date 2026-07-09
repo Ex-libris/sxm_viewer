@@ -45,11 +45,12 @@ def _spec_position_text(spec):
 
 
 def _spec_leaf_label(spec, index=None):
+    # Off-frame/low-confidence status is now shown as an icon
+    # (_browser_status_icon) rather than bracketed text - keeps leaf rows
+    # scannable, especially for large flat lists (a 512-point grid).
     bits = []
     if index is not None:
         bits.append(f"{index}.")
-    if _spec_is_off_frame(spec):
-        bits.append("⚠️")
     bits.append(Path(spec.get("path", "")).name)
     channel = str(spec.get("channel_name") or "").strip()
     if channel:
@@ -60,8 +61,6 @@ def _spec_leaf_label(spec, index=None):
     stack = str(spec.get("xy_stack_display") or "").strip()
     if stack:
         bits.append(f"[{stack}]")
-    if _spec_is_off_frame(spec):
-        bits.append("[off-frame]")
     return " ".join(bit for bit in bits if bit)
 
 
@@ -81,7 +80,7 @@ def _site_tree_label(site_specs):
     if low_conf_count:
         extras.append(f"low conf {low_conf_count}")
     if off_frame_count:
-        extras.append(f"⚠️ off-frame {off_frame_count}")
+        extras.append(f"off-frame {off_frame_count}")
     if first.get("site_has_z_stack"):
         extras.append("Z series")
     elif int(first.get("xy_stack_count") or 0) > 1:
@@ -113,6 +112,110 @@ def _spec_search_blob(spec):
 
 def _spec_is_off_frame(spec):
     return bool(spec.get("off_frame_direction"))
+
+
+_BROWSER_ICON_SIZE = 18
+_browser_icon_cache = {}
+
+
+def _browser_type_icon(kind):
+    """Small colored glyph summarizing a site's kind (single point, matrix/
+    grid, Z-stack) - reuses the same accent colors as the on-thumbnail
+    marker overlays (see gui/spectroscopy/overlays.py) so the browser's
+    visual language matches what's drawn on the images themselves, instead
+    of relying purely on bracketed text tags."""
+    cached = _browser_icon_cache.get(kind)
+    if cached is not None:
+        return cached
+    size = _BROWSER_ICON_SIZE
+    pix = QPixmap(size, size)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    cx = cy = size / 2.0
+    if kind == "matrix":
+        color = QtGui.QColor(64, 200, 255)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QBrush(color))
+        step = 4.2
+        start = cx - step
+        for r in range(3):
+            for c in range(3):
+                painter.drawEllipse(QtCore.QPointF(start + c * step, start + r * step), 1.3, 1.3)
+    elif kind == "zstack":
+        color = QtGui.QColor(165, 141, 242)
+        painter.setPen(QtCore.Qt.NoPen)
+        bar_w, bar_h, gap = 11.0, 2.6, 1.6
+        total_h = bar_h * 3 + gap * 2
+        top = cy - total_h / 2.0
+        for i, w in enumerate((1.0, 0.75, 0.55)):
+            c = QtGui.QColor(color)
+            c.setAlpha(max(120, 235 - i * 45))
+            painter.setBrush(QtGui.QBrush(c))
+            bw = bar_w * w
+            painter.drawRoundedRect(QtCore.QRectF(cx - bw / 2.0, top + i * (bar_h + gap), bw, bar_h), bar_h / 2.0, bar_h / 2.0)
+    else:  # "single"
+        color = QtGui.QColor(255, 160, 0)
+        painter.setPen(QtGui.QPen(QtGui.QColor(20, 12, 0), 1.0))
+        painter.setBrush(QtGui.QBrush(color))
+        painter.drawEllipse(QtCore.QPointF(cx, cy), 5.0, 5.0)
+    painter.end()
+    icon = QIcon(pix)
+    _browser_icon_cache[kind] = icon
+    return icon
+
+
+def _browser_status_icon(*, low_conf=False, off_frame=False):
+    """Small overlay glyph for assignment-status flags on a leaf row - a
+    dashed amber ring for a low-confidence link, or the same orange flag
+    used for off-frame markers on thumbnails (see _draw_off_frame_chevron in
+    overlays.py). Returns None when neither flag applies, so callers can
+    skip setting an icon entirely for the common (unflagged) case."""
+    if not low_conf and not off_frame:
+        return None
+    key = ("status", bool(low_conf), bool(off_frame))
+    cached = _browser_icon_cache.get(key)
+    if cached is not None:
+        return cached
+    size = _BROWSER_ICON_SIZE
+    pix = QPixmap(size, size)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    cx = cy = size / 2.0
+    if off_frame:
+        color = QtGui.QColor(255, 140, 0)
+        outline = QtGui.QColor(20, 12, 0)
+        painter.setPen(QtGui.QPen(outline, 1.4))
+        painter.drawLine(QtCore.QPointF(cx - 4.5, cy - 5.5), QtCore.QPointF(cx - 4.5, cy + 5.5))
+        path = QtGui.QPainterPath()
+        path.moveTo(cx - 4.5, cy - 5.5)
+        path.lineTo(cx + 5.5, cy - 2.2)
+        path.lineTo(cx - 4.5, cy + 1.0)
+        path.closeSubpath()
+        painter.setPen(QtGui.QPen(outline, 1.0))
+        painter.setBrush(QtGui.QBrush(color))
+        painter.drawPath(path)
+    elif low_conf:
+        color = QtGui.QColor(255, 210, 96)
+        pen = QtGui.QPen(color, 1.8)
+        pen.setStyle(QtCore.Qt.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawEllipse(QtCore.QPointF(cx, cy), 6.5, 6.5)
+    painter.end()
+    icon = QIcon(pix)
+    _browser_icon_cache[key] = icon
+    return icon
+
+
+def _site_kind(site_specs):
+    first = site_specs[0] if site_specs else {}
+    if first.get("site_has_matrix"):
+        return "matrix"
+    if first.get("site_has_z_stack") or int(first.get("xy_stack_count") or 0) > 1:
+        return "zstack"
+    return "single"
 
 
 def _browser_filter_flags(viewer):
@@ -149,6 +252,49 @@ def _spec_passes_browser_filters(viewer, spec, flags):
     return True
 
 
+def _update_browser_preview_image(viewer, image_key):
+    """Render a real colored thumbnail of the assigned image - with all of
+    its usual spectroscopy overlays (markers, footprints, off-frame flags,
+    and the pulsing glow on whatever _highlight_spectrum_entry last set) -
+    into the browser's preview panel, instead of leaving it as bare text.
+    Call this AFTER _highlight_spectrum_entry so the glow reflects the
+    current selection."""
+    lbl = getattr(viewer, "spectro_preview_img_lbl", None)
+    if lbl is None:
+        return
+    if not image_key or image_key not in getattr(viewer, "headers", {}):
+        lbl.clear()
+        lbl.setVisible(False)
+        return
+    try:
+        header, fds = viewer.headers.get(str(image_key), (None, None))
+        if not header or not fds:
+            lbl.clear()
+            lbl.setVisible(False)
+            return
+        channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
+        if channel_idx < 0 or channel_idx >= len(fds):
+            channel_idx = 0
+        cmap = viewer.thumb_cmap_combo.currentText() if hasattr(viewer, "thumb_cmap_combo") else None
+        cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
+        size = lbl.width() or 120
+        pix = viewer._thumbnail_pixmap_for_file(str(image_key), channel_idx, size, size, cmap)
+        if pix is None:
+            lbl.clear()
+            lbl.setVisible(False)
+            return
+        pix = pix.copy()
+        try:
+            viewer._decorate_thumbnail_pixmap(pix, str(image_key), channel_idx, header, fds)
+        except Exception:
+            pass
+        lbl.setPixmap(pix.scaled(lbl.width(), lbl.height(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        lbl.setVisible(True)
+    except Exception:
+        lbl.clear()
+        lbl.setVisible(False)
+
+
 def _set_browser_preview_to_image(viewer, image_key, text):
     try:
         viewer.spectro_preview_lbl.setText(text)
@@ -165,6 +311,7 @@ def _set_browser_preview_to_image(viewer, image_key, text):
             viewer._highlight_spectrum_entry(None)
     except Exception:
         pass
+    _update_browser_preview_image(viewer, image_key)
 
 
 def _open_browser_item(viewer, item):
@@ -212,6 +359,14 @@ def _select_first_browser_match(viewer, predicate=None):
                 continue
             if predicate is not None and not predicate(payload):
                 continue
+            # Sites/images can be collapsed by default now (see
+            # _BROWSER_AUTO_EXPAND_SITES/_SITE_SPECS) - a match inside a
+            # collapsed branch must be expanded explicitly, or
+            # setCurrentItem leaves it selected but invisible.
+            ancestor = candidate.parent()
+            while ancestor is not None:
+                ancestor.setExpanded(True)
+                ancestor = ancestor.parent()
             tree.setCurrentItem(candidate)
             tree.scrollToItem(candidate)
             return True
@@ -319,13 +474,25 @@ def _ensure_spectro_dock(viewer):
         return
     dock = QtWidgets.QDockWidget("Spectro Browser", viewer)
     dock.setFloating(True)
+    dock.resize(460, 640)
     container = QtWidgets.QWidget(dock)
     v = QtWidgets.QVBoxLayout(container)
-    v.setContentsMargins(6, 6, 6, 6)
+    v.setContentsMargins(8, 8, 8, 8)
     v.setSpacing(6)
+
+    search_row = QtWidgets.QHBoxLayout()
+    search_row.setContentsMargins(0, 0, 0, 0)
+    search_row.setSpacing(6)
     viewer.spectro_search = QtWidgets.QLineEdit()
     viewer.spectro_search.setPlaceholderText("Search image, site, file, channel, or position")
-    v.addWidget(viewer.spectro_search)
+    viewer.spectro_search.setClearButtonEnabled(True)
+    search_row.addWidget(viewer.spectro_search, 1)
+    v.addLayout(search_row)
+
+    viewer.spectro_results_lbl = QLabel("")
+    viewer.spectro_results_lbl.setObjectName("spectroResultsLabel")
+    v.addWidget(viewer.spectro_results_lbl)
+
     filter_row = QtWidgets.QHBoxLayout()
     filter_row.setContentsMargins(0, 0, 0, 0)
     filter_row.setSpacing(6)
@@ -346,17 +513,34 @@ def _ensure_spectro_dock(viewer):
     filter_row.addWidget(viewer.spectro_filter_off_frame_cb)
     filter_row.addStretch(1)
     v.addLayout(filter_row)
+
     viewer.spectro_list = QTreeWidget()
     viewer.spectro_list.setHeaderHidden(True)
     viewer.spectro_list.setRootIsDecorated(True)
     viewer.spectro_list.setUniformRowHeights(False)
+    viewer.spectro_list.setIndentation(16)
+    viewer.spectro_list.setIconSize(QtCore.QSize(_BROWSER_ICON_SIZE, _BROWSER_ICON_SIZE))
+    viewer.spectro_list.setAlternatingRowColors(True)
     viewer.spectro_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
     v.addWidget(viewer.spectro_list, 1)
+
+    preview_frame = QtWidgets.QFrame()
+    preview_frame.setObjectName("spectroPreviewFrame")
+    preview_frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+    preview_layout = QtWidgets.QHBoxLayout(preview_frame)
+    preview_layout.setContentsMargins(6, 6, 6, 6)
+    preview_layout.setSpacing(8)
+    viewer.spectro_preview_img_lbl = QLabel()
+    viewer.spectro_preview_img_lbl.setAlignment(QtCore.Qt.AlignCenter)
+    viewer.spectro_preview_img_lbl.setFixedSize(120, 120)
+    viewer.spectro_preview_img_lbl.setScaledContents(False)
+    preview_layout.addWidget(viewer.spectro_preview_img_lbl)
     viewer.spectro_preview_lbl = QLabel("Select a position or spectrum")
-    viewer.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignCenter)
-    viewer.spectro_preview_lbl.setMinimumHeight(120)
-    viewer.spectro_preview_lbl.setStyleSheet("QLabel { color: #999; }")
-    v.addWidget(viewer.spectro_preview_lbl)
+    viewer.spectro_preview_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+    viewer.spectro_preview_lbl.setWordWrap(True)
+    preview_layout.addWidget(viewer.spectro_preview_lbl, 1)
+    v.addWidget(preview_frame)
+
     container.setLayout(v)
     dock.setWidget(container)
     viewer.spectro_dock = dock
@@ -382,12 +566,37 @@ def open_spectro_browser(viewer, entries=None):
     viewer.spectro_dock.raise_()
 
 
+_BROWSER_AUTO_EXPAND_SITES = 8
+_BROWSER_AUTO_EXPAND_SITE_SPECS = 20
+
+
+def _update_browser_filter_counts(viewer):
+    """Live counts on each filter checkbox (e.g. "Off-frame (2)") so the
+    user knows before checking one whether there's anything to find,
+    instead of clicking a checkbox that silently empties the tree."""
+    entries = list(getattr(viewer, "_spectro_browser_entries", []) or [])
+    z_stack_n = sum(1 for s in entries if bool(s.get("site_has_z_stack") or s.get("xy_stack_z_varies")))
+    matrix_n = sum(1 for s in entries if bool(s.get("site_has_matrix") or s.get("matrix_index") is not None))
+    low_conf_n = sum(1 for s in entries if str(s.get("assignment_confidence") or "").strip().lower() == "low")
+    off_frame_n = sum(1 for s in entries if _spec_is_off_frame(s))
+    for attr, label, n in (
+        ("spectro_filter_z_stack_cb", "Z-stacks", z_stack_n),
+        ("spectro_filter_matrix_cb", "Matrix", matrix_n),
+        ("spectro_filter_low_conf_cb", "Low confidence", low_conf_n),
+        ("spectro_filter_off_frame_cb", "Off-frame", off_frame_n),
+    ):
+        widget = getattr(viewer, attr, None)
+        if widget is not None:
+            widget.setText(f"{label} ({n})")
+
+
 def _filter_spectro_browser(viewer):
     if not hasattr(viewer, "spectro_list"):
         return
     txt = viewer.spectro_search.text().strip().lower() if hasattr(viewer, "spectro_search") else ""
     flags = _browser_filter_flags(viewer)
     viewer.spectro_list.clear()
+    _update_browser_filter_counts(viewer)
 
     grouped = OrderedDict()
     for spec in list(getattr(viewer, "_spectro_browser_entries", []) or []):
@@ -398,7 +607,9 @@ def _filter_spectro_browser(viewer):
         site_key = str(spec.get("site_key") or viewer._spec_identity_key(spec) or id(spec))
         grouped[image_key].setdefault(site_key, []).append(spec)
 
+    single_image = len(grouped) <= 1
     global_index = 0
+    shown_count = 0
     for image_key, sites in grouped.items():
         image_name = Path(image_key).name if image_key else "Unassigned spectra"
         image_blob = f"{image_name} {image_key}".lower()
@@ -422,9 +633,13 @@ def _filter_spectro_browser(viewer):
                 image_specs.extend(visible_specs)
         if not visible_sites:
             continue
+        shown_count += len(image_specs)
 
         image_item = QTreeWidgetItem([_image_tree_label(image_key, image_specs, len(visible_sites))])
         image_item.setToolTip(0, image_key or image_name)
+        bold_font = image_item.font(0)
+        bold_font.setBold(True)
+        image_item.setFont(0, bold_font)
         image_item.setData(0, QtCore.Qt.UserRole, {
             "kind": "image",
             "image_key": image_key,
@@ -435,6 +650,7 @@ def _filter_spectro_browser(viewer):
         for site_key, site_specs in visible_sites:
             first = site_specs[0]
             site_item = QTreeWidgetItem([_site_tree_label(site_specs)])
+            site_item.setIcon(0, _browser_type_icon(_site_kind(site_specs)))
             site_summary = str(first.get("site_summary") or first.get("site_display") or "").strip()
             if site_summary:
                 site_item.setToolTip(0, site_summary)
@@ -450,6 +666,11 @@ def _filter_spectro_browser(viewer):
             for spec in site_specs:
                 global_index += 1
                 leaf = QTreeWidgetItem([_spec_leaf_label(spec, index=global_index)])
+                low_conf = str(spec.get("assignment_confidence") or "").strip().lower() == "low"
+                off_frame = _spec_is_off_frame(spec)
+                status_icon = _browser_status_icon(low_conf=low_conf, off_frame=off_frame)
+                if status_icon is not None:
+                    leaf.setIcon(0, status_icon)
                 assignment_summary = str(spec.get("assignment_summary") or "").strip()
                 assignment_conf = str(spec.get("assignment_confidence") or "").strip()
                 tip_lines = [Path(spec.get("path", "")).name]
@@ -472,8 +693,21 @@ def _filter_spectro_browser(viewer):
                     "spec": spec,
                 })
                 site_item.addChild(leaf)
-            site_item.setExpanded(True)
-        image_item.setExpanded(True)
+            # Large single-image grids/stacks (hundreds of positions) used to
+            # auto-expand every level unconditionally, producing a wall of
+            # text with no way to get an overview first. Only expand a site
+            # by default when its trace count is small enough to be useful
+            # at a glance; searching or opening a filter still surfaces
+            # matches directly via _select_first_browser_match.
+            site_item.setExpanded(len(site_specs) <= _BROWSER_AUTO_EXPAND_SITE_SPECS)
+        image_item.setExpanded(single_image or len(visible_sites) <= _BROWSER_AUTO_EXPAND_SITES)
+
+    total_count = len(list(getattr(viewer, "_spectro_browser_entries", []) or []))
+    if hasattr(viewer, "spectro_results_lbl"):
+        if txt or any(flags.values()):
+            viewer.spectro_results_lbl.setText(f"Showing {shown_count} of {total_count} spectra")
+        else:
+            viewer.spectro_results_lbl.setText(f"{total_count} spectra")
 
 
 def _on_spectro_browser_selection(viewer, current, _prev):
@@ -507,12 +741,22 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         lines = [site_summary or "Position"]
         if specs:
             lines.append(f"{len(specs)} spectra")
-        _set_browser_preview_to_image(viewer, image_key, "\n".join(line for line in lines if line))
+        viewer.spectro_preview_lbl.setText("\n".join(line for line in lines if line))
+        try:
+            if image_key and image_key in viewer._thumb_labels:
+                viewer.selected_file_for_thumbs = image_key
+                viewer._refresh_thumb_selection_styles()
+        except Exception:
+            pass
         try:
             if first is not None and hasattr(viewer, "_highlight_spectrum_entry"):
                 viewer._highlight_spectrum_entry(first)
         except Exception:
             pass
+        # Highlight must be set BEFORE rendering the preview pixmap so its
+        # pulsing glow (drawn by _decorate_thumbnail_pixmap from
+        # self._highlighted_spec) actually shows up in this render.
+        _update_browser_preview_image(viewer, image_key)
         return
 
     spec = payload.get("spec")
@@ -541,8 +785,8 @@ def _on_spectro_browser_selection(viewer, current, _prev):
     except Exception:
         viewer.spectro_preview_lbl.setText(Path(spec.get("path", "")).name)
 
+    image_key = spec.get("image_key")
     try:
-        image_key = spec.get("image_key")
         shared_keys = [str(key) for key in (spec.get("shared_image_keys") or []) if key]
         current_preview = str(viewer.last_preview[0]) if getattr(viewer, "last_preview", None) else ""
         if current_preview and current_preview in shared_keys:
@@ -559,6 +803,7 @@ def _on_spectro_browser_selection(viewer, current, _prev):
             viewer._highlight_spectrum_entry(spec)
     except Exception:
         pass
+    _update_browser_preview_image(viewer, image_key)
 
 
 def _on_spectro_browser_activate(viewer, item, _column=0):
