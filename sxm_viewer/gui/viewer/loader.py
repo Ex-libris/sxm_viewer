@@ -93,6 +93,15 @@ from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompar
 _SPECTRO_MANIFEST_VERSION = 5
 _SPECTRO_CACHE_MTIME_TOLERANCE = 2.0
 _SPECTRO_MANIFEST_FILE = "manifest_v2.json"
+# Bumped once, alongside the _scan_spectros per-file-loop fix that stopped
+# manifest-restored (metadata-only) spec lists from being written back to the
+# per-file disk payload cache as false "payload_usable: False" negatives.
+# _load_spectro_disk_payload only trusts a stored negative (skips reparsing)
+# when it was written by a cache_format_version match, so every entry written
+# before this fix - which may be a real negative or may be cache poisoning,
+# indistinguishable after the fact - gets re-verified against the file once
+# instead of being trusted forever.
+_SPECTRO_DISK_CACHE_VERSION = 2
 _SPECTRO_METADATA_ARRAY_KEYS = {
     "channels",
     "V",
@@ -1213,7 +1222,10 @@ def _load_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None,
                 "payload_meta": meta_file.name,
                 "payload_data": data_file.name,
                 "cache_key": cache_key,
-                "stored_unusable": cache_meta.get("payload_usable") is False,
+                "stored_unusable": (
+                    cache_meta.get("payload_usable") is False
+                    and cache_meta.get("cache_format_version") == _SPECTRO_DISK_CACHE_VERSION
+                ),
             }
         except Exception:
             continue
@@ -1236,6 +1248,7 @@ def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None
             # drawable data" (serve from cache) apart from "a usable payload
             # got corrupted" (re-parse to heal).
             "payload_usable": bool(_payload_specs_usable(specs)),
+            "cache_format_version": _SPECTRO_DISK_CACHE_VERSION,
             "relative_path": _spectro_relative_key(base_folder, filepath),
         }
         with open(meta_file, "w", encoding="utf-8") as handle:
@@ -2229,11 +2242,25 @@ def _scan_spectros(
             spec_list = _spec_metadata_list(restored) if lazy_payload else [_clone_spec_entry(entry) for entry in restored]
             stats["cache_hits"] = stats.get("cache_hits", 0) + 1
         else:
+            # Tracks whether spec_list came from the manifest or the per-file
+            # disk cache (both already-persisted, metadata-only-or-better
+            # sources) as opposed to a genuine fresh parse. Only a fresh parse
+            # may be written (back) to the in-memory cache / disk payload
+            # cache below - manifest restores are metadata-only by design
+            # (never carry channels/V), so writing one to the disk payload
+            # cache would permanently overwrite a file's real cached curve
+            # data with a false "no usable payload" negative. This was a real
+            # bug: it silently poisoned the disk cache (and this run's
+            # in-memory viewer._spectro_cache, since `cache` is that same
+            # dict) for the vast majority of files on affected folders,
+            # making previously-working spectra fail to open.
+            restored_from_persisted_source = False
             if manifest_entry and _manifest_entry_valid(manifest_entry, mtime=mtime, fsize=fsize):
                 t_manifest = time.perf_counter()
                 spec_list = _restore_spec_metadata_list(manifest_entry)
                 stats["manifest_ms"] += (time.perf_counter() - t_manifest) * 1000.0
                 stats["manifest_hits"] = stats.get("manifest_hits", 0) + 1
+                restored_from_persisted_source = True
             elif disk_cache_dir:
                 t_disk = time.perf_counter()
                 disk_cached, payload_info = _load_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize)
@@ -2243,6 +2270,7 @@ def _scan_spectros(
                     manifest_changed = True
                     spec_list = _spec_metadata_list(disk_cached) if lazy_payload else [_clone_spec_entry(entry) for entry in disk_cached]
                     stats["disk_cache_hits"] = stats.get("disk_cache_hits", 0) + 1
+                    restored_from_persisted_source = True
             if spec_list is None and disk_cache_dir and cache_miss_logged < 10:
                 cache_miss_logged += 1
                 try:
@@ -2264,23 +2292,25 @@ def _scan_spectros(
                 continue
             if not spec_list:
                 stats['empty_files'] += 1
-                # Remember the empty outcome so the next folder load's bulk
-                # manifest path (see bulk_manifest_ready above) doesn't treat
-                # this file as "never scanned" and fall back to the slow
-                # per-file loop for the whole folder just because of it.
-                cache[norm_key] = {'mtime': mtime, 'data': [], 'empty': True}
-                if manifest_enabled:
-                    manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, [])
-                    manifest_changed = True
+                if not restored_from_persisted_source:
+                    # Remember the empty outcome so the next folder load's bulk
+                    # manifest path (see bulk_manifest_ready above) doesn't treat
+                    # this file as "never scanned" and fall back to the slow
+                    # per-file loop for the whole folder just because of it.
+                    cache[norm_key] = {'mtime': mtime, 'data': [], 'empty': True}
+                    if manifest_enabled:
+                        manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, [])
+                        manifest_changed = True
                 continue
-            cache[norm_key] = {'mtime': mtime, 'data': [_clone_payload_spec_entry(spec) for spec in spec_list]}
-            if disk_cache_dir:
-                payload_info = _store_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize, spec_list)
-            if manifest_enabled:
-                manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, spec_list, payload_info=payload_info)
-                manifest_changed = True
-            if lazy_payload:
-                spec_list = _spec_metadata_list(spec_list)
+            if not restored_from_persisted_source:
+                cache[norm_key] = {'mtime': mtime, 'data': [_clone_payload_spec_entry(spec) for spec in spec_list]}
+                if disk_cache_dir:
+                    payload_info = _store_spectro_disk_payload(disk_cache_dir, folder_path, p, mtime, fsize, spec_list)
+                if manifest_enabled:
+                    manifest_entries[rel_key] = _build_manifest_entry(folder_path, p, mtime, fsize, spec_list, payload_info=payload_info)
+                    manifest_changed = True
+                if lazy_payload:
+                    spec_list = _spec_metadata_list(spec_list)
         for spec in spec_list or []:
             _reset_spec_classification(spec)
         specs.extend(spec_list or [])
