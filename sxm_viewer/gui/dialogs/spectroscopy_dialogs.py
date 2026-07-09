@@ -1710,6 +1710,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             )
         else:
             remove_act = None
+        entry = self._current_entry()
+        entry_path = entry.get("spec_path") if entry else None
+        if entry_path:
+            menu.addSeparator()
+            add_source_file_menu(menu, entry_path, self)
         chosen = menu.exec_(self.curve_list.mapToGlobal(pos))
         if remove_act is not None and chosen == remove_act:
             self._remove_selected_curve()
@@ -2809,7 +2814,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # and keeping it real means none of that has to change; the button
         # row below just drives it instead of the user seeing it directly.
         self.map_mode_combo = QtWidgets.QComboBox()
-        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value", "Reference image"])
+        self.map_mode_combo.addItems(["Slice at value", "Reference image", "Max amplitude", "Peak position", "Integral"])
         self.map_mode_combo.setVisible(False)
         self._mode_buttons = {}
         self._mode_group = QtWidgets.QButtonGroup(self)
@@ -3599,6 +3604,10 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             show_image_act = menu.addAction("Show on image")
         clear_act = menu.addAction("Clear selections")
         reset_act = menu.addAction("Reset view")
+        grid_path = self.specs[0].get("path") if self.specs else None
+        if grid_path:
+            menu.addSeparator()
+            add_source_file_menu(menu, grid_path, self, title="Grid file")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if show_image_act is not None and action == show_image_act:
             self._on_show_on_image()
@@ -6919,17 +6928,22 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         item = self.spec_list.itemAt(pos)
         if not item:
             return
+        spec = item.data(0, QtCore.Qt.UserRole)
         menu = QtWidgets.QMenu(self)
         act = menu.addAction("Open popup")
         show_image_act = None
         if hasattr(self.viewer, "reveal_spectroscopy_source"):
             show_image_act = menu.addAction("Show on image")
         copy_act = menu.addAction("Copy selected to clipboard")
+        source_path = spec.get("path") if isinstance(spec, dict) else None
+        if source_path:
+            menu.addSeparator()
+            add_source_file_menu(menu, source_path, self)
         chosen = menu.exec_(self.spec_list.mapToGlobal(pos))
         if chosen == act:
-            self._show_popup_for_spec(item.data(0, QtCore.Qt.UserRole))
+            self._show_popup_for_spec(spec)
         elif show_image_act is not None and chosen == show_image_act:
-            self._on_show_on_image(item.data(0, QtCore.Qt.UserRole))
+            self._on_show_on_image(spec)
         elif chosen == copy_act:
             self._copy_selected_to_clipboard()
 

@@ -38,6 +38,7 @@ from ..._shared import (
     matplotlib,
 )
 from ..ppt_mixin import PPTContextMenuMixin
+from ..system_open import add_source_file_menu
 from ..thumbnail_render import (
     array_to_qimage,
     _ThumbnailJobSignals,
@@ -526,6 +527,10 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
         menu.addAction(open_action)
 
         specs = self._payload_specs(payload)
+        source_path = specs[0].get("path") if specs else (self._file_key if kind == "image" else None)
+        if source_path:
+            menu.addSeparator()
+            add_source_file_menu(menu, source_path, self)
         if kind in {"site", "spec"} and specs:
             menu.addSeparator()
             current_image_key = ""
