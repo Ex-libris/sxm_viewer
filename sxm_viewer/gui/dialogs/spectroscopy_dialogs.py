@@ -392,6 +392,107 @@ def _spectro_site_text(spec: dict | None) -> str:
     return ""
 
 
+def _apply_signal_filter_chain(x_vals, y_vals, y_unit, x_unit, filter_cfg):
+    """Apply the gaussian/median/savgol/fft/notch/derive filter chain
+    described by filter_cfg to y_vals, returning (filtered_y, unit).
+
+    Pure/module-level (no `self`) so it can run identically from a
+    QThread-based fit worker as from the GUI-thread plotting code that
+    originally only lived as SpectroscopyPopup._apply_data_filters and
+    SpectroscopyCompareDialog._apply_data_filters - both of which now
+    delegate here instead of keeping their own duplicate copy of this
+    logic, matching what fits get: without a single shared implementation,
+    "fit" silently reading raw data while "plot" reads filtered data (see
+    _SpectroFitWorker) would have been an easy discrepancy to reintroduce.
+    """
+    filter_cfg = filter_cfg or {}
+    data = np.asarray(y_vals, dtype=float)
+    x_arr = np.asarray(x_vals, dtype=float) if np.size(x_vals) == data.size else np.linspace(0, data.size - 1, data.size)
+    if data.size == 0:
+        return data, y_unit
+    result = data.copy()
+    dx = float(np.nanmean(np.diff(x_arr))) if x_arr.size > 1 else 1.0
+    if not math.isfinite(dx) or dx == 0:
+        dx = 1.0
+
+    def _odd(value, minimum):
+        v = max(minimum, int(value) or minimum)
+        return v + 1 if v % 2 == 0 else v
+
+    gauss = filter_cfg.get("gaussian", {})
+    if gauss.get("enabled"):
+        sigma = max(0.1, float(gauss.get("sigma", 1.0)))
+        if _scipy_ndimage is not None:
+            result = _scipy_ndimage.gaussian_filter1d(result, sigma=max(0.05, sigma), mode="nearest")
+        else:
+            radius = max(1, int(3 * sigma))
+            xs = np.arange(-radius, radius + 1)
+            kernel = np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
+            kernel /= kernel.sum() or 1.0
+            result = np.convolve(result, kernel, mode="same")
+
+    median = filter_cfg.get("median", {})
+    if median.get("enabled"):
+        size = _odd(median.get("size", 3), 3)
+        if _scipy_ndimage is not None:
+            result = _scipy_ndimage.median_filter(result, size=size, mode="nearest")
+        else:
+            pad = size // 2
+            padded = np.pad(result, pad, mode="edge")
+            out = np.empty_like(result)
+            for i in range(result.size):
+                out[i] = np.median(padded[i:i + size])
+            result = out
+
+    sav_cfg = filter_cfg.get("savgol", {})
+    if sav_cfg.get("enabled"):
+        window = _odd(sav_cfg.get("window", 11), 5)
+        window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
+        window = max(5, window if window % 2 == 1 else window - 1)
+        poly = max(2, min(int(sav_cfg.get("poly", 3)), window - 1))
+        if window >= 3 and window <= result.size:
+            if _scipy_signal is not None:
+                result = _scipy_signal.savgol_filter(result, window, poly, mode="interp")
+            else:
+                result = np.convolve(result, np.ones(window) / float(window), mode="same")
+
+    fft_cfg = filter_cfg.get("fft", {})
+    if fft_cfg.get("enabled") and result.size >= 8:
+        cutoff = min(max(float(fft_cfg.get("cutoff", 0.15)), 0.0), 0.5)
+        if cutoff > 0.0:
+            centered = result - np.nanmean(result)
+            freq = np.fft.rfftfreq(result.size, d=dx)
+            spectrum = np.fft.rfft(centered)
+            nyquist = 0.5 / dx
+            spectrum *= (np.abs(freq) <= cutoff * nyquist)
+            result = np.fft.irfft(spectrum, n=result.size) + np.nanmean(result)
+
+    notch = filter_cfg.get("notch", {})
+    if notch.get("enabled") and result.size >= 8:
+        freq = abs(float(notch.get("freq", 50.0)))
+        width = max(0.0001, abs(float(notch.get("width", 5.0))))
+        if freq > 0.0:
+            centered = result - np.nanmean(result)
+            spectrum = np.fft.rfft(centered)
+            freqs = np.fft.rfftfreq(result.size, d=dx)
+            spectrum *= ~(np.abs(freqs - freq) < width)
+            result = np.fft.irfft(spectrum, n=result.size) + np.nanmean(result)
+
+    deriv = filter_cfg.get("derive", {})
+    unit = y_unit
+    if deriv.get("enabled"):
+        window = _odd(deriv.get("window", 11), 5)
+        window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
+        window = max(5, window if window % 2 == 1 else window - 1)
+        poly = max(2, min(int(deriv.get("poly", 3)), window - 1))
+        if _scipy_signal is not None and window >= 5 and window <= result.size:
+            result = _scipy_signal.savgol_filter(result, window, poly, deriv=1, delta=dx, mode="interp")
+        else:
+            result = np.gradient(result, x_arr)
+        unit = f"d({unit or 'arb'})/d({x_unit or 'x'})"
+    return result, unit
+
+
 class SpectroscopyPopup(QtWidgets.QDialog):
     """Popup window showing spectroscopy curves for a given file."""
     SCIENCE_PALETTE = [
@@ -960,91 +1061,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._plot_selected_channel()
 
     def _apply_data_filters(self, x_vals, y_vals, y_unit, x_unit):
-        data = np.asarray(y_vals, dtype=float)
-        x_arr = np.asarray(x_vals, dtype=float) if np.size(x_vals) == data.size else np.linspace(0, data.size - 1, data.size)
-        if data.size == 0:
-            return data, y_unit
-        result = data.copy()
-        dx = float(np.nanmean(np.diff(x_arr))) if x_arr.size > 1 else 1.0
-        if not math.isfinite(dx) or dx == 0:
-            dx = 1.0
-
-        def _odd(value, minimum):
-            v = max(minimum, int(value) or minimum)
-            return v + 1 if v % 2 == 0 else v
-
-        gauss = self._filter_cfg.get("gaussian", {})
-        if gauss.get("enabled"):
-            sigma = max(0.1, float(gauss.get("sigma", 1.0)))
-            if _scipy_ndimage is not None:
-                result = _scipy_ndimage.gaussian_filter1d(result, sigma=max(0.05, sigma), mode="nearest")
-            else:
-                radius = max(1, int(3 * sigma))
-                xs = np.arange(-radius, radius + 1)
-                kernel = np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
-                kernel /= kernel.sum() or 1.0
-                result = np.convolve(result, kernel, mode="same")
-
-        median = self._filter_cfg.get("median", {})
-        if median.get("enabled"):
-            size = _odd(median.get("size", 3), 3)
-            if _scipy_ndimage is not None:
-                result = _scipy_ndimage.median_filter(result, size=size, mode="nearest")
-            else:
-                pad = size // 2
-                padded = np.pad(result, pad, mode="edge")
-                out = np.empty_like(result)
-                for i in range(result.size):
-                    out[i] = np.median(padded[i:i + size])
-                result = out
-
-        sav_cfg = self._filter_cfg.get("savgol", {})
-        if sav_cfg.get("enabled"):
-            window = _odd(sav_cfg.get("window", 11), 5)
-            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
-            window = max(5, window if window % 2 == 1 else window - 1)
-            poly = max(2, min(int(sav_cfg.get("poly", 3)), window - 1))
-            if window >= 3 and window <= result.size:
-                if _scipy_signal is not None:
-                    result = _scipy_signal.savgol_filter(result, window, poly, mode="interp")
-                else:
-                    result = np.convolve(result, np.ones(window) / float(window), mode="same")
-
-        fft_cfg = self._filter_cfg.get("fft", {})
-        if fft_cfg.get("enabled") and result.size >= 8:
-            cutoff = min(max(float(fft_cfg.get("cutoff", 0.15)), 0.0), 0.5)
-            if cutoff > 0.0:
-                centered = result - np.nanmean(result)
-                freq = np.fft.rfftfreq(result.size, d=dx)
-                spectrum = np.fft.rfft(centered)
-                nyquist = 0.5 / dx
-                spectrum *= (np.abs(freq) <= cutoff * nyquist)
-                result = np.fft.irfft(spectrum, n=result.size) + np.nanmean(result)
-
-        notch = self._filter_cfg.get("notch", {})
-        if notch.get("enabled") and result.size >= 8:
-            freq = abs(float(notch.get("freq", 50.0)))
-            width = max(0.0001, abs(float(notch.get("width", 5.0))))
-            if freq > 0.0:
-                centered = result - np.nanmean(result)
-                spectrum = np.fft.rfft(centered)
-                freqs = np.fft.rfftfreq(result.size, d=dx)
-                spectrum *= ~(np.abs(freqs - freq) < width)
-                result = np.fft.irfft(spectrum, n=result.size) + np.nanmean(result)
-
-        deriv = self._filter_cfg.get("derive", {})
-        unit = y_unit
-        if deriv.get("enabled"):
-            window = _odd(deriv.get("window", 11), 5)
-            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
-            window = max(5, window if window % 2 == 1 else window - 1)
-            poly = max(2, min(int(deriv.get("poly", 3)), window - 1))
-            if _scipy_signal is not None and window >= 5 and window <= result.size:
-                result = _scipy_signal.savgol_filter(result, window, poly, deriv=1, delta=dx, mode="interp")
-            else:
-                result = np.gradient(result, x_arr)
-            unit = f"d({unit or 'arb'})/d({x_unit or 'x'})"
-        return result, unit
+        return _apply_signal_filter_chain(x_vals, y_vals, y_unit, x_unit, self._filter_cfg)
 
     def _set_filter_enabled(self, section, enabled):
         self._filter_cfg.setdefault(section, {})["enabled"] = bool(enabled)
@@ -2727,7 +2744,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         if not name or name not in self.channels:
             return
         try:
-            res = fit_parabola_bias(self.V, self.channels[name])
+            # Fit whatever is actually plotted, not the raw unfiltered
+            # channel - _plot_selected_channel already runs the enabled
+            # filter chain via _apply_data_filters before drawing, so a fit
+            # against self.channels[name] directly would silently disagree
+            # with the curve on screen whenever a filter is active.
+            axis_unit = self.axis_unit if getattr(self, "axis_unit", None) else ""
+            fit_data, _ = self._apply_data_filters(self.V, self.channels[name], "", axis_unit)
+            res = fit_parabola_bias(self.V, fit_data)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Fit failed", str(e))
             return
@@ -4425,11 +4449,15 @@ class _SpectroFitWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(list, list)
     progress = QtCore.pyqtSignal(int, str)
 
-    def __init__(self, specs, channel, axis_key):
+    def __init__(self, specs, channel, axis_key, filter_cfg=None):
         super().__init__()
         self.specs = list(specs)
         self.channel = channel
         self.axis_key = axis_key or "primary"
+        # Plain dict copy, not a reference to the dialog's live _filter_cfg -
+        # this worker runs on its own QThread, so it must not touch a Qt
+        # widget's state directly.
+        self.filter_cfg = dict(filter_cfg or {})
 
     @staticmethod
     def _axis_for_spec_with_key(spec, key):
@@ -4460,6 +4488,13 @@ class _SpectroFitWorker(QtCore.QObject):
             if data is None or not V.size:
                 logs.append(f"{name}: channel '{self.channel}' unavailable for axis '{axis_label}'")
                 continue
+            # Fit whatever the dialog is actually plotting - if a filter
+            # (smoothing, denoising, derivative, ...) is enabled, fitting
+            # the raw unfiltered curve instead would silently disagree with
+            # what's on screen, which is the whole point of having filters
+            # in a fit workflow. A no-op (data unchanged) when every
+            # section is disabled, which is the default filter_cfg state.
+            data, _ = _apply_signal_filter_chain(V, data, "", axis_unit, self.filter_cfg)
             try:
                 res = fit_parabola_bias(V, data)
                 res['spec'] = spec
@@ -7176,110 +7211,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _apply_data_filters(self, x_vals, y_vals, y_unit, x_unit):
         """Apply any enabled data filters/derivatives."""
-        data = np.asarray(y_vals, dtype=float)
-        x_arr = np.asarray(x_vals, dtype=float) if np.size(x_vals) == data.size else np.linspace(0, data.size - 1, data.size)
-        if data.size == 0:
-            return data, y_unit
-        cfg = getattr(self, "_filter_cfg", {})
-        result = data.copy()
-        dx = float(np.nanmean(np.diff(x_arr))) if x_arr.size > 1 else 1.0
-        if not math.isfinite(dx) or dx == 0:
-            dx = 1.0
-
-        def _odd(value, minimum):
-            v = max(minimum, int(value) or minimum)
-            return v + 1 if v % 2 == 0 else v
-
-        # Gaussian smoothing
-        gauss = cfg.get("gaussian", {})
-        if gauss.get("enabled"):
-            sigma = max(0.1, float(gauss.get("sigma", 1.0)))
-            if _scipy_ndimage is not None:
-                result = _scipy_ndimage.gaussian_filter1d(result, sigma=max(0.05, sigma), mode="nearest")
-            else:
-                radius = max(1, int(3 * sigma))
-                xs = np.arange(-radius, radius + 1)
-                kernel = np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
-                kernel /= kernel.sum() or 1.0
-                result = np.convolve(result, kernel, mode="same")
-
-        # Median filtering
-        median = cfg.get("median", {})
-        if median.get("enabled"):
-            size = _odd(median.get("size", 3), 3)
-            if _scipy_ndimage is not None:
-                result = _scipy_ndimage.median_filter(result, size=size, mode="nearest")
-            else:
-                pad = size // 2
-                padded = np.pad(result, pad, mode="edge")
-                out = np.empty_like(result)
-                for i in range(result.size):
-                    window = padded[i:i + size]
-                    out[i] = np.median(window)
-                result = out
-
-        # Savitzky-Golay smoothing
-        sav_cfg = cfg.get("savgol", {})
-        if sav_cfg.get("enabled"):
-            window = _odd(sav_cfg.get("window", 11), 5)
-            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
-            window = max(5, window if window % 2 == 1 else window - 1)
-            poly = max(2, min(int(sav_cfg.get("poly", 3)), window - 1))
-            if window >= 3 and window <= result.size:
-                if _scipy_signal is not None:
-                    result = _scipy_signal.savgol_filter(result, window, poly, mode="interp")
-                else:
-                    kernel = np.ones(window) / float(window)
-                    result = np.convolve(result, kernel, mode="same")
-
-        # FFT low-pass
-        fft_cfg = cfg.get("fft", {})
-        if fft_cfg.get("enabled") and result.size >= 8:
-            cutoff = float(fft_cfg.get("cutoff", 0.15))
-            cutoff = min(max(cutoff, 0.0), 0.5)
-            if cutoff > 0.0:
-                centered = result - np.nanmean(result)
-                freq = np.fft.rfftfreq(result.size, d=dx)
-                spectrum = np.fft.rfft(centered)
-                nyquist = 0.5 / dx
-                thresh = cutoff * nyquist
-                mask = np.abs(freq) <= thresh
-                spectrum *= mask
-                recovered = np.fft.irfft(spectrum, n=result.size)
-                result = recovered + np.nanmean(result)
-
-        # Notch filter
-        notch = cfg.get("notch", {})
-        if notch.get("enabled") and result.size >= 8:
-            freq = abs(float(notch.get("freq", 50.0)))
-            width = max(0.0001, abs(float(notch.get("width", 5.0))))
-            if freq > 0.0:
-                centered = result - np.nanmean(result)
-                spectrum = np.fft.rfft(centered)
-                freqs = np.fft.rfftfreq(result.size, d=dx)
-                mask = np.ones_like(freqs, dtype=bool)
-                notch_region = np.abs(freqs - freq) < width
-                mask[notch_region] = False
-                spectrum *= mask
-                recovered = np.fft.irfft(spectrum, n=result.size)
-                result = recovered + np.nanmean(result)
-
-        # Derivative (dY/dX)
-        deriv = cfg.get("derive", {})
-        unit = y_unit
-        if deriv.get("enabled"):
-            window = _odd(deriv.get("window", 11), 5)
-            window = min(window, result.size - 1 if result.size % 2 == 0 else result.size)
-            window = max(5, window if window % 2 == 1 else window - 1)
-            poly = max(2, min(int(deriv.get("poly", 3)), window - 1))
-            if _scipy_signal is not None and window >= 5 and window <= result.size:
-                result = _scipy_signal.savgol_filter(result, window, poly, deriv=1, delta=dx, mode="interp")
-            else:
-                result = np.gradient(result, x_arr)
-            denom = x_unit or "x"
-            unit = f"d({unit or 'arb'})/d({denom})"
-
-        return result, unit
+        return _apply_signal_filter_chain(x_vals, y_vals, y_unit, x_unit, getattr(self, "_filter_cfg", {}))
 
     def _register_filter_control(self, section, key, widget):
         self._filter_controls.setdefault(section, {})[key] = widget
@@ -8507,7 +8439,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         channel = self.channel_combo.currentText()
         self._set_busy(True, f"Fitting {len(specs)} spectra...")
         axis_key = self.axis_combo.currentData()
-        self._fit_worker = _SpectroFitWorker(specs, channel, axis_key)
+        self._fit_worker = _SpectroFitWorker(specs, channel, axis_key, filter_cfg=getattr(self, "_filter_cfg", {}))
         self._fit_thread = QtCore.QThread(self)
         self._fit_worker.moveToThread(self._fit_thread)
         self._fit_thread.started.connect(self._fit_worker.run)
