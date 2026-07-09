@@ -141,6 +141,52 @@ from ..thumbnail_render import (
 from .matrix_fit import MatrixFitDialog
 from ..spectroscopy import overlays as spectro_overlays
 
+def _spec_display_coords(viewer, spec, header, file_key, disp_w, disp_h, crop_info=None):
+    """Map a spec's position onto a *displayed* (possibly downsampled and
+    row-cropped) thumbnail image of size (disp_w, disp_h).
+
+    `_map_spec_to_pixels` returns pixel coordinates in the *original*,
+    uncropped header pixel grid (xPixel/yPixel) - not the on-screen thumbnail
+    size. The main thumbnail grid's own marker overlays
+    (`_render_spectroscopy_overlays`) account for this by scaling separately
+    per axis: w_scale from the full column count, h_scale from the cropped
+    row count (when `detect_valid_scan_region` trimmed blank rows off a
+    partial/aborted scan) or the full row count otherwise. Position insets
+    must use the same two-step transform, or markers land outside the
+    displayed image entirely whenever the underlying thumbnail was cropped.
+    """
+    if not viewer or not file_key or spec is None or header is None:
+        return None
+    try:
+        xpix = int(header.get('xPixel', 128))
+        ypix = int(header.get('yPixel', xpix))
+    except Exception:
+        return None
+    try:
+        c = viewer._map_spec_to_pixels(spec, header, xpix, ypix, file_key=file_key, thumb_crop=crop_info)
+    except Exception:
+        c = None
+    if c is None:
+        return None
+    col, row = c
+    crop_rows = None
+    if crop_info:
+        try:
+            r0 = int(crop_info.get("r0"))
+            r1 = int(crop_info.get("r1"))
+            if r1 > r0:
+                crop_rows = r1 - r0 + 1
+        except Exception:
+            crop_rows = None
+    y_denom = max(1, (crop_rows - 1)) if crop_rows else max(1, ypix - 1)
+    w_scale = max(2, int(disp_w)) / max(1, xpix - 1)
+    h_scale = max(2, int(disp_h)) / y_denom
+    try:
+        return (float(col) * w_scale, float(row) * h_scale)
+    except Exception:
+        return None
+
+
 def _normalize_topo_axis(values: np.ndarray, unit_hint: str | None) -> tuple[np.ndarray, str]:
     arr = np.asarray(values, dtype=float)
     unit = (unit_hint or "").strip()
@@ -1971,9 +2017,15 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             entry.setdefault("matrix_index", spec.get("matrix_index"))
             entry.setdefault("image_key", str(spec.get("image_key") or ""))
             entry.setdefault("nm_coords", (spec.get("x"), spec.get("y")))
-            coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"))
-            if coords:
-                entry["coords"] = coords
+            # Deliberately do NOT precompute/cache "coords" here: the
+            # position-inset display size and crop (aborted-scan row
+            # trimming) aren't known yet at entry-creation time, so any
+            # coords computed now would use the wrong scale and get stuck in
+            # the entry (_collect_inset_markers only recomputes when
+            # entry["coords"] is still None). The inset draw path computes
+            # and caches the correct coords itself once it knows the actual
+            # displayed image size/crop.
+            entry["coords"] = None
         return entry
 
     def _resolve_spec_from_viewer(self, entry):
@@ -2245,11 +2297,16 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         viewer = getattr(self, "viewer", None)
         file_key = file_key or str(self.spec.get("image_key") or "")
         if not viewer or not file_key:
-            return None
+            return None, None
         thumb = None
+        crop_info = None
         label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
         if label is not None and label.pixmap():
             thumb = label.pixmap()
+            try:
+                crop_info = label.property("thumb_crop")
+            except Exception:
+                crop_info = None
         if thumb is None:
             try:
                 width = int(getattr(viewer, "thumb_size_px", 160))
@@ -2258,10 +2315,18 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 cmap = cmap or getattr(viewer, "thumb_cmap", "viridis")
                 channel_idx = viewer.channel_dropdown.currentIndex() if hasattr(viewer, "channel_dropdown") else 0
                 thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
+                header, fds = viewer.headers.get(str(file_key), (None, None))
+                if header is not None and fds and 0 <= channel_idx < len(fds):
+                    try:
+                        data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fds[channel_idx], width, height)
+                        with viewer._thumb_data_lock:
+                            crop_info = viewer._thumb_crop_cache.get(data_key)
+                    except Exception:
+                        crop_info = None
             except Exception:
-                return None
+                return None, None
         if thumb is None:
-            return None
+            return None, None
         qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
         ptr = qimg.bits()
         ptr.setsize(qimg.byteCount())
@@ -2269,9 +2334,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         arr = arr[..., :3] / 255.0
         gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
         tinted = np.stack([gray, gray, gray], axis=-1)
-        return tinted
+        return tinted, crop_info
 
-    def _spec_thumbnail_coords(self, spec=None, file_key=None, dims=None):
+    def _spec_thumbnail_coords(self, spec=None, file_key=None, dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
         spec = spec or self.spec
         file_key = file_key or str(spec.get("image_key") or "")
@@ -2286,11 +2351,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         else:
             width = int(getattr(viewer, "thumb_size_px", 160))
             height = max(48, int(round(width * 0.75)))
-        try:
-            coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=file_key)
-        except Exception:
-            coords = None
-        return coords
+        return _spec_display_coords(viewer, spec, header, file_key, width, height, crop_info=crop_info)
 
     def _update_position_inset(self):
         if self._position_inset_ax is not None:
@@ -2304,14 +2365,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return
         base_entry = self._curve_entries[0] if self._curve_entries else None
         base_key = base_entry.get("image_key") if base_entry else str(self.spec.get("image_key") or "")
-        image = self._load_thumbnail_array(base_key)
+        image, crop_info = self._load_thumbnail_array(base_key)
         image_dims = None
         if image is not None:
             try:
                 image_dims = (int(image.shape[1]), int(image.shape[0]))
             except Exception:
                 image_dims = None
-        markers = self._collect_inset_markers(base_key, image_dims=image_dims)
+        markers = self._collect_inset_markers(base_key, image_dims=image_dims, crop_info=crop_info)
         if image is None or not markers:
             self._remove_inset_drag_handlers()
             return
@@ -2406,10 +2467,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_drag_offset = (0.0, 0.0)
         self._suppress_drag_until_release = False
 
-    def _collect_inset_markers(self, image_key, image_dims=None):
+    def _collect_inset_markers(self, image_key, image_dims=None, crop_info=None):
         markers = []
         if not self._curve_entries:
-            coords = self._spec_thumbnail_coords(dims=image_dims)
+            coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
                 markers.append(("#ff3b6a", coords))
             return markers
@@ -2425,13 +2486,13 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                     if spec:
                         entry["spec"] = spec
                 if spec:
-                    coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"), dims=image_dims)
+                    coords = self._spec_thumbnail_coords(spec=spec, file_key=entry.get("image_key"), dims=image_dims, crop_info=crop_info)
                     if coords:
                         entry["coords"] = coords
             if coords is not None:
                 markers.append((color, coords))
         if not markers:
-            coords = self._spec_thumbnail_coords(dims=image_dims)
+            coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
                 markers.append(("#ff3b6a", coords))
         return markers
@@ -6799,7 +6860,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _load_thumbnail_array_for_inset(self, file_key):
         viewer = getattr(self, "viewer", None)
         if not viewer or not file_key:
-            return None
+            return None, None
         cache_key = None
         try:
             width = int(getattr(viewer, "thumb_size_px", 160))
@@ -6811,20 +6872,34 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             cached = self._compare_inset_image_cache.get(cache_key)
             if cached is not None:
                 self._compare_inset_image_cache.move_to_end(cache_key)
-                return np.array(cached, copy=True)
+                tinted_cached, crop_info_cached = cached
+                return np.array(tinted_cached, copy=True), crop_info_cached
         except Exception:
             cache_key = None
         thumb = None
+        crop_info = None
         label = getattr(viewer, "_thumb_labels", {}).get(file_key) if hasattr(viewer, "_thumb_labels") else None
         if label is not None and label.pixmap():
             thumb = label.pixmap()
+            try:
+                crop_info = label.property("thumb_crop")
+            except Exception:
+                crop_info = None
         if thumb is None:
             try:
                 thumb = viewer._thumbnail_pixmap_for_file(file_key, channel_idx, width, height, cmap)
+                header, fds = viewer.headers.get(str(file_key), (None, None))
+                if header is not None and fds and 0 <= channel_idx < len(fds):
+                    try:
+                        data_key = viewer._thumbnail_data_key(str(file_key), channel_idx, fds[channel_idx], width, height)
+                        with viewer._thumb_data_lock:
+                            crop_info = viewer._thumb_crop_cache.get(data_key)
+                    except Exception:
+                        crop_info = None
             except Exception:
-                return None
+                return None, None
         if thumb is None:
-            return None
+            return None, None
         qimg = thumb.toImage().convertToFormat(QtGui.QImage.Format_RGBA8888)
         ptr = qimg.bits()
         ptr.setsize(qimg.byteCount())
@@ -6833,12 +6908,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         gray = np.clip(arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114, 0.0, 1.0)
         tinted = np.stack([gray, gray, gray], axis=-1)
         if cache_key is not None:
-            self._compare_inset_image_cache[cache_key] = np.array(tinted, copy=True)
+            self._compare_inset_image_cache[cache_key] = (np.array(tinted, copy=True), crop_info)
             while len(self._compare_inset_image_cache) > 6:
                 self._compare_inset_image_cache.popitem(last=False)
-        return tinted
+        return tinted, crop_info
 
-    def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None):
+    def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
         spec = spec or None
         if spec is None:
@@ -6857,13 +6932,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         else:
             width = int(getattr(viewer, "thumb_size_px", 160))
             height = max(48, int(round(width * 0.75)))
-        try:
-            coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=file_key)
-        except Exception:
-            coords = None
-        return coords
+        return _spec_display_coords(viewer, spec, header, file_key, width, height, crop_info=crop_info)
 
-    def _collect_inset_markers_compare(self, base_key, image_dims=None):
+    def _collect_inset_markers_compare(self, base_key, image_dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
         if not viewer or not base_key:
             return []
@@ -6887,10 +6958,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 header, _ = viewer.headers.get(key, (None, None))
             except Exception:
                 header = None
-            try:
-                coords = viewer._map_spec_to_pixels(spec, header, width, height, file_key=key)
-            except Exception:
-                coords = None
+            coords = _spec_display_coords(viewer, spec, header, key, width, height, crop_info=crop_info)
             if coords is None:
                 continue
             spec_id = self._spec_id(spec)
@@ -6914,14 +6982,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         base_spec = items[0].data(0, QtCore.Qt.UserRole)
         base_key = str(base_spec.get("image_key") or "") if base_spec else ""
-        image = self._load_thumbnail_array_for_inset(base_key)
+        image, crop_info = self._load_thumbnail_array_for_inset(base_key)
         image_dims = None
         if image is not None:
             try:
                 image_dims = (int(image.shape[1]), int(image.shape[0]))
             except Exception:
                 image_dims = None
-        markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims)
+        markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims, crop_info=crop_info)
         if image is None or not markers:
             return
         if self._inset_bbox is None:
