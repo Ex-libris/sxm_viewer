@@ -96,7 +96,7 @@ def _refresh_popup_actions(viewer):
             pass
 
 
-def _open_spectroscopy_popup(viewer, spec):
+def _open_spectroscopy_popup(viewer, spec, initial_color=None):
     if not spec:
         return None
     try:
@@ -104,7 +104,7 @@ def _open_spectroscopy_popup(viewer, spec):
             hydrated = viewer.hydrate_spectro_entry(spec)
             if hydrated:
                 spec = hydrated
-        dlg = SpectroscopyPopup(spec, parent=viewer)
+        dlg = SpectroscopyPopup(spec, parent=viewer, initial_color=initial_color)
         _prepare_popup_window(dlg, viewer)
         dlg.show()
         viewer._spectro_popups.append(dlg)

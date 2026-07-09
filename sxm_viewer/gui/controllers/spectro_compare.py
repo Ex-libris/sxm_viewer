@@ -161,11 +161,11 @@ class SpectroCompareController:
                     return dlg
         return self.open_single_popup(spec)
 
-    def open_single_popup(self, spec):
+    def open_single_popup(self, spec, initial_color=None):
         viewer = self.viewer
         if not viewer._spectros_loaded:
             viewer.ensure_spectros_loaded(refresh=False)
-        return spectro_popups._open_spectroscopy_popup(viewer, spec)
+        return spectro_popups._open_spectroscopy_popup(viewer, spec, initial_color=initial_color)
 
     def open_stack_popup(self, spec, file_key=""):
         viewer = self.viewer

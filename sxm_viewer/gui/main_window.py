@@ -9439,13 +9439,13 @@ QLabel:hover {{
         QtWidgets.QToolTip.hideText()
         return False
 
-    def _open_spectroscopy_popup(self, spec):
+    def _open_spectroscopy_popup(self, spec, initial_color=None):
         controller = getattr(self, "spectro_compare_controller", None)
         if controller:
-            return controller.open_single_popup(spec)
+            return controller.open_single_popup(spec, initial_color=initial_color)
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
-        return spectro_popups._open_spectroscopy_popup(self, spec)
+        return spectro_popups._open_spectroscopy_popup(self, spec, initial_color=initial_color)
 
     def _ensure_single_spectro_popup(self, spec):
         controller = getattr(self, "spectro_compare_controller", None)

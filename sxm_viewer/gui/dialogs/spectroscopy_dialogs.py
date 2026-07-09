@@ -405,7 +405,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         "#f96855", "#56a3a6", "#9f5f9d", "#2d5d82", "#73c2ff", "#ffaec9",
         "#000000", "#202020", "#404040", "#808080", "#c0c0c0", "#ffffff"
     ]
-    def __init__(self, spec, parent=None):
+    def __init__(self, spec, parent=None, initial_color=None):
         super().__init__(parent)
         self.spec = spec
         self.viewer = parent
@@ -426,7 +426,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.axis_combo = QtWidgets.QComboBox()
         self.fit_btn = QtWidgets.QPushButton("Fit parabola")
         self.copy_btn = QtWidgets.QPushButton("Copy channel")
-        self._active_line_color = self.SCIENCE_PALETTE[0]
+        # Honor the color the caller already committed to (e.g. the Grid Map
+        # Explorer's color-cycle swatch for the point that was clicked) so
+        # this popup's trace doesn't default to a mismatched palette entry.
+        self._active_line_color = str(initial_color) if initial_color else self.SCIENCE_PALETTE[0]
         self._swatch_buttons = []
         self._curve_entries = []
         self._selected_curve_index = 0
@@ -3968,7 +3971,11 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 except Exception:
                     pass
         else:
-            self.viewer._open_spectroscopy_popup(spec)
+            # Pass the color this click just claimed from the grid map's
+            # own color cycle so the popup that opens doesn't independently
+            # default to its own SCIENCE_PALETTE[0] - the two would almost
+            # never coincide, so the marker and its trace looked unrelated.
+            self.viewer._open_spectroscopy_popup(spec, initial_color=color)
         max_sel = 24
         if len(self._selection) > max_sel:
             overflow = len(self._selection) - max_sel
