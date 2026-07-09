@@ -647,6 +647,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "highlight_spec": highlight_spec,
         "spec_pixels": list(spec_pixels),
         "stack_badges": list(stack_badges),
+        "marker_symbol": str(getattr(viewer, "spectro_marker_symbol", "circle") or "circle"),
     }
     clim = _resolve_view_clim(
         viewer,
@@ -837,6 +838,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'highlight_spec': highlight_spec,
         'spec_pixels': list(spec_pixels),
         'stack_badges': list(stack_badges),
+        'marker_symbol': str(getattr(viewer, "spectro_marker_symbol", "circle") or "circle"),
     }
     # A filter pipeline applied while this file was previously shown (via the
     # quick-menu or "Let the robot") is persisted to thumbnail_filters and

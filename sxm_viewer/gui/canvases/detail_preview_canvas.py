@@ -73,6 +73,13 @@ except Exception:  # pragma: no cover - optional dependency
     cv2 = None
     _HAS_CV2 = False
 
+# Matplotlib marker codes for each spectro_marker_symbol choice, so single-
+# spectrum markers on the main preview canvas respect the same symbol
+# setting as the thumbnail overlays (gui/spectroscopy/overlays.py) instead
+# of always being a plain circle.
+_MPL_SPEC_MARKER_CODES = {"circle": "o", "square": "s", "triangle": "^", "diamond": "D"}
+
+
 def _default_export_filename(view, ext):
     """Derive a default export filename for a preview view from its structured metadata."""
     meta = view.get("meta") or {}
@@ -3128,11 +3135,31 @@ class MultiPreviewCanvas(FigureCanvas):
         highlight_ys = []
         points = []
         missing_specs = []
+        matrix_groups = {}
         highlight_spec = view.get('highlight_spec')
         highlight_key = _spec_identity(highlight_spec)
         pulse = float(getattr(self, "_highlight_pulse_strength", 1.0) or 1.0)
         pixel_lookup = {id(spec): (col, row) for spec, col, row in (view.get('spec_pixels') or [])}
         stack_badges = list(view.get("stack_badges") or [])
+        marker_symbol = _MPL_SPEC_MARKER_CODES.get(str(view.get('marker_symbol') or 'circle').lower(), 'o')
+
+        def _route_point(x, y, spec):
+            # Matrix/grid points are grouped into one footprint rectangle
+            # per dataset below instead of being scattered as individual
+            # dots - a real grid can be 700-2000+ points, and drawing every
+            # one as a raw marker here (this canvas has no notion of
+            # footprints, unlike the thumbnail overlay system) looked like
+            # a dense, confusing point swarm even though each point's own
+            # position was correct.
+            if spec.get('matrix_index') is not None:
+                dataset_key = spec.get('matrix_dataset') or str(spec.get('path') or '')
+                matrix_groups.setdefault(dataset_key, []).append((x, y, spec))
+                return
+            if highlight_key is not None and _spec_identity(spec) == highlight_key:
+                highlight_xs.append(x); highlight_ys.append(y)
+            else:
+                normal_xs.append(x); normal_ys.append(y)
+
         for idx, s in enumerate(specs):
             coords = pixel_lookup.get(id(s))
             if coords is None:
@@ -3140,10 +3167,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
             x, y = _axis_from_pixel(coords[0], coords[1])
             points.append((x, y, s))
-            if highlight_key is not None and _spec_identity(s) == highlight_key:
-                highlight_xs.append(x); highlight_ys.append(y)
-            else:
-                normal_xs.append(x); normal_ys.append(y)
+            _route_point(x, y, s)
         # Fallback grid placement for entries without coordinates so markers still show up
         m = len(missing_specs)
         if m:
@@ -3157,21 +3181,53 @@ class MultiPreviewCanvas(FigureCanvas):
                 fx = x0 + (c + 0.5) * dx
                 fy = y0 + (r + 0.5) * dy
                 points.append((fx, fy, spec))
-                if highlight_key is not None and _spec_identity(spec) == highlight_key:
-                    highlight_xs.append(fx); highlight_ys.append(fy)
-                else:
-                    normal_xs.append(fx); normal_ys.append(fy)
-        if not (normal_xs or highlight_xs):
+                _route_point(fx, fy, spec)
+        if not (normal_xs or highlight_xs or matrix_groups):
             self._spectra_points[ax] = []
             return
         try:
             if normal_xs:
-                ax.scatter(normal_xs, normal_ys, s=28, marker='o', facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
+                ax.scatter(normal_xs, normal_ys, s=28, marker=marker_symbol, facecolor='#ffcc00', edgecolor='#1a1a1a', linewidths=0.7, alpha=0.9, zorder=35)
             if highlight_xs:
                 outer = 260 * (0.9 + 0.3 * pulse)
                 core = 140 * (0.7 + 0.3 * pulse)
                 ax.scatter(highlight_xs, highlight_ys, s=outer, marker='o', facecolor='#ffe8fb', edgecolor='none', alpha=0.22, zorder=36)
                 ax.scatter(highlight_xs, highlight_ys, s=core, marker='o', facecolor='none', edgecolor='#ff5fb7', linewidths=2.4, alpha=0.9, zorder=37)
+            for dataset_key, members in matrix_groups.items():
+                xs_m = [p[0] for p in members]
+                ys_m = [p[1] for p in members]
+                rx_lo, rx_hi = min(xs_m), max(xs_m)
+                ry_lo, ry_hi = min(ys_m), max(ys_m)
+                pad_x = max((rx_hi - rx_lo) * 0.03, abs(rx_hi) * 0.005 + 1e-9)
+                pad_y = max((ry_hi - ry_lo) * 0.03, abs(ry_hi) * 0.005 + 1e-9)
+                rect = patches.Rectangle(
+                    (rx_lo - pad_x, ry_lo - pad_y),
+                    (rx_hi - rx_lo) + 2 * pad_x,
+                    (ry_hi - ry_lo) + 2 * pad_y,
+                    fill=True,
+                    facecolor='#40c8ff',
+                    alpha=0.12,
+                    edgecolor='#40c8ff',
+                    linewidth=1.6,
+                    zorder=34,
+                )
+                ax.add_patch(rect)
+                sample_spec = members[0][2]
+                gc = sample_spec.get('grid_cols')
+                gr = sample_spec.get('grid_rows')
+                label = f"{gc}×{gr} grid" if gc and gr else f"{len(members)} pts"
+                ax.text(
+                    (rx_lo + rx_hi) / 2.0,
+                    ry_hi + pad_y,
+                    label,
+                    fontsize=7.5 * getattr(self, "_font_scale", 1.0),
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color="#eafbff",
+                    zorder=39,
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor="#0d3a4a", edgecolor="#40c8ff", linewidth=1.0, alpha=0.92),
+                )
             for badge in stack_badges:
                 try:
                     bx, by = _axis_from_pixel(float(badge.get("col")), float(badge.get("row")))
