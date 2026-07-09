@@ -2815,11 +2815,33 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._mode_group = QtWidgets.QButtonGroup(self)
         self._mode_group.setExclusive(True)
         primary_modes = {"Slice at value", "Reference image"}
+        mode_tooltips = {
+            "Max amplitude": "Peak-to-peak amplitude of each pixel's whole curve "
+                "(max value minus min value) - useful for spotting which pixels "
+                "have the most signal variation, but doesn't say where in the "
+                "sweep that happened.",
+            "Peak position": "The sweep-axis value (e.g. Bias) where each pixel's "
+                "curve reaches its maximum - useful for mapping where a resonance "
+                "or peak shifts across the grid.",
+            "Integral": "Area under each pixel's curve (sum over the sweep axis) - "
+                "useful as a rough total-signal map when the peak shape itself "
+                "isn't what matters.",
+            "Slice at value": "Shows the channel's value at one chosen point along "
+                "the sweep axis (e.g. Frequency Shift at Bias = -0.5 V) for every "
+                "pixel - a CITS-style slice through the grid. Usually the most "
+                "direct way to see spatial structure in the data.",
+            "Reference image": "Shows the topography/reference scan this grid was "
+                "acquired on, with spectroscopy positions overlaid - no per-pixel "
+                "grid data, just the underlying image for context.",
+        }
         for i in range(self.map_mode_combo.count()):
             mode_name = self.map_mode_combo.itemText(i)
             btn = QtWidgets.QPushButton(mode_name)
             btn.setCheckable(True)
             btn.setCursor(QtCore.Qt.PointingHandCursor)
+            tooltip = mode_tooltips.get(mode_name)
+            if tooltip:
+                btn.setToolTip(tooltip)
             if mode_name in primary_modes:
                 btn.setStyleSheet(
                     "QPushButton { font-weight: 600; padding: 6px 10px; border-radius: 5px; }"
@@ -2834,7 +2856,13 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._mode_group.addButton(btn)
             self._mode_buttons[mode_name] = btn
             mode_row.addWidget(btn)
-        self._mode_buttons["Max amplitude"].setChecked(True)
+        # "Slice at value" is the default: it's the one view that shows real
+        # per-pixel spectroscopy data at a glance (a CITS-style slice), unlike
+        # the three aggregate statistics (which need context to interpret) or
+        # "Reference image" (which shows no grid data at all).
+        _default_mode = "Slice at value"
+        self._mode_buttons[_default_mode].setChecked(True)
+        self.map_mode_combo.setCurrentIndex(self.map_mode_combo.findText(_default_mode))
         left_layout.addLayout(mode_row)
 
         controls = QtWidgets.QHBoxLayout()
@@ -3016,7 +3044,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
         self._update_palette_swatch()
         self._update_slice_axis_range()
-        self._draw_image_layer()
+        # Route the initial draw through _on_map_mode_changed (rather than
+        # calling _draw_image_layer directly) so whatever mode ended up
+        # checked above - default "Slice at value" - also gets its
+        # mode-specific setup applied (slice_controls visibility, cmap sync),
+        # not just the metric computation.
+        self._on_map_mode_changed()
         self._update_matrix_info_label()
 
     def resizeEvent(self, event):
