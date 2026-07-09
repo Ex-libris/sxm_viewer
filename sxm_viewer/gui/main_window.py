@@ -9298,6 +9298,7 @@ QLabel:hover {{
         x, y = coords
         file_key = str(label_widget.property("file_path"))
         hit_info = None
+        best_area = None
         fallback = None
         best_d2 = None
         tol_px = 14.0
@@ -9307,8 +9308,17 @@ QLabel:hover {{
             if rect is None:
                 continue
             if rect.contains(x, y):
-                hit_info = info
-                break
+                # Rects can overlap - a Z-stack icon or single-point marker
+                # is drawn on top of a much larger matrix/group footprint
+                # rect. Prefer the smallest (most specific) rect under the
+                # cursor instead of whichever marker happens to come first
+                # in list order, or the footprint always wins and whatever
+                # is drawn on top of it is never individually clickable.
+                area = max(0.0, rect.width()) * max(0.0, rect.height())
+                if best_area is None or area < best_area:
+                    best_area = area
+                    hit_info = info
+                continue
             center = rect.center()
             try:
                 dx = float(x - center.x())
@@ -9326,15 +9336,13 @@ QLabel:hover {{
         if hit_info.get('label') == 'badge':
             self._open_spectro_summary_for_file(file_key)
             return True
-        if hit_info.get('label') == 'stack-badge':
-            spec = hit_info.get('spec') or {}
-            if spec:
-                self._open_spectro_summary_for_site(spec, file_key=file_key, quiet=True)
-                try:
-                    self._highlight_spectrum_entry(spec)
-                except Exception:
-                    pass
-                return True
+        # Note: the 'stack-badge' (Z-stack icon) marker deliberately falls
+        # through to the same generic activation path as clicking the point
+        # marker below it - both used to lead to different dialogs (site
+        # summary browser vs. Z-series comparison plot), which was
+        # confusing since they represent the same site. _handle_activation
+        # already opens the Z-series comparison popup for any spec with
+        # xy_stack_count > 1, so a plain marker/kind lookup handles it.
         mods = QtCore.Qt.NoModifier
         if event is not None:
             try:
@@ -9362,52 +9370,64 @@ QLabel:hover {{
             QtWidgets.QToolTip.hideText()
             return False
         x, y = coords
+        hit_info = None
+        best_area = None
         for info in markers:
             rect = info.get('rect')
-            if rect and rect.contains(x, y):
-                if info.get('label') == 'badge':
-                    file_key = str(label_widget.property("file_path") or "")
-                    entries = list((getattr(self, "spectros_by_image", {}) or {}).get(file_key, []) or [])
-                    site_count = len(list((getattr(self, "spectro_sites_by_image", {}) or {}).get(file_key, []) or []))
-                    single_count = sum(1 for entry in entries if entry.get("matrix_index") is None)
-                    matrix_count = sum(1 for entry in entries if entry.get("matrix_index") is not None)
-                    text = (
-                        f"Spectroscopy summary\n"
-                        f"{len(entries)} spectra | {site_count} position" + ("" if site_count == 1 else "s") + "\n"
-                        f"Single {single_count} | Grid {matrix_count}"
-                    )
-                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), text)
-                    return True
-                if info.get('label') == 'stack-badge':
-                    spec = info.get('spec') or {}
-                    site_summary = str(spec.get("site_summary") or spec.get("xy_stack_summary") or "Position summary").strip()
-                    QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), site_summary)
-                    return True
-                spec = info.get('spec') or {}
-                tooltip = info.get('tooltip')
-                if not tooltip:
-                    tooltip = Path(spec.get('path', '')).name
-                    idx = spec.get('matrix_index')
-                    if idx is not None:
-                        tooltip = f"{tooltip} [{idx}]"
-                    xs = spec.get('x'); ys = spec.get('y')
-                    if xs is not None and ys is not None:
-                        tooltip = f"{tooltip}\n({xs:.1f}, {ys:.1f}) nm"
-                    stack_summary = str(spec.get("xy_stack_summary") or "").strip()
-                    if stack_summary:
-                        tooltip = f"{tooltip}\n{stack_summary}"
-                    site_display = str(spec.get("site_display") or "").strip()
-                    if site_display:
-                        tooltip = f"{tooltip}\n{site_display}"
-                    assignment_summary = str(spec.get("assignment_summary") or "").strip()
-                    assignment_conf = str(spec.get("assignment_confidence") or "").strip()
-                    if assignment_summary:
-                        if assignment_conf:
-                            tooltip = f"{tooltip}\nAssignment: {assignment_summary} ({assignment_conf})"
-                        else:
-                            tooltip = f"{tooltip}\nAssignment: {assignment_summary}"
-                QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
+            if not rect or not rect.contains(x, y):
+                continue
+            # Same precedence as clicks (_handle_spec_marker_click): prefer
+            # the smallest (most specific) rect under the cursor so hovering
+            # a marker drawn on top of a footprint shows that marker's
+            # tooltip, not the footprint's.
+            area = max(0.0, rect.width()) * max(0.0, rect.height())
+            if best_area is None or area < best_area:
+                best_area = area
+                hit_info = info
+        if hit_info is not None:
+            if hit_info.get('label') == 'badge':
+                file_key = str(label_widget.property("file_path") or "")
+                entries = list((getattr(self, "spectros_by_image", {}) or {}).get(file_key, []) or [])
+                site_count = len(list((getattr(self, "spectro_sites_by_image", {}) or {}).get(file_key, []) or []))
+                single_count = sum(1 for entry in entries if entry.get("matrix_index") is None)
+                matrix_count = sum(1 for entry in entries if entry.get("matrix_index") is not None)
+                text = (
+                    f"Spectroscopy summary\n"
+                    f"{len(entries)} spectra | {site_count} position" + ("" if site_count == 1 else "s") + "\n"
+                    f"Single {single_count} | Grid {matrix_count}"
+                )
+                QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), text)
                 return True
+            if hit_info.get('label') == 'stack-badge':
+                spec = hit_info.get('spec') or {}
+                site_summary = str(spec.get("site_summary") or spec.get("xy_stack_summary") or "Position summary").strip()
+                QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), site_summary)
+                return True
+            spec = hit_info.get('spec') or {}
+            tooltip = hit_info.get('tooltip')
+            if not tooltip:
+                tooltip = Path(spec.get('path', '')).name
+                idx = spec.get('matrix_index')
+                if idx is not None:
+                    tooltip = f"{tooltip} [{idx}]"
+                xs = spec.get('x'); ys = spec.get('y')
+                if xs is not None and ys is not None:
+                    tooltip = f"{tooltip}\n({xs:.1f}, {ys:.1f}) nm"
+                stack_summary = str(spec.get("xy_stack_summary") or "").strip()
+                if stack_summary:
+                    tooltip = f"{tooltip}\n{stack_summary}"
+                site_display = str(spec.get("site_display") or "").strip()
+                if site_display:
+                    tooltip = f"{tooltip}\n{site_display}"
+                assignment_summary = str(spec.get("assignment_summary") or "").strip()
+                assignment_conf = str(spec.get("assignment_confidence") or "").strip()
+                if assignment_summary:
+                    if assignment_conf:
+                        tooltip = f"{tooltip}\nAssignment: {assignment_summary} ({assignment_conf})"
+                    else:
+                        tooltip = f"{tooltip}\nAssignment: {assignment_summary}"
+            QtWidgets.QToolTip.showText(label_widget.mapToGlobal(event.pos()), tooltip)
+            return True
         QtWidgets.QToolTip.hideText()
         return False
 
