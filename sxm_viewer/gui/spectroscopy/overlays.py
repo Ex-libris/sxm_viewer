@@ -542,10 +542,16 @@ def _render_spectroscopy_overlays(
     # normal single-marker rendering below since they were never excluded from
     # `singles` in that case.
     if viewer.show_single_markers and grouped_keys and not matrix_as_points and not reveal_points:
+        # "cloud" groups (loose, non-grid/line point clusters) are excluded
+        # from the compact-footprint treatment - unlike an actual grid or a
+        # line of points, a cloud has no shape that a single bounding-box
+        # summary conveys, so the user wants every point visible rather
+        # than merged into one rectangle. Grid/line groups keep the
+        # existing footprint behavior.
         groups_here = {
             g["group_key"]: g
             for g in (getattr(viewer, "spectro_groups_by_image", {}) or {}).get(str(file_key), [])
-            if g["group_key"] in grouped_keys
+            if g["group_key"] in grouped_keys and (g.get("kind") or "cloud") != "cloud"
         }
         drawn_group_keys = set()
         drawn_groups = []
