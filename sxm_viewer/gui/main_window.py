@@ -2322,14 +2322,20 @@ QLabel:hover {{
     def _show_spectro_marker_legend(self):
         return spectro_overlays.show_marker_legend_dialog(self)
 
-    def _open_matrix_explorer_for_file(self, file_key):
+    def _open_matrix_explorer_for_file(self, file_key, dataset_key=None):
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         all_image_specs = list(self.spectros_by_image.get(str(file_key), []))
         image_specs = [s for s in all_image_specs if s.get('matrix_index') is not None]
         dataset_specs = list(image_specs)
         dataset = None
-        dataset_key = image_specs[0].get('matrix_dataset') if image_specs else None
+        # An image can host several distinct grids at once (e.g. repeated
+        # .3ds scans of the same region) - without an explicit dataset_key,
+        # this arbitrarily picked whichever grid happened to be first in
+        # image_specs. The spectroscopy browser now opens a specific grid
+        # by its dataset key directly (one browser row per .3ds file), so
+        # honor that when given instead of guessing.
+        dataset_key = dataset_key or (image_specs[0].get('matrix_dataset') if image_specs else None)
         if dataset_key:
             dataset = self.matrix_datasets.get(dataset_key)
             full = [spec for spec in self.matrix_spectros if spec.get('matrix_dataset') == dataset_key]

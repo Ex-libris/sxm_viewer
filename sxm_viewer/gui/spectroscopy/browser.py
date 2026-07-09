@@ -151,9 +151,68 @@ def _site_tree_label(site_specs):
     return f"{title}  [{display} | {' | '.join(extras)}]"
 
 
-def _image_tree_label(image_key, specs, site_count):
+def _image_tree_label(image_key, specs, site_count, dataset_count=0):
     name = Path(str(image_key or "")).name if image_key else "Unassigned spectra"
-    return f"{name}  [{site_count} position" + ("" if site_count == 1 else "s") + f" | {len(specs)} spectra]"
+    bits = [f"{site_count} position" + ("" if site_count == 1 else "s")]
+    if dataset_count:
+        bits.append(f"{dataset_count} grid" + ("" if dataset_count == 1 else "s"))
+    bits.append(f"{len(specs)} spectra")
+    return f"{name}  [{' | '.join(bits)}]"
+
+
+def _matrix_dataset_label(viewer, dataset_key, ds_specs):
+    """Grid dims/point count/channel count for a .3ds dataset's browser
+    row, sourced from the already-parsed MatrixDataset (viewer.matrix_datasets)
+    instead of implying one row per point."""
+    ds = (getattr(viewer, "matrix_datasets", {}) or {}).get(dataset_key)
+    first = ds_specs[0] if ds_specs else {}
+    name = Path(str(first.get("path") or dataset_key or "Grid")).name
+    detail = []
+    if ds is not None:
+        detail.append(f"{ds.cols}×{ds.rows} grid ({ds.cols * ds.rows} pts)")
+    else:
+        detail.append(f"{len(ds_specs)} pts")
+    # ds.channels counts entries in the MatrixDataset's own channel-file
+    # list, which for a Nanonis .3ds is always 1 (the whole grid is one
+    # file with several measured channels inside) - not the actual number
+    # of measured channels. site_channel_count/available_channels (already
+    # used for the solo-item detail rows) gives the real per-point count
+    # for both Nanonis and Omicron matrix formats.
+    ch_count = int(first.get("site_channel_count") or 0) or len(first.get("available_channels") or ())
+    if not ch_count and ds is not None:
+        ch_count = len(ds.channels)
+    if ch_count:
+        detail.append(f"{ch_count} ch")
+    pos = _spec_position_text(first)
+    if pos:
+        detail.append(f"centered {pos} nm")
+    acquired = first.get("time") or first.get("display_time")
+    if acquired:
+        try:
+            detail.append(acquired.strftime("%Y-%m-%d %H:%M"))
+        except Exception:
+            pass
+    return f"{name}  [{' | '.join(detail)}]"
+
+
+def _matrix_dataset_tooltip(viewer, dataset_key, ds_specs):
+    ds = (getattr(viewer, "matrix_datasets", {}) or {}).get(dataset_key)
+    first = ds_specs[0] if ds_specs else {}
+    lines = [Path(str(first.get("path") or dataset_key or "")).name]
+    if ds is not None:
+        try:
+            lines.append(ds.summary())
+        except Exception:
+            pass
+    assignment_summary = str(first.get("assignment_summary") or "").strip()
+    assignment_conf = str(first.get("assignment_confidence") or "").strip()
+    if assignment_summary:
+        if assignment_conf:
+            lines.append(f"Assignment: {assignment_summary} ({assignment_conf} confidence)")
+        else:
+            lines.append(f"Assignment: {assignment_summary}")
+    lines.append("Double-click or right-click → Open to launch the Grid Map Explorer.")
+    return "\n".join(lines)
 
 
 def _spec_search_blob(spec):
@@ -411,6 +470,16 @@ def _open_browser_item(viewer, item):
             if site_display:
                 title = f"Spectrum comparison - {site_display}"
             spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+        return
+    if kind == "matrix_dataset":
+        # A grid can be 1000+ points - there is no per-point "Spectrum"
+        # popup that makes sense here. Open the existing Grid Map Explorer
+        # for exactly this .3ds dataset instead (dataset_key disambiguates
+        # which grid when an image hosts several).
+        image_key = str(payload.get("image_key") or "")
+        dataset_key = str(payload.get("dataset_key") or "")
+        if image_key and hasattr(viewer, "_open_matrix_explorer_for_file"):
+            viewer._open_matrix_explorer_for_file(image_key, dataset_key=dataset_key or None)
         return
     if kind == "image":
         image_key = str(payload.get("image_key") or "")
@@ -696,14 +765,25 @@ def _filter_spectro_browser(viewer):
         if not _spec_passes_browser_filters(viewer, spec, flags):
             continue
         image_key = str(spec.get("image_key") or spec.get("primary_image_key") or "")
-        grouped.setdefault(image_key, OrderedDict())
+        bucket = grouped.setdefault(image_key, {"sites": OrderedDict(), "datasets": OrderedDict()})
+        dataset_key = spec.get("matrix_dataset")
+        if spec.get("matrix_index") is not None and dataset_key:
+            # A grid can be 1024+ individual points - grouping those by
+            # site (like single spectra) meant even one grid flooded the
+            # tree with a row per point. Group by the .3ds file itself
+            # instead: one row per grid, opened via the existing Grid Map
+            # Explorer rather than drilled into point-by-point.
+            bucket["datasets"].setdefault(str(dataset_key), []).append(spec)
+            continue
         site_key = str(spec.get("site_key") or viewer._spec_identity_key(spec) or id(spec))
-        grouped[image_key].setdefault(site_key, []).append(spec)
+        bucket["sites"].setdefault(site_key, []).append(spec)
 
     single_image = len(grouped) <= 1
     global_index = 0
     shown_count = 0
-    for image_key, sites in grouped.items():
+    for image_key, bucket in grouped.items():
+        sites = bucket["sites"]
+        datasets = bucket["datasets"]
         image_name = Path(image_key).name if image_key else "Unassigned spectra"
         image_blob = f"{image_name} {image_key}".lower()
         image_specs = []
@@ -724,11 +804,22 @@ def _filter_spectro_browser(viewer):
             if visible_specs:
                 visible_sites.append((site_key, visible_specs))
                 image_specs.extend(visible_specs)
-        if not visible_sites:
+
+        visible_datasets = []
+        for dataset_key, ds_specs in datasets.items():
+            first = ds_specs[0]
+            ds_blob = f"{Path(str(first.get('path') or '')).name} {dataset_key}".lower()
+            ds_matches = bool(txt and (txt in image_blob or txt in ds_blob))
+            visible_specs = [s for s in ds_specs if not txt or ds_matches or txt in _spec_search_blob(s)]
+            if visible_specs:
+                visible_datasets.append((dataset_key, visible_specs))
+                image_specs.extend(visible_specs)
+
+        if not visible_sites and not visible_datasets:
             continue
         shown_count += len(image_specs)
 
-        image_item = QTreeWidgetItem([_image_tree_label(image_key, image_specs, len(visible_sites))])
+        image_item = QTreeWidgetItem([_image_tree_label(image_key, image_specs, len(visible_sites), len(visible_datasets))])
         image_item.setToolTip(0, image_key or image_name)
         bold_font = image_item.font(0)
         bold_font.setBold(True)
@@ -739,6 +830,18 @@ def _filter_spectro_browser(viewer):
             "specs": image_specs,
         })
         viewer.spectro_list.addTopLevelItem(image_item)
+
+        for dataset_key, ds_specs in visible_datasets:
+            ds_item = QTreeWidgetItem([_matrix_dataset_label(viewer, dataset_key, ds_specs)])
+            ds_item.setIcon(0, _browser_type_icon("matrix"))
+            ds_item.setToolTip(0, _matrix_dataset_tooltip(viewer, dataset_key, ds_specs))
+            ds_item.setData(0, QtCore.Qt.UserRole, {
+                "kind": "matrix_dataset",
+                "image_key": image_key,
+                "dataset_key": dataset_key,
+                "specs": ds_specs,
+            })
+            image_item.addChild(ds_item)
 
         for site_key, site_specs in visible_sites:
             first = site_specs[0]
@@ -856,6 +959,26 @@ def _on_spectro_browser_selection(viewer, current, _prev):
         site_count = len(list((getattr(viewer, "spectro_sites_by_image", {}) or {}).get(image_key, []) or []))
         text = f"{image_name}\n{len(specs)} spectra | {site_count} site" + ("" if site_count == 1 else "s")
         _set_browser_preview_to_image(viewer, image_key, text)
+        return
+
+    if kind == "matrix_dataset":
+        specs = list(payload.get("specs") or [])
+        dataset_key = str(payload.get("dataset_key") or "")
+        image_key = str(payload.get("image_key") or "")
+        lines = [_matrix_dataset_label(viewer, dataset_key, specs), "Double-click to open in the Grid Map Explorer"]
+        viewer.spectro_preview_lbl.setText("\n".join(line for line in lines if line))
+        try:
+            if image_key and image_key in viewer._thumb_labels:
+                viewer.selected_file_for_thumbs = image_key
+                viewer._refresh_thumb_selection_styles()
+        except Exception:
+            pass
+        try:
+            if hasattr(viewer, "_highlight_spectrum_entry"):
+                viewer._highlight_spectrum_entry(None)
+        except Exception:
+            pass
+        _update_browser_preview_image(viewer, image_key)
         return
 
     if kind == "site":
