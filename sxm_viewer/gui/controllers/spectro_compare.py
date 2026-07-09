@@ -123,7 +123,7 @@ class SpectroCompareController:
         viewer._last_clicked_spec = None
 
     # ------------------------------------------------------------------
-    def append_spec_to_single_popup(self, spec):
+    def append_spec_to_single_popup(self, spec, initial_color=None):
         viewer = self.viewer
         if not spec:
             return
@@ -132,7 +132,7 @@ class SpectroCompareController:
             return
         dlg = self._active_single_popup()
         if dlg is None:
-            dlg = self.ensure_single_popup(spec)
+            dlg = self.ensure_single_popup(spec, initial_color=initial_color)
             if dlg:
                 viewer._multi_single_popup_anchor = key
             return
@@ -140,11 +140,11 @@ class SpectroCompareController:
             return
         if hasattr(dlg, "add_external_spectrum"):
             try:
-                dlg.add_external_spectrum(spec)
+                dlg.add_external_spectrum(spec, color=initial_color)
             except Exception:
                 pass
 
-    def ensure_single_popup(self, spec):
+    def ensure_single_popup(self, spec, initial_color=None):
         viewer = self.viewer
         if not spec:
             return None
@@ -159,7 +159,7 @@ class SpectroCompareController:
                     except Exception:
                         pass
                     return dlg
-        return self.open_single_popup(spec)
+        return self.open_single_popup(spec, initial_color=initial_color)
 
     def open_single_popup(self, spec, initial_color=None):
         viewer = self.viewer

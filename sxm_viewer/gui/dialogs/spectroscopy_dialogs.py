@@ -1697,14 +1697,65 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.curve_list.setCurrentRow(row)
         menu = QtWidgets.QMenu(self)
         self._populate_trace_style_menu(menu)
+        open_own_act = None
+        split_act = None
         if len(self._curve_entries) > 1:
             menu.addSeparator()
             remove_act = menu.addAction("Remove selected trace")
+            open_own_act = menu.addAction("Open selected trace in its own window")
+            split_act = menu.addAction("Split all traces into separate windows")
+            split_act.setToolTip(
+                "Opens one Spectrum window per trace, each keeping its current "
+                "color, then closes this combined window."
+            )
         else:
             remove_act = None
         chosen = menu.exec_(self.curve_list.mapToGlobal(pos))
         if remove_act is not None and chosen == remove_act:
             self._remove_selected_curve()
+        elif open_own_act is not None and chosen == open_own_act:
+            entry = self._current_entry()
+            if entry:
+                self._open_curve_in_own_window(entry)
+        elif split_act is not None and chosen == split_act:
+            self._split_into_individual_windows()
+
+    def _open_curve_in_own_window(self, entry):
+        """Pop a single trace out into its own Spectrum window, keeping its
+        current color - the color-cycle link to whatever produced this
+        multi-trace window (e.g. the Grid Map) is one-way and only applies
+        at creation time, so this is just a normal independent popup from
+        here on."""
+        viewer = getattr(self, "viewer", None)
+        if viewer is None or not hasattr(viewer, "_open_spectroscopy_popup"):
+            return
+        spec = entry.get("spec") or self._resolve_spec_from_viewer(entry)
+        if not spec:
+            QtWidgets.QMessageBox.warning(
+                self, "Open trace", "Could not resolve the original spectrum for this trace."
+            )
+            return
+        viewer._open_spectroscopy_popup(spec, initial_color=entry.get("color"))
+
+    def _split_into_individual_windows(self):
+        """Explode every trace currently combined in this window into its
+        own Spectrum popup, each keeping its color, then close this one."""
+        viewer = getattr(self, "viewer", None)
+        if viewer is None or not hasattr(viewer, "_open_spectroscopy_popup"):
+            return
+        resolved = []
+        for entry in self._curve_entries:
+            spec = entry.get("spec") or self._resolve_spec_from_viewer(entry)
+            if not spec:
+                QtWidgets.QMessageBox.warning(
+                    self, "Split traces",
+                    f"Could not resolve the original spectrum for '{entry.get('label', '')}' - nothing was split.",
+                )
+                return
+            resolved.append((spec, entry.get("color")))
+        for spec, color in resolved:
+            viewer._open_spectroscopy_popup(spec, initial_color=color)
+        self.close()
 
     def _font_style_state(self):
         return {
@@ -2437,15 +2488,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         event.acceptProposedAction()
 
     def _add_entry_from_drop(self, payload):
-        axis_vals = np.asarray(payload.get("axis_vals") or [], dtype=float)
-        values = np.asarray(payload.get("values") or [], dtype=float)
+        raw_axis_vals = payload.get("axis_vals")
+        raw_values = payload.get("values")
+        axis_vals = np.asarray(raw_axis_vals, dtype=float) if raw_axis_vals is not None else np.asarray([], dtype=float)
+        values = np.asarray(raw_values, dtype=float) if raw_values is not None else np.asarray([], dtype=float)
         color = payload.get("color") or self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)]
         label = payload.get("label") or Path(payload.get("spec_path", "")).name
         spec_path = payload.get("spec_path", "")
         channel = payload.get("channel")
-        # Avoid duplicating the curve when a drag/drop occurs onto the same popup.
+        matrix_index = payload.get("matrix_index")
+        # Avoid duplicating the curve when a drag/drop (or a repeat grid-map
+        # click) targets the same trace already in this popup. Matrix/grid
+        # specs all share one spec_path (the .3ds file) with per-pixel
+        # matrix_index, so spec_path+channel alone would treat every point
+        # in the same grid as "already present" after the first one.
         for entry in self._curve_entries:
-            if spec_path and spec_path == entry.get("spec_path") and (channel or "") == (entry.get("channel") or ""):
+            if (
+                spec_path
+                and spec_path == entry.get("spec_path")
+                and (channel or "") == (entry.get("channel") or "")
+                and matrix_index == entry.get("matrix_index")
+            ):
                 QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Curve already present", self)
                 return
         entry = {
@@ -2471,13 +2534,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._update_curve_list()
         self._plot_selected_channel()
 
-    def add_external_spectrum(self, spec, channel=None, axis_key=None):
+    def add_external_spectrum(self, spec, channel=None, axis_key=None, color=None):
         """Append another spectroscopy entry into this popup."""
         if spec is None:
             return False
         channels = spec.get("channels") or {}
         channel_name = channel or self.channel_combo.currentText()
-        data = np.asarray(channels.get(channel_name) or [], dtype=float)
+        raw_values = channels.get(channel_name)
+        data = np.asarray(raw_values, dtype=float) if raw_values is not None else np.asarray([], dtype=float)
         if data.size == 0:
             for name, values in channels.items():
                 arr = np.asarray(values, dtype=float)
@@ -2502,7 +2566,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "label": f"{Path(spec.get('path', '')).name} ({channel_name})",
             "axis_vals": axis_vals,
             "values": data,
-            "color": self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)],
+            "color": str(color) if color else self.SCIENCE_PALETTE[len(self._curve_entries) % len(self.SCIENCE_PALETTE)],
             "spec_path": str(Path(spec.get("path", ""))),
             "channel": channel_name,
             "axis_label": axis_label,
@@ -3967,7 +4031,12 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             controller = getattr(self.viewer, "spectro_compare_controller", None)
             if controller is not None and hasattr(controller, "append_spec_to_single_popup"):
                 try:
-                    controller.append_spec_to_single_popup(spec)
+                    # Each shift+click already claimed the next color-cycle
+                    # color for this dialog's own selection table above; hand
+                    # it to the popup too so the accumulating multi-trace
+                    # window's colors track the grid map's cycle instead of
+                    # the popup's own independent SCIENCE_PALETTE ordering.
+                    controller.append_spec_to_single_popup(spec, initial_color=color)
                 except Exception:
                     pass
         else:
