@@ -2699,16 +2699,6 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.image_entry = image_entry
         self.specs = list(specs)
         self.viewer = parent
-        # spec identity -> pixel coords, shared across _build_stat_metric/
-        # _build_integral_metric/_build_peak_metric and across every
-        # map_mode_combo switch: position depends only on spec + anchor
-        # geometry, never on which metric is displayed, so recomputing it
-        # per point on every switch was purely wasted (measured 5-9+ seconds
-        # on a real 2400-point grid). self._channel_specs (built once below)
-        # keeps every spec/list referenced for the dialog's lifetime, so
-        # id()-keying here is safe - nothing can be garbage-collected and
-        # have its id reused while this cache is alive.
-        self._pixel_coords_cache = {}
         self._plot_font_family = normalize_font_family(getattr(self.viewer, "_plot_font_family", None), "sans-serif")
         self._plot_font_bold = bool(getattr(self.viewer, "_plot_font_bold", False))
         self._plot_font_italic = bool(getattr(self.viewer, "_plot_font_italic", False))
@@ -2744,7 +2734,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.channel_combo = QtWidgets.QComboBox()
         controls.addWidget(self.channel_combo, 1)
         self.map_mode_combo = QtWidgets.QComboBox()
-        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value"])
+        self.map_mode_combo.addItems(["Max amplitude", "Peak position", "Integral", "Slice at value", "Reference image"])
         controls.addWidget(self.map_mode_combo)
         left_layout.addLayout(controls)
 
@@ -3441,26 +3431,46 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             return
         path = Path(anchor)
         header, fds = self.viewer.headers.get(str(path), (None, None))
-        header_map = header or {}
         channel_specs = self._current_channel_specs()
         self.ax.clear()
         self._selection_artists = []
         agg_mode = self.map_mode_combo.currentText()
-        metric = None
-        file_key = str(path)
         channel_label = self._channel_label_for_path(self.channel_combo.currentData())
-        if agg_mode == "Max amplitude":
-            metric = self._build_stat_metric(np.nanmax, channel_specs, header_map, file_key, channel_label=channel_label)
-        elif agg_mode == "Integral":
-            metric = self._build_integral_metric(channel_specs, header_map, file_key, channel_label=channel_label)
-        elif agg_mode == "Peak position":
-            metric = self._build_peak_metric(channel_specs, header_map, file_key, channel_label=channel_label)
-        elif agg_mode == "Slice at value":
-            metric = self._build_slice_metric(channel_specs, header_map, file_key, channel_label, self._current_slice_value())
+
+        # The channel/slice map is built at the grid's OWN native resolution
+        # (e.g. 30x30) using its real measured extent - not painted onto the
+        # reference image's (usually much higher-resolution) pixel grid,
+        # which used to leave nearly the entire array empty/invisible (a
+        # 900-point grid onto a 96x96-pixel reference image only fills
+        # ~10% of the cells) and silently masked as "no data" by the
+        # fallback below. See _grid_axes for the extent convention.
+        rows, cols, zero_based = self._grid_dims(channel_specs)
+        row_axis, col_axis = self._grid_axes(channel_specs, rows, cols, zero_based)
+        grid_extent = None
+        if row_axis is not None and col_axis is not None and rows > 1 and cols > 1:
+            # matplotlib's extent is always (left, right, bottom, top); with
+            # origin='upper', row 0 of the array is placed at the "top"
+            # value - so row 0's own real y (row_axis[0]) must be the 4th
+            # element here, not the 3rd, or row 0 renders at the wrong edge.
+            grid_extent = (float(col_axis[0]), float(col_axis[-1]), float(row_axis[-1]), float(row_axis[0]))
+
+        metric = None
+        if grid_extent is not None:
+            if agg_mode == "Max amplitude":
+                metric = self._build_stat_metric(np.nanmax, channel_specs, channel_label, rows, cols, zero_based)
+            elif agg_mode == "Integral":
+                metric = self._build_integral_metric(channel_specs, channel_label, rows, cols, zero_based)
+            elif agg_mode == "Peak position":
+                metric = self._build_peak_metric(channel_specs, channel_label, rows, cols, zero_based)
+            elif agg_mode == "Slice at value":
+                metric = self._build_slice_metric(channel_specs, channel_label, rows, cols, zero_based, self._current_slice_value())
         metric_valid = metric is not None and np.isfinite(metric).any()
-        if metric_valid:
-            self.ax.imshow(metric, cmap='inferno', origin='upper')
+
+        view_extent = grid_extent
+        if agg_mode != "Reference image" and metric_valid:
+            self.ax.imshow(metric, cmap='inferno', origin='upper', extent=grid_extent, aspect='auto')
             self._current_image_arr = metric
+            self._current_image_extent = grid_extent
             sample_spec = channel_specs[0] if channel_specs else None
             self._current_image_unit = self._channel_unit_for_spec(sample_spec, channel_label) if sample_spec else ''
         elif header and fds:
@@ -3470,42 +3480,48 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     idx = 0
                 fd = fds[idx]
                 arr = self.viewer._get_channel_array(str(path), idx, header, fd)
-                self.ax.imshow(arr, cmap='gray', origin='upper')
+                ref_extent = self.viewer._header_extent(header)
+                self.ax.imshow(arr, cmap='gray', origin='upper', extent=ref_extent, aspect='auto')
                 self._current_image_arr = np.asarray(arr, dtype=float)
+                self._current_image_extent = ref_extent
                 self._current_image_unit = fd.get('PhysUnit', '')
+                view_extent = ref_extent
             except Exception:
                 self.ax.text(0.5, 0.5, Path(path).name, ha='center', va='center', transform=self.ax.transAxes)
                 self._current_image_arr = None
+                self._current_image_extent = None
         else:
             self.ax.text(0.5, 0.5, Path(path).name, ha='center', va='center', transform=self.ax.transAxes)
             self._current_image_arr = None
-        xpix = int(header_map.get('xPixel', 128))
-        ypix = int(header_map.get('yPixel', 128))
-        xs = []
-        ys = []
+            self._current_image_extent = None
+
+        # Position markers - plotted directly in real (x, y) nm, the same
+        # coordinate system as both possible backgrounds above, so they are
+        # always correctly aligned regardless of which one is showing.
         if getattr(self.show_positions_cb, "isChecked", lambda: True)():
             overlay_specs = self.specs
         else:
             overlay_specs = channel_specs
-        if overlay_specs:
-            for spec in overlay_specs:
-                coords = self.viewer._map_spec_to_pixels(spec, header_map, xpix, ypix, file_key=file_key)
-                if coords:
-                    xs.append(coords[0])
-                    ys.append(coords[1])
-            if xs and ys:
-                cfg = self._position_marker_config
-                self.ax.scatter(
-                    xs,
-                    ys,
-                    s=cfg.get("size", 28),
-                    marker=cfg.get("marker", "o"),
-                    facecolors=cfg.get("facecolor", "#ffffff"),
-                    edgecolors=cfg.get("edgecolor", "#101010"),
-                    linewidths=cfg.get("linewidth", 0.4),
-                    alpha=cfg.get("alpha", 0.85),
-                    zorder=2,
-                )
+        xs = [float(s['x']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
+        ys = [float(s['y']) for s in (overlay_specs or []) if s.get('x') is not None and s.get('y') is not None]
+        if xs and ys:
+            cfg = self._position_marker_config
+            self.ax.scatter(
+                xs,
+                ys,
+                s=cfg.get("size", 28),
+                marker=cfg.get("marker", "o"),
+                facecolors=cfg.get("facecolor", "#ffffff"),
+                edgecolors=cfg.get("edgecolor", "#101010"),
+                linewidths=cfg.get("linewidth", 0.4),
+                alpha=cfg.get("alpha", 0.85),
+                zorder=2,
+            )
+        if view_extent is not None:
+            self.ax.set_xlim(view_extent[0], view_extent[1])
+            self.ax.set_ylim(view_extent[2], view_extent[3])
+        self.ax.set_xlabel("x (nm)")
+        self.ax.set_ylabel("y (nm)")
         style = _style_kwargs(self._font_style_state())
         for text in list(self.ax.get_xticklabels()) + list(self.ax.get_yticklabels()):
             apply_text_style(text, family=self._plot_font_family, **style)
@@ -3550,34 +3566,75 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     label = next(iter(channels.keys()))
         return label or Path(key).name
 
-    def _mapped_pixel_coords(self, channel_specs, header, file_key, xpix, ypix):
-        """Integer (col, row) grid-cell positions for channel_specs, cached
-        per spec identity - see self._pixel_coords_cache docstring in
-        __init__. viewer._map_spec_to_pixels returns continuous float
-        positions (needed for precise marker placement elsewhere in the
-        app); the metric grids built from these are indexed with them
-        directly, and numpy (>=1.24) raises IndexError on float indices -
-        silently caught by each metric builder's try/except, which made
-        every per-pixel metric grid come back entirely empty and fall back
-        to showing the reference topography image instead. Round once here
-        instead of duplicating the cast in every metric-builder function."""
-        cache = self._pixel_coords_cache.setdefault(id(channel_specs), {})
-        coords_list = []
-        for spec in channel_specs:
-            spec_key = id(spec)
-            if spec_key in cache:
-                coords = cache[spec_key]
-            else:
-                raw = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
-                if raw is None:
-                    coords = None
-                else:
-                    col = min(max(int(round(raw[0])), 0), max(xpix - 1, 0))
-                    row = min(max(int(round(raw[1])), 0), max(ypix - 1, 0))
-                    coords = (col, row)
-                cache[spec_key] = coords
-            coords_list.append(coords)
-        return coords_list
+    def _grid_dims(self, specs):
+        """(rows, cols, zero_based) for a set of grid-point specs. zero_based
+        mirrors MatrixFitWorker's own matrix_index convention detection
+        (matrix_fit.py) so the two stay consistent."""
+        if not specs:
+            return 0, 0, True
+        rows = max((s.get('grid_rows') or 0) for s in specs)
+        cols = max((s.get('grid_cols') or 0) for s in specs)
+        zero_based = True
+        if rows and cols:
+            matrix_indices = [s.get('matrix_index') for s in specs if s.get('matrix_index') is not None]
+            if matrix_indices:
+                min_idx, max_idx = min(matrix_indices), max(matrix_indices)
+                if min_idx >= 1 and max_idx == rows * cols:
+                    zero_based = False
+        return rows, cols, zero_based
+
+    def _spec_grid_row_col(self, spec, rows, cols, zero_based):
+        """This spec's (row, col) in the grid's own native rows x cols
+        layout - from explicit grid_row/grid_col fields when present, else
+        derived from matrix_index (matching MatrixFitWorker's derivation)."""
+        row = spec.get('grid_row')
+        col = spec.get('grid_col')
+        if row is not None and col is not None:
+            try:
+                return int(row), int(col)
+            except Exception:
+                pass
+        if not cols:
+            return None
+        idx = spec.get('matrix_index')
+        if idx is None:
+            return None
+        try:
+            idx_val = int(idx)
+        except Exception:
+            return None
+        if not zero_based:
+            idx_val -= 1
+        return idx_val // cols, idx_val % cols
+
+    def _grid_axes(self, specs, rows, cols, zero_based):
+        """1D arrays holding each row/column index's real measured (y, x)
+        nm position - row_axis[0]/col_axis[0] is whatever position grid
+        index 0 was actually measured at (not assumed to be the minimum),
+        so orientation is always correct regardless of scan direction.
+        Mirrors MatrixFitDialog's _axis_from_specs (matrix_fit.py) except
+        kept in absolute nm (not shifted to start at 0), so it lines up
+        with the reference image and the position markers."""
+        if not rows or not cols:
+            return None, None
+        row_axis = [None] * rows
+        col_axis = [None] * cols
+        for spec in specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None:
+                continue
+            row, col = rc
+            y = spec.get('y')
+            x = spec.get('x')
+            if 0 <= row < rows and y is not None and row_axis[row] is None:
+                row_axis[row] = float(y)
+            if 0 <= col < cols and x is not None and col_axis[col] is None:
+                col_axis[col] = float(x)
+            if all(v is not None for v in row_axis) and all(v is not None for v in col_axis):
+                break
+        if any(v is None for v in row_axis) or any(v is None for v in col_axis):
+            return None, None
+        return np.asarray(row_axis, dtype=float), np.asarray(col_axis, dtype=float)
 
     def _extract_pixel_series(self, spec, channel_label):
         """Return (xs, ys) for one grid pixel, for the metric-builder
@@ -3603,78 +3660,70 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 pass
         return None, None
 
-    def _build_stat_metric(self, fn, channel_specs, header, file_key, channel_label=None):
-        if not channel_specs:
+    def _build_stat_metric(self, fn, channel_specs, channel_label, rows, cols, zero_based):
+        if not channel_specs or not rows or not cols:
             return None
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        grid = np.full((ypix, xpix), np.nan, dtype=float)
-        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
-        for spec, coords in zip(channel_specs, coords_list):
-            if coords is None:
+        grid = np.full((rows, cols), np.nan, dtype=float)
+        for spec in channel_specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
                 continue
             _xs, ys = self._extract_pixel_series(spec, channel_label)
             if ys is None:
                 continue
             try:
-                grid[coords[1], coords[0]] = fn(ys)
+                grid[rc[0], rc[1]] = fn(ys)
             except Exception:
                 continue
         return grid
 
-    def _build_integral_metric(self, channel_specs, header, file_key, channel_label=None):
-        if not channel_specs:
+    def _build_integral_metric(self, channel_specs, channel_label, rows, cols, zero_based):
+        if not channel_specs or not rows or not cols:
             return None
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        grid = np.full((ypix, xpix), np.nan, dtype=float)
-        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
-        for spec, coords in zip(channel_specs, coords_list):
-            if coords is None:
+        grid = np.full((rows, cols), np.nan, dtype=float)
+        for spec in channel_specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
                 continue
             xs, ys = self._extract_pixel_series(spec, channel_label)
             if xs is None or ys is None:
                 continue
             try:
-                grid[coords[1], coords[0]] = np.trapz(ys, xs)
+                grid[rc[0], rc[1]] = np.trapz(ys, xs)
             except Exception:
                 continue
         return grid
 
-    def _build_peak_metric(self, channel_specs, header, file_key, channel_label=None):
-        if not channel_specs:
+    def _build_peak_metric(self, channel_specs, channel_label, rows, cols, zero_based):
+        if not channel_specs or not rows or not cols:
             return None
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        grid = np.full((ypix, xpix), np.nan, dtype=float)
-        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
-        for spec, coords in zip(channel_specs, coords_list):
-            if coords is None:
+        grid = np.full((rows, cols), np.nan, dtype=float)
+        for spec in channel_specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
                 continue
             xs, ys = self._extract_pixel_series(spec, channel_label)
             if xs is None or ys is None:
                 continue
             try:
                 idx = int(np.nanargmax(ys))
-                grid[coords[1], coords[0]] = xs[idx]
+                grid[rc[0], rc[1]] = xs[idx]
             except Exception:
                 continue
         return grid
 
-    def _build_slice_metric(self, channel_specs, header, file_key, channel_label, slice_value):
+    def _build_slice_metric(self, channel_specs, channel_label, rows, cols, zero_based, slice_value):
         """A CITS-style slice: the selected channel's value at one specific
         sweep-axis point (e.g. Frequency Shift at Bias = -0.5 V) for every
         pixel, linearly interpolated between the nearest measured points -
         as opposed to the other modes, which each collapse a pixel's whole
         curve into a single aggregate statistic."""
-        if not channel_specs:
+        if not channel_specs or not rows or not cols:
             return None
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        grid = np.full((ypix, xpix), np.nan, dtype=float)
-        coords_list = self._mapped_pixel_coords(channel_specs, header, file_key, xpix, ypix)
-        for spec, coords in zip(channel_specs, coords_list):
-            if coords is None:
+        grid = np.full((rows, cols), np.nan, dtype=float)
+        for spec in channel_specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
                 continue
             xs, ys = self._extract_pixel_series(spec, channel_label)
             if xs is None or ys is None or xs.size < 2:
@@ -3683,23 +3732,25 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 if xs[0] > xs[-1]:
                     xs = xs[::-1]
                     ys = ys[::-1]
-                grid[coords[1], coords[0]] = np.interp(slice_value, xs, ys)
+                grid[rc[0], rc[1]] = np.interp(slice_value, xs, ys)
             except Exception:
                 continue
         return grid
 
-    def _pick_spec_from_point(self, x, y, channel_specs, file_key):
+    def _pick_spec_from_point(self, x, y, channel_specs, file_key=None):
+        """Nearest spec to a click, by real (x, y) nm distance - the canvas
+        now displays real coordinates directly (see _draw_image_layer), so
+        this no longer needs any pixel-space mapping."""
+        if x is None or y is None:
+            return None
         best = None
         best_dist = None
-        header, _ = self.viewer.headers.get(str(self.image_entry['path']), (None, None))
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
         for spec in channel_specs:
-            coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=file_key)
-            if coords is None:
+            sx = spec.get('x')
+            sy = spec.get('y')
+            if sx is None or sy is None:
                 continue
-            col, row = coords
-            dist = (col - x)**2 + (row - y)**2
+            dist = (sx - x) ** 2 + (sy - y) ** 2
             if best is None or dist < best_dist:
                 best = spec
                 best_dist = dist
@@ -3708,14 +3759,15 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
     def _on_click(self, event):
         if event.inaxes != self.ax or event.button != MouseButton.LEFT:
             return
-        channel_specs = self._current_channel_specs()
-        spec = self._pick_spec_from_point(event.xdata, event.ydata, channel_specs, str(self.image_entry['path']))
+        # Pick from whatever set of positions is actually drawn (see
+        # show_positions_cb handling in _draw_image_layer) - the full
+        # dataset when "Show all spectroscopy positions" is checked, or
+        # just the current channel/file's points when it's not.
+        pickable_specs = self.specs if getattr(self.show_positions_cb, "isChecked", lambda: True)() else self._current_channel_specs()
+        spec = self._pick_spec_from_point(event.xdata, event.ydata, pickable_specs)
         if not spec:
             return
-        header, _ = self.viewer.headers.get(str(self.image_entry['path']), (None, None))
-        xpix = int(header.get('xPixel', 128) if header else 128)
-        ypix = int(header.get('yPixel', 128) if header else 128)
-        coords = self.viewer._map_spec_to_pixels(spec, header or {}, xpix, ypix, file_key=str(self.image_entry['path']))
+        coords = (spec.get('x'), spec.get('y'))
         key = self._selection_key(spec)
         mods = self._event_modifiers(event)
         shift = bool(mods & QtCore.Qt.ShiftModifier)
@@ -3756,6 +3808,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self._aggregate_mode = True
             if hasattr(self.viewer, '_toggle_multi_spec_selection'):
                 self.viewer._toggle_multi_spec_selection(spec)
+            # Shift+click on a second (third, ...) point used to only
+            # update this dialog's own embedded comparison plot below -
+            # nothing opened or changed anywhere else, which read as
+            # "shift-clicking more spectra does nothing." Also open/append
+            # to a spectrum popup, matching how shift+click behaves on
+            # thumbnail markers elsewhere in the app.
+            controller = getattr(self.viewer, "spectro_compare_controller", None)
+            if controller is not None and hasattr(controller, "append_spec_to_single_popup"):
+                try:
+                    controller.append_spec_to_single_popup(spec)
+                except Exception:
+                    pass
         else:
             self.viewer._open_spectroscopy_popup(spec)
         max_sel = 24
@@ -3945,7 +4009,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if event.inaxes != self.ax or self._current_image_arr is None:
             self.image_value_label.setText("Value: --")
             return
-        val = sample_array_value(self._current_image_arr, event.xdata, event.ydata, self._current_image_extent)
+        val = self._sample_current_image(event.xdata, event.ydata)
         if val is None:
             self.image_value_label.setText("Value: --")
             return
@@ -3954,6 +4018,33 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if unit:
             txt += f" {unit}"
         self.image_value_label.setText(txt)
+
+    def _sample_current_image(self, x, y):
+        """Value of self._current_image_arr at real (x, y) nm, given
+        self._current_image_extent in the (left, right, bottom, top)
+        convention used with origin='upper' throughout _draw_image_layer -
+        i.e. array row 0 sits at the extent's 4th ("top") value. Not
+        sample_array_value (thumbnail_render.py), which assumes the
+        opposite (origin='lower': row 0 at the extent's 3rd/"bottom"
+        value) and would silently read the wrong row here."""
+        arr = self._current_image_arr
+        extent = self._current_image_extent
+        if arr is None or extent is None or x is None or y is None:
+            return None
+        h, w = arr.shape
+        if h < 1 or w < 1:
+            return None
+        x0, x1, y_bottom, y_top = extent
+        x_lo, x_hi = min(x0, x1), max(x0, x1)
+        y_lo, y_hi = min(y_bottom, y_top), max(y_bottom, y_top)
+        if not (x_lo <= x <= x_hi and y_lo <= y <= y_hi):
+            return None
+        col = 0.0 if w <= 1 or x1 == x0 else (x - x0) / (x1 - x0) * (w - 1)
+        row = 0.0 if h <= 1 or y_top == y_bottom else (y - y_top) / (y_bottom - y_top) * (h - 1)
+        col = int(round(min(max(col, 0), w - 1)))
+        row = int(round(min(max(row, 0), h - 1)))
+        val = arr[row, col]
+        return float(val) if np.isfinite(val) else None
 
 class _SpectroFitWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(list, list)
