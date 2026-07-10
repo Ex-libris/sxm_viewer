@@ -817,6 +817,16 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._grid_minor_enabled = False
         self._axis_unit_override = None
         self._hover_points = []
+        # Scroll-to-zoom (cursor-centered) / drag-to-pan (once zoomed) /
+        # Reset View - mirrors the main preview canvas's own zoom mechanism
+        # (detail_preview_canvas.py's _on_scroll_zoom/_is_zoomed/_pan_active)
+        # for a consistent feel across the app.
+        self._home_xlim = None
+        self._home_ylim = None
+        self._pan_active = False
+        self._pan_start = None
+        self._pan_start_lim = None
+        self._pan_fast_mode_state = None
         self._legend_enabled = True
         self._show_markers = False
         self._show_line = True
@@ -907,6 +917,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         value_row.addWidget(self.value_label, 1)
         info_layout.addLayout(value_row)
         self.canvas.mpl_connect("motion_notify_event", self._on_plot_value_hover)
+        self.canvas.mpl_connect("scroll_event", self._on_zoom_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_pan_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_pan_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_pan_release)
 
         controls_panel = QtWidgets.QWidget()
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
@@ -928,6 +942,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.dark_bg_toggle = self._make_toggle_button("Dark", checked=self._dark_background, tooltip="Toggle dark spectroscopy plot background")
         self.dark_bg_toggle.toggled.connect(lambda checked: self._set_plot_option("dark", checked))
         primary_row.addWidget(self.dark_bg_toggle)
+        self.reset_view_btn = QtWidgets.QPushButton("Reset View")
+        self.reset_view_btn.setToolTip("Undo scroll-zoom/drag-pan and restore the original view (scroll to zoom, drag to pan while zoomed)")
+        self.reset_view_btn.clicked.connect(self._on_reset_zoom)
+        primary_row.addWidget(self.reset_view_btn)
         primary_row.addStretch(1)
         self.advanced_toggle_btn = self._make_toggle_button("Advanced ▼", checked=False, tooltip="Show/hide advanced spectroscopy controls")
         self.advanced_toggle_btn.toggled.connect(self._set_advanced_options_visible)
@@ -1821,6 +1839,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._populate_axis_unit_combo()
         self._update_primary_axis(axis_vals=self.V, axis_label=self.axis_label, axis_unit=self.axis_unit)
         self._apply_axis_to_entries(key)
+        # A different axis means the X domain (and its numbers) changed
+        # entirely - forget any scroll-zoom/pan so _plot_selected_channel
+        # autoscales fresh instead of reapplying a now-meaningless window.
+        self._home_xlim = None
+        self._home_ylim = None
         self._plot_selected_channel()
         self._update_fit_button()
 
@@ -1850,6 +1873,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def _on_axis_unit_override_changed(self, text):
         text = (text or "").strip()
         self._axis_unit_override = text or None
+        # The display-unit scale changed the X numbers too (e.g. nm -> Å is
+        # a 10x rescale) - a prior zoom window would no longer line up.
+        self._home_xlim = None
+        self._home_ylim = None
         self._plot_selected_channel()
 
     def _on_channel_changed(self, name):
@@ -1857,6 +1884,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.fit_result_label.setText("")
         self.fit_result_label.setVisible(False)
         self._apply_channel_to_entries(name or "")
+        # A different channel means the Y domain changed entirely - see
+        # _on_axis_changed's identical reasoning for the X axis.
+        self._home_xlim = None
+        self._home_ylim = None
         self._plot_selected_channel()
         self._update_fit_button()
 
@@ -1942,6 +1973,15 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         entry["axis_unit"] = axis_unit
 
     def _plot_selected_channel(self):
+        # Preserve the user's current scroll-zoom/pan across redraws that
+        # don't change the data domain (toggling grid/markers/color, adding
+        # a Ctrl+click-combined curve, ...) - _on_axis_changed/
+        # _on_channel_changed clear _home_xlim/_home_ylim first, which makes
+        # _is_zoomed() False here and so intentionally skips restoration,
+        # since switching axis/channel changes what the numbers even mean.
+        was_zoomed = self._is_zoomed()
+        zoom_xlim = self.ax.get_xlim() if was_zoomed else None
+        zoom_ylim = self.ax.get_ylim() if was_zoomed else None
         self.ax.clear()
         if not self._curve_entries:
             self._apply_plot_theme()
@@ -2017,6 +2057,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._update_position_inset()
         self._apply_plot_theme()
         self._apply_font_scale()
+        self._home_xlim = self.ax.get_xlim()
+        self._home_ylim = self.ax.get_ylim()
+        if was_zoomed and zoom_xlim is not None and zoom_ylim is not None:
+            self.ax.set_xlim(zoom_xlim)
+            self.ax.set_ylim(zoom_ylim)
         self.canvas.draw_idle()
 
     def _on_plot_value_hover(self, event):
@@ -2063,6 +2108,192 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.value_label.setText(f"Value: x={event.xdata:.4g} {x_unit}   y={event.ydata:.4g}")
         else:
             self.value_label.setText("Value: —")
+
+    def _click_reserved_by_other_tool(self, event):
+        """True when a click/drag should be left to some other interactive
+        element (the position inset's own drag/resize, or a draggable
+        legend) instead of starting a zoom-scroll pan - mirrors the
+        preview canvas's convention of reserving overlay handles/bodies
+        before falling back to background pan."""
+        if self._position_inset_ax is not None and self._show_position_inset:
+            try:
+                bbox = self._position_inset_ax.bbox
+                if bbox is not None and (
+                    _near_resize_handle(bbox, event.x, event.y) or bbox.contains(event.x, event.y)
+                ):
+                    return True
+            except Exception:
+                pass
+        legend = self.ax.get_legend()
+        if legend is not None and legend.get_visible():
+            try:
+                if legend.contains(event)[0]:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _is_zoomed(self):
+        if self._home_xlim is None or self._home_ylim is None:
+            return False
+        try:
+            cur_xlim = self.ax.get_xlim()
+            cur_ylim = self.ax.get_ylim()
+            tol = 1e-9
+            return (
+                abs(cur_xlim[0] - self._home_xlim[0]) > tol
+                or abs(cur_xlim[1] - self._home_xlim[1]) > tol
+                or abs(cur_ylim[0] - self._home_ylim[0]) > tol
+                or abs(cur_ylim[1] - self._home_ylim[1]) > tol
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _clamp_zoom_limits(new_lim, base_lim):
+        """Clamp new axis limits to stay within base limits (preserving
+        axis direction), so scroll-zoom-out and pan can't wander past the
+        original, fully-autoscaled view."""
+        try:
+            base_min, base_max = min(base_lim), max(base_lim)
+            new_min, new_max = min(new_lim), max(new_lim)
+            width = new_max - new_min
+            base_width = base_max - base_min
+            if width >= base_width:
+                return base_lim
+            start = max(base_min, min(new_min, base_max - width))
+            end = start + width
+            return (start, end) if base_lim[0] <= base_lim[1] else (end, start)
+        except Exception:
+            return new_lim
+
+    def _on_zoom_scroll(self, event):
+        """Mouse-wheel zoom centered on the cursor, mirroring the main
+        preview canvas's _on_scroll_zoom."""
+        if event is None or event.inaxes is not self.ax:
+            return
+        if self._pan_active or self._click_reserved_by_other_tool(event):
+            return
+        btn = getattr(event, "button", None)
+        if btn == "up":
+            delta = 1
+        elif btn == "down":
+            delta = -1
+        else:
+            step = getattr(event, "step", 0) or 0
+            if not step:
+                return
+            delta = 1 if step > 0 else -1
+        scale = 0.9 if delta > 0 else 1.1
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+        if self._home_xlim is None:
+            self._home_xlim = xlim
+        if self._home_ylim is None:
+            self._home_ylim = ylim
+        x0 = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) * 0.5
+        y0 = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) * 0.5
+        new_xlim = (x0 - (x0 - xlim[0]) * scale, x0 + (xlim[1] - x0) * scale)
+        new_ylim = (y0 - (y0 - ylim[0]) * scale, y0 + (ylim[1] - y0) * scale)
+        new_xlim = self._clamp_zoom_limits(new_xlim, self._home_xlim)
+        new_ylim = self._clamp_zoom_limits(new_ylim, self._home_ylim)
+        self.ax.set_xlim(new_xlim)
+        self.ax.set_ylim(new_ylim)
+        self.canvas.draw_idle()
+
+    def _enter_fast_pan_mode(self):
+        """Temporarily simplify the plot for the duration of an active drag
+        (minor grid off, markers hidden) so each *real* redraw during the
+        pan has less to rasterize, restored via _exit_fast_pan_mode on
+        release. Deliberately keeps every frame a genuine, live
+        set_xlim/set_ylim + redraw - i.e. what's on screen during the drag
+        always IS the real, current position - rather than sliding a frozen
+        snapshot and committing a possibly-different final redraw on
+        release, which felt smoother in isolation but left the final
+        "landing" position uncertain until it happened."""
+        if self._pan_fast_mode_state is not None:
+            return
+        marker_sizes = {}
+        for line in self.ax.get_lines():
+            marker = line.get_marker()
+            if marker not in (None, "None", ""):
+                marker_sizes[line] = line.get_markersize()
+                line.set_markersize(0)
+        had_minor_grid = bool(self._grid_minor_enabled)
+        if had_minor_grid:
+            self.ax.grid(False, which="minor")
+        self._pan_fast_mode_state = {"markers": marker_sizes, "minor_grid": had_minor_grid}
+
+    def _exit_fast_pan_mode(self):
+        state = self._pan_fast_mode_state
+        if state is None:
+            return
+        for line, size in state.get("markers", {}).items():
+            try:
+                line.set_markersize(size)
+            except Exception:
+                pass
+        if state.get("minor_grid"):
+            self.ax.grid(True, which="minor", alpha=0.12, linewidth=0.5)
+        self._pan_fast_mode_state = None
+
+    def _pan_limits_for(self, event):
+        x0, y0 = self._pan_start
+        xlim0, ylim0 = self._pan_start_lim
+        dx = event.xdata - x0
+        dy = event.ydata - y0
+        new_xlim = (xlim0[0] - dx, xlim0[1] - dx)
+        new_ylim = (ylim0[0] - dy, ylim0[1] - dy)
+        if self._home_xlim is not None:
+            new_xlim = self._clamp_zoom_limits(new_xlim, self._home_xlim)
+        if self._home_ylim is not None:
+            new_ylim = self._clamp_zoom_limits(new_ylim, self._home_ylim)
+        return new_xlim, new_ylim
+
+    def _on_pan_press(self, event):
+        if event is None or event.button != 1 or event.inaxes is not self.ax:
+            return
+        if self._click_reserved_by_other_tool(event):
+            return
+        if event.xdata is None or event.ydata is None or not self._is_zoomed():
+            return
+        self._pan_active = True
+        self._pan_start = (event.xdata, event.ydata)
+        self._pan_start_lim = (self.ax.get_xlim(), self.ax.get_ylim())
+        self._enter_fast_pan_mode()
+
+    def _on_pan_motion(self, event):
+        if not self._pan_active:
+            return
+        if event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return
+        if self._pan_start is None or self._pan_start_lim is None:
+            return
+        new_xlim, new_ylim = self._pan_limits_for(event)
+        self.ax.set_xlim(new_xlim)
+        self.ax.set_ylim(new_ylim)
+        self.canvas.draw_idle()
+
+    def _on_pan_release(self, event):
+        if event is not None and event.button != 1:
+            return
+        if self._pan_active and self._pan_start is not None and self._pan_start_lim is not None:
+            if event is not None and event.xdata is not None and event.ydata is not None:
+                new_xlim, new_ylim = self._pan_limits_for(event)
+                self.ax.set_xlim(new_xlim)
+                self.ax.set_ylim(new_ylim)
+            self._exit_fast_pan_mode()
+            self.canvas.draw_idle()
+        self._pan_active = False
+        self._pan_start = None
+        self._pan_start_lim = None
+
+    def _on_reset_zoom(self):
+        if self._home_xlim is not None:
+            self.ax.set_xlim(self._home_xlim)
+        if self._home_ylim is not None:
+            self.ax.set_ylim(self._home_ylim)
+        self.canvas.draw_idle()
 
     def _on_show_on_image(self):
         viewer = self.viewer
@@ -2157,6 +2388,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         position_act = style_menu.addAction("Show position inset")
         position_act.setCheckable(True)
         position_act.setChecked(self._show_position_inset)
+        reset_view_act = style_menu.addAction("Reset View (undo zoom/pan)")
+        reset_view_act.setEnabled(self._is_zoomed())
         reset_act = style_menu.addAction("Reset style")
         action = menu.exec_(self.canvas.mapToGlobal(pos))
         if action in preset_actions:
@@ -2215,6 +2448,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         elif action == position_act:
             self._show_position_inset = position_act.isChecked()
             self._plot_selected_channel()
+        elif action == reset_view_act:
+            self._on_reset_zoom()
         elif action == reset_act:
             self._reset_plot_style()
 
@@ -2999,7 +3234,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
     def eventFilter(self, source, event):
         if source == self.canvas:
             if event.type() == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
-                if self._qt_pos_hits_inset(event.pos()):
+                if self._qt_pos_hits_inset(event.pos()) or self._is_zoomed():
+                    # Once zoomed, click+drag is reserved for panning (see
+                    # _on_pan_press/_on_pan_motion) - without this, dragging
+                    # to pan and dragging to export the curve (this event
+                    # filter's own QDrag-on-drag-threshold feature below)
+                    # fired at the same time from the same gesture, and the
+                    # QDrag's blocking exec_() mid-pan is what made panning
+                    # feel snappy/clunky instead of smooth.
                     self._drag_start_pos = None
                     self._suppress_drag_until_release = True
                 else:
