@@ -116,6 +116,87 @@ from ..thumbnail_render import (
     _trim_nan_border,
     save_wsxm_xyz,
 )
+from ..canvases.detail_preview_canvas import MultiPreviewCanvas
+from ..controllers.preview_popup import spawn_preview_popup
+
+
+def _spec_grid_row_col(spec, cols, zero_based):
+    """This spec's (row, col) in the grid's own native rows x cols layout.
+    Mirrors MatrixSpectroViewer._spec_grid_row_col (spectroscopy_dialogs.py)
+    as an independent, parallel implementation rather than a shared import -
+    MatrixFitWorker runs in its own QThread with only the raw specs list, no
+    access to that dialog instance - matching this file's existing
+    convention of manually-synced grid-indexing helpers (see the module-level
+    grid_cols/grid_rows/zero_based_indices derivation in
+    MatrixFitWorker.run(), whose docstring cross-reference already notes
+    "mirrors ... so the two stay consistent")."""
+    row = spec.get('grid_row')
+    col = spec.get('grid_col')
+    if row is not None and col is not None:
+        try:
+            return int(row), int(col)
+        except Exception:
+            pass
+    if not cols:
+        return None
+    idx = spec.get('matrix_index')
+    if idx is None:
+        return None
+    try:
+        idx_val = int(idx)
+    except Exception:
+        return None
+    if not zero_based:
+        idx_val -= 1
+    return idx_val // cols, idx_val % cols
+
+
+def _grid_xy_coords(specs, rows, cols, zero_based):
+    """2D (rows, cols) arrays of every grid pixel's true measured absolute
+    (x, y) nm position. Mirrors MatrixSpectroViewer._grid_xy_coords - see
+    _spec_grid_row_col for why this is a parallel copy, not a shared call."""
+    if not specs or not rows or not cols:
+        return None, None
+    X = np.full((rows, cols), np.nan, dtype=float)
+    Y = np.full((rows, cols), np.nan, dtype=float)
+    for spec in specs:
+        rc = _spec_grid_row_col(spec, cols, zero_based)
+        if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
+            continue
+        x = spec.get('x')
+        y = spec.get('y')
+        if x is None or y is None:
+            continue
+        X[rc[0], rc[1]] = float(x)
+        Y[rc[0], rc[1]] = float(y)
+    return X, Y
+
+
+def _grid_local_pitch(X, Y, rows, cols):
+    """Typical real-world spacing (nm) per grid step, from true per-point
+    positions - rotation-invariant, unlike a plain bounding box (min/max) of
+    those same points. Mirrors MatrixSpectroViewer._grid_local_pitch.
+
+    A rotated grid's point positions form a rotated rectangle in absolute
+    (x, y): min/max of them measures that rectangle's *axis-aligned bounding
+    box*, not its true side length - for a 45-degree rotation the bounding
+    box is sqrt(2) times too large (confirmed on real data: a 24 nm grid
+    edge was exported as ~34 nm, 24*sqrt(2)=33.9). Median nearest-neighbor
+    spacing along each axis is unaffected by rotation and is also robust to
+    a single noisy point, unlike min/max."""
+    dx = dy = 1.0
+    if cols > 1:
+        step = np.hypot(np.diff(X, axis=1), np.diff(Y, axis=1))
+        finite = step[np.isfinite(step)]
+        if finite.size:
+            dx = float(np.nanmedian(finite)) or 1.0
+    if rows > 1:
+        step = np.hypot(np.diff(X, axis=0), np.diff(Y, axis=0))
+        finite = step[np.isfinite(step)]
+        if finite.size:
+            dy = float(np.nanmedian(finite)) or 1.0
+    return dx, dy
+
 
 class MatrixFitWorker(QtCore.QObject):
     progress = QtCore.pyqtSignal(int, int)
@@ -209,6 +290,13 @@ class MatrixFitWorker(QtCore.QObject):
             'rmse': np.full((grid_rows, grid_cols), np.nan),
         }
         def _axis_from_specs(coord_key, index_key, size):
+            # Bounding-box fallback (min/max of each point's own absolute
+            # position) - only used when true per-point coordinates aren't
+            # fully available (see the pitch-based x_axis/y_axis computation
+            # below, which is what's actually used whenever possible: this
+            # bounding-box approach silently measures a *rotated* grid's
+            # axis-aligned bounding box instead of its true side length, up
+            # to sqrt(2)x too large at 45 degrees).
             if not size:
                 return np.arange(0, dtype=float)
             coords = [None] * size
@@ -228,6 +316,18 @@ class MatrixFitWorker(QtCore.QObject):
             arr = np.asarray(coords, dtype=float)
             arr = arr - float(np.nanmin(arr))
             return arr
+
+        def _pitch_based_axes():
+            """(x_axis, y_axis) built from the grid's true, rotation-
+            invariant point spacing (_grid_xy_coords/_grid_local_pitch -
+            mirrors MatrixSpectroViewer's own "local/relative axes" frame
+            used for its virtual-copy export), or None if true per-point
+            coordinates aren't fully available for every grid cell."""
+            X, Y = _grid_xy_coords(specs, grid_rows, grid_cols, zero_based_indices)
+            if X is None or Y is None or np.isnan(X).any() or np.isnan(Y).any():
+                return None
+            dx, dy = _grid_local_pitch(X, Y, grid_rows, grid_cols)
+            return np.arange(grid_cols, dtype=float) * dx, np.arange(grid_rows, dtype=float) * dy
 
         logs = []
         for idx, spec in enumerate(specs):
@@ -283,12 +383,18 @@ class MatrixFitWorker(QtCore.QObject):
                 print(f"[MatrixFit] {current}/{total} processed", flush=True)
             except Exception:
                 pass
+        pitch_axes = _pitch_based_axes()
+        if pitch_axes is not None:
+            x_axis, y_axis = pitch_axes
+        else:
+            x_axis = _axis_from_specs('x', 'grid_col', grid_cols)
+            y_axis = _axis_from_specs('y', 'grid_row', grid_rows)
         payload = {
             'maps': maps,
             'logs': logs,
             'channel_name': channel_name,
-            'x_axis': _axis_from_specs('x', 'grid_col', grid_cols),
-            'y_axis': _axis_from_specs('y', 'grid_row', grid_rows),
+            'x_axis': x_axis,
+            'y_axis': y_axis,
             'axis_unit': axis_unit,
         }
         self.finished.emit(payload)
@@ -308,6 +414,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.viewer = viewer
         self.specs = list(specs)
+        self._fit_anchor_path = self._resolve_fit_anchor_path()
         self.setWindowTitle("Matrix parabola fits")
         self.resize(900, 700)
         self._worker_thread = None
@@ -350,8 +457,40 @@ class MatrixFitDialog(QtWidgets.QDialog):
         layout.addWidget(display_box)
         self.progress = QtWidgets.QProgressBar()
         layout.addWidget(self.progress)
-        self.fig = Figure(figsize=(6,5))
-        self.canvas = FigureCanvas(self.fig)
+        # Embed the same MultiPreviewCanvas the main preview/popups use,
+        # instead of a bespoke Figure/subplot-grid, so these fit maps get
+        # the preview's full feature set (molecule overlay, scale bar, crop,
+        # profile/angle tools, per-view colormap/histogram, virtual copy,
+        # ...) for free through the canvas's own machinery - mirroring how
+        # gui/controllers/preview_popup.py's spawn_preview_popup stands up a
+        # fully-featured MultiPreviewCanvas outside the main window.
+        self.canvas = MultiPreviewCanvas(self, figsize=(9, 7))
+        try:
+            self.canvas._undo_suspend_depth += 1
+            self.canvas.set_render_suspended(True)
+        except Exception:
+            pass
+        self.canvas.set_view_layout("grid")
+        self.canvas.set_crop_callback(lambda v, c=self.canvas: self.viewer._on_preview_crop(v, c))
+        self.canvas.set_virtual_copy_callback(self._create_virtual_copy_of_fit_map)
+        self.canvas.set_double_click_callback(self._on_map_double_click)
+        self.canvas.set_filter_menu_callback(
+            lambda menu, view, c=self.canvas: self.viewer._populate_canvas_filter_menu(menu, c, view)
+        )
+        self.canvas.set_histogram_dialog_callback(lambda c: self.viewer._open_histogram_dialog(c))
+        self.canvas.set_histogram_auto_callback(lambda c: self.viewer._auto_contrast(c))
+        self.canvas.set_histogram_reset_callback(lambda c: self.viewer._reset_contrast(c))
+        self.canvas.set_molecule_palette_callback(self.viewer._on_molecule_palette_changed)
+        if hasattr(self.canvas, "set_recent_molecule_callback"):
+            self.canvas._recent_molecule_paths = list(getattr(self.viewer, "recent_molecules", []) or [])
+            self.canvas.set_recent_molecule_callback(self.viewer._on_recent_molecules_updated)
+        self.canvas.set_plot_font_family_callback(self.viewer.set_plot_font_family)
+        self.canvas.set_stp_export_callback(self.viewer._export_view_as_stp)
+        self.canvas.set_window_arrange_callback(self.viewer.on_arrange_popouts)
+        self.canvas.set_window_minimize_callback(self.viewer.on_minimize_popouts)
+        self.canvas.set_window_restore_callback(self.viewer.on_restore_popouts)
+        self.canvas.set_window_close_callback(self.viewer.on_close_popouts)
+        self.canvas.set_value_callback(self._on_map_value)
         layout.addWidget(self.canvas, 1)
         self.map_value_label = QtWidgets.QLabel("Value: --")
         layout.addWidget(self.map_value_label)
@@ -369,8 +508,11 @@ class MatrixFitDialog(QtWidgets.QDialog):
         self.low_pct_spin.valueChanged.connect(self._on_display_option_changed)
         self.high_pct_spin.valueChanged.connect(self._on_display_option_changed)
         self._update_percentile_enabled()
-        self._axes_to_key = {}
-        self.canvas.mpl_connect('motion_notify_event', self._on_map_hover)
+        try:
+            self.canvas._undo_suspend_depth = max(0, getattr(self.canvas, "_undo_suspend_depth", 0) - 1)
+            self.canvas.set_render_suspended(False)
+        except Exception:
+            pass
 
     def _start_fit(self):
         if self._worker_thread is not None:
@@ -408,7 +550,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
             self.logs.append(line)
         any_finite = maps and any(np.isfinite(arr).any() for arr in maps.values())
         if any_finite:
-            self._render_maps(maps, channel_name)
+            self._build_views(maps, channel_name)
             self.save_btn.setEnabled(True)
             self.export_xyz_btn.setEnabled(True)
         else:
@@ -441,7 +583,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
         if self._result_payload and self._result_payload.get('maps'):
             maps = self._result_payload['maps']
             channel = self._result_payload.get('channel_name', 'channel')
-            self._render_maps(maps, channel)
+            self._build_views(maps, channel)
         else:
             self.canvas.draw_idle()
 
@@ -480,33 +622,52 @@ class MatrixFitDialog(QtWidgets.QDialog):
             return None
         return [x0, x1, y0, y1]
 
-    def _render_maps(self, maps, channel_name):
-        self.fig.clf()
-        self._axes_to_key = {}
-        params = ['a','b','c','a_err','b_err','c_err','rmse']
-        cols = 3
-        rows = math.ceil(len(params)/cols)
+    def _view_extent_raw(self, arr_shape):
+        """Like _map_extent, but in the [x0, x1, y1, y0] convention
+        view["extent_raw"] uses elsewhere (header_extent's own docstring in
+        main_window_spectro.py states this explicitly) - the reverse of
+        plain matplotlib imshow(extent=...) order that _map_extent itself
+        returns. Getting this backwards silently shears/mirrors the result,
+        so this conversion is deliberately kept as the *only* place that
+        touches the ordering, rather than inlined at each call site."""
+        extent = self._map_extent(arr_shape)
+        if extent is None:
+            return None
+        x0, x1, y0, y1 = extent
+        return [x0, x1, y1, y0]
+
+    def _build_views(self, maps, channel_name):
+        params = ['a', 'b', 'c', 'a_err', 'b_err', 'c_err', 'rmse']
         axis_unit = (self._result_payload or {}).get('axis_unit') or self.PARAM_INFO.get('b', {}).get('unit') or ''
-        for idx, key in enumerate(params, 1):
-            ax = self.fig.add_subplot(rows, cols, idx)
-            info = self.PARAM_INFO.get(key, {'label': key, 'unit': ''})
-            ax.set_title(info['label'])
-            vmin, vmax = self._compute_vlims(maps[key])
-            extent = self._map_extent(maps[key].shape)
-            cmap = info.get('cmap', 'viridis')
-            im = ax.imshow(maps[key], origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
-            cbar = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            unit = info.get('unit')
-            if key in ('b', 'b_err') and axis_unit:
-                unit = axis_unit
-            if unit:
-                cbar.set_label(unit)
-            if extent:
-                ax.set_xlabel("x (nm)")
-                ax.set_ylabel("y (nm)")
-            self._axes_to_key[ax] = key
-        self.fig.suptitle(f"Parabola fits - channel {channel_name}")
-        self.canvas.draw_idle()
+        views = []
+        for key in params:
+            arr = maps.get(key)
+            if arr is None:
+                continue
+            info = self.PARAM_INFO.get(key, {'label': key, 'unit': '', 'cmap': 'viridis'})
+            vmin, vmax = self._compute_vlims(arr)
+            unit = axis_unit if key in ('b', 'b_err') and axis_unit else info.get('unit', '')
+            views.append({
+                "arr": np.asarray(arr, dtype=float),
+                "cmap": info.get('cmap', 'viridis'),
+                "clim": (vmin, vmax) if vmin is not None and vmax is not None else None,
+                "extent_raw": self._view_extent_raw(arr.shape),
+                "unit": unit,
+                "title": info.get('label', key),
+                # Not a real file - a unique placeholder so nothing that
+                # keys off view["path"]/view["channel_idx"] internally
+                # (caches, molecule-overlay association, ...) collides
+                # across the 7 maps by sharing an identical None/0 key.
+                "path": f"<matrix-fit:{key}>",
+                "channel_idx": 0,
+                "_param_key": key,
+            })
+        self._fit_views = views
+        self.canvas.set_views(views)
+        try:
+            self.setWindowTitle(f"Matrix parabola fits - channel {channel_name}")
+        except Exception:
+            pass
 
     def _save_maps(self):
         if not self._result_payload or not self._result_payload.get('maps'):
@@ -551,30 +712,103 @@ class MatrixFitDialog(QtWidgets.QDialog):
     def get_result_maps(self):
         return self._result_payload
 
-    def _on_map_hover(self, event):
-        if self._result_payload is None or not self._result_payload.get('maps'):
+    def _on_map_value(self, value, x, y, view):
+        """Wired to the canvas's set_value_callback - mirrors
+        gui/viewer/preview.py's _on_preview_value exactly, but writes to
+        this dialog's own map_value_label instead of the main window's.
+        Replaces the old manual _axes_to_key hover lookup entirely now that
+        the canvas tracks per-axes view identity itself."""
+        if value is None or view is None:
             self.map_value_label.setText("Value: --")
             return
-        if event.inaxes not in self._axes_to_key:
-            self.map_value_label.setText("Value: --")
-            return
-        key = self._axes_to_key.get(event.inaxes)
-        arr = self._result_payload['maps'].get(key)
-        if arr is None:
-            self.map_value_label.setText("Value: --")
-            return
-        extent = self._map_extent(arr.shape)
-        val = sample_array_value(arr, event.xdata, event.ydata, extent)
-        if val is None:
-            self.map_value_label.setText("Value: --")
-            return
-        info = self.PARAM_INFO.get(key, {})
-        unit = info.get('unit') or ''
-        label = info.get('label', key)
-        text = f"{label}: {val:.4g}"
+        unit = view.get('unit') or ''
+        title = view.get('title') or ''
+        text = f"{title}: {value:.4g}"
         if unit:
             text += f" {unit}"
         self.map_value_label.setText(text)
+
+    def _resolve_fit_anchor_path(self):
+        """Find the grid's own anchored reference image (the real scan
+        image this grid was matched to - see _assign_matrix_reference in
+        gui/viewer/loader.py) to borrow a parseable header/units from when
+        creating a virtual copy. Each spec's own "path" is the raw
+        .3ds/matrix file itself, which has no directly loadable header as
+        an image - "image_key" is the real, already-registered scan image,
+        matching exactly what MatrixSpectroViewer.anchor_path resolves to
+        for the same purpose (see its _resolve_anchor_path)."""
+        headers = getattr(self.viewer, 'headers', {}) or {}
+        candidates = [
+            spec.get('image_key') or spec.get('primary_image_key')
+            for spec in (self.specs or [])
+        ]
+        candidates = [str(c) for c in candidates if c]
+        for key in candidates:
+            if key in headers:
+                return key
+        return candidates[0] if candidates else None
+
+    def _create_virtual_copy_of_fit_map(self, view):
+        """Turn a fit-parameter map into a real virtual-copy thumbnail via
+        the same mechanism the Grid Map Explorer's own "Virtual copy"
+        action uses (MatrixSpectroViewer._create_virtual_copy_of_map) - once
+        it exists as a thumbnail/channel, it's a real image as far as the
+        rest of the app is concerned, so it inherits the main preview's
+        full feature set for free."""
+        viewer = getattr(self, "viewer", None)
+        if viewer is None or not hasattr(viewer, "_create_virtual_view_copy"):
+            return
+        anchor = self._fit_anchor_path
+        arr = view.get('arr') if isinstance(view, dict) else None
+        extent = view.get('extent_raw') if isinstance(view, dict) else None
+        if not anchor or arr is None or extent is None:
+            QtWidgets.QMessageBox.information(self, "Virtual copy", "No map data to copy yet.")
+            return
+        key = view.get('_param_key', 'map')
+        title = view.get('title', key)
+        unit = view.get('unit') or ''
+        caption = f"{title} (fit)"
+        vc_view = {
+            "path": str(anchor),
+            "arr": np.asarray(arr, dtype=float),
+            "channel_idx": 0,
+            "extent_raw": tuple(float(v) for v in extent),
+            "title": caption,
+            # The array holds this fit parameter's own physical values
+            # (LCPD in mV, RMSE in Hz, ...), not whatever the anchor
+            # image's real channel 0 measures - override its unit/scale so
+            # the copy is labeled/scaled correctly instead of silently
+            # inheriting the anchor's original channel metadata (see
+            # _create_virtual_view_copy's fd_overrides handling).
+            "fd_overrides": {
+                "PhysUnit": unit,
+                "Scale": 1.0,
+                "Offset": 0.0,
+                "Caption": caption,
+            },
+        }
+        result_key = viewer._create_virtual_view_copy(vc_view, tag=f"fit_{key}", op="matrix_fit")
+        if not result_key:
+            QtWidgets.QMessageBox.warning(self, "Virtual copy", "Could not create a virtual copy of this map.")
+            return
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Virtual copy created", self)
+        try:
+            viewer.show_file_channel(result_key, 0)
+        except Exception:
+            pass
+
+    def _on_map_double_click(self, view):
+        """Pop a single fit-parameter map out into its own full-featured
+        preview window, reusing the exact popup machinery the main preview
+        uses (gui/controllers/preview_popup.spawn_preview_popup)."""
+        viewer = getattr(self, "viewer", None)
+        if viewer is None or not isinstance(view, dict):
+            return
+        title = view.get('title') or "Fit map"
+        try:
+            spawn_preview_popup(viewer, [dict(view)], title=title, source_canvas=self.canvas)
+        except Exception:
+            pass
 
     def _collect_fit_metadata(self, x_axis, y_axis, maps):
         specs = self.specs or []
@@ -626,13 +860,6 @@ class MatrixFitDialog(QtWidgets.QDialog):
             meta['estimated_duration_seconds'] = float((times[-1] - times[0]).total_seconds())
         meta['saved_at'] = datetime.utcnow().isoformat()
         return meta
-
-    def closeEvent(self, event):
-        thread = self._worker_thread
-        if thread is not None and thread.isRunning():
-            thread.quit()
-            thread.wait()
-        super().closeEvent(event)
 
     def closeEvent(self, event):
         if self._worker_thread is not None and self._worker_thread.isRunning():

@@ -10791,6 +10791,20 @@ QLabel:hover {{
                 base_caption = fd_new.get("Caption") or Path(path).name
                 fd_new["FileName"] = f"{Path(path).name}_{op_name}_ch{i}"
                 fd_new["Caption"] = f"{base_caption} {tag}"
+            # A copy's array doesn't always represent the same physical
+            # quantity as the anchor's own channel ch_idx (e.g. a matrix-fit
+            # parameter map borrows a real scan image purely as a header/units
+            # template - its values are LCPD/RMSE/etc, not whatever channel
+            # ch_idx originally measured). Without this, _get_filtered_
+            # channel_array's normalize_unit_and_data(arr, fd['PhysUnit'])
+            # would silently label/scale the copy using the anchor's
+            # original unit. fd_overrides lets the caller correct
+            # PhysUnit/Scale/Offset/Caption/etc. post-clone for exactly
+            # this case; grid-slice/crop copies (which do share the anchor's
+            # own units) simply don't pass it.
+            fd_overrides = view.get("fd_overrides")
+            if fd_overrides and 0 <= ch_idx < len(fds_new):
+                fds_new[ch_idx].update(fd_overrides)
             header_new = dict(header)
             header_new["xPixel"] = int(arr.shape[1])
             header_new["yPixel"] = int(arr.shape[0])

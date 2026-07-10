@@ -4199,13 +4199,34 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             for idx, fd in enumerate(fds):
                 label = fd.get('Caption', fd.get('FileName', f"Channel {idx}"))
                 self.image_channel_combo.addItem(label, idx)
+
+            def _looks_backward(i):
+                label = str(fds[i].get('Caption', fds[i].get('FileName', ''))).lower()
+                return "backward" in label or "bwd" in label
+
+            # Backward-direction channels are stored in raw acquisition
+            # column order (mirrored left-right relative to the real, physical
+            # orientation - confirmed empirically: a real Z forward/backward
+            # pair correlates at only 0.39 as-is vs 0.97 once backward is
+            # flipped) and nothing in this app ever corrects that anywhere.
+            # "Slice at value"/metric modes are built from each grid point's
+            # true absolute (x, y), so they're immune to this - but
+            # "Reference image" mode just displays the selected raw channel
+            # array as-is, so picking a Backward channel here makes it look
+            # mirrored relative to the (correctly oriented) metric map. Default
+            # to a Forward-looking channel to sidestep that mismatch, rather
+            # than inheriting whatever direction the main preview last showed.
             default_idx = 0
+            for i in range(len(fds)):
+                if not _looks_backward(i):
+                    default_idx = i
+                    break
             if self.viewer.last_preview and self.viewer.last_preview[0] == str(path):
                 try:
                     prev_idx = int(self.viewer.last_preview[1])
                 except Exception:
-                    prev_idx = 0
-                if 0 <= prev_idx < len(fds):
+                    prev_idx = -1
+                if 0 <= prev_idx < len(fds) and not _looks_backward(prev_idx):
                     default_idx = prev_idx
             self.image_channel_combo.setCurrentIndex(default_idx)
         self.image_channel_combo.blockSignals(False)
