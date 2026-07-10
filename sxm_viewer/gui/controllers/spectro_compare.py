@@ -119,6 +119,17 @@ class SpectroCompareController:
             return
         viewer._multi_spec_selection.append(candidate)
         viewer._multi_spec_selection_keys.add(key)
+        # If the spec plain-clicked right before this Ctrl+click already has
+        # its own open popup, adopt it as this group's anchor - otherwise
+        # the upcoming append_spec_to_single_popup(current_spec) call finds
+        # no anchor and opens a second, disconnected popup instead of
+        # joining the one already on screen, breaking "Ctrl+click builds a
+        # single comparison group" whenever the very first click wasn't
+        # itself a Ctrl+click.
+        if not getattr(viewer, "_multi_single_popup_anchor", None):
+            existing_dlg = self._single_popup_for_key(key)
+            if existing_dlg is not None:
+                viewer._multi_single_popup_anchor = key
         self.update_spec_selection_label()
         viewer._last_clicked_spec = None
 
@@ -198,6 +209,42 @@ class SpectroCompareController:
         if not viewer._spectros_loaded:
             viewer.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_multi_spectroscopy_popup(viewer)
+
+    def all_specs_for_image(self, file_key):
+        """All non-matrix (solo/site) spectra assigned to one image, deduped
+        by identity - matrix/grid points are excluded since they belong in
+        the Grid Map Explorer, not a trace-comparison plot."""
+        viewer = self.viewer
+        file_key = str(file_key or "")
+        if not file_key:
+            return []
+        bucket = list((getattr(viewer, "spectros_by_image", {}) or {}).get(file_key, []) or [])
+        deduped = []
+        seen = set()
+        for entry in bucket:
+            if viewer._is_matrix_spec(entry):
+                continue
+            ident = self.spec_identity_key(entry) or str(Path(str(entry.get("path") or "")))
+            if ident in seen:
+                continue
+            seen.add(ident)
+            deduped.append(entry)
+        deduped.sort(key=self._stack_sort_key)
+        return deduped
+
+    def open_all_specs_popup(self, file_key):
+        viewer = self.viewer
+        specs = self.all_specs_for_image(file_key)
+        if not specs:
+            return None
+        if len(specs) < 2:
+            return self.open_single_popup(specs[0])
+        if not viewer._spectros_loaded:
+            viewer.ensure_spectros_loaded(refresh=False)
+        title = f"All spectra on this image ({len(specs)})"
+        dlg = spectro_popups._open_spectroscopy_compare_popup(viewer, specs, title=title)
+        self._configure_compare_popup(dlg, specs[0], specs)
+        return dlg
 
     def stack_specs_for_popup(self, spec, file_key=""):
         if not spec:
@@ -329,7 +376,15 @@ class SpectroCompareController:
         viewer = self.viewer
         if not spec or not viewer.show_spectra:
             return False
-        if modifiers & QtCore.Qt.ShiftModifier:
+        # Shift still works where it isn't otherwise claimed (thumbnail
+        # marker clicks); Ctrl is the multi-select trigger on the main/popup
+        # preview canvas, where Shift is reserved for the crop-rectangle
+        # drag (see detail_preview_canvas.py's _on_base_click). Matrix/grid
+        # points are excluded here so Ctrl+click on one still falls through
+        # to the original "force matrix explorer" behavior below instead of
+        # being added to a compare-plot selection they don't belong in.
+        multi_select_requested = bool(modifiers & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier))
+        if multi_select_requested and spec.get('matrix_index') is None:
             self.prime_multi_selection_anchor(spec)
             key = self.spec_identity_key(spec) if spec else None
             already_selected = bool(key and key in getattr(viewer, "_multi_spec_selection_keys", set()))
@@ -397,8 +452,28 @@ class SpectroCompareController:
         if event is None:
             return mods
         try:
-            if hasattr(event, "modifiers"):
-                return event.modifiers()
+            raw = getattr(event, "modifiers", None)
+            if callable(raw):
+                # A genuine Qt event (e.g. thumbnail marker clicks) - modifiers()
+                # is a real bound method here.
+                return raw()
+            if isinstance(raw, (frozenset, set, list, tuple)):
+                # A matplotlib MouseEvent (preview/popup canvas marker clicks):
+                # `.modifiers` is a plain collection of lowercase modifier-name
+                # strings ("ctrl", "shift", "alt", ...), NOT a callable -
+                # `event.modifiers()` raised TypeError here and was silently
+                # swallowed below, so Ctrl/Shift-click never actually registered
+                # for markers on this canvas.
+                names = {str(m).lower() for m in raw}
+                if "ctrl" in names or "control" in names:
+                    mods |= QtCore.Qt.ControlModifier
+                if "shift" in names:
+                    mods |= QtCore.Qt.ShiftModifier
+                if "alt" in names:
+                    mods |= QtCore.Qt.AltModifier
+                if "super" in names or "meta" in names or "cmd" in names:
+                    mods |= QtCore.Qt.MetaModifier
+                return mods
             gui_evt = getattr(event, "guiEvent", None)
             if gui_evt is not None and hasattr(gui_evt, "modifiers"):
                 return gui_evt.modifiers()

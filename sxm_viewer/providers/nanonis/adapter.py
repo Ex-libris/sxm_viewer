@@ -860,10 +860,37 @@ def _select_z_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optio
 
 
 def _select_z_rel_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optional[np.ndarray]]:
-    """Select a relative Z axis if present (z_rel naming)."""
+    """Select a relative Z axis if present (z_rel naming, e.g. "Z rel (m)")."""
     for name, data in signals.items():
         low = name.lower()
-        if "z_rel" in low or "rel z" in low:
+        if "z_rel" in low or "zrel" in low or "rel z" in low or "z rel" in low:
+            return name, data
+    return None, None
+
+
+def _select_topo_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    """Best-effort selection of an absolute Z/piezo axis, distinct from a
+    relative-Z channel (see `_select_z_rel_axis`) - i.e. the same candidate
+    list as `_select_z_axis` but excluding anything "rel"-named."""
+    candidates = [
+        "Z (m)",
+        "Z",
+        "Delta Z (m)",
+        "Z offset (m)",
+        "Z offset",
+        "Z piezo (m)",
+        "Z piezo",
+        "Distance (m)",
+        "Distance",
+    ]
+    for name in candidates:
+        if name in signals:
+            return name, signals[name]
+    for name, data in signals.items():
+        low = name.lower()
+        if "rel" in low:
+            continue
+        if low.startswith("z") or "z " in low or " z" in low or "distance" in low:
             return name, data
     return None, None
 
@@ -880,6 +907,29 @@ def _select_bias_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Op
             return name, signals[name]
     for name, data in signals.items():
         if "(V)" in name or name.lower().startswith("bias"):
+            return name, data
+    return None, None
+
+
+def _select_true_bias_axis(signals: Dict[str, np.ndarray]) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    """Like `_select_bias_axis`, but without the broad "any (V)-named
+    column" fallback - used only for the Axis dropdown's "Bias" choice,
+    where mislabeling an unrelated voltage channel (e.g. an oscillation
+    excitation amplitude, which also happens to be measured in volts) as
+    "Bias" would be actively misleading. `_select_bias_axis`'s broader match
+    stays as-is for picking the file's *primary* sweep axis, where a
+    best-effort guess is better than failing to parse the file at all."""
+    candidates = [
+        "Bias calc (V)",
+        "Sample bias (V)",
+        "Bias (V)",
+        "Tip bias (V)",
+    ]
+    for name in candidates:
+        if name in signals:
+            return name, signals[name]
+    for name, data in signals.items():
+        if name.lower().startswith("bias"):
             return name, data
     return None, None
 
@@ -958,6 +1008,98 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
             unit_map[label] = unit_guess
     if not channels:
         return []
+
+    # Build a richer, always-available AxisChoices list (bias / relative-Z /
+    # absolute-Z), independent of the `prefer_z` filename heuristic above -
+    # that heuristic only picks the *default* axis; a relative-Z channel
+    # (e.g. "Z rel (m)") should be selectable in the Axis dropdown whenever
+    # it's present, not just for files whose name flags them as Z-spectroscopy.
+    axes_choices: List[Dict[str, object]] = []
+    bias_choice = None
+    bias_name, bias_data = _select_true_bias_axis(spec.signals)
+    if bias_name is not None and bias_data is not None:
+        bias_choice = {
+            "key": "bias",
+            "label": re.sub(r"\s*\(.*?\)", "", bias_name).strip() or "Bias",
+            "unit": "V",
+            "values": np.asarray(bias_data, dtype=float).copy(),
+        }
+    else:
+        # No per-point Bias column - common for a pure Z-sweep, where bias
+        # is held fixed for the whole spectrum rather than swept. Fall back
+        # to the header's own fixed scalar bias value as a constant-valued
+        # choice, instead of silently omitting "Bias" from the Axis list.
+        fixed_bias = None
+        for hdr_key in ("Bias>Bias (V)", "Bias (V)"):
+            try:
+                if hdr_key in (spec.header or {}):
+                    fixed_bias = float(spec.header[hdr_key])
+                    break
+            except Exception:
+                continue
+        if fixed_bias is not None and axis.size:
+            bias_choice = {
+                "key": "bias",
+                "label": "Bias",
+                "unit": "V",
+                "values": np.full(axis.shape, fixed_bias, dtype=float),
+            }
+    zrel_choice = None
+    zrel_values = None
+    zrel_name, zrel_data = _select_z_rel_axis(spec.signals)
+    if zrel_name is not None and zrel_data is not None:
+        zrel_values = np.asarray(zrel_data, dtype=float).copy()
+        try:
+            if np.nanmax(np.abs(zrel_values)) < 1e-6:
+                zrel_values = zrel_values * 1e9  # assume meters -> nm
+        except Exception:
+            pass
+        zrel_choice = {
+            "key": "z",
+            "label": re.sub(r"\s*\(.*?\)", "", zrel_name).strip() or "Z rel",
+            "unit": "nm",
+            "values": zrel_values,
+        }
+    topo_choice = None
+    topo_values = None
+    topo_name, topo_data = _select_topo_axis(spec.signals)
+    if topo_name is not None and topo_data is not None and topo_name != zrel_name:
+        topo_values = np.asarray(topo_data, dtype=float).copy()
+        try:
+            if np.nanmax(np.abs(topo_values)) < 1e-6:
+                topo_values = topo_values * 1e9  # assume meters -> nm
+        except Exception:
+            pass
+        topo_choice = {
+            "key": "topo",
+            "label": re.sub(r"\s*\(.*?\)", "", topo_name).strip() or "Topo",
+            "unit": "nm",
+            "values": topo_values,
+        }
+    # When both a relative-Z and an absolute-Z axis exist, record the
+    # constant offset between them so combining multiple spectra can add it
+    # back to each one's own relative-Z values, keeping their true relative
+    # height differences meaningful instead of every trace starting at zero.
+    if zrel_choice is not None and topo_choice is not None:
+        try:
+            diff = topo_values - zrel_values
+            finite = diff[np.isfinite(diff)]
+            if finite.size:
+                zrel_choice["origin_abs"] = float(np.nanmedian(finite))
+        except Exception:
+            pass
+    # For Z-spectroscopy files the meaningful sweep axis is Z itself, so list
+    # absolute Z first, then relative Z, then Bias last (Bias is normally
+    # held fixed during a Z sweep - still offered, just the least useful
+    # default here). Bias-spectroscopy files keep the conventional opposite
+    # order (Bias first).
+    ordered_choices = (
+        [topo_choice, zrel_choice, bias_choice]
+        if prefer_z
+        else [bias_choice, zrel_choice, topo_choice]
+    )
+    axes_choices.extend(choice for choice in ordered_choices if choice is not None)
+
     meta = _nanonis_spec_metadata(spec.header or {}, Path(path))
     if meta.get("z_level_nm") is None:
         z_nm, z_label = _extract_constant_signal_z_level_nm(spec.signals)
@@ -970,6 +1112,7 @@ def parse_nanonis_spectroscopy(path: Path | str) -> List[Dict[str, object]]:
         "V": axis.copy(),
         "AxisLabel": axis_label,
         "AxisUnit": axis_unit,
+        "AxisChoices": axes_choices or None,
         "AltAxis": alt_axis.copy() if alt_axis is not None else None,
         "AltAxisLabel": re.sub(r"\s*\(.*?\)", "", alt_axis_name).strip() if alt_axis_name else None,
         "AltAxisUnit": alt_axis_unit,

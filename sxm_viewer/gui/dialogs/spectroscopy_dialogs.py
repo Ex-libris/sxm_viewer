@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import functools
-import itertools
 import json
 import math
 import time
@@ -147,6 +146,43 @@ _INSET_RESIZE_HANDLE_PX = 10
 _INSET_MIN_SIZE = 0.10
 _INSET_MAX_SIZE = 0.85
 
+# nm-per-unit for length axes (base unit is always "nm" - see
+# data/spectroscopy.py and providers/nanonis/adapter.py) and V-per-unit for
+# voltage axes (base unit is always "V"). Only the units actually offered in
+# the Axis-unit selector need entries here.
+_LENGTH_NM_PER_UNIT = {"pm": 1e-3, "Å": 0.1, "nm": 1.0, "µm": 1e3}
+_VOLTAGE_V_PER_UNIT = {"µV": 1e-6, "mV": 1e-3, "V": 1.0}
+
+
+def _axis_unit_choices_for(base_unit):
+    """Selectable display units for a given axis's native/base unit, in
+    display order. Length axes (base "nm") offer pm/Å/nm/µm; voltage axes
+    (base "V", or "mV" - see the mislabeled-mV heuristic in
+    _on_axis_changed, which relabels without rescaling) offer µV/mV/V. Any
+    other axis (Hz, A, ...) offers nothing - it's shown as-is."""
+    u = (base_unit or "").strip()
+    if u.lower() == "nm":
+        return ["pm", "Å", "nm", "µm"]
+    if u.lower() == "v" or u in _VOLTAGE_V_PER_UNIT:
+        return ["µV", "mV", "V"]
+    return []
+
+
+def _axis_unit_scale_for(base_unit, target_unit):
+    """Multiplier to convert a value already in `base_unit` into
+    `target_unit`. `base_unit` is normally "nm" or "V", but can also be
+    "mV" (see the mislabeled-mV heuristic in _on_axis_changed, which
+    relabels large-magnitude "V" data as "mV" without rescaling it)."""
+    u = (base_unit or "").strip()
+    if u.lower() == "nm" and target_unit in _LENGTH_NM_PER_UNIT:
+        return 1.0 / _LENGTH_NM_PER_UNIT[target_unit]
+    base_v_per_unit = _VOLTAGE_V_PER_UNIT.get(u)
+    if base_v_per_unit is None and u.lower() == "v":
+        base_v_per_unit = _VOLTAGE_V_PER_UNIT["V"]
+    if base_v_per_unit is not None and target_unit in _VOLTAGE_V_PER_UNIT:
+        return base_v_per_unit / _VOLTAGE_V_PER_UNIT[target_unit]
+    return 1.0
+
 
 def _near_resize_handle(bbox, x, y):
     """True when (x, y) - in the same display-pixel space as bbox - is near
@@ -159,23 +195,33 @@ def _near_resize_handle(bbox, x, y):
 
 def _resize_inset_bbox(parent_ax, resize_start, event_x, event_y):
     """Compute a new [x0, y0, w, h] inset bbox (axes-fraction units) from a
-    bottom-right-corner drag. `resize_start` is (start_event_x,
-    start_event_y, start_bbox) captured on mouse press."""
+    bottom-right-corner drag. `resize_start` is (corner_offset_x,
+    corner_offset_y, start_bbox): the pixel-space offset between the press
+    point and the inset's true bottom-right corner (captured on mouse press,
+    so grabbing slightly off-corner doesn't snap), plus the bbox at press
+    time.
+
+    The inset's top-left corner (x0, y0+h0) is held fixed and the
+    bottom-right corner is made to track the cursor directly (1:1, modulo
+    the captured offset) - matching where the visible resize-grip glyph
+    actually sits, so dragging it down/right grows the box toward the
+    cursor and dragging up/left shrinks it, instead of the box growing away
+    from the corner being dragged.
+    """
     if not resize_start:
         return None
-    start_x, start_y, start_bbox = resize_start
+    offset_x, offset_y, start_bbox = resize_start
     try:
         inv = parent_ax.transAxes.inverted()
-        p0 = inv.transform((start_x, start_y))
-        p1 = inv.transform((event_x, event_y))
+        corner = inv.transform((event_x - offset_x, event_y - offset_y))
     except Exception:
         return None
-    dw = p1[0] - p0[0]
-    dh = p0[1] - p1[1]  # bbox y grows downward from its bottom-left origin
     x0, y0, w0, h0 = start_bbox
-    new_w = min(max(w0 + dw, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - x0)
-    new_h = min(max(h0 + dh, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - y0)
-    return [x0, y0, new_w, new_h]
+    y_top = y0 + h0
+    new_w = min(max(corner[0] - x0, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - x0)
+    new_h = min(max(y_top - corner[1], _INSET_MIN_SIZE), _INSET_MAX_SIZE, y_top)
+    new_y0 = y_top - new_h
+    return [x0, new_y0, new_w, new_h]
 
 
 def _draw_inset_resize_handle(inset_ax):
@@ -339,6 +385,53 @@ def _normalize_topo_axis(values: np.ndarray, unit_hint: str | None) -> tuple[np.
             return arr * 1e9, "nm"
         return arr, (unit if unit else "nm")
     return arr, unit
+
+
+def _zrel_group_common_origin(specs):
+    """The reference "zero" for a combined Z_rel view: the MOST NEGATIVE
+    absolute-Z sweep-start (origin_abs, see data/spectroscopy.py and
+    providers/nanonis/adapter.py) across every spectrum in `specs` that has
+    one. Returns None if fewer than one spec carries an origin_abs (or the
+    group has only one spectrum) - the single-spectrum case is meant to stay
+    trivial (plain Nanonis-native Z_rel, unchanged)."""
+    origins = []
+    for spec in specs or []:
+        if not spec:
+            continue
+        for ax in spec.get("AxisChoices") or []:
+            if ax.get("key") == "z" and ax.get("origin_abs") is not None:
+                try:
+                    origins.append(float(ax["origin_abs"]))
+                except Exception:
+                    pass
+                break
+    if len(origins) < 2:
+        return None
+    return min(origins)
+
+
+def _apply_zrel_origin(vals: np.ndarray, ax_choice: dict, key, common_origin=None) -> np.ndarray:
+    """When `key` is the relative-Z axis and its AxisChoice carries a
+    precomputed absolute-Z origin (see data/spectroscopy.py and
+    providers/nanonis/adapter.py, both key "z"), shift this spectrum's own
+    Z_rel by (its own origin_abs - the group's common origin), so combining
+    several spectra aligns every trace relative to whichever one's own sweep
+    started deepest (most negative absolute Z) - not to absolute zero, which
+    just reconstructs the Z(abs) axis and defeats the point of a *relative*
+    view. `common_origin` should be `_zrel_group_common_origin` computed over
+    every spectrum currently combined together; when None (a single,
+    uncombined spectrum, or no other spec carries an origin_abs), the shift
+    is trivially zero - the plain Nanonis-native Z_rel curve, unchanged."""
+    if key != "z" or not isinstance(ax_choice, dict):
+        return vals
+    origin_abs = ax_choice.get("origin_abs")
+    if origin_abs is None:
+        return vals
+    reference = common_origin if common_origin is not None else origin_abs
+    try:
+        return vals + float(origin_abs - reference)
+    except Exception:
+        return vals
 
 
 def _topo_axis_from_spec(spec: dict | None) -> dict | None:
@@ -703,6 +796,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.ax = self.fig.add_subplot(111)
         self.channel_combo = QtWidgets.QComboBox()
         self.axis_combo = QtWidgets.QComboBox()
+        self.unit_combo = QtWidgets.QComboBox()
+        self.unit_combo.setToolTip("Display unit for the X axis")
+        self.unit_combo.setEnabled(False)
+        self.unit_combo.currentTextChanged.connect(self._on_axis_unit_override_changed)
+        self.value_label = QtWidgets.QLabel("Value: —")
+        self.value_label.setObjectName("spectroValueLabel")
         self.fit_btn = QtWidgets.QPushButton("Fit parabola")
         self.copy_btn = QtWidgets.QPushButton("Copy channel")
         # Honor the color the caller already committed to (e.g. the Grid Map
@@ -715,6 +814,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._drag_start_pos = None
         self._font_scale = 1.0
         self._grid_enabled = True
+        self._grid_minor_enabled = False
+        self._axis_unit_override = None
+        self._hover_points = []
         self._legend_enabled = True
         self._show_markers = False
         self._show_line = True
@@ -793,9 +895,18 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         selector_row.addWidget(self.channel_combo, 1)
         selector_row.addWidget(QtWidgets.QLabel("Axis:"))
         selector_row.addWidget(self.axis_combo, 1)
+        selector_row.addWidget(QtWidgets.QLabel("Unit:"))
+        selector_row.addWidget(self.unit_combo)
         selector_row.addWidget(self.fit_btn)
         selector_row.addWidget(self.copy_btn)
         info_layout.addLayout(selector_row)
+
+        value_row = QtWidgets.QHBoxLayout()
+        value_row.setContentsMargins(0, 0, 0, 0)
+        value_row.setSpacing(6)
+        value_row.addWidget(self.value_label, 1)
+        info_layout.addLayout(value_row)
+        self.canvas.mpl_connect("motion_notify_event", self._on_plot_value_hover)
 
         controls_panel = QtWidgets.QWidget()
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
@@ -945,6 +1056,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         for ax in self.axes:
             self.axis_combo.addItem(self._axis_display_name(ax), ax.get("key"))
         self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        self._populate_axis_unit_combo()
         for name in self.channels.keys():
             self.channel_combo.addItem(name)
         if self.channel_combo.count():
@@ -1644,8 +1756,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             )
         return axes
 
-    def _axis_values_for_spec(self, spec, axis_key):
-        """Return axis values/label/unit for a given spec and axis key."""
+    def _axis_values_for_spec(self, spec, axis_key, common_origin=None):
+        """Return axis values/label/unit for a given spec and axis key.
+        `common_origin` (see _zrel_group_common_origin) should be passed
+        whenever this spec is being shown alongside others, so a relative-Z
+        axis aligns to the group's deepest sweep-start instead of showing
+        each spectrum's own absolute Z."""
         if spec is None:
             return np.asarray([]), "Axis", ""
         axis_key = axis_key or "primary"
@@ -1654,6 +1770,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             key = choice.get("key") or choice.get("label")
             if key == axis_key:
                 vals = np.asarray(choice.get("values", []), dtype=float)
+                vals = _apply_zrel_origin(vals, choice, key, common_origin)
                 return vals, choice.get("label") or "Axis", choice.get("unit") or ""
         if axis_key == "topo":
             extra_topo = _topo_axis_from_spec(spec)
@@ -1701,9 +1818,39 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             except Exception:
                 pass
         self.axis_unit = unit or ""
+        self._populate_axis_unit_combo()
         self._update_primary_axis(axis_vals=self.V, axis_label=self.axis_label, axis_unit=self.axis_unit)
+        self._apply_axis_to_entries(key)
         self._plot_selected_channel()
         self._update_fit_button()
+
+    def _populate_axis_unit_combo(self):
+        """(Re)populate the Unit combo for the currently-selected axis's
+        unit family (length: pm/Å/nm/µm, voltage: µV/mV/V), preserving the
+        user's chosen override when it's still valid for the new axis, and
+        clearing it (back to the native unit) when switching to a
+        differently-typed axis (e.g. Z -> Bias) would otherwise leave a
+        stale, meaningless override in effect."""
+        choices = _axis_unit_choices_for(self.axis_unit)
+        self.unit_combo.blockSignals(True)
+        self.unit_combo.clear()
+        if choices:
+            self.unit_combo.addItems(choices)
+            self.unit_combo.setEnabled(True)
+            if self._axis_unit_override not in choices:
+                self._axis_unit_override = None
+            target = self._axis_unit_override or self.axis_unit
+            idx = self.unit_combo.findText(target)
+            self.unit_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            self._axis_unit_override = None
+            self.unit_combo.setEnabled(False)
+        self.unit_combo.blockSignals(False)
+
+    def _on_axis_unit_override_changed(self, text):
+        text = (text or "").strip()
+        self._axis_unit_override = text or None
+        self._plot_selected_channel()
 
     def _on_channel_changed(self, name):
         self._last_fit_result = None
@@ -1750,6 +1897,42 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             )
         return changed
 
+    def _apply_axis_to_entries(self, axis_key):
+        """Force every curve entry to recompute its own X-axis data for the
+        given axis key, using each entry's OWN spec - mirroring
+        _apply_channel_to_entries for the Y-axis/channel side. Without this,
+        switching the Axis dropdown only updated _curve_entries[0] (via
+        _update_primary_axis), leaving every Ctrl+click-appended curve on
+        whatever axis was selected back when it was appended, visibly
+        misaligning the combined plot. When more than one curve is shown
+        together, a relative-Z axis is aligned to the group's deepest
+        sweep-start (see _zrel_group_common_origin/_apply_zrel_origin)
+        instead of each spectrum's own absolute Z; a lone curve keeps the
+        plain relative-from-zero view."""
+        entries = self._curve_entries or []
+        specs = []
+        for entry in entries:
+            spec = entry.get("spec")
+            if spec is None:
+                spec = self._resolve_spec_from_viewer(entry)
+                if spec:
+                    entry["spec"] = spec
+            specs.append(spec)
+        common_origin = _zrel_group_common_origin(specs)
+        changed = False
+        for entry, spec in zip(entries, specs):
+            if not spec:
+                continue
+            axis_vals, axis_label, axis_unit = self._axis_values_for_spec(spec, axis_key, common_origin=common_origin)
+            axis_vals = np.asarray(axis_vals, dtype=float)
+            if axis_vals.size == 0:
+                continue
+            entry["axis_vals"] = axis_vals
+            entry["axis_label"] = axis_label
+            entry["axis_unit"] = axis_unit
+            changed = True
+        return changed
+
     def _update_primary_axis(self, axis_vals, axis_label, axis_unit):
         if not self._curve_entries:
             return
@@ -1768,16 +1951,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         axis_unit = (self.axis_unit or "").strip()
         axis_plot_scale = 1.0
         axis_plot_unit = axis_unit
-        if axis_unit.lower() == "v" and self.V.size:
+        if self._axis_unit_override:
+            axis_plot_scale = _axis_unit_scale_for(axis_unit, self._axis_unit_override)
+            axis_plot_unit = self._axis_unit_override
+        elif axis_unit.lower() == "v" and self.V.size:
             axis_plot_scale = 1000.0
             axis_plot_unit = "mV"
-        if axis_unit and axis_unit not in axis_label:
-            axis_label = f"{axis_label} ({axis_unit})"
+        if axis_plot_unit and axis_plot_unit not in axis_label:
+            axis_label = f"{axis_label} ({axis_plot_unit})"
         plotted = False
         active_marker = 'o' if self._show_markers else None
         if not self._show_line and active_marker is None:
             active_marker = 'o'
         filtered_units = []
+        self._hover_points = []
         for entry in self._curve_entries:
             self._normalize_curve_style(entry)
             axis_vals = np.asarray(entry.get("axis_vals", []), dtype=float)
@@ -1799,6 +1986,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 markersize=4 if active_marker else None,
                 label=entry.get("label", "Data"),
             )
+            self._hover_points.append((scaled_axis, values_plot, entry.get("label", "")))
             plotted = True
         self._axis_plot_scale = axis_plot_scale
         self._axis_plot_unit = axis_plot_unit
@@ -1811,9 +1999,15 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             ylabel = f"{name or 'Signal'} ({unit})"
         self.ax.set_ylabel(ylabel)
         if self._grid_enabled:
-            self.ax.grid(True, alpha=0.25)
+            self.ax.minorticks_on()
+            self.ax.grid(True, which="major", alpha=0.25)
+            if self._grid_minor_enabled:
+                self.ax.grid(True, which="minor", alpha=0.12, linewidth=0.5)
+            else:
+                self.ax.grid(False, which="minor")
         else:
-            self.ax.grid(False)
+            self.ax.minorticks_off()
+            self.ax.grid(False, which="both")
         if plotted and self._legend_enabled:
             legend = self.ax.legend(loc=self._legend_loc or 'best', fontsize=self._legend_font)
             if legend:
@@ -1824,6 +2018,51 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._apply_plot_theme()
         self._apply_font_scale()
         self.canvas.draw_idle()
+
+    def _on_plot_value_hover(self, event):
+        """Value-reader: show the plotted (x, y) nearest the cursor,
+        snapping to the closest actual data point (in on-screen pixel
+        distance, matching the marker-hit-testing convention used
+        elsewhere in this app) within a small radius; otherwise fall back
+        to the raw cursor position so the label always reads *something*
+        useful while hovering the plot."""
+        if not hasattr(self, "value_label"):
+            return
+        if event is None or event.inaxes is not self.ax or not self._hover_points:
+            self.value_label.setText("Value: —")
+            return
+        try:
+            ex, ey = float(event.x), float(event.y)
+        except Exception:
+            self.value_label.setText("Value: —")
+            return
+        best_xy = None
+        best_d2 = None
+        best_label = ""
+        multi = len(self._curve_entries) > 1
+        for xs, ys, label in self._hover_points:
+            if xs.size == 0:
+                continue
+            try:
+                disp = self.ax.transData.transform(np.column_stack((xs, ys)))
+            except Exception:
+                continue
+            dx = disp[:, 0] - ex
+            dy = disp[:, 1] - ey
+            d2 = dx * dx + dy * dy
+            idx = int(np.argmin(d2))
+            if best_d2 is None or d2[idx] < best_d2:
+                best_d2 = d2[idx]
+                best_xy = (xs[idx], ys[idx])
+                best_label = label
+        x_unit = self._axis_plot_unit or self.axis_unit or ""
+        if best_xy is not None and best_d2 is not None and best_d2 <= 400.0:  # 20px radius
+            suffix = f"  [{best_label}]" if multi and best_label else ""
+            self.value_label.setText(f"Value: x={best_xy[0]:.4g} {x_unit}   y={best_xy[1]:.4g}{suffix}")
+        elif event.xdata is not None and event.ydata is not None:
+            self.value_label.setText(f"Value: x={event.xdata:.4g} {x_unit}   y={event.ydata:.4g}")
+        else:
+            self.value_label.setText("Value: —")
 
     def _on_show_on_image(self):
         viewer = self.viewer
@@ -1875,6 +2114,10 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         grid_act = style_menu.addAction("Show grid")
         grid_act.setCheckable(True)
         grid_act.setChecked(self._grid_enabled)
+        grid_minor_act = style_menu.addAction("Show minor grid (finer)")
+        grid_minor_act.setCheckable(True)
+        grid_minor_act.setChecked(self._grid_minor_enabled)
+        grid_minor_act.setEnabled(self._grid_enabled)
         legend_act = style_menu.addAction("Show legend")
         legend_act.setCheckable(True)
         legend_act.setChecked(self._legend_enabled)
@@ -1938,6 +2181,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self._save_plot_export("pdf")
         elif action == grid_act:
             self._grid_enabled = grid_act.isChecked()
+            self._plot_selected_channel()
+        elif action == grid_minor_act:
+            self._grid_minor_enabled = grid_minor_act.isChecked()
             self._plot_selected_channel()
         elif action == legend_act:
             self._legend_enabled = legend_act.isChecked()
@@ -2412,7 +2658,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 pass
         if self._grid_enabled:
             try:
-                self.ax.grid(True, color=grid, alpha=0.35 if dark else 0.45)
+                self.ax.grid(True, which="major", color=grid, alpha=0.35 if dark else 0.45)
+                if self._grid_minor_enabled:
+                    self.ax.grid(True, which="minor", color=grid, alpha=(0.35 if dark else 0.45) * 0.55)
             except Exception:
                 pass
         legend = self.ax.get_legend()
@@ -2476,6 +2724,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
 
     def _reset_plot_style(self):
         self._grid_enabled = True
+        self._grid_minor_enabled = False
         self._legend_enabled = True
         self._show_markers = False
         self._show_line = True
@@ -2604,7 +2853,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 return
             if _near_resize_handle(bbox, event.x, event.y):
                 self._inset_resizing = True
-                self._inset_resize_start = (event.x, event.y, list(self._inset_bbox or [0.04, 0.04, 0.28, 0.28]))
+                self._inset_resize_start = (
+                    event.x - bbox.x1,
+                    event.y - bbox.y0,
+                    list(self._inset_bbox or [0.04, 0.04, 0.28, 0.28]),
+                )
                 return
             if bbox.contains(event.x, event.y):
                 self._inset_dragging = True
@@ -2624,6 +2877,14 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 self.canvas.draw_idle()
                 return
             if not self._inset_dragging:
+                bbox = self._position_inset_ax.bbox
+                if bbox is not None:
+                    if _near_resize_handle(bbox, event.x, event.y):
+                        self.canvas.setCursor(QtCore.Qt.SizeFDiagCursor)
+                    elif bbox.contains(event.x, event.y):
+                        self.canvas.setCursor(QtCore.Qt.SizeAllCursor)
+                    else:
+                        self.canvas.setCursor(QtCore.Qt.ArrowCursor)
                 return
             bbox = self._position_inset_ax.bbox
             if bbox is None:
@@ -2835,6 +3096,18 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         """Append another spectroscopy entry into this popup."""
         if spec is None:
             return False
+        # Unlike _open_spectroscopy_popup/_open_spectroscopy_compare_popup,
+        # a spec arriving here (e.g. from Ctrl+click multi-select) may still
+        # be an unhydrated, lazily-loaded placeholder with no "channels"/"V"
+        # payload yet - hydrate it in place first, or every append below
+        # silently no-ops on empty channel data.
+        if hasattr(self.viewer, "hydrate_spectro_entry"):
+            try:
+                hydrated = self.viewer.hydrate_spectro_entry(spec)
+                if hydrated:
+                    spec = hydrated
+            except Exception:
+                pass
         channels = spec.get("channels") or {}
         channel_name = channel or self.channel_combo.currentText()
         raw_values = channels.get(channel_name)
@@ -2875,6 +3148,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             "spec": spec,
         }
         self._add_entry_from_drop(payload)
+        # Adding this spec can change the group's Z_rel common origin (e.g.
+        # if its own sweep started deeper than every curve already shown) -
+        # recompute every entry's axis data against the now-updated group
+        # instead of leaving pre-existing curves aligned to a stale one.
+        if self._apply_axis_to_entries(axis_key):
+            self._plot_selected_channel()
         return True
 
     def _start_drag(self):
@@ -5326,10 +5605,11 @@ class _SpectroFitWorker(QtCore.QObject):
         self.filter_cfg = dict(filter_cfg or {})
 
     @staticmethod
-    def _axis_for_spec_with_key(spec, key):
+    def _axis_for_spec_with_key(spec, key, common_origin=None):
         for ax in spec.get("AxisChoices") or []:
             if ax.get("key") == key:
                 vals = np.asarray(ax.get("values", []), dtype=float)
+                vals = _apply_zrel_origin(vals, ax, key, common_origin)
                 return vals, ax.get("label") or "Axis", ax.get("unit") or ""
         if key == "alt":
             alt_vals = spec.get("AltAxis")
@@ -5343,12 +5623,13 @@ class _SpectroFitWorker(QtCore.QObject):
         results = []
         logs = []
         total_specs = len(self.specs)
+        common_origin = _zrel_group_common_origin(self.specs)
         for i, spec in enumerate(self.specs):
             name = Path(spec['path']).name
             progress_msg = f"Fitting {name} ({i+1}/{total_specs})"
             self.progress.emit(int((i / total_specs) * 100), progress_msg)
 
-            V, axis_label, axis_unit = self._axis_for_spec_with_key(spec, self.axis_key)
+            V, axis_label, axis_unit = self._axis_for_spec_with_key(spec, self.axis_key, common_origin)
             channels = spec.get('channels') or {}
             data = channels.get(self.channel)
             if data is None or not V.size:
@@ -5552,6 +5833,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
         self._line_map = {}
         self._legend_map = {}
+        self._auto_color_by_id = {}  # spec_id -> auto-assigned palette color, stable across reorders/filtering
+        self._auto_color_next_idx = 0  # persistent cycle position so newly-added curves get a fresh, non-colliding color
         self._fit_results = {}
         self._fit_thread = None
         self._fit_worker = None
@@ -5912,7 +6195,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         bg_id = self._background_spec_id or ""
         filter_sig = self._filter_signature()
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
-        colors = self._iter_color_cycle()
         visible_count = max(1, len(plot_items))
         rel_zero = 0.0
         if relative_nm:
@@ -5955,7 +6237,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if not x_plot.size:
                 continue
             y_units_after_filters.append(y_unit_final or y_unit_raw)
-            color = next(colors)
+            color = self._auto_color_for_spec(spec_id)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
             if self._legend_filename_only:
@@ -6085,12 +6367,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 color = style.get("color")
             else:
                 color = cycle[idx % len(cycle)]
+                self._auto_color_by_id[spec_id] = color
             try:
                 line.set_color(color)
                 line.set_markerfacecolor(color)
                 line.set_markeredgecolor(color)
             except Exception:
                 pass
+        # Keep the persistent cycle position in sync with what this fast
+        # path just assigned, so a curve added afterward continues the
+        # sequence instead of restarting at palette[0] and colliding with
+        # one of these.
+        self._auto_color_next_idx = len(self._plotted_spec_ids)
         legend = self.ax.get_legend()
         if legend:
             for idx, leg_line in enumerate(legend.get_lines()):
@@ -6867,6 +7155,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._color_cycle = get_color_cycle(self._palette_name)
         if not self._color_cycle:
             self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        self._auto_color_by_id.clear()
+        self._auto_color_next_idx = 0
         idx = self.palette_combo.findText(self._palette_name)
         self.palette_combo.blockSignals(True)
         if idx >= 0:
@@ -6961,9 +7251,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return self._axis_for_spec_with_key(spec, choice_key)
 
     def _axis_for_spec_with_key(self, spec, choice_key):
+        common_origin = _zrel_group_common_origin(self.specs)
         for ax in spec.get("AxisChoices") or []:
             if ax.get("key") == choice_key:
                 vals = np.asarray(ax.get("values", []), dtype=float)
+                vals = _apply_zrel_origin(vals, ax, choice_key, common_origin)
                 return vals, ax.get("label") or "Axis", ax.get("unit") or ""
         if choice_key == "topo":
             extra_topo = _topo_axis_from_spec(spec)
@@ -7249,7 +7541,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         relative_nm = bool(self._relative_zero_enabled)
 
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
-        colors = self._iter_color_cycle()
         plot_items = self._visible_plot_items()
         visible_count = max(1, len(plot_items))
         plotted = 0
@@ -7291,7 +7582,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
             x_plot, y_plot = self._decimate_curve_for_display(x_plot, y_data, visible_count)
             y_units_after_filters.append(y_unit_final or y_unit_raw)
-            color = next(colors)
+            color = self._auto_color_for_spec(spec_id)
             highlight = spec_id in selected_ids or not selected_ids
             label_txt = self._display_name(spec)
             if self._legend_filename_only:
@@ -7551,7 +7842,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         if _near_resize_handle(bbox, event.x, event.y):
             self._inset_resizing = True
-            self._inset_resize_start = (event.x, event.y, list(self._inset_bbox or [0.04, 0.04, 0.26, 0.26]))
+            self._inset_resize_start = (
+                event.x - bbox.x1,
+                event.y - bbox.y0,
+                list(self._inset_bbox or [0.04, 0.04, 0.26, 0.26]),
+            )
             return
         if bbox.contains(event.x, event.y):
             self._inset_dragging = True
@@ -7574,6 +7869,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self.canvas.draw_idle()
             return
         if not self._inset_dragging:
+            bbox = self._position_inset_ax.bbox
+            if bbox is not None:
+                if _near_resize_handle(bbox, event.x, event.y):
+                    self._set_canvas_cursor(QtCore.Qt.SizeFDiagCursor)
+                elif bbox.contains(event.x, event.y):
+                    self._set_canvas_cursor(QtCore.Qt.SizeAllCursor)
             return
         bbox = self._position_inset_ax.bbox
         if bbox is None:
@@ -7676,11 +7977,22 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plot_line_width = float(min(4.5, max(0.4, self._plot_line_width + delta)))
         self._request_plot_update(delay_ms=20)
 
-    def _iter_color_cycle(self):
-        palette = self._color_cycle or get_color_cycle(DEFAULT_COLOR_CYCLE)
+    def _auto_color_for_spec(self, spec_id):
+        """Return this spectrum's cached auto color, assigning the next
+        unused one (by a persistent cycle position, not by this render
+        pass's item order) the first time it's seen - so a spectrum's color
+        stays stable across reorders/filtering, and a newly-appended curve
+        doesn't collide with a color already assigned to an existing one."""
+        color = self._auto_color_by_id.get(spec_id)
+        if color is not None:
+            return color
+        palette = self._color_cycle or get_color_cycle(DEFAULT_COLOR_CYCLE) or []
         if not palette:
-            palette = get_color_cycle(DEFAULT_COLOR_CYCLE)
-        return itertools.cycle(palette)
+            return "#1f77b4"
+        color = palette[self._auto_color_next_idx % len(palette)]
+        self._auto_color_next_idx += 1
+        self._auto_color_by_id[spec_id] = color
+        return color
 
     def _update_color_swatches(self):
         container = getattr(self, "palette_swatches", None)
@@ -7752,6 +8064,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._color_cycle = get_color_cycle(self._palette_name)
         if not self._color_cycle:
             self._color_cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
+        self._auto_color_by_id.clear()
+        self._auto_color_next_idx = 0
         parent = self.parent()
         if parent and hasattr(parent, "set_spectro_color_cycle"):
             parent.set_spectro_color_cycle(self._palette_name)

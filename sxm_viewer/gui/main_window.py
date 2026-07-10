@@ -1524,6 +1524,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_panel.setLayout(preview_panel_layout)
         self.preview_canvas.set_value_callback(self._on_preview_value)
         self.preview_canvas.set_spectra_click_callback(self._on_preview_spec_click)
+        self.preview_canvas.set_spectra_compare_all_callback(
+            lambda file_key: self.spectro_compare_controller.open_all_specs_popup(file_key)
+        )
         self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         # Double-click popup disabled — opens redundant windows when preview is already visible

@@ -275,7 +275,7 @@ def _rows_to_spec(
         if idx in (bias_col, time_col):
             continue
         low = (lbl or "").lower()
-        if low in ("dz", "z", "z_rel", "zrel", "height"):
+        if low in ("dz", "z", "height") or low.startswith("z_rel") or low.startswith("zrel"):
             z_col = idx
             break
     for idx, lbl in enumerate(cleaned_labels):
@@ -339,6 +339,24 @@ def _rows_to_spec(
         except Exception:
             pass
         axes_choices.append({"key": "topo", "label": topo_label, "unit": topo_unit, "values": topo_axis})
+
+    # When both a relative-Z axis and an absolute-Z (topo) axis exist for the
+    # same spectrum, record the constant offset between them (both are
+    # already nm-normalized above). Combining multiple spectra can add this
+    # back to each one's own relative-Z values so their true relative height
+    # differences stay meaningful instead of every trace starting at zero.
+    if alt_axis is not None and topo_axis is not None:
+        try:
+            diff = np.asarray(topo_axis, dtype=float) - np.asarray(alt_axis, dtype=float)
+            finite = diff[np.isfinite(diff)]
+            if finite.size:
+                origin_abs = float(np.nanmedian(finite))
+                for choice in axes_choices:
+                    if choice.get("key") == "z":
+                        choice["origin_abs"] = origin_abs
+                        break
+        except Exception:
+            pass
 
     # Expose a time axis choice only when an explicit time-like column exists.
     if time_axis is not None:

@@ -295,8 +295,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._colorbars = []
         self._highlight_pulse_strength = 1.0
         self._view_layout = "grid"
+        self._show_spectra_overlays = True
         self._spectra_points = {}
         self._spectra_click_cb = None
+        self._spectra_compare_all_callback = None
         self._zoom_reset_limits = {}
         self.angle_enabled = False
         self.angle_pts = None  # (vx, vy, ax, ay, bx, by) for the active frame
@@ -1156,6 +1158,15 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         self._notify_views_callback()
 
+    def set_show_spectra_overlays(self, show: bool):
+        show = bool(show)
+        if show == self._show_spectra_overlays:
+            return
+        self.push_undo_state("show_spectra_overlays")
+        self._show_spectra_overlays = show
+        self._redraw()
+        self._notify_views_callback()
+
     def set_show_shortcut_hint(self, show: bool):
         show = bool(show)
         if show == self._show_shortcut_hint:
@@ -1627,6 +1638,11 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_spectra_click_callback(self, cb):
         """Register a callback for spectroscopy marker clicks (spec, event)."""
         self._spectra_click_cb = cb
+
+    def set_spectra_compare_all_callback(self, cb):
+        """Register a callback(file_key) for the "Compare all spectra on
+        this image" context-menu action."""
+        self._spectra_compare_all_callback = cb
 
     def resizeEvent(self, event):
         size = event.size()
@@ -3049,7 +3065,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _draw_spectra(self, ax):
         view = self._ax_view_map.get(ax, {})
-        specs = view.get('spectra') or []
+        specs = view.get('spectra') or [] if self._show_spectra_overlays else []
         if not specs:
             self._spectra_points[ax] = []
             return
@@ -7135,6 +7151,32 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 gui_mods = QtCore.Qt.NoModifier
         mods_qt = gui_mods
+
+        # Spectrum-marker clicks take priority over the ad-hoc modifier-
+        # gated gestures below: Shift/Ctrl/Alt-drag (crop-rect, quick
+        # profile, quick angle, outline extraction) all fire unconditionally
+        # on those modifiers regardless of what's under the cursor and
+        # `return` before ever reaching a hit-test, which made a marker
+        # unreachable whenever any of those modifiers was held. A plain
+        # click still opens the spectrum; Ctrl+click toggles it in/out of
+        # the multi-selection (see spectro_compare.py's modifier check)
+        # without affecting Ctrl-drag's normal "quick profile line" meaning
+        # anywhere else on the canvas. Skipped while a measurement tool is
+        # already toggled on or the crop template is being edited, so those
+        # persistent modes keep owning every click exactly as before.
+        if (
+            event.button == 1
+            and not self._fixed_crop_transform_mode
+            and not self.profile_enabled
+            and not self.angle_enabled
+        ):
+            hit = self._hit_spectrum_point(event)
+            if hit is not None and callable(self._spectra_click_cb):
+                try:
+                    self._spectra_click_cb(hit, event)
+                except Exception:
+                    pass
+                return
         alt_pressed = bool(mods_qt & QtCore.Qt.AltModifier) or 'alt' in str(getattr(event, "key", "")).lower() or bool(getattr(self, "outline_mode", False))
         template_square = bool((self._fixed_crop_template or {}).get("square", False))
         want_square = (
@@ -7234,13 +7276,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._crop_rect = None
             return
         if event.button == 1:
-            hit = self._hit_spectrum_point(event)
-            if hit is not None and callable(self._spectra_click_cb):
-                try:
-                    self._spectra_click_cb(hit, event)
-                except Exception:
-                    pass
-                return
             if (
                 self._fixed_crop_quick_mode
                 and view is not None
@@ -8781,6 +8816,20 @@ class MultiPreviewCanvas(FigureCanvas):
         show_molecule_overlay_act = overlays_menu.addAction("Show Molecules  (Ctrl+3)")
         show_molecule_overlay_act.setCheckable(True)
         show_molecule_overlay_act.setChecked(bool(self.show_molecules))
+        show_spectra_overlay_act = overlays_menu.addAction("Display Spectroscopy Positions")
+        show_spectra_overlay_act.setCheckable(True)
+        show_spectra_overlay_act.setChecked(bool(self._show_spectra_overlays))
+        compare_all_specs_act = None
+        compare_all_file_key = view.get("path") if isinstance(view, dict) else None
+        if callable(self._spectra_compare_all_callback) and compare_all_file_key:
+            compare_all_count = len([
+                s for s in (view.get("spectra") or [])
+                if not (isinstance(s, dict) and s.get("matrix_index") is not None)
+            ])
+            compare_all_specs_act = overlays_menu.addAction(
+                f"Compare All Spectra on This Image ({compare_all_count})..."
+            )
+            compare_all_specs_act.setEnabled(compare_all_count >= 2)
 
         analysis_menu = menu.addMenu("Analysis")
         # Filters (provided by parent viewer)
@@ -9113,6 +9162,13 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_angle_overlays(show_angle_overlay_act.isChecked())
         elif chosen == show_molecule_overlay_act:
             self.set_show_molecules(show_molecule_overlay_act.isChecked())
+        elif chosen == show_spectra_overlay_act:
+            self.set_show_spectra_overlays(show_spectra_overlay_act.isChecked())
+        elif compare_all_specs_act and chosen == compare_all_specs_act:
+            try:
+                self._spectra_compare_all_callback(compare_all_file_key)
+            except Exception:
+                pass
         elif chosen == load_mol_act:
             self._load_molecule_dialog()
         elif recent_menu and chosen in recent_actions:
