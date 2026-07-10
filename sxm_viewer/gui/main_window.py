@@ -9127,16 +9127,33 @@ QLabel:hover {{
             # _assign_spectros_to_images/_spec_frame_offset_info) should
             # land exactly on the real frame's nearest edge/vertex, not get
             # remapped into the spec-cloud's bounding box - that fallback
-            # exists for grid/matrix points whose true extent can slightly
-            # exceed the header's nominal extent, but for a genuinely
-            # off-frame single spectrum it produces a plausible-looking
-            # interior position (stretching to include the outlier) that's
-            # indistinguishable from a normal in-frame point - exactly the
-            # "invisible off-frame marker" complaint this branch used to
-            # cause. Matrix/grid points never carry off_frame_direction
-            # (see _assign_spectros_to_images's is_matrix_point guard), so
-            # they keep using the cloud/grid fallback below unaffected.
-            if not spec.get('off_frame_direction'):
+            # produces a plausible-looking interior position (stretching to
+            # include the outlier) that's indistinguishable from a normal
+            # in-frame point - exactly the "invisible off-frame marker"
+            # complaint this branch used to cause. This applies to grid/
+            # matrix points too (off_frame_direction is computed for them
+            # the same way as singles - see _assign_spectros_to_images).
+            #
+            # Gate on KEY PRESENCE, not truthiness - _spec_frame_offset_info
+            # returns direction=None whenever a point is right at the edge
+            # (over_x_nm/over_y_nm both below its 1e-9 threshold), which is
+            # a valid, deliberately-computed "basically in bounds" result,
+            # not "off-frame status unknown". Gating on truthiness treated
+            # that case identically to "never assigned/checked at all" and
+            # sent it through the bad fallback anyway - confirmed on real
+            # data as a rotated grid whose extent was built to exactly touch
+            # its anchored image's edge (a common, sensible acquisition
+            # pattern): floating-point noise in the rotation trig put an
+            # entire boundary row/column of points at u or v = +/-0.500000
+            # ...0007 instead of exactly +/-0.5, so every one of them (not
+            # just true outliers) got off_frame_direction=None and fell
+            # through to the cloud-bbox fallback, producing a visibly
+            # warped/fanned line of points along what should have been a
+            # perfectly straight grid edge. Only skip the clamp-only path
+            # (i.e. still use the fallback) when this spec's off-frame
+            # status was never evaluated at all (key absent - e.g. no valid
+            # header extent existed for its image at assignment time).
+            if 'off_frame_direction' not in spec:
                 fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
                 if fallback is not None:
                     col, row = fallback
@@ -10781,6 +10798,28 @@ QLabel:hover {{
             if view_extent is not None and len(view_extent) == 4:
                 try:
                     x0, x1, y_a, y_b = [float(v) for v in view_extent]
+                    # Every regular header-driven image in this app relies on
+                    # one fixed invariant: array row 0 corresponds to the
+                    # SMALLER real-world y (the Nanonis adapter's own
+                    # Direction-based row flip exists specifically to
+                    # guarantee this at conversion time - see providers/
+                    # nanonis/adapter.py). y_a/y_b here follow the (x0, x1,
+                    # bottom, top) imshow-extent convention the caller drew
+                    # with, where y_b ("top") is where the array's row 0 was
+                    # actually placed on screen - normally that's already
+                    # the smaller value (y_a > y_b), but a source view whose
+                    # row 0 happens to be the *larger* value (confirmed for
+                    # MatrixSpectroViewer's grid-slice virtual copies, whose
+                    # own row order has no relationship to this convention)
+                    # would otherwise silently invert once XScanRange/
+                    # yCenter below collapse the extent to a symmetric
+                    # range+center and lose that distinction - producing a
+                    # vertical mirror the moment this copy is redrawn
+                    # through the standard header_extent-based pipeline.
+                    if y_b > y_a:
+                        arr = np.flipud(arr)
+                        arr_by_channel[ch_idx] = arr
+                        y_a, y_b = y_b, y_a
                     stored_extent = (x0, x1, y_a, y_b)
                     xmin, xmax = sorted((x0, x1))
                     ymin, ymax = sorted((y_a, y_b))

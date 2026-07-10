@@ -323,22 +323,36 @@ def _assign_spectros_to_images(viewer):
         # relying on assignment_reason alone silently misses the common
         # real case (a reference spectrum acquired off to the side, whose
         # nearest image in time still doesn't actually contain it).
-        if not is_matrix_point:
-            ext = image_extents.get(image_key)
-            angle = image_angles.get(image_key) or 0.0
-            offset = viewer._spec_frame_offset_info(spec.get('x'), spec.get('y'), ext, angle_deg=angle) if ext else None
-            if offset:
-                spec['off_frame_direction'] = offset.get('direction')
-                spec['off_frame_distance_nm'] = offset.get('distance_nm')
+        #
+        # This used to skip matrix/grid points entirely (is_matrix_point),
+        # on the assumption a grid's own anchored image always contains it.
+        # That's not true once anchoring prefers the smaller, correct,
+        # just-preceding zoom scan over an oversized overview image (see
+        # _assign_matrix_reference in loader.py) - a grid can legitimately
+        # be physically larger than the specific scan it was centered on.
+        # Without off_frame_direction set, _map_spec_to_pixels (main_window.py)
+        # had no way to tell "genuinely off this image's edge" from "normal
+        # in-frame point" for grid points, so it routed every out-of-frame
+        # grid point through its spec-cloud bounding-box fallback instead of
+        # clamping to the true nearest edge - confirmed on real data as a
+        # visible warped/fanned cluster of points where the two populations
+        # (normally-mapped vs. cloud-fallback-mapped) met.
+        ext = image_extents.get(image_key)
+        angle = image_angles.get(image_key) or 0.0
+        offset = viewer._spec_frame_offset_info(spec.get('x'), spec.get('y'), ext, angle_deg=angle) if ext else None
+        if offset:
+            spec['off_frame_direction'] = offset.get('direction')
+            spec['off_frame_distance_nm'] = offset.get('distance_nm')
+            if not is_matrix_point:
                 distance_txt = _off_frame_distance_text(offset)
                 if distance_txt and 'off-frame' not in (spec.get('assignment_summary') or '').lower():
                     spec['assignment_summary'] = (
                         f"{spec.get('assignment_summary') or ''} Real position is {distance_txt} - "
                         "likely a reference point acquired off-frame, not a placement error."
                     ).strip()
-            else:
-                spec.setdefault('off_frame_direction', None)
-                spec.setdefault('off_frame_distance_nm', None)
+        else:
+            spec.setdefault('off_frame_direction', None)
+            spec.setdefault('off_frame_distance_nm', None)
         target_keys = [image_key]
         if share_repeat_scans:
             target_keys = _shared_repeat_spec_targets(viewer, spec, image_key, repeat_groups, image_extents)

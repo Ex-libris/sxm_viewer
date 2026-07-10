@@ -642,13 +642,46 @@ def _spec_identity_token(spec):
 def _merge_payload_into_spec(target, payload):
     if target is payload:
         return target
+    # off_frame_direction/off_frame_distance_nm are computed once by
+    # _assign_spectros_to_images and meant to be authoritative everywhere
+    # downstream (see CLAUDE.md) - but None is itself a meaningful,
+    # deliberately-computed result here ("checked, and it's confirmed not
+    # off-frame"), not "never set". The generic `preserved` dict below skips
+    # None values (right for every other field, where None genuinely means
+    # "not applicable yet"), so these two need their own None-safe
+    # preservation - captured before target.clear() and re-applied
+    # unconditionally afterward, but only when the key actually existed
+    # (so a spec that was truly never assigned stays that way, and
+    # _map_spec_to_pixels's "off-frame status unknown -> use the fallback"
+    # branch still applies to it, not just to unhydrated/never-scanned specs).
+    had_off_frame_direction = "off_frame_direction" in target
+    had_off_frame_distance = "off_frame_distance_nm" in target
+    off_frame_direction_val = target.get("off_frame_direction")
+    off_frame_distance_val = target.get("off_frame_distance_nm")
     preserved = {
+        # grid_row/grid_col are derived once at scan time by
+        # _ensure_grid_indices (from matrix_index, for formats like Nanonis
+        # .3ds whose own raw parser never sets them) - a fresh re-parse via
+        # hydrate_spectro_file never re-runs that derivation, so without
+        # preserving these here, opening a lazily-loaded grid (which
+        # triggers exactly this hydration path) silently wiped grid_row/
+        # grid_col back to missing on every point. Confirmed on real data:
+        # most call sites happen to fall back to re-deriving the same values
+        # from matrix_index anyway, but at least one (_map_spec_by_grid,
+        # main_window.py) does not and just silently no-ops - real,
+        # if usually invisible, data loss on every hydration.
+        "grid_row": target.get("grid_row"),
+        "grid_col": target.get("grid_col"),
         "assignment_override_image_key": target.get("assignment_override_image_key"),
         "image_key": target.get("image_key"),
         "image_path": target.get("image_path"),
         "primary_image_key": target.get("primary_image_key"),
         "shared_image_keys": target.get("shared_image_keys"),
         "shared_repeat_assignment": target.get("shared_repeat_assignment"),
+        "assignment_reason": target.get("assignment_reason"),
+        "assignment_reason_label": target.get("assignment_reason_label"),
+        "assignment_confidence": target.get("assignment_confidence"),
+        "assignment_summary": target.get("assignment_summary"),
         "display_time": target.get("display_time"),
         "site_key": target.get("site_key"),
         "site_image_key": target.get("site_image_key"),
@@ -676,6 +709,10 @@ def _merge_payload_into_spec(target, payload):
     for key, value in preserved.items():
         if value not in (None, "", []):
             target[key] = value
+    if had_off_frame_direction:
+        target["off_frame_direction"] = off_frame_direction_val
+    if had_off_frame_distance:
+        target["off_frame_distance_nm"] = off_frame_distance_val
     target["available_channels"] = _spec_channel_names(target)
     trace_length = _spec_points_per_trace(target)
     if trace_length is not None:
@@ -1875,18 +1912,6 @@ def _scan_spectros(
         )
         return info
 
-    def _extent_bounds_with_margin(extent, margin_frac=0.02):
-        """Return (xmin, xmax, ymin, ymax) for `extent` padded by `margin_frac`, or None."""
-        try:
-            x0, x1, y1, y0 = extent
-            xmin, xmax = sorted((float(x0), float(x1)))
-            ymin, ymax = sorted((float(y0), float(y1)))
-            mx = (xmax - xmin) * float(margin_frac)
-            my = (ymax - ymin) * float(margin_frac)
-            return (xmin - mx, xmax + mx, ymin - my, ymax + my)
-        except Exception:
-            return None
-
     def _image_before_reference(candidates, ref_epoch):
         if not candidates:
             return None
@@ -1969,9 +1994,11 @@ def _scan_spectros(
             try:
                 header, _fds = headers.get(str(pth), (None, None))
                 extent = viewer._header_extent(header or {}) if header is not None else None
+                angle = viewer._header_scan_angle(header or {}) if header is not None else 0.0
             except Exception:
                 extent = None
-            enriched.append({"path": pth, "epoch": epoch, "extent": extent})
+                angle = 0.0
+            enriched.append({"path": pth, "epoch": epoch, "extent": extent, "angle": angle})
         enriched.sort(key=lambda item: item.get("epoch") if item.get("epoch") is not None else float("-inf"))
 
         best_key = None
@@ -1989,25 +2016,78 @@ def _scan_spectros(
             # regardless of how "warm" the spectro cache is. Building the xy
             # array once and testing all spectra per candidate in one numpy
             # call instead turns that inner loop into a single vectorized op.
+            #
+            # Rotation-aware: a naive axis-aligned bbox test (the previous
+            # version of this check) silently misjudges any candidate whose
+            # scan Angle is non-zero, since a rotated image's real footprint
+            # is a rotated parallelogram, not the box XScanRange/YScanRange
+            # describe when centered unrotated. Confirmed on real data: a
+            # grid genuinely acquired just after a small rotated zoom scan
+            # was anchored instead to an unrelated, much larger, older
+            # overview scan whose oversized unrotated bbox happened to
+            # geometrically swallow the grid's points, repeatedly, across
+            # many different grids in the same folder. Mirrors the same
+            # rotate-then-normalize convention as _spec_within_extent
+            # (gui/spectroscopy/controller.py) - kept as a separate
+            # vectorized copy here rather than calling that per-point
+            # function in a loop, since this runs once per (candidate image
+            # x whole grid) pair, not once per point.
             xy_arr = np.asarray(xy_specs, dtype=float)
             xs = xy_arr[:, 0]
             ys = xy_arr[:, 1]
+            n_specs = float(xs.size)
+            margin_frac = 0.02
             scored = []
             for item in enriched:
                 extent = item.get("extent")
                 if not extent:
                     continue
-                bounds = _extent_bounds_with_margin(extent, margin_frac=0.02)
-                if bounds is None:
+                try:
+                    x0, x1, y1, y0 = extent
+                    xspan = x1 - x0
+                    yspan = y1 - y0
+                    if xspan <= 0 or yspan <= 0:
+                        continue
+                    cx = 0.5 * (x0 + x1)
+                    cy = 0.5 * (y0 + y1)
+                    dx = xs - cx
+                    dy = ys - cy
+                    angle_deg = item.get("angle") or 0.0
+                    if angle_deg:
+                        theta = math.radians(angle_deg)
+                        cos_t, sin_t = math.cos(theta), math.sin(theta)
+                        u = dx * cos_t - dy * sin_t
+                        v = dx * sin_t + dy * cos_t
+                    else:
+                        u, v = dx, dy
+                    bound = 0.5 + margin_frac
+                    mask = (
+                        (u >= -bound * xspan) & (u <= bound * xspan)
+                        & (v >= -bound * yspan) & (v <= bound * yspan)
+                    )
+                    hits = int(np.count_nonzero(mask))
+                except Exception:
                     continue
-                xmin, xmax, ymin, ymax = bounds
-                hits = int(np.count_nonzero((xs >= xmin) & (xs <= xmax) & (ys >= ymin) & (ys <= ymax)))
                 if hits > 0:
-                    scored.append((hits, item))
+                    scored.append((hits / n_specs, hits, item))
             if scored:
-                max_hits = max(score for score, _item in scored)
-                spatial_candidates = [item for score, item in scored if score == max_hits]
-                chosen = _image_before_reference(spatial_candidates, ref_epoch)
+                # Prefer candidates that contain (nearly) the whole grid over
+                # whichever candidate merely has the highest raw hit count -
+                # otherwise a big, older overview scan that happens to
+                # geometrically overlap part of many different grids
+                # systematically outranks the small, correct, just-preceding
+                # zoom scan that actually and fully contains any one of them.
+                # Only fall back to "best partial coverage" when nothing
+                # comes close to full containment (e.g. the grid genuinely
+                # straddles an image edge).
+                FULL_COVERAGE = 0.98
+                full_candidates = [item for coverage, _hits, item in scored if coverage >= FULL_COVERAGE]
+                if full_candidates:
+                    chosen = _image_before_reference(full_candidates, ref_epoch)
+                else:
+                    max_hits = max(hits for _coverage, hits, _item in scored)
+                    spatial_candidates = [item for _coverage, hits, item in scored if hits == max_hits]
+                    chosen = _image_before_reference(spatial_candidates, ref_epoch)
                 if chosen is not None:
                     best_key = chosen.get("path")
         if not best_key:

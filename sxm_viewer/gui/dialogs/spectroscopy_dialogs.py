@@ -3246,6 +3246,21 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         )
         self.show_position_markers_cb.toggled.connect(self._on_show_position_markers_toggled)
         positions_row.addWidget(self.show_position_markers_cb)
+        self.relative_axes_cb = QtWidgets.QCheckBox("Relative axes")
+        self.relative_axes_cb.setChecked(True)
+        self.relative_axes_cb.setToolTip(
+            "Draw the channel/slice map on the grid's own local, unrotated "
+            "pitch-based axes instead of true absolute nm position - a "
+            "flat, axis-aligned view that's easier to compare across grids "
+            "and always matches what 'Virtual copy'/'Export WSxM XYZ' "
+            "produce. On by default. Uncheck for the true absolute-position "
+            "view, which lines up exactly with the reference image and "
+            "shows the grid's real acquisition angle, but renders as a "
+            "tilted parallelogram for any rotated grid - that tilt is "
+            "correct geometry, not a rendering bug."
+        )
+        self.relative_axes_cb.toggled.connect(self._draw_image_layer)
+        positions_row.addWidget(self.relative_axes_cb)
         positions_row.addStretch(1)
         left_layout.addLayout(positions_row)
 
@@ -3336,6 +3351,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._fit_dialogs = []
         self._current_image_arr = None
         self._current_image_extent = None
+        self._current_image_coords = None
         self._current_image_unit = ''
         self._selection = []
         self._selection_keys = set()
@@ -3783,13 +3799,43 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         viewer = getattr(self, "viewer", None)
         if viewer is None or not hasattr(viewer, "_create_virtual_view_copy"):
             return
-        arr = self._current_image_arr
-        extent = self._current_image_extent
         anchor = self.anchor_path or self.image_entry.get('path')
-        if arr is None or extent is None or not anchor:
+        if not anchor:
             QtWidgets.QMessageBox.information(self, "Virtual copy", "No map data to copy yet.")
             return
         agg_mode = self.map_mode_combo.currentText()
+        arr = self._current_image_arr
+        if agg_mode == "Reference image":
+            extent = self._current_image_extent
+        else:
+            # Always export from the grid's own local/relative axes,
+            # regardless of which view is currently on screen - a virtual
+            # copy becomes a normal, always axis-aligned image elsewhere in
+            # the app (_create_virtual_view_copy), which the true, rotated
+            # absolute-position view (pcolormesh) can never faithfully
+            # become without resampling onto a new raster; the local frame
+            # already is axis-aligned, so it's the only representation that
+            # round-trips correctly - confirmed the old row_axis/col_axis
+            # extent (grid_extent) produced a virtual copy that visibly
+            # disagreed in orientation with the grid map's own (correctly
+            # rotated) on-screen slice. Recomputed fresh here rather than
+            # reused from self._current_image_extent, so the copy's
+            # geometry doesn't depend on which mode/toggle was last drawn.
+            channel_specs = self._current_channel_specs()
+            rows, cols, zero_based = self._grid_dims(channel_specs)
+            _dx, _dy, extent, row_flip, col_flip = self._grid_local_extent(channel_specs, rows, cols, zero_based)
+            if arr is not None and (row_flip or col_flip):
+                # Match _draw_image_layer's relative-axes rendering (see
+                # _grid_local_orientation) - without this, a virtual copy
+                # of a grid whose acquisition angle flips north/south or
+                # east/west would still visibly disagree with the grid
+                # map's own on-screen local/relative view, even though
+                # both are now built from the same extent.
+                arr = np.flipud(arr) if row_flip else arr
+                arr = np.fliplr(arr) if col_flip else arr
+        if arr is None or extent is None:
+            QtWidgets.QMessageBox.information(self, "Virtual copy", "No map data to copy yet.")
+            return
         channel_label = self._channel_label_for_path(self.channel_combo.currentData()) or "channel"
         view = {
             "path": str(anchor),
@@ -4084,7 +4130,22 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
     def _export_map_wsxm_xyz(self):
         arr = self._current_image_arr
-        extent = self._current_image_extent
+        agg_mode = self.map_mode_combo.currentText()
+        if agg_mode == "Reference image":
+            extent = self._current_image_extent
+        else:
+            # See _create_virtual_copy_of_map: always export the grid's own
+            # local/relative axes, not whatever's currently on screen, so
+            # this file's coordinates are always a plain axis-aligned grid
+            # (matching WSxM's own expectations) rather than depending on
+            # the true-position view's rotation.
+            channel_specs = self._current_channel_specs()
+            rows, cols, zero_based = self._grid_dims(channel_specs)
+            _dx, _dy, extent, row_flip, col_flip = self._grid_local_extent(channel_specs, rows, cols, zero_based)
+            if arr is not None and (row_flip or col_flip):
+                # See _create_virtual_copy_of_map / _grid_local_orientation.
+                arr = np.flipud(arr) if row_flip else arr
+                arr = np.fliplr(arr) if col_flip else arr
         if arr is None or extent is None:
             QtWidgets.QMessageBox.information(self, "Export WSxM XYZ", "No map data to export.")
             return
@@ -4099,7 +4160,6 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # top-to-bottom to stay aligned with arr's own row order.
         x_vals = np.linspace(x0, x1, nx) if nx > 1 else np.array([x0])
         y_vals = np.linspace(y_top, y_bottom, ny) if ny > 1 else np.array([y_top])
-        agg_mode = self.map_mode_combo.currentText()
         channel_label = self._channel_label_for_path(self.channel_combo.currentData()) or "channel"
         unit = self._current_image_unit or "a.u."
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{channel_label}_{agg_mode}").strip("_") or "grid_map"
@@ -4230,10 +4290,68 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         metric_valid = metric is not None and np.isfinite(metric).any()
 
         view_extent = grid_extent
+        self._current_image_coords = None
+        relative_mode = bool(
+            agg_mode != "Reference image"
+            and getattr(self, "relative_axes_cb", None) is not None
+            and self.relative_axes_cb.isChecked()
+        )
+        local_dx = local_dy = None
+        local_row_flip = local_col_flip = False
         if agg_mode != "Reference image" and metric_valid:
-            self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
+            if relative_mode:
+                # Local/relative frame: a plain axis-aligned grid using the
+                # grid's own real pixel pitch, ignoring its acquisition
+                # angle entirely - the familiar "fill the box" look, and
+                # (unlike the true-position view below) always exportable
+                # as a normal image, since it's already axis-aligned. See
+                # _grid_local_extent. row_flip/col_flip keep this view in
+                # visual agreement with the absolute view about which end
+                # is up/right - without them, any grid whose acquisition
+                # angle flips north/south or east/west would render here
+                # mirrored relative to every other (correctly, absolutely
+                # positioned) view of the same data.
+                local_dx, local_dy, local_extent, local_row_flip, local_col_flip = self._grid_local_extent(
+                    channel_specs, rows, cols, zero_based
+                )
+                if local_extent is not None:
+                    display_metric = metric
+                    if local_row_flip:
+                        display_metric = np.flipud(display_metric)
+                    if local_col_flip:
+                        display_metric = np.fliplr(display_metric)
+                    self.ax.imshow(display_metric, cmap=self._metric_cmap, origin='upper', extent=local_extent, aspect='equal')
+                    view_extent = local_extent
+                    self._current_image_extent = local_extent
+                else:
+                    relative_mode = False
+            if not relative_mode:
+                X, Y = self._grid_xy_coords(channel_specs, rows, cols, zero_based)
+                has_coords = (
+                    X is not None and Y is not None
+                    and not np.isnan(X).any() and not np.isnan(Y).any()
+                )
+                if has_coords:
+                    # Render at each pixel's true measured position instead of
+                    # the grid's axis-aligned row/col-index extent (_grid_axes) -
+                    # a rotated grid's real footprint is a rotated parallelogram,
+                    # not the axis-aligned box imshow(extent=...) can draw, so
+                    # imshow there silently disagreed with the position markers
+                    # below (which already plot specs' real, correctly-rotated
+                    # x/y) on any grid with a non-zero acquisition angle. This
+                    # keeps both in the same absolute frame regardless of angle.
+                    self.ax.pcolormesh(X, Y, metric, cmap=self._metric_cmap, shading='nearest')
+                    self.ax.set_aspect('equal', adjustable='box')
+                    self._current_image_coords = (X, Y)
+                    view_extent = (
+                        float(np.nanmin(X)), float(np.nanmax(X)),
+                        float(np.nanmin(Y)), float(np.nanmax(Y)),
+                    )
+                else:
+                    self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
+                    view_extent = grid_extent
+                self._current_image_extent = grid_extent
             self._current_image_arr = metric
-            self._current_image_extent = grid_extent
             sample_spec = channel_specs[0] if channel_specs else None
             self._current_image_unit = self._channel_unit_for_spec(sample_spec, channel_label) if sample_spec else ''
         elif header and fds:
@@ -4271,20 +4389,35 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # once markers are on) - unchecking it lets the channel/slice map be
         # viewed/copied on its own, with no marker points at all.
         show_markers = getattr(self.show_position_markers_cb, "isChecked", lambda: True)()
-        if show_markers and getattr(self.show_positions_cb, "isChecked", lambda: True)():
-            overlay_specs = self.specs
-        elif show_markers:
-            overlay_specs = channel_specs
-        else:
-            overlay_specs = []
         xs = []
         ys = []
-        for s in (overlay_specs or []):
-            sx, sy = self._spec_display_xy(s)
-            if sx is None or sy is None:
-                continue
-            xs.append(sx)
-            ys.append(sy)
+        if relative_mode and local_dx is not None:
+            # A synthetic local position only means something for this
+            # grid's own points (row/col only exists inside this dataset) -
+            # "Show all spectroscopy positions" doesn't apply here, unlike
+            # the absolute/true-position view above.
+            if show_markers:
+                for s in channel_specs:
+                    rc = self._spec_grid_row_col(s, rows, cols, zero_based)
+                    if rc is None:
+                        continue
+                    disp_row = (rows - 1 - rc[0]) if local_row_flip else rc[0]
+                    disp_col = (cols - 1 - rc[1]) if local_col_flip else rc[1]
+                    xs.append((disp_col + 0.5) * local_dx)
+                    ys.append((disp_row + 0.5) * local_dy)
+        else:
+            if show_markers and getattr(self.show_positions_cb, "isChecked", lambda: True)():
+                overlay_specs = self.specs
+            elif show_markers:
+                overlay_specs = channel_specs
+            else:
+                overlay_specs = []
+            for s in (overlay_specs or []):
+                sx, sy = self._spec_display_xy(s)
+                if sx is None or sy is None:
+                    continue
+                xs.append(sx)
+                ys.append(sy)
         if xs and ys:
             cfg = self._position_marker_config
             self.ax.scatter(
@@ -4399,7 +4532,19 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         so orientation is always correct regardless of scan direction.
         Mirrors MatrixFitDialog's _axis_from_specs (matrix_fit.py) except
         kept in absolute nm (not shifted to start at 0), so it lines up
-        with the reference image and the position markers."""
+        with the reference image and the position markers.
+
+        This assumes the grid is axis-aligned in absolute (x, y) - i.e.
+        every point in a given row shares one y, every point in a given
+        column shares one x - which only holds when the grid's own
+        acquisition angle is 0. For a rotated grid (Nanonis .3ds grids can
+        carry an arbitrary angle - see providers/nanonis/adapter.py) real
+        x/y varies with *both* row and col together, so a single scalar
+        per row/column silently throws away the rotation. _draw_image_layer
+        therefore only falls back to this axis-aligned extent when the true
+        per-point coordinates from _grid_xy_coords aren't usable; prefer
+        that for anything that needs to actually match the point markers'
+        positions."""
         if not rows or not cols:
             return None, None
         row_axis = [None] * rows
@@ -4420,6 +4565,118 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if any(v is None for v in row_axis) or any(v is None for v in col_axis):
             return None, None
         return np.asarray(row_axis, dtype=float), np.asarray(col_axis, dtype=float)
+
+    def _grid_xy_coords(self, specs, rows, cols, zero_based):
+        """2D (rows, cols) arrays of every grid pixel's true measured
+        absolute (x, y) nm position, placed the same way _build_stat_metric
+        et al. place values (via _spec_grid_row_col) so the result lines up
+        cell-for-cell with those metric grids.
+
+        Unlike _grid_axes, this keeps each point's real position instead of
+        collapsing a row/column to one shared scalar, so it stays correct
+        for a rotated grid - _draw_image_layer uses this to render the
+        slice/metric map with pcolormesh at each pixel's true position,
+        which is what makes it land exactly under the position markers
+        (which already plot specs' real x/y) regardless of acquisition
+        angle."""
+        if not specs or not rows or not cols:
+            return None, None
+        X = np.full((rows, cols), np.nan, dtype=float)
+        Y = np.full((rows, cols), np.nan, dtype=float)
+        for spec in specs:
+            rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+            if rc is None or not (0 <= rc[0] < rows and 0 <= rc[1] < cols):
+                continue
+            x = spec.get('x')
+            y = spec.get('y')
+            if x is None or y is None:
+                continue
+            X[rc[0], rc[1]] = float(x)
+            Y[rc[0], rc[1]] = float(y)
+        return X, Y
+
+    def _grid_local_pitch(self, X, Y, rows, cols):
+        """Typical real-world spacing (nm) per grid step along columns and
+        rows, from true per-point positions (_grid_xy_coords) - used to
+        build a synthetic, always axis-aligned "local" frame that doesn't
+        depend on the grid's acquisition angle (see "Relative axes" mode in
+        _draw_image_layer, and _grid_local_extent for virtual-copy/export).
+        Reduces to the physical pixel pitch for an unrotated grid too."""
+        dx = dy = 1.0
+        if cols > 1:
+            step = np.hypot(np.diff(X, axis=1), np.diff(Y, axis=1))
+            finite = step[np.isfinite(step)]
+            if finite.size:
+                dx = float(np.nanmedian(finite)) or 1.0
+        if rows > 1:
+            step = np.hypot(np.diff(X, axis=0), np.diff(Y, axis=0))
+            finite = step[np.isfinite(step)]
+            if finite.size:
+                dy = float(np.nanmedian(finite)) or 1.0
+        return dx, dy
+
+    def _grid_local_orientation(self, X, Y, rows, cols):
+        """(row_flip, col_flip): whether the metric array needs flipping
+        along that axis so the local/relative view agrees with the
+        absolute/reference-image view about which end is up/right.
+
+        The local/relative view deliberately discards the grid's rotation
+        (that's the whole point of it), but a fixed "row 0 always at the
+        top" rule silently discards more than that for any grid whose
+        acquisition angle happens to flip north/south or east/west (e.g. an
+        angle past ~90 degrees swaps which end of the row axis points
+        "up") - confirmed on real data as the local/relative view and the
+        absolute/reference-image view of the *same* grid disagreeing about
+        which end is up, i.e. looking mirrored relative to each other, even
+        though each individually rendered its own points/slice consistently.
+
+        The two modes don't share a Y convention to begin with, which this
+        has to account for: _draw_image_layer's local-mode extent is
+        (0, cols*dx, rows*dy, 0) - bottom > top - so with origin='upper' an
+        *unflipped* array already renders row 0 at the top and increasing
+        row moving downward on screen, i.e. row-index and screen-Y move
+        together. The absolute/pcolormesh view instead uses a standard
+        ax.set_ylim(lo, hi) (Y increases upward on screen, un-inverted), so
+        there row-index and screen-Y move together only when real Y
+        *decreases* as row increases; when real Y increases with row
+        (row's north end has the larger index), absolute mode shows that as
+        moving up while local mode's unflipped default would still show it
+        moving down - opposite - hence the flip condition below is
+        inverted relative to the naive "flip when Y decreases" guess.
+        X has no such cross-convention mismatch (both modes increase X
+        rightward), so col_flip only needs the straightforward check."""
+        row_flip = False
+        col_flip = False
+        if rows > 1:
+            y_first = np.nanmean(Y[0, :])
+            y_last = np.nanmean(Y[-1, :])
+            if np.isfinite(y_first) and np.isfinite(y_last):
+                row_flip = bool(y_last > y_first)
+        if cols > 1:
+            x_first = np.nanmean(X[:, 0])
+            x_last = np.nanmean(X[:, -1])
+            if np.isfinite(x_first) and np.isfinite(x_last):
+                col_flip = bool(x_last < x_first)
+        return row_flip, col_flip
+
+    def _grid_local_extent(self, channel_specs, rows, cols, zero_based):
+        """(dx, dy, extent, row_flip, col_flip) for the grid's local/
+        relative frame - a plain axis-aligned box of size (cols*dx,
+        rows*dy) starting at (0, 0). row_flip/col_flip (see
+        _grid_local_orientation) say whether the metric array and marker
+        placement need flipping along that axis before display, so this
+        flattened view still agrees with the absolute/reference-image view
+        about which end is up/right. Returns (None, None, None, False,
+        False) if true per-point coordinates aren't available (e.g. some
+        pixels missing channel data).
+        """
+        X, Y = self._grid_xy_coords(channel_specs, rows, cols, zero_based)
+        if X is None or Y is None or np.isnan(X).any() or np.isnan(Y).any():
+            return None, None, None, False, False
+        dx, dy = self._grid_local_pitch(X, Y, rows, cols)
+        row_flip, col_flip = self._grid_local_orientation(X, Y, rows, cols)
+        extent = (0.0, cols * dx, rows * dy, 0.0)
+        return dx, dy, extent, row_flip, col_flip
 
     def _extract_pixel_series(self, spec, channel_label):
         """Return (xs, ys) for one grid pixel, for the metric-builder
@@ -4572,6 +4829,25 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             coords = None
         if coords is None:
             return x, y
+        # A single occasional off-frame spectrum is deliberately clamped to
+        # the reference image's nearest edge elsewhere in the app (see
+        # CLAUDE.md's off-frame handling) - a fine treatment for one point.
+        # A grid can have an entire boundary row/column genuinely outside a
+        # smaller anchored image (confirmed on real data: a grid whose own
+        # footprint was larger than its anchored scan in both axes), and
+        # clamping *all* of those independently per-axis produces a
+        # crisscrossing zigzag of points that reads as scrambled/broken data
+        # rather than "this grid extends past this image" - which points
+        # are affected also changes every time anchoring picks a different
+        # (correctly, more specific) image, since that's a property of the
+        # image, not the grid. Matrix/grid points with a real (not just
+        # floating-point-noise) off-frame distance are omitted here instead
+        # of clamped - they still render correctly in "Slice at value" and
+        # "Relative axes" modes, which aren't tied to any one image's bounds.
+        if spec.get('matrix_index') is not None:
+            off_dist = spec.get('off_frame_distance_nm')
+            if off_dist and off_dist > 1e-6:
+                return None, None
         col, row = coords
         x0, x1, y1, y0 = extent
         disp_x = x0 + (col / max(1, xpix - 1)) * (x1 - x0)
@@ -4985,16 +5261,40 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self.canvas.draw_idle()
 
     def _sample_current_image(self, x, y):
-        """Value of self._current_image_arr at real (x, y) nm, given
-        self._current_image_extent in the (left, right, bottom, top)
-        convention used with origin='upper' throughout _draw_image_layer -
-        i.e. array row 0 sits at the extent's 4th ("top") value. Not
-        sample_array_value (thumbnail_render.py), which assumes the
-        opposite (origin='lower': row 0 at the extent's 3rd/"bottom"
-        value) and would silently read the wrong row here."""
+        """Value of self._current_image_arr at real (x, y) nm.
+
+        When self._current_image_coords is set (grid-native metric modes
+        rendered via pcolormesh at each pixel's true, possibly-rotated
+        position - see _draw_image_layer), row/col can't be recovered by
+        linear extent math since the map isn't an axis-aligned raster, so
+        this finds the nearest true pixel position instead and rejects
+        anything too far outside the grid's actual footprint to be a real
+        hover-over-a-cell.
+
+        Otherwise, given self._current_image_extent in the (left, right,
+        bottom, top) convention used with origin='upper' throughout
+        _draw_image_layer - i.e. array row 0 sits at the extent's 4th
+        ("top") value. Not sample_array_value (thumbnail_render.py), which
+        assumes the opposite (origin='lower': row 0 at the extent's 3rd/
+        "bottom" value) and would silently read the wrong row here."""
         arr = self._current_image_arr
+        if arr is None or x is None or y is None:
+            return None
+        coords = self._current_image_coords
+        if coords is not None:
+            X, Y = coords
+            x_lo, x_hi = float(np.nanmin(X)), float(np.nanmax(X))
+            y_lo, y_hi = float(np.nanmin(Y)), float(np.nanmax(Y))
+            pad_x = 0.05 * (x_hi - x_lo)
+            pad_y = 0.05 * (y_hi - y_lo)
+            if not (x_lo - pad_x <= x <= x_hi + pad_x and y_lo - pad_y <= y <= y_hi + pad_y):
+                return None
+            d2 = (X - float(x)) ** 2 + (Y - float(y)) ** 2
+            row, col = np.unravel_index(int(np.nanargmin(d2)), d2.shape)
+            val = arr[row, col]
+            return float(val) if np.isfinite(val) else None
         extent = self._current_image_extent
-        if arr is None or extent is None or x is None or y is None:
+        if extent is None:
             return None
         h, w = arr.shape
         if h < 1 or w < 1:

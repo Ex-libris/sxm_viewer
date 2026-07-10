@@ -163,11 +163,22 @@ class MatrixFitWorker(QtCore.QObject):
         axis_unit = specs[0].get('AxisUnit') or "V"
         col_candidates = [spec.get('grid_col') for spec in specs if spec.get('grid_col') is not None]
         row_candidates = [spec.get('grid_row') for spec in specs if spec.get('grid_row') is not None]
+        dims_cols = [spec.get('grid_cols') for spec in specs if spec.get('grid_cols')]
+        dims_rows = [spec.get('grid_rows') for spec in specs if spec.get('grid_rows')]
         matrix_indices = [spec.get('matrix_index') for spec in specs if spec.get('matrix_index') is not None]
         grid_cols = grid_rows = None
         if col_candidates and row_candidates:
             grid_cols = max(col_candidates) + 1
             grid_rows = max(row_candidates) + 1
+        elif dims_cols and dims_rows:
+            # Nanonis .3ds entries (unlike Omicron/Anfatec matrix .dat
+            # entries) never populate the per-point grid_row/grid_col
+            # fields, only the whole-grid grid_rows/grid_cols dimensions -
+            # prefer those directly over guessing a square grid from
+            # matrix_index below, which silently corrupts any grid where
+            # rows != cols (e.g. a 32x8 grid got treated as ~16x16).
+            grid_cols = max(dims_cols)
+            grid_rows = max(dims_rows)
         else:
             if matrix_indices:
                 min_idx = min(matrix_indices)

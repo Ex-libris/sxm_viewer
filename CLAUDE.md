@@ -405,6 +405,145 @@ need to render *somewhere*, and the established approach has two rules:
   from an edge-clamped marker (e.g. the off-frame flag in `overlays.py`)
   also needs a rendering-side inset, or it draws past the pixmap's own
   boundary and gets silently clipped by Qt — invisible, not merely subtle.
+  This computation now runs for matrix/grid points too, not just `.dat`
+  singles (see "Grid Map Explorer" below for why that took a second pass to
+  get right) — the singles-oriented "likely a reference point acquired
+  off-frame" summary text is still singles-only, but the underlying
+  `off_frame_direction`/`off_frame_distance_nm` fields are computed and
+  meaningful for every spec type.
+
+### Grid Map Explorer: anchoring, three rendering conventions, and the hydration-wipe trap
+`MatrixSpectroViewer` (`gui/dialogs/spectroscopy_dialogs.py`, the "Grid map"
+window for a `.3ds`/matrix file) went through a second, longer rotation/frame
+investigation on top of the one above — warped points, a tilted slice view,
+and mirrored virtual copies were reported and each "fixed" across several
+rounds before the real root causes were found. Every stage below is a
+distinct, real bug; earlier fixes were genuine but kept getting silently
+undone by a later one in the list, which is why this took so long to nail
+down. Worth reading in full before touching anchoring, off-frame handling,
+or rendering for matrix data again.
+
+**1. Grid-to-image anchoring was rotation-blind and favored size over
+specificity.** `_assign_matrix_reference` (`gui/viewer/loader.py`) — decides
+which loaded image a matrix file's points/markers get drawn on — used a
+plain axis-aligned bounding-box containment test (ignoring the candidate
+image's own `Angle`) and picked whichever single candidate had the highest
+*raw point count*. A big, older, unrelated overview scan's oversized
+unrotated bbox geometrically "contained" more points from many different
+grids than the small, correct, just-preceding zoom scan each grid was
+actually acquired on — so on a real 14-grid folder, nearly every grid ended
+up anchored to the same 2-3 images regardless of which scan it was really
+taken on. Fixed to reuse the same rotate-then-normalize containment test as
+`_spec_within_extent`, and to rank candidates by **coverage fraction**
+(≥98% of the grid's points contained) before ever falling back to raw hit
+count — mirrors the causal-time-first pattern `_choose_image_for_spec`
+already uses for singles.
+
+**2. Matrix points never got off-frame status at all.**
+`_assign_spectros_to_images` used to skip `off_frame_direction`/
+`off_frame_distance_nm` computation entirely for matrix points
+(`is_matrix_point` gate), on the assumption a grid's anchored image always
+contains it. Once anchoring was fixed (#1) to prefer the correct, small,
+specific image, that assumption broke: a grid is routinely physically
+larger than the particular scan it was centered on, so a real fraction of
+its own boundary now legitimately falls outside its (correctly, tightly)
+anchored image. Without off-frame status, those points fell into
+`_map_spec_by_spec_extent`'s spec-cloud-bounding-box fallback instead of
+clamping to the true edge — a warped/fanned cluster of points. Fixed by
+computing off-frame status for matrix points too (the gate now only
+excludes them from the singles-oriented summary text, not the computation).
+
+**3. Truthy check vs. key-presence check in `_map_spec_to_pixels`'s
+off-frame gate.** Even after #2, warping came back specifically for grids
+whose extent was built to exactly touch their anchor image's edge (a
+normal "grid over exactly this region" acquisition) — an entire boundary
+row/column then sits at *exactly* the image edge, off by floating-point
+noise (~1e-15) from the rotation trig. `_spec_frame_offset_info` correctly
+reports these as "basically in bounds" (`direction=None`, `distance≈0`),
+but the gate was `if not spec.get('off_frame_direction'):` — `True` for
+both "confirmed in bounds" (`None`) *and* "never checked" (key absent), so
+both got routed into the same bad fallback. Fixed by checking key
+**presence** (`if 'off_frame_direction' not in spec:`) instead of
+truthiness.
+
+**4. The recurring bug: hydration silently wipes derived per-spec fields.**
+This is the one that made every fix above look like it kept "not
+sticking," across multiple clean-restart-and-reload cycles reported by the
+user. `hydrate_spectro_entries`/`hydrate_spectro_file`
+(`gui/viewer/loader.py`) re-parse a spec's source file to fill in
+lazily-deferred payload (`channels`/`V`) — and this runs **every time** a
+lazily-loaded grid dataset is opened in the Grid Map Explorer, not once
+per session. The merge, `_merge_payload_into_spec`, does `target.clear();
+target.update(payload)` and keeps only a small explicit "preserved" field
+whitelist — and neither `grid_row`/`grid_col` (derived once at scan time
+by `_ensure_grid_indices`, since Nanonis's own `.3ds` parser never sets
+them) nor `off_frame_direction`/`off_frame_distance_nm`/`assignment_*`
+(computed once by `_assign_spectros_to_images`) were in it. So simply
+*opening* the Grid Map Explorer — the exact action used to test every fix
+above — silently erased their own data on every open, making a genuinely
+fixed bug look permanently unfixed. Fixed by adding both groups to the
+preserved-fields whitelist; `off_frame_direction`/`off_frame_distance_nm`
+needed special-case handling since `None` is itself a meaningful,
+deliberately-computed value for them ("checked, confirmed not
+off-frame"), not "not applicable yet" — the generic preserved-dict loop
+skips `None` values (right for every other field), so these two are
+captured before `target.clear()` and restored explicitly afterward,
+unconditionally, whenever the key existed beforehand.
+**Lesson**: when a bug seems to survive a fix across multiple clean-reload
+cycles, suspect a per-spec-dict field getting silently dropped by a
+re-merge path (check `_merge_payload_into_spec`'s whitelist first), not
+stale caching — especially if the fix touches a field computed once
+elsewhere rather than something present in every raw parse.
+
+**5. Three rendering conventions that must visually agree.**
+`_draw_image_layer` can show a grid's per-pixel data three ways, each in a
+different frame:
+- **"Reference image" mode** — the anchor image's own topo channel, drawn
+  axis-aligned via `imshow(extent=_header_extent(header))`; markers are
+  pre-rotated into that same local-pixel frame via `_map_spec_to_pixels`
+  (same convention as the main preview/Position insets).
+- **Absolute view** ("Slice at value" etc. with Relative axes off) —
+  `pcolormesh(X, Y, metric)` at each pixel's true, rotated absolute nm
+  position (`_grid_xy_coords`) — geometrically correct, matches "Reference
+  image" mode and the true acquisition angle, and renders as a tilted
+  parallelogram for any rotated grid (expected geometry, not a bug).
+- **"Relative axes"** (the default) — a flattened, always axis-aligned
+  view from the grid's own local pixel pitch (`_grid_local_extent`/
+  `_grid_local_pitch`), deliberately discarding rotation for a "fill the
+  box" look that's also the only representation `Virtual copy`/`Export
+  WSxM XYZ` can round-trip into a normal image — they always use this
+  local frame regardless of what's on-screen (`_create_virtual_copy_of_map`).
+
+The local/relative flattening initially used a **fixed** "row 0 = top,
+col 0 = left" rule, independent of the grid's actual geometry — fine for
+small rotation angles, but for a grid whose acquisition angle happens to
+swap which end is north/south or east/west (confirmed on a real
+157°-rotated grid), that fixed rule disagreed with the absolute/reference-
+image convention, so the local view (and everything derived from it -
+virtual copies, WSxM export) rendered visibly mirrored relative to the
+correct one. Fixed by `_grid_local_orientation`, which derives the needed
+row/col flip from the grid's own true coordinates (does real Y increase or
+decrease as row increases, etc.) instead of assuming a fixed direction -
+applied consistently to the metric array, marker placement, virtual copy,
+and WSxM export.
+
+**Getting the flip's sign right requires checking against ground truth,
+not self-consistency.** The first attempt at this flip had the row
+condition backwards, because the two views' Y-axis conventions are
+*themselves* inverted relative to each other before rotation even enters
+it: the local view's extent is deliberately built as `(0, cols*dx,
+rows*dy, 0)` (bottom > top) so an *unflipped* array already shows row 0 at
+the top under `origin='upper'` - row-index and screen-Y move together by
+default. The absolute view instead uses a plain `ax.set_ylim(lo, hi)`
+(standard, non-inverted) - there, row-index and screen-Y move together
+only when real Y *decreases* as row increases. Testing "does the local
+view match its own virtual copy" passed even with the sign backwards,
+since both share the same (wrong) code path and were wrong together -
+catching it required checking a specific real feature's position against
+the independently-already-verified-correct absolute view. When comparing
+two views that are supposed to agree, cross-check at least one of them
+against a third, independently-correct reference - comparing them only to
+each other can't catch a bug both sides share.
 
 ### Spectroscopy browser (`gui/spectroscopy/browser.py`)
 Follows the same module-function convention as `gui/viewer/*.py` (plain
@@ -452,7 +591,18 @@ fitting (`_SpectroFitWorker.run`, feeding `KPFMFitTrendDialog`) call a shared
 KPFM contact-potential). Matrix-wide per-pixel fitting is
 `gui/dialogs/matrix_fit.py`'s `MatrixFitWorker`, which auto-picks a Δf/KPFM
 channel and produces 2D fit-parameter maps, rendered/exported by
-`MatrixFitDialog`. Both worker classes follow the same
+`MatrixFitDialog`. `MatrixFitWorker.run()` sizes the output grid from
+`spec['grid_row']`/`grid_col'` when present, else falls back to guessing a
+**square** grid from `matrix_index` (`side = sqrt(max_idx + 1)`) - Nanonis
+`.3ds` entries never set the singular `grid_row`/`grid_col` fields (only
+the plural `grid_rows`/`grid_cols` whole-grid dimensions), so every Nanonis
+matrix fit used to hit that square-guess fallback, silently corrupting any
+non-square grid (confirmed: an 8×32 grid got treated as ~16×16). Fixed by
+preferring the plural `grid_rows`/`grid_cols` fields directly over the
+square guess - invisible on square grids, which is why it shipped unnoticed
+the same way the rotation-order bug did (see "Spectroscopy position
+mapping" above).
+Both worker classes follow the same
 `QObject.moveToThread(QThread)` + `thread.started.connect(worker.run)`
 pattern rather than `QRunnable`.
 
@@ -486,4 +636,13 @@ pattern rather than `QRunnable`.
   than being recomputed per call site. When adding a new derived
   per-spec flag, prefer this same pattern (compute once at assignment
   time, read everywhere else) over recomputing it from geometry on every
-  render.
+  render. **This pattern has a real failure mode**: any such field also
+  needs to be added to `_merge_payload_into_spec`'s (`gui/viewer/
+  loader.py`) preserved-fields whitelist, or a later `hydrate_spectro_
+  entries` re-parse (triggered just by opening certain dialogs on a
+  lazily-loaded spec) will silently wipe it back to unset - confirmed as
+  the root cause of a bug that looked "not fixed" across several clean-
+  restart cycles because the fix's own data kept getting erased by the
+  next dialog open, not by anything stale (see "Grid Map Explorer" above).
+  `grid_row`/`grid_col` (derived once from `matrix_index` by
+  `_ensure_grid_indices`) need the same protection for the same reason.
