@@ -2313,7 +2313,6 @@ def _scan_spectros(
             if not spec_list:
                 stats['deferred_files'] += 1
                 cache[norm_key] = {'mtime': mtime, 'deferred': True, 'path': str(p)}
-                viewer._spectro_deferred.add(norm_key)
                 continue
 
         if cached and abs(cached.get('mtime', 0.0) - mtime) <= _SPECTRO_CACHE_MTIME_TOLERANCE and not cached.get('deferred'):

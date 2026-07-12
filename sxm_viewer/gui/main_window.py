@@ -88,7 +88,6 @@ from .controllers.filter_controller import FilterController
 from .controllers.recent_files_controller import RecentFilesController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
-from .viewer.state import ViewerState
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
 from .ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt, _bridge as _ppt_bridge
@@ -421,7 +420,6 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._session_recovery_interval_min = max(1, int(self.config.get("session_recovery_interval_min", 5) or 5))
         except Exception:
             self._session_recovery_interval_min = 5
-        self._workspace_window_shutdown = False
         self.last_channel_index = int(self.config.get("last_channel_index", 0))
         default_cmap = "Blues_r"
         thumb_cfg = self.config.get("thumbnail_cmap")
@@ -530,7 +528,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         else:
             self._collection_source = None
             self._current_collection_mode = None
-        self._workspace_kind = "folder"
         self._display_defaults = {
             'show_matrix_markers': True,
             'show_single_markers': True,
@@ -659,7 +656,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._spectros_pending = False
         self._spectro_cache = {}
         self._spectro_manifest_entries = {}
-        self._spectro_deferred = set()
         self._spectro_miniature_cache = OrderedDict()
         self._spectro_autoload_timer = QtCore.QTimer(self)
         self._spectro_autoload_timer.setSingleShot(True)
@@ -699,7 +695,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._toast_registry = {}
         self._batch_export_progress = None
         self._batch_export_worker = None
-        self.virtual_copies = {}
         self.virtual_copy_order = []
         self.thumbnail_filters = {}
         self.image_adjustments = defaultdict(dict)
@@ -718,10 +713,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.header_cache = self._header_cache_bg_result.get("cache", {})
         log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms (background-overlapped) | {len(self.header_cache)} entries")
         self._header_cache_dirty = False
-        self.state = ViewerState.from_viewer(self)
-        # Deprecated: previously stored concrete arrays for extra views
-        # self.added_views kept for backward compatibility but not used for rendering
-        self.added_views = []
         # New: store extra view specifications to rebuild per selected file
         # Each spec: { 'caption': str, 'index': int, 'cmap': str }
         self.extra_view_specs = []
@@ -879,8 +870,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         controls_h.addWidget(self.channel_dropdown, 1)
         controls_h.addWidget(self.channel_next_btn)
 
-        # Dark mode handled via toolbar toggle; placeholder kept for compatibility
-        self.dark_mode_cb = None
         left_v.addWidget(essentials_group)
 
         self.collection_group = QtWidgets.QGroupBox("Current Collection")
@@ -2117,18 +2106,6 @@ QLabel:hover {{
     def _create_lower_controls(self):
         return main_window_layout.create_lower_controls(self)
 
-    def _build_browse_context_page(self):
-        return main_window_layout.build_browse_context_page(self)
-
-    def _build_measure_context_page(self):
-        return main_window_layout.build_measure_context_page(self)
-
-    def _build_spectro_context_page(self):
-        return main_window_layout.build_spectro_context_page(self)
-
-    def _build_display_widget(self, parent):
-        return main_window_layout.build_display_widget(self, parent)
-
     def _apply_lower_control_theme(self):
         return main_window_layout.apply_lower_control_theme(self)
 
@@ -3105,12 +3082,8 @@ QLabel:hover {{
             self._suspend_window_history = previous
 
     def _prepare_for_workspace_load(self, kind="workspace"):
-        self._workspace_window_shutdown = True
-        try:
-            self._clear_closed_window_history()
-            self._close_workspace_windows(record_history=False, include_canvas=True)
-        finally:
-            self._workspace_window_shutdown = False
+        self._clear_closed_window_history()
+        self._close_workspace_windows(record_history=False, include_canvas=True)
         self._current_session_path = None
 
     def _refresh_autosave_timer(self):
@@ -4267,9 +4240,6 @@ QLabel:hover {{
             pass
         self._rebuild_popup_menu()
 
-    def _rebuild_deferred_popup_menu(self):
-        self._rebuild_popup_menu()
-
     def _refresh_deferred_popup_ui(self):
         self._refresh_popup_ui()
 
@@ -4843,9 +4813,7 @@ QLabel:hover {{
         self.current_spectro_thumb_files = []
         self.selected_spectro_thumb_file = None
         self.thumbnail_filters = {}
-        self.virtual_copies = {}
         self.virtual_copy_order = []
-        self.added_views = []
         self.extra_view_specs = []
         self.molecule_overlays = {}
         self.svg_molecule_overlays = {}
@@ -4853,7 +4821,6 @@ QLabel:hover {{
         self._frame_real_pixmap_cache = {}
         self._processed_views = {}
         self._collection_item_snapshots = {}
-        self._workspace_kind = "folder"
         self._current_session_path = None
         self.matrix_datasets = {}
         self._spectro_hist_cache = {}
@@ -6463,20 +6430,6 @@ QLabel:hover {{
         except Exception:
             pass
 
-    def _ensure_canvas_for_drag(self):
-        """Open the canvas window as a drop target during thumbnail drags."""
-        win = self._canvas_window_ref()
-        if win is None or not win.isVisible():
-            win = ExperimentalCanvasWindow(self, self)
-            self._canvas_window = win
-            win.finished.connect(lambda _=None, w=win: self._remember_closed_canvas_window(w))
-        win.show()
-        win.raise_()
-        try:
-            win.activateWindow()
-        except Exception:
-            pass
-
     def on_thumbnail_clicked(self, header_path_str, channel_idx):
         controller = getattr(self, "thumbnail_controller", None)
         if controller:
@@ -7138,15 +7091,6 @@ QLabel:hover {{
             path = meta.get("path") or meta.get("file_path")
         return path
 
-    def _is_crop_view(self, view):
-        if not view:
-            return False
-        title = str(view.get("title") or "").lower()
-        label = str(view.get("label") or "").lower()
-        if "[crop]" in title or label == "[crop]":
-            return True
-        return False
-
     def _filter_action_label(self, filter_key):
         return self.filter_controller._filter_action_label(filter_key)
 
@@ -7412,7 +7356,6 @@ QLabel:hover {{
             self._header_cache_dirty = False
 
     def on_clear_views(self):
-        self.added_views = []
         self.extra_view_specs = []
         if self.last_preview: self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
@@ -8613,7 +8556,6 @@ QLabel:hover {{
             folder = Path(folder)
         except Exception:
             folder = self.last_dir
-        self._spectro_deferred = set()
         log_status("[Lazy] Loading spectroscopy references...")
         log_status(f"Scanning spectroscopy files in: {folder}")
         t_scan_start = time.perf_counter()
@@ -8667,7 +8609,6 @@ QLabel:hover {{
         except Exception:
             folder = self.last_dir
         log_status(f"Scanning spectroscopy files in: {folder}")
-        self._spectro_deferred = set()
         specs, spec_stats = self._scan_spectros(folder)
         scan_ms = (time.perf_counter() - t_scan_start) * 1000.0
         self._apply_spectro_scan_results(specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
@@ -9384,17 +9325,6 @@ QLabel:hover {{
             return controller.handle_navigation(key, modifiers=modifiers)
         return False
 
-    def _activate_thumbnail_by_index(self, index):
-        controller = getattr(self, "thumbnail_controller", None)
-        if controller:
-            return controller.activate_thumbnail_by_index(index)
-        return False
-
-    def _focus_first_matrix_dataset(self):
-        controller = getattr(self, "thumbnail_controller", None)
-        if controller:
-            return controller.focus_first_matrix_dataset()
-
     def _update_matrix_summary_banner(self):
         controller = getattr(self, "thumbnail_controller", None)
         if controller:
@@ -9554,35 +9484,6 @@ QLabel:hover {{
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups._open_spectroscopy_popup(self, spec, initial_color=initial_color)
-
-    def _ensure_single_spectro_popup(self, spec):
-        controller = getattr(self, "spectro_compare_controller", None)
-        if controller:
-            return controller.ensure_single_popup(spec)
-        if not spec:
-            return None
-        key = self._spec_identity_key(spec)
-        if key and getattr(self, "_spectro_popups", None):
-            for dlg in list(self._spectro_popups):
-                dlg_spec = getattr(dlg, "spec", None)
-                if dlg_spec and self._spec_identity_key(dlg_spec) == key:
-                    try:
-                        dlg.raise_()
-                        dlg.activateWindow()
-                    except Exception:
-                        pass
-                    return dlg
-        return self._open_spectroscopy_popup(spec)
-
-    def _append_spec_to_single_popup(self, spec):
-        controller = getattr(self, "spectro_compare_controller", None)
-        if controller:
-            return controller.append_spec_to_single_popup(spec)
-
-    def _prime_multi_selection_anchor(self, current_spec):
-        controller = getattr(self, "spectro_compare_controller", None)
-        if controller:
-            return controller.prime_multi_selection_anchor(current_spec)
 
     def _highlight_spectrum_entry(self, spec):
         if not getattr(self, "spectro_highlight_glow", True):
@@ -11793,11 +11694,6 @@ QLabel:hover {{
             widget.set_range(vmin, vmax)
         self._on_compact_histogram_clim_changed(vmin, vmax, True)
 
-    def _sync_quick_crop_template_controls(self):
-        controller = getattr(self, "quick_crop_controller", None)
-        if controller:
-            controller.sync_template_controls()
-
     def _on_quick_crop_edit_toggled(self, checked: bool):
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
@@ -11816,20 +11712,6 @@ QLabel:hover {{
         controller = getattr(self, "quick_crop_controller", None)
         if controller:
             controller.on_aspect_mode_changed()
-
-    def _on_quick_crop_real_spin_changed(self, _=None):
-        try:
-            sender = self.sender()
-        except Exception:
-            sender = None
-        controller = getattr(self, "quick_crop_controller", None)
-        if controller:
-            controller.on_real_spin_changed(sender)
-
-    def _apply_quick_crop_template_from_controls(self):
-        controller = getattr(self, "quick_crop_controller", None)
-        if controller:
-            controller.apply_template_from_controls()
 
     def _on_fixed_crop_history_updated(self, entries):
         controller = getattr(self, "quick_crop_controller", None)

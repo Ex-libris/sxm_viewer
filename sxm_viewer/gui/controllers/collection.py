@@ -1830,7 +1830,6 @@ class CollectionController:
         except Exception:
             pass
         viewer._collection_item_snapshots = {}
-        viewer._workspace_kind = "collection"
         self._remember_current_collection(collection_path, mode=str(payload.get("default_mode") or "linked"))
 
         # Partition items into real file+channel references (loaded through the normal folder

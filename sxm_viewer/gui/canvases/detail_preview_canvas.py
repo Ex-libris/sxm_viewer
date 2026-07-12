@@ -3734,15 +3734,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 return idx
         return None
 
-    def _build_profile_style(self, *, color=None, lw=None, line_style=None, marker_style=None, marker_size=None, active=False):
-        return {
-            "color": color,
-            "lw": float(lw if lw is not None else (self._active_profile_lw if active else 1.5)),
-            "line_style": self._normalize_profile_line_style(line_style, "-" if active else "--"),
-            "marker_style": self._normalize_profile_marker_style(marker_style, self._active_profile_marker_style if active else "o"),
-            "marker_size": float(marker_size if marker_size is not None else (self._active_profile_marker_size if active else 5.0)),
-        }
-
     def export_profile_state(self):
         saved = []
         for entry in self._saved_profiles:
@@ -5821,31 +5812,6 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return float('inf')
 
-    def _delete_snapshot_near(self, x, y):
-        if x is None or y is None or not self._saved_profiles:
-            return
-        target = None
-        for entry in reversed(self._saved_profiles):
-            pts = entry.get('pts')
-            if pts is None:
-                continue
-            dist = self._distance_to_segment_pixels(x, y, pts)
-            if dist <= 12.0:
-                target = entry
-                break
-        if target is None:
-            return
-        self.push_undo_state("delete_profile")
-        for art in target.get('artists', []):
-            try:
-                if art is not None:
-                    art.remove()
-            except Exception:
-                pass
-        self._saved_profiles.remove(target)
-        self.draw_idle()
-        self._emit_profile()
-
     def _remove_saved_profile(self, idx):
         if idx < 0 or idx >= len(self._saved_profiles):
             return
@@ -7378,27 +7344,6 @@ class MultiPreviewCanvas(FigureCanvas):
         style["show_hydrogens"] = bool(style.get("show_hydrogens", False))
         return style
 
-    def _molecule_style_from_molecule(self, mol):
-        style = dict(_DEFAULT_MOLECULE_STYLE)
-        if mol is not None:
-            style.update(
-                {
-                    "display_mode": getattr(mol, "display_mode", style["display_mode"]),
-                    "render_style": normalize_molecule_render_style(getattr(mol, "render_style", style["render_style"])),
-                    "bond_style": str(getattr(mol, "bond_style", style["bond_style"]) or style["bond_style"]).lower(),
-                    "radius_mode": str(getattr(mol, "radius_mode", style["radius_mode"]) or style["radius_mode"]).lower(),
-                    "radius_scale": float(getattr(mol, "radius_scale", style["radius_scale"]) or style["radius_scale"]),
-                    "atom_color_override": getattr(mol, "atom_color_override", None),
-                    "bond_color_override": getattr(mol, "bond_color_override", None),
-                    "bond_color_mode": getattr(mol, "bond_color_mode", "default"),
-                    "atom_color_map": dict(getattr(mol, "atom_color_map", {}) or {}),
-                }
-            )
-        style["palette"] = str(getattr(self, "molecule_palette", style["palette"]) or style["palette"]).lower()
-        style["show_shadows"] = bool(getattr(self, "_show_molecule_shadow", style["show_shadows"]))
-        style["show_hydrogens"] = bool(getattr(self, "_show_hydrogens", style["show_hydrogens"]))
-        return style
-
     def _save_molecule_default_style(self, style=None):
         style = dict(style or {})
         if not style:
@@ -7586,19 +7531,8 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             self._last_svg_molecule_dir = str(path or "")
 
-    def get_last_svg_molecule_dir(self):
-        return str(getattr(self, "_last_svg_molecule_dir", "") or "")
-
     def set_last_svg_molecule_dir_callback(self, cb):
         self._last_svg_molecule_dir_cb = cb
-
-    def _pick_color(self, initial_hex: str | None = None) -> str | None:
-        """Show a QColorDialog and return a hex string or None."""
-        initial = QtGui.QColor(initial_hex) if initial_hex else QtGui.QColor("#cccccc")
-        color = QtWidgets.QColorDialog.getColor(initial, self, "Select color")
-        if color.isValid():
-            return color.name()
-        return None
 
     def _clear_molecules(self):
         if not self.molecules:
@@ -9371,9 +9305,6 @@ class MultiPreviewCanvas(FigureCanvas):
             self._refresh_scale_bars()
             self.draw_idle()
 
-    def _toggle_colorbar_orientation(self):
-        self._set_colorbar_orientation('horizontal' if self._colorbar_orientation == 'vertical' else 'vertical')
-
     def _set_colorbar_orientation(self, orientation):
         orientation = str(orientation or 'vertical').strip().lower()
         if orientation not in ('vertical', 'horizontal'):
@@ -10126,14 +10057,6 @@ class MultiPreviewCanvas(FigureCanvas):
     # ------------------------------------------------------------------ #
     # Outlines                                                           #
     # ------------------------------------------------------------------ #
-    def set_outline_percentile(self, pct: float):
-        """Set outline threshold (0-1 fraction)."""
-        try:
-            pct = float(pct)
-        except Exception:
-            return
-        self._outline_threshold = max(0.05, min(0.99, pct))
-
     def _outline_key(self, view):
         meta = view.get("meta") or {}
         extent = view.get("extent_raw")
@@ -11024,9 +10947,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_history_visible = visible
         self._redraw()
 
-    def is_fixed_crop_history_visible(self):
-        return bool(self._fixed_crop_history_visible)
-
     def set_fixed_crop_history_highlight(self, seq):
         seq = int(seq) if seq is not None else None
         if self._fixed_crop_history_highlight_seq == seq:
@@ -11347,14 +11267,6 @@ class MultiPreviewCanvas(FigureCanvas):
             "arr_shape": (h, w),
             "flip": flip,
         }
-
-    def _fixed_crop_template_contains_point(self, xdata, ydata, geom):
-        if geom is None or xdata is None or ydata is None:
-            return False
-        rot = Affine2D().rotate_deg_around(geom["cx"], geom["cy"], float(geom.get("angle", 0.0) or 0.0))
-        inv = rot.inverted()
-        lx, ly = inv.transform((xdata, ydata))
-        return geom["left"] <= lx <= geom["right"] and geom["bottom"] <= ly <= geom["top"]
 
     def _fixed_crop_template_handle_hit(self, event, view, ax):
         if event is None or event.xdata is None or event.ydata is None:
@@ -11882,15 +11794,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self._emit_fixed_crop_history_update()
         self._redraw()
         return True
-
-    def is_fixed_crop_history_entry_visible(self, seq):
-        seq = int(seq) if seq is not None else None
-        if seq is None:
-            return False
-        for entry in self._fixed_crop_history:
-            if entry.get("sequence") == seq:
-                return bool(entry.get("visible", True))
-        return False
 
     def _crop_color_for_seq(self, seq: int):
         palette = [

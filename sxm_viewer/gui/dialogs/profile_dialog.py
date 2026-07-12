@@ -64,7 +64,6 @@ from ...config import (
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    THUMB_DISK_CACHE_DIR,
     load_config,
     save_config,
     load_header_cache,

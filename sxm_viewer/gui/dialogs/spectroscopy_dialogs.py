@@ -73,7 +73,6 @@ from ...config import (
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    THUMB_DISK_CACHE_DIR,
     load_config,
     save_config,
     load_header_cache,
@@ -7966,27 +7965,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 self._compare_inset_image_cache.popitem(last=False)
         return rgb, crop_info
 
-    def _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None, dims=None, crop_info=None):
-        viewer = getattr(self, "viewer", None)
-        spec = spec or None
-        if spec is None:
-            items = self._checked_items() or self._selected_items()
-            if items:
-                spec = items[0].data(0, QtCore.Qt.UserRole)
-        file_key = file_key or (str(spec.get("image_key") or "") if spec else "")
-        if not viewer or not file_key or spec is None:
-            return None
-        header, _ = viewer.headers.get(file_key, (None, None))
-        if header is None:
-            return None
-        if dims and len(dims) == 2:
-            width = max(2, int(dims[0]))
-            height = max(2, int(dims[1]))
-        else:
-            width = int(getattr(viewer, "thumb_size_px", 160))
-            height = max(48, int(round(width * 0.75)))
-        return _spec_display_coords(viewer, spec, header, file_key, width, height, crop_info=crop_info)
-
     def _collect_inset_markers_compare(self, base_key, image_dims=None, crop_info=None, current_spec_id=None):
         viewer = getattr(self, "viewer", None)
         if not viewer or not base_key:
@@ -8373,12 +8351,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 "spec_id": spec_id,
                 "display_name": self._display_name(spec),
             }
-
-    def _spec_id_by_name(self, name):
-        for spec in self.specs:
-            if self._display_name(spec) == name:
-                return self._spec_id(spec)
-        return None
 
     def _on_legend_pick(self, event):
         spec_id = self._legend_map.get(event.artist)

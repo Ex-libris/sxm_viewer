@@ -11,7 +11,6 @@ from .config_defaults import (
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    THUMB_DISK_CACHE_DIR,
 )
 from .config_io import (
     load_config,
@@ -34,7 +33,6 @@ __all__ = [
     "CH_SAMPLE_POINTS",
     "CHANNEL_DATA_CACHE_LIMIT",
     "FILTERED_CACHE_LIMIT",
-    "THUMB_DISK_CACHE_DIR",
     "load_config",
     "save_config",
     "flush_pending_config_save",

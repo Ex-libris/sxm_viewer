@@ -81,8 +81,6 @@ def open_single_spectro_popup(viewer, spectro):
         # Prefer the main spectroscopy popup handler (matrix or single).
         if hasattr(viewer, "_open_spectroscopy_popup"):
             viewer._open_spectroscopy_popup(spectro)
-        elif hasattr(viewer, "_show_spectro_popup"):
-            viewer._show_spectro_popup(spectro)
         else:
             QtWidgets.QMessageBox.information(
                 viewer, "Spectro", f"Spectroscopy at {spectro.get('x')}/{spectro.get('y')}"

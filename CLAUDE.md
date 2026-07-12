@@ -51,8 +51,10 @@ python -m sxm_viewer
   `spectroscopy.py` (`.dat` metadata, axis helpers, matrix-scan detection),
   `matrix.py` (`MatrixDataset` representation).
 - `processing/` — `filters.py` (image filter definitions/pipeline),
-  `detection.py` (topography-channel auto-detection), `nanonis_adapter.py`
-  (thin re-export shim into `providers/nanonis`).
+  `detection.py` (topography-channel auto-detection). GUI code and
+  everything else import Nanonis support directly from `providers/nanonis`
+  (a since-removed `processing/nanonis_adapter.py` re-export shim had zero
+  importers anywhere in the repo and was deleted).
 - `providers/` — format-specific adapters, kept import-isolated from GUI/Qt:
   - `nanonis/adapter.py` converts Nanonis `.sxm` scans into Omicron-style
     header/channel caches (`.sxmviewer_nanonis/` folders next to the data,
@@ -306,8 +308,10 @@ Supporting modules: `canvas_view.py` (`CanvasGraphicsView`, a `QGraphicsView`),
 matplotlib rendering), `canvas_layout.py` (2x2/1x3/3x1 layout presets),
 `canvas_state.py` (undo/redo stack), `canvas_io.py` (`save_canvas`/
 `load_canvas`/`export_image`, JSON with `{"version":1,"items":[...]}`).
-**`experimental_canvas.py` is dead/legacy code** — nothing imports it; it was
-superseded by the split modules above and should not be extended.
+A prior monolithic `experimental_canvas.py` predated this split (duplicate
+definitions of `ExperimentalCanvasWindow`/`CanvasImageItem`/
+`CanvasGraphicsView`/etc.), was never imported anywhere once superseded, and
+has been removed.
 
 ### Spectroscopy dialogs & popups
 `gui/dialogs/spectroscopy_dialogs.py` defines the dialog classes;

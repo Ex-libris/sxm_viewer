@@ -1,0 +1,292 @@
+================================================================================
+SXM VIEWER — LEGACY / DEAD CODE CLEANUP REPORT
+================================================================================
+Date: 2026-07-12
+Scope: sxm_viewer/ package, based on a full architecture review (object-graph
+audit, dead-code sweep, and data-flow trace) performed the same session.
+Nothing in this pass changed application behavior — every removal was a
+piece of code with zero live callers/readers, verified by repo-wide grep
+both before AND after the edit, plus a real runtime construction test
+(SXMGridViewer instantiated end-to-end under an offscreen Qt platform).
+
+Net effect: 3 files deleted, 14 files edited, roughly 5,100 lines of dead
+code removed, ~250 lines re-added (see CORRECTION below — a chunk of
+code initially misjudged as dead had to be restored).
+
+--------------------------------------------------------------------------------
+1. FILES DELETED
+--------------------------------------------------------------------------------
+
+1.1 sxm_viewer/gui/canvases/experimental_canvas.py   (2,910 lines)
+    STATUS: DELETED
+    WHAT IT WAS: The original monolithic publication-canvas window, predating
+    the later split into canvas_view.py / canvas_items.py / canvas_window.py /
+    canvas_layout.py / canvas_rendering.py / canvas_state.py / canvas_io.py.
+    Defined duplicate classes with the SAME names as the live split modules:
+    ExperimentalCanvasWindow, CanvasImageItem, CanvasGraphicsView,
+    RubberBandSelection, AlignmentGuide, plus a duplicate _safe_float helper.
+    EVIDENCE: repo-wide grep for "experimental_canvas" / "ExperimentalCanvas"
+    found zero importers anywhere outside the file itself, before deletion.
+    CLAUDE.md already documented this file as dead; confirmed accurate.
+
+1.2 sxm_viewer/processing/nanonis_adapter.py   (11 lines)
+    STATUS: DELETED
+    WHAT IT WAS: A "compatibility shim" re-exporting parse_nanonis_spectroscopy
+    and prepare_nanonis_folder from sxm_viewer.providers.nanonis. CLAUDE.md
+    described this as live architecture ("thin re-export shim into
+    providers/nanonis"), but it turned out to be a shim of a shim: nothing in
+    the repo ever imports sxm_viewer.processing.nanonis_adapter — every real
+    call site imports sxm_viewer.providers.nanonis directly.
+    EVIDENCE: repo-wide grep for "nanonis_adapter" found only CLAUDE.md's own
+    prose describing it, no actual import statements.
+    DOC FIX: CLAUDE.md's package-layout section corrected to remove the
+    stale claim and note the shim's removal.
+
+1.3 sxm_viewer/gui/viewer/state.py   (51 lines)
+    STATUS: DELETED
+    WHAT IT WAS: A ViewerState dataclass/snapshot class with a
+    from_viewer(viewer) constructor. Instantiated exactly once, in
+    SXMGridViewer.__init__ ("self.state = ViewerState.from_viewer(self)"),
+    and never read again anywhere in the codebase (no "self.state." or
+    "viewer.state." access found). Several of the cache objects it captured
+    references to were later wholesale-reassigned elsewhere in __init__
+    (e.g. self._channel_data_cache = OrderedDict()), so even a hypothetical
+    future reader would have seen stale, orphaned handles.
+    READS AS: an abandoned refactor toward a real state-container pattern —
+    exactly the "object instantiated but not really used" pattern flagged
+    in the original review.
+    ALSO REMOVED: the "from .viewer.state import ViewerState" import and the
+    "self.state = ViewerState.from_viewer(self)" construction line in
+    gui/main_window.py.
+
+--------------------------------------------------------------------------------
+2. DEAD CLASS + DUPLICATE-CODE BLOCK REMOVED
+--------------------------------------------------------------------------------
+
+2.1 _LegacyImageCompareDialog  (gui/controllers/image_compare.py)
+    STATUS: REMOVED (class body + monkey-patch block)
+    WHAT IT WAS: A full duplicate predecessor of the live ImageCompareDialog
+    class. Only ImageCompareDialog is ever instantiated
+    (image_compare.py: "dlg = ImageCompareDialog(self, self.viewer, ...)");
+    _LegacyImageCompareDialog is constructed nowhere.
+    ALSO REMOVED (found during this pass, NOT in the original review): an
+    entire "if False:" block immediately following the class's monkey-patch
+    assignments — ~945 lines of fully unreachable method definitions
+    (pre-refactor in-place versions of the same methods later extracted as
+    the _icd_* free functions below). Since it's guarded by a literal
+    "if False:", it never executes under any circumstance.
+    TOTAL REMOVED: lines 831-2763 of the original file (~1,933 lines) —
+    the class body, its 17-line monkey-patch block, and the dead "if False:"
+    block, all deleted as one contiguous unit.
+
+--------------------------------------------------------------------------------
+   *** CORRECTION MADE DURING THIS PASS — READ BEFORE TRUSTING THE REST ***
+--------------------------------------------------------------------------------
+    The same deletion above also removed 17 module-level "_icd_*" helper
+    functions (_icd_on_profile_mode_toggled, _icd_clear_profile_overlay,
+    _icd_draw_profile_overlay, _icd_set_profile_line,
+    _icd_ensure_crosshair_artists, _icd_update_crosshair,
+    _icd_clear_crosshair, _icd_update_hover_label, _icd_on_canvas_press,
+    _icd_on_canvas_motion, _icd_on_canvas_release, _icd_on_canvas_leave,
+    _icd_show_landmark_hint, _icd_default_export_stem, _icd_export_comparison,
+    _icd_export_png, _icd_export_diff_csv). The original review had reported
+    these as referenced only by the dead _LegacyImageCompareDialog monkey-patch
+    block — but that was WRONG. A post-deletion grep for "_icd_" turned up 17
+    surviving call sites inside the LIVE ImageCompareDialog class itself
+    (one-line shim methods like
+        def _on_profile_mode_toggled(self, checked):
+            return _icd_on_profile_mode_toggled(self, checked)
+    ), meaning these 17 functions were the REAL implementation used by live
+    code, just invoked by module-level name rather than as direct methods.
+    FIX: the 17 function bodies were recovered verbatim from git HEAD (the
+    file was unmodified in git before this session's edits) and reinserted
+    at module level, immediately before "class ImageCompareDialog". Verified
+    by: (a) syntax check, (b) constructing SXMGridViewer end-to-end under an
+    offscreen Qt platform, (c) explicitly asserting hasattr(ImageCompareDialog,
+    name) for all 17 shim method names. All checks passed after the fix.
+    LESSON: block-boundary reasoning ("this whole span belongs to a dead
+    class") is not a substitute for grepping each individual identifier
+    before deleting it — the _LegacyImageCompareDialog class boundary was
+    correct, but two unrelated code paths (the dead monkey-patch and the
+    live shim methods) both referenced the same free functions, and only
+    checking the class name, not each function name, missed that.
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+3. UNREACHABLE BRANCH REMOVED
+--------------------------------------------------------------------------------
+
+3.1 gui/main_window_spectro.py, open_single_spectro_popup()
+    STATUS: REMOVED
+    WHAT IT WAS: "elif hasattr(viewer, "_show_spectro_popup"): ..." — a
+    fallback branch calling a method that is not defined ANYWHERE in the
+    codebase (confirmed by repo-wide grep). CLAUDE.md already documents that
+    this exact gap was the root cause of a real bug (double-click on a
+    spectrum silently doing nothing) — the bug was fixed by adding the
+    "_open_spectroscopy_popup" branch above it, but the dead elif was never
+    removed. gui/spectroscopy/browser.py:445 has a comment acknowledging the
+    same history.
+
+--------------------------------------------------------------------------------
+4. ZERO-CALL-SITE METHODS REMOVED (27 total)
+--------------------------------------------------------------------------------
+Each was individually grepped for zero occurrences repo-wide (beyond its own
+"def" line) both before deletion and again in a final consistency pass after
+all edits were made — all 27 now return zero matches anywhere in the repo.
+
+4.1 gui/main_window.py (SXMGridViewer) — 15 removed:
+    - _activate_thumbnail_by_index(self, index)
+    - _focus_first_matrix_dataset(self)
+    - _build_browse_context_page(self)
+    - _build_measure_context_page(self)
+    - _build_spectro_context_page(self)
+    - _build_display_widget(self, parent)
+    - _ensure_canvas_for_drag(self)
+    - _is_crop_view(self, view)
+    - _rebuild_deferred_popup_menu(self)
+    - _append_spec_to_single_popup(self, spec)
+    - _ensure_single_spectro_popup(self, spec)
+    - _prime_multi_selection_anchor(self, current_spec)
+    - _sync_quick_crop_template_controls(self)
+    - _on_quick_crop_real_spin_changed(self, _=None)
+    - _apply_quick_crop_template_from_controls(self)
+    PATTERN: all 15 were "just in case" delegation shims following the
+    codebase's documented self._xxx -> controller.yyy() convention, but the
+    real Qt signal wiring ended up calling the controller methods directly,
+    leaving these wrapper methods orphaned. Their underlying controller
+    methods (e.g. thumbnail_controller.activate_thumbnail_by_index) are
+    untouched and still live.
+
+4.2 gui/canvases/detail_preview_canvas.py (MultiPreviewCanvas) — 10 removed:
+    - get_last_svg_molecule_dir(self)
+    - is_fixed_crop_history_visible(self)
+    - is_fixed_crop_history_entry_visible(self, seq)
+    - set_outline_percentile(self, pct)
+    - _toggle_colorbar_orientation(self)
+    - _pick_color(self, initial_hex=None)
+    - _build_profile_style(self, ...)
+    - _delete_snapshot_near(self, x, y)
+    - _fixed_crop_template_contains_point(self, xdata, ydata, geom)
+    - _molecule_style_from_molecule(self, mol)
+    PATTERN: public-looking getter/setter/action methods with no menu item,
+    shortcut, or signal ever wired to them.
+
+4.3 gui/dialogs/spectroscopy_dialogs.py — 2 removed:
+    - _spec_id_by_name(self, name)
+    - _spec_thumbnail_coords_for_compare(self, spec=None, file_key=None,
+      dims=None, crop_info=None)
+
+--------------------------------------------------------------------------------
+5. DEAD / WRITE-ONLY STATE FIELDS REMOVED
+--------------------------------------------------------------------------------
+Each of these was written to but never read anywhere in the repo (verified
+by grep both for plain attribute access and any getattr()/comparison use).
+
+5.1 self.added_views  (gui/main_window.py, 3 sites: __init__, a reset
+    method, and on_clear_views)
+    Explicitly self-documented as dead in the code's own comment:
+    "Deprecated: previously stored concrete arrays for extra views ...
+    kept for backward compatibility but not used for rendering."
+
+5.2 self.virtual_copies  (gui/main_window.py, 2 sites)
+    A dict written twice, read nowhere. Its sibling self.virtual_copy_order
+    (list) is very much alive (used by _normalize_virtual_copy_order and
+    elsewhere) — this looks like the dict half of an intended dict+order-list
+    pair that fell out of use while the order-list half didn't. Only the
+    dict was removed; virtual_copy_order is untouched.
+
+5.3 self._workspace_kind  ("folder" / "collection")
+    (gui/main_window.py, 2 sites; gui/controllers/collection.py, 1 site)
+    Written 3 times, never read/compared anywhere. The rest of the code
+    still infers folder-vs-collection ad hoc from
+    "_collection_source is not None" instead of using this flag.
+
+5.4 THUMB_DISK_CACHE_DIR  (config_defaults.py definition + 8 import sites)
+    A path constant (~/.sxm_thumb_cache) imported into config.py and 7 GUI
+    files (thumbnail_render.py, dialogs/filters.py, dialogs/image_adjust.py,
+    dialogs/matrix_fit.py, dialogs/profile_dialog.py,
+    dialogs/spectroscopy_dialogs.py, workers/batch_export.py) but never
+    actually read/written as a path anywhere — no disk-backed thumbnail
+    cache exists in the current code; all thumbnail caching is in-memory
+    only (_thumb_data_cache, thumb_cache, _frame_real_pixmap_cache).
+    Removed the definition, its __all__ entries in config_defaults.py and
+    config.py, and all 7 now-unused imports.
+
+5.5 self.dark_mode_cb  (gui/main_window.py, 1 site)
+    Set to None with the adjacent comment: "Dark mode handled via toolbar
+    toggle; placeholder kept for compatibility." Never read.
+
+5.6 self._workspace_window_shutdown  (gui/main_window.py, 3 sites)
+    A bool flag toggled True/False around _prepare_for_workspace_load's
+    body, never read anywhere. The surrounding try/finally (which existed
+    solely to guarantee the flag reset) was simplified away; the function's
+    actual behavior (clear window history, close workspace windows, clear
+    the session path) is unchanged — if an exception occurs partway through,
+    the session-path clear was already skipped before this change too
+    (it sat after the try/finally, not inside it).
+
+5.7 self._spectro_deferred  (gui/main_window.py, 3 sites;
+    gui/viewer/loader.py, 1 site)
+    A set() populated via .add() in loader.py when a spectro file's data is
+    lazily deferred, but never iterated, membership-tested, or read anywhere
+    else in the codebase.
+
+--------------------------------------------------------------------------------
+6. VERIFICATION PERFORMED
+--------------------------------------------------------------------------------
+- py_compile on every modified .py file: all pass.
+- Repo-wide grep, after all edits, for every removed identifier
+  (experimental_canvas, nanonis_adapter, _LegacyImageCompareDialog,
+  _show_spectro_popup, ViewerState, added_views, virtual_copies,
+  _workspace_kind, THUMB_DISK_CACHE_DIR, dark_mode_cb,
+  _workspace_window_shutdown, _spectro_deferred, and all 27 method names):
+  zero unexpected matches (only the intentionally-kept explanatory comment
+  in gui/spectroscopy/browser.py referencing the old _show_spectro_popup
+  bug remains, which is correct — it's prose, not code).
+- Full runtime construction test: built a real QApplication (offscreen
+  platform) and instantiated SXMGridViewer end-to-end — succeeded, loading
+  the real 2,686-entry header cache from this machine with no AttributeError
+  or NameError.
+- Explicitly asserted all 17 restored ImageCompareDialog shim methods
+  resolve via hasattr() after the correction in section 2.
+
+WHAT WAS NOT VERIFIED: this was a static + import/construction-time check,
+not a full manual UI click-through of every dialog (image compare, quick
+crop, spectro popups, quick-crop templates, etc.). Given the removed code
+was either (a) never-called dead code or (b) restored to working order and
+explicitly checked, risk is low, but exercising the Image Compare dialog,
+Quick Crop panel, and Spectro popups by hand once is a reasonable follow-up
+before considering this fully closed.
+
+--------------------------------------------------------------------------------
+7. OUT OF SCOPE (deliberately not touched this pass)
+--------------------------------------------------------------------------------
+- The 7-way overlapping "which popups/windows are open" tracker cluster
+  (_popup_canvases, _spectro_popups, _popup_refs, _deferred_popup_entries,
+  _multi_spectro_popups, _active_preview_popup/_active_preview_canvas,
+  _closed_window_history) — all individually live and in active use; this
+  is architectural consolidation, not dead-code removal, and carries real
+  behavioral risk if done mechanically.
+- The 8-way overlapping "what's currently selected" tracker cluster
+  (thumb_multi_select, selected_file_for_thumbs, spectro_thumb_multi_select,
+  selected_spectro_thumb_file, current_spectro_thumb_files,
+  _multi_spec_selection/_multi_spec_selection_keys, _last_clicked_spec,
+  _highlighted_spec) — same reasoning; all live, genuine complexity (main
+  grid vs. spectro sub-grid vs. multi-compare vs. hover are legitimately
+  different concepts), worth a deliberate consolidation design, not a
+  find-and-delete pass.
+- Session vs. Collection controllers' duplicated UI-settings serialization
+  (CollectionController re-derives ~6 spectro-display flags independently
+  of SessionController's ui_state, once at top level and once nested under
+  "spectro_settings") — a real "two paths, one truth" smell, but fixing it
+  means designing one shared helper both controllers call, not a deletion.
+- Root-level cruft outside the sxm_viewer/ package (screenshot PNGs,
+  advice.txt, time-log.txt, and a standalone tkinter script
+  spectroscopy_markers_frame_reference.py) — these are currently untracked
+  in git, i.e. not repo debt, and several look like the user's own working
+  notes/reference images rather than code; left alone pending an explicit
+  ask.
+
+================================================================================
+END OF REPORT
+================================================================================
