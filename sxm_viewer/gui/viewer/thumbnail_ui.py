@@ -542,6 +542,81 @@ def _spectroscopy_miniature_pixmap(viewer, spec, width, height, channel_name=Non
     return pix
 
 
+def _compute_thumbnail_file_order(viewer):
+    """Filter/sort/virtual-order viewer.files into the order that would be
+    shown for the current filter/sort combo settings - pure computation, no
+    widget creation, so it's safe to call speculatively from the cheap
+    resort/refilter fast path (see on_thumb_sort_changed/on_thumb_filter_changed)
+    to check whether a change actually alters the visible file set before
+    deciding whether a full populate_thumbnails_for_channel rebuild is
+    needed. Mirrors the file-order logic inside populate_thumbnails_for_channel
+    exactly; that function calls this helper too, so there is only one place
+    this logic lives."""
+    files_iter = list(viewer.files)
+
+    filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
+    if filt == 'With spectroscopy' and not getattr(viewer, '_spectros_loaded', False):
+        # The filter needs spec-to-image assignments; force the lazy load the
+        # same way the spectro-miniatures path above does.
+        try:
+            log_status("Loading spectroscopy references for the 'With spectroscopy' filter...")
+            viewer.ensure_spectros_loaded(refresh=False)
+        except Exception:
+            pass
+    if filt and filt != 'All':
+        matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
+        spectra_set = set(getattr(viewer, 'files_with_spectra', set()) or [])
+        def include(path_str):
+            tag = effective_tag(viewer, path_str)
+            if filt == 'Starred':
+                return path_str in (getattr(viewer, 'starred', None) or set())
+            if filt == 'Constant height':
+                return tag == 'constant-height'
+            if filt == 'Constant current':
+                return tag == 'constant-current'
+            if filt == 'With spectroscopy':
+                return effective_spectra_key(viewer, path_str) in spectra_set
+            if filt == 'Untagged':
+                return tag is None
+            if filt == 'Matrix datasets':
+                return effective_spectra_key(viewer, path_str) in matrix_set
+            return True
+        files_iter = [t for t in files_iter if include(str(t))]
+
+    sort_mode = (viewer.thumb_sort_combo.currentText() if hasattr(viewer, 'thumb_sort_combo') else 'Name (A?Z)')
+    real_files_iter = [str(p) for p in files_iter if not viewer._is_processed_key(str(p))]
+    processed_files_iter = [str(p) for p in files_iter if viewer._is_processed_key(str(p))]
+    if sort_mode.startswith('Name'):
+        def _natural_key(name: str):
+            parts = re.split(r"(\d+)", name)
+            key = []
+            for part in parts:
+                if part.isdigit():
+                    try:
+                        key.append(int(part))
+                    except Exception:
+                        key.append(part)
+                else:
+                    key.append(part.lower())
+            return key
+        real_files_iter.sort(key=lambda p: _natural_key(Path(p).name))
+    elif 'Date (new' in sort_mode or 'Date (old' in sort_mode:
+        rev = ('new' in sort_mode)
+        def sort_key_date(p):
+            hdr = viewer.headers.get(str(p), (None, None))[0]
+            return viewer._parse_header_datetime(hdr, path=p)
+        real_files_iter.sort(key=sort_key_date, reverse=rev)
+    elif sort_mode.startswith('Tag'):
+        order = {'constant-height': 0, 'constant-current': 1, None: 2}
+        real_files_iter.sort(key=lambda p: (order.get(effective_tag(viewer, str(p)), 2), Path(p).name.lower()))
+
+    try:
+        files_iter = viewer._ordered_virtual_thumbnail_files(real_files_iter, processed_files_iter)
+    except Exception:
+        files_iter = list(real_files_iter) + list(processed_files_iter)
+    return files_iter
+
+
 def populate_thumbnails_for_channel(viewer, channel_idx:int):
     _t0_populate = time.perf_counter()
     preserve_scroll_state = None
@@ -590,72 +665,11 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     cmap_name = getattr(viewer, "thumb_cmap", None) or viewer.thumb_cmap_combo.currentText()
     viewer._thumb_generation += 1
     generation = viewer._thumb_generation
-    files_iter = list(viewer.files)
+    files_iter = _compute_thumbnail_file_order(viewer)
     try:
         viewer.thumb_grid_columns = max_cols
     except Exception:
         viewer.thumb_grid_columns = 1
-
-    filt = (viewer.thumb_filter_combo.currentText() if hasattr(viewer, 'thumb_filter_combo') else 'All')
-    if filt == 'With spectroscopy' and not getattr(viewer, '_spectros_loaded', False):
-        # The filter needs spec-to-image assignments; force the lazy load the
-        # same way the spectro-miniatures path above does.
-        try:
-            log_status("Loading spectroscopy references for the 'With spectroscopy' filter...")
-            viewer.ensure_spectros_loaded(refresh=False)
-        except Exception:
-            pass
-    if filt and filt != 'All':
-        matrix_set = set(getattr(viewer, 'files_with_matrix', set()) or [])
-        spectra_set = set(getattr(viewer, 'files_with_spectra', set()) or [])
-        def include(path_str):
-            tag = effective_tag(viewer, path_str)
-            if filt == 'Starred':
-                return path_str in (getattr(viewer, 'starred', None) or set())
-            if filt == 'Constant height':
-                return tag == 'constant-height'
-            if filt == 'Constant current':
-                return tag == 'constant-current'
-            if filt == 'With spectroscopy':
-                return effective_spectra_key(viewer, path_str) in spectra_set
-            if filt == 'Untagged':
-                return tag is None
-            if filt == 'Matrix datasets':
-                return effective_spectra_key(viewer, path_str) in matrix_set
-            return True
-        files_iter = [t for t in files_iter if include(str(t))]
-
-    sort_mode = (viewer.thumb_sort_combo.currentText() if hasattr(viewer, 'thumb_sort_combo') else 'Name (A?Z)')
-    real_files_iter = [str(p) for p in files_iter if not viewer._is_processed_key(str(p))]
-    processed_files_iter = [str(p) for p in files_iter if viewer._is_processed_key(str(p))]
-    if sort_mode.startswith('Name'):
-        def _natural_key(name: str):
-            parts = re.split(r"(\\d+)", name)
-            key = []
-            for part in parts:
-                if part.isdigit():
-                    try:
-                        key.append(int(part))
-                    except Exception:
-                        key.append(part)
-                else:
-                    key.append(part.lower())
-            return key
-        real_files_iter.sort(key=lambda p: _natural_key(Path(p).name))
-    elif 'Date (new' in sort_mode or 'Date (old' in sort_mode:
-        rev = ('new' in sort_mode)
-        def sort_key_date(p):
-            hdr = viewer.headers.get(str(p), (None, None))[0]
-            return viewer._parse_header_datetime(hdr, path=p)
-        real_files_iter.sort(key=sort_key_date, reverse=rev)
-    elif sort_mode.startswith('Tag'):
-        order = {'constant-height': 0, 'constant-current': 1, None: 2}
-        real_files_iter.sort(key=lambda p: (order.get(effective_tag(viewer, str(p)), 2), Path(p).name.lower()))
-
-    try:
-        files_iter = viewer._ordered_virtual_thumbnail_files(real_files_iter, processed_files_iter)
-    except Exception:
-        files_iter = list(real_files_iter) + list(processed_files_iter)
 
     viewer.current_thumb_files = [str(f) for f in files_iter]
     viewer._thumb_meta = {}
@@ -859,6 +873,26 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             return
 
     _t0_loop = time.perf_counter()
+    # Only do the (stat()-backed) cache-hit lookup for thumbnails that will
+    # actually be visible right after this rebuild - the same window
+    # _request_visible_thumbs() computes a few lines below. Every other file
+    # just gets a placeholder, with its data_key/cache lookup deferred until
+    # it's scrolled into view, instead of an unconditional per-file
+    # Path.stat() syscall (see _thumbnail_data_key) for the entire, often
+    # much larger, off-screen majority on every sort/filter/channel change -
+    # expensive on network-mounted data folders.
+    try:
+        vp = getattr(viewer, '_thumb_viewport', None)
+        scroll = getattr(viewer, 'scroll', None)
+        card_h = viewer._thumb_card_height
+        y0 = scroll.verticalScrollBar().value() if scroll else 0
+        vh = vp.height() if vp else card_h * 4
+        first_row = max(0, int(y0 // card_h) - 2)
+        last_row = int((y0 + vh) // card_h) + 2
+        visible_start_idx = max(0, first_row * max_cols)
+        visible_end_idx = min(len(files_iter), (last_row + 1) * max_cols)
+    except Exception:
+        visible_start_idx, visible_end_idx = 0, len(files_iter)
     for i, t in enumerate(files_iter):
         key = str(t)
         if key not in viewer.headers:
@@ -914,12 +948,13 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
             fd = fds[thumb_channel_idx]
             base_pix = None
             data_key = None
-            try:
-                data_key = viewer._thumbnail_data_key(key, thumb_channel_idx, fd, thumb_w, thumb_h)
-            except Exception:
-                data_key = None
-            if data_key:
-                base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(data_key, entry_cmap_name, entry_clim))
+            if visible_start_idx <= i < visible_end_idx:
+                try:
+                    data_key = viewer._thumbnail_data_key(key, thumb_channel_idx, fd, thumb_w, thumb_h)
+                except Exception:
+                    data_key = None
+                if data_key:
+                    base_pix = viewer.thumb_cache.get(_thumb_render_cache_key(data_key, entry_cmap_name, entry_clim))
             if base_pix is not None:
                 pix = base_pix.copy()
                 crop_info = None
@@ -1017,12 +1052,81 @@ def reflow_thumbnail_grid(viewer, channel_idx: int):
     elapsed_ms = (time.perf_counter() - _t0) * 1000
     log_status(f"[Perf] reflow_thumbnail_grid: {elapsed_ms:.0f} ms | {moved} widgets repositioned, {max_cols} cols")
 
+
+def _try_cheap_thumbnail_resort(viewer, channel_idx):
+    """Attempt a cheap in-place reposition of the existing thumbnail cards
+    for a sort/filter combo change, instead of the full
+    populate_thumbnails_for_channel() rebuild (which destroys and recreates
+    every card's QLabel/QFrame/QVBoxLayout/tooltip/event-handler/style-sheet
+    from scratch - see reflow_thumbnail_grid's docstring for the same cost
+    measured on a resize: ~900ms-1.3s/224 files). Reuses that same
+    "reposition an already-parented widget in the QGridLayout" technique.
+
+    Only safe when the new filter/sort settings would show exactly the same
+    set of files as what's already on screen (a pure sort-order change, or a
+    filter change that happens not to alter the visible set) - anything else
+    (an actual filter change, spectro-miniature mode, no widgets yet) falls
+    back to the full rebuild by returning False, so this can never produce
+    an incorrect thumbnail grid, only skip the optimization."""
+    if getattr(viewer, "show_spectro_miniatures", False):
+        return False
+    if getattr(viewer, "spectro_thumb_widgets", None):
+        return False
+    image_widgets = getattr(viewer, "thumb_widgets", None) or {}
+    if not image_widgets:
+        return False
+    try:
+        new_order = _compute_thumbnail_file_order(viewer)
+    except Exception:
+        return False
+    new_keys = [str(f) for f in new_order]
+    if set(new_keys) != set(image_widgets.keys()):
+        return False
+
+    thumb_w, thumb_h = viewer._thumb_dimensions()
+    try:
+        vp = getattr(viewer, '_thumb_viewport', None)
+        avail_w = vp.width() if vp is not None else (viewer.thumb_container.width() if hasattr(viewer, 'thumb_container') else 800)
+    except Exception:
+        avail_w = 800
+    card_w = thumb_w + 24
+    max_cols = max(1, min(12, int(avail_w / card_w)))
+
+    row = col = 0
+    for key in new_keys:
+        card = image_widgets.get(key)
+        if card is None:
+            return False
+        viewer.thumb_layout.addWidget(card, row, col)
+        col += 1
+        if col >= max_cols:
+            col = 0
+            row += 1
+    viewer.thumb_grid_columns = max_cols
+    viewer.current_thumb_files = new_keys
+    try:
+        viewer._refresh_thumb_selection_styles()
+    except Exception:
+        pass
+    try:
+        viewer._request_visible_thumbs()
+    except Exception:
+        pass
+    return True
+
+
 def on_thumb_sort_changed(viewer, idx):
     try:
         viewer.config['thumb_sort'] = viewer.thumb_sort_combo.currentText(); save_config(viewer.config)
     except Exception:
         pass
-    viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+    channel_idx = viewer.channel_dropdown.currentIndex()
+    try:
+        if _try_cheap_thumbnail_resort(viewer, channel_idx):
+            return
+    except Exception:
+        pass
+    viewer.populate_thumbnails_for_channel(channel_idx)
 
 
 def on_thumb_filter_changed(viewer, idx):
@@ -1030,7 +1134,13 @@ def on_thumb_filter_changed(viewer, idx):
         viewer.config['thumb_filter'] = viewer.thumb_filter_combo.currentText(); save_config(viewer.config)
     except Exception:
         pass
-    viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+    channel_idx = viewer.channel_dropdown.currentIndex()
+    try:
+        if _try_cheap_thumbnail_resort(viewer, channel_idx):
+            return
+    except Exception:
+        pass
+    viewer.populate_thumbnails_for_channel(channel_idx)
 
 
 def effective_tag(viewer, path_str):

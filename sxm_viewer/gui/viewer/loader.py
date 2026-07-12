@@ -1107,7 +1107,6 @@ def load_spectroscopy_files(viewer, files, folder_hint: Path | None = None, *, a
         files=files,
         image_paths=[str(p) for p in getattr(viewer, "files", []) or []],
         image_meta=getattr(viewer, "image_meta", None),
-        use_disk_cache=False,
     )
     if append:
         merged_specs = prev_specs + list(new_specs or [])
