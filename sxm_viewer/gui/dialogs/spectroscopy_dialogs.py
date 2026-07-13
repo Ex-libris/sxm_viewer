@@ -4888,18 +4888,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     self.ax.pcolormesh(X, Y, metric, cmap=self._metric_cmap, shading='nearest')
                     self.ax.set_aspect('equal', adjustable='box')
                     self._current_image_coords = (X, Y)
-                    # y is deliberately inverted (max first -> set_ylim(max,
-                    # min) below): every image view in the app (thumbnails,
-                    # main preview, this dialog's own "Reference image" mode
-                    # via _header_extent) renders with y increasing DOWNWARD
-                    # on screen. A standard upward ylim here made this
-                    # absolute view - and the local/relative view, which was
-                    # aligned to it - vertically mirrored against the actual
-                    # image of the same region (confirmed on a real 48x30
-                    # grid vs its anchor scan).
+                    # Standard upward ylim (min, max): physically north-up,
+                    # which matches "Reference image" mode's CONTENT (row 0 =
+                    # north drawn at the top). Do not "fix" an apparent
+                    # mirror here by inverting this — the one time that
+                    # looked necessary, the real culprit was a stale
+                    # pre-row-flip Nanonis conversion cache serving a
+                    # mirrored anchor thumbnail (see NANONIS_CACHE_VERSION
+                    # v5 note in providers/nanonis/adapter.py).
                     view_extent = (
                         float(np.nanmin(X)), float(np.nanmax(X)),
-                        float(np.nanmax(Y)), float(np.nanmin(Y)),
+                        float(np.nanmin(Y)), float(np.nanmax(Y)),
                     )
                 else:
                     self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
@@ -5185,19 +5184,20 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         which end is up, i.e. looking mirrored relative to each other, even
         though each individually rendered its own points/slice consistently.
 
-        Both metric views share the app-wide image Y convention (real Y
-        increases DOWNWARD on screen — same as thumbnails, the main
-        preview, and this dialog's "Reference image" mode): the local
-        extent is (0, cols*dx, rows*dy, 0) (inverted, row 0 at top when
-        unflipped), and the absolute/pcolormesh view sets ylim(max, min)
-        (see _draw_image_layer). With Y-down on screen, an unflipped local
-        view (row 0 at top) agrees with the absolute view exactly when
-        row 0 holds the smallest real Y; flip when real Y *decreases* as
-        row index increases. (An earlier revision aligned the local view
-        to an absolute view that still used a standard upward ylim, which
-        made BOTH metric views vertically mirrored against the actual
-        image of the region — the inverted flip condition it needed was a
-        symptom of that, not the fix.)
+        The two modes don't share a Y convention, which this accounts for:
+        _draw_image_layer's local-mode extent is (0, cols*dx, rows*dy, 0)
+        — bottom > top — so with origin='upper' an *unflipped* array
+        already renders row 0 at the top and increasing row moving
+        downward on screen. The absolute/pcolormesh view uses a standard
+        upward ylim (min, max) — physically north-up, matching "Reference
+        image" mode's content — so there, row index and screen direction
+        agree only when real Y *decreases* as row increases; flip when
+        real Y increases with row. (History: this condition was once
+        inverted to chase an apparent mirror vs the anchor thumbnail; the
+        thumbnail itself turned out to be mirrored by a stale
+        pre-row-flip conversion cache — see NANONIS_CACHE_VERSION v5 in
+        providers/nanonis/adapter.py. Verify against a freshly-converted
+        anchor image before touching this sign.)
         X has no such subtlety (all views increase X rightward), so
         col_flip is the straightforward check."""
         row_flip = False
@@ -5206,7 +5206,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             y_first = np.nanmean(Y[0, :])
             y_last = np.nanmean(Y[-1, :])
             if np.isfinite(y_first) and np.isfinite(y_last):
-                row_flip = bool(y_last < y_first)
+                row_flip = bool(y_last > y_first)
         if cols > 1:
             x_first = np.nanmean(X[:, 0])
             x_last = np.nanmean(X[:, -1])

@@ -40,7 +40,15 @@ NANONIS_CACHE_DIRNAME = ".sxmviewer_nanonis"
 # to the cached header (isinstance(scan_time, (list, tuple)) silently missed
 # nanonispy2's numpy-array scan_time) - existing caches need rebuilding to
 # pick up the fix.
-NANONIS_CACHE_VERSION = 4
+#
+# v5: the Direction=up row flip (see _extract_scan_channels) was added
+# WITHOUT bumping this version, so every up-scan converted before that fix
+# kept serving a vertically mirrored array from its cache - confirmed
+# against Nanonis's own Scan Inspector on real data (K1202, Direction=up,
+# cache generated 4 days before the flip commit). Any change to the
+# conversion's data-orientation semantics MUST bump this constant, or the
+# fix silently applies only to never-before-converted files.
+NANONIS_CACHE_VERSION = 5
 _NANONIS_READ = None
 _IMPORT_ERROR = None
 

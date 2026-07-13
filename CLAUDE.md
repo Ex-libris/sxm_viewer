@@ -510,15 +510,12 @@ different frame:
 - **Absolute view** ("Slice at value" etc. with Relative axes off) —
   `pcolormesh(X, Y, metric)` at each pixel's true, rotated absolute nm
   position (`_grid_xy_coords`) — geometrically correct, matches "Reference
-  image" mode and the true acquisition angle, and renders as a tilted
-  parallelogram for any rotated grid (expected geometry, not a bug).
-  Its `view_extent` packs y as (max, min) so `set_ylim` renders **y
-  increasing downward on screen** — the app-wide image convention every
-  other view (thumbnails, main preview, "Reference image" mode via
-  `_header_extent`) already uses. It originally used a standard upward
-  ylim, which made this view — and the local view aligned to it —
-  vertically mirrored against the actual image of the same region (found
-  on a real 48×30 grid vs. its anchor scan, 2026-07).
+  image" mode's content and the true acquisition angle, and renders as a
+  tilted parallelogram for any rotated grid (expected geometry, not a
+  bug). Uses a standard upward ylim (physically north-up). Note the
+  labeled-axis quirk: image views via `_header_extent` label their y axis
+  increasing downward while this view labels it increasing upward — the
+  *content* orientation agrees even though tick directions differ.
 - **"Relative axes"** (the default) — a flattened, always axis-aligned
   view from the grid's own local pixel pitch (`_grid_local_extent`/
   `_grid_local_pitch`), deliberately discarding rotation for a "fill the
@@ -539,26 +536,27 @@ decrease as row increases, etc.) instead of assuming a fixed direction -
 applied consistently to the metric array, marker placement, virtual copy,
 and WSxM export.
 
-**Getting the flip's sign right requires checking against ground truth,
-not self-consistency — and "ground truth" must be the actual image.**
-This bit twice. First, the flip's row condition was validated by "does the
+**Getting the flip's sign right requires checking against ground truth —
+and make sure your ground truth isn't itself corrupted.** This bit three
+times. (1) The flip's row condition was first validated by "does the
 local view match its own virtual copy," which passed even with the sign
-backwards since both shared the same code path. Second — and worse — the
-reference used to "independently" verify it was the absolute view, which
-itself turned out to be vertically mirrored: it used a standard upward
-`set_ylim` while every image view in the app renders y increasing
-DOWNWARD on screen. So local-vs-absolute agreement was achieved while
-both were mirrored against the real topography. The fix inverted the
-absolute view's ylim to the app-wide image convention and simplified
-`_grid_local_orientation`'s row condition to the direct check (flip when
-real Y decreases as row index increases); with both metric views sharing
-the image convention, all three now agree with the thumbnail. The lesson,
-sharpened: for orientation questions the ONLY trustworthy reference is
-the anchor image itself ("Reference image" mode / the thumbnail) — any
-metric-derived view can be self-consistently wrong. Also note the value
-readout (`_sample_current_image`) samples the *unflipped* metric and must
-undo the local display flips (`_current_local_flips`) or it reads the
-wrong pixel in flipped local views.
+backwards since both shared the same code path. (2) A later session
+"fixed" an apparent vertical mirror of both metric views against the
+anchor thumbnail by inverting the absolute view's ylim and the flip
+condition — but the thumbnail itself was the mirrored one: its `.sxm`
+had been converted to the channel cache *before* the Direction=up row
+flip was added to `providers/nanonis/adapter.py`, and that flip commit
+never bumped `NANONIS_CACHE_VERSION`, so the stale unflipped array kept
+being served. Comparing against Nanonis's own Scan Inspector (the only
+truly independent reference) exposed it; the "fix" was reverted and the
+cache version bumped (v5) instead. (3) The value readout
+(`_sample_current_image`) samples the *unflipped* metric and must undo
+the local display flips (`_current_local_flips`) or it reads the wrong
+pixel in flipped local views. The sharpened lesson: for orientation
+questions, validate against the vendor's own viewer on freshly-converted
+data; and any change to conversion-time data-orientation semantics MUST
+bump `NANONIS_CACHE_VERSION`, or the fix silently applies only to
+never-before-converted files while every existing cache keeps the bug.
 
 ### Spectroscopy browser (`gui/spectroscopy/browser.py`)
 Follows the same module-function convention as `gui/viewer/*.py` (plain
