@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from .._shared import QtCore, QtWidgets
+from . import theme as ui_theme
 
 _HIST_BINS = 48
 _DRAG_TOL_FRACTION = 0.04  # wider than the full dialog's 1%: fewer pixels here
@@ -78,10 +79,26 @@ class CompactHistogramWidget(QtWidgets.QWidget):
         self.clear()
 
     def _style_axes(self):
+        # Figure/axes background follows the app theme (light stays white);
+        # the histogram bars and clim lines keep their own colors.
+        try:
+            colors = ui_theme.mpl_chrome_colors(ui_theme.current_theme())
+            self._fig.set_facecolor(colors["fig_face"])
+            self._ax.set_facecolor(colors["ax_face"])
+        except Exception:
+            pass
         self._ax.set_xticks([])
         self._ax.set_yticks([])
         for spine in self._ax.spines.values():
             spine.set_visible(False)
+
+    def refresh_theme(self):
+        """Re-style backgrounds after an app theme switch (no data change)."""
+        self._style_axes()
+        try:
+            self._canvas.draw_idle()
+        except Exception:
+            pass
 
     def _set_controls_enabled(self, enabled: bool):
         self._auto_btn.setEnabled(enabled)

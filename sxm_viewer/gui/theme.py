@@ -72,6 +72,21 @@ def normalize(name) -> str:
     return name if name in THEMES else THEME_LIGHT
 
 
+# The app has exactly one active theme; the main window registers it here on
+# every apply so leaf widgets (dialogs, popups) that have no viewer reference
+# can still style their chrome correctly.
+_CURRENT_THEME = THEME_LIGHT
+
+
+def set_current_theme(name: str):
+    global _CURRENT_THEME
+    _CURRENT_THEME = normalize(name)
+
+
+def current_theme() -> str:
+    return _CURRENT_THEME
+
+
 def theme_label(name: str) -> str:
     return _THEME_LABELS.get(normalize(name), "Light")
 
@@ -642,7 +657,8 @@ def plot_chrome_mode(viewer_or_name) -> str:
     for cand in candidates:
         if cand is not None and getattr(cand, "dark_mode", False):
             return THEME_DARK
-    return THEME_LIGHT
+    # Leaf widgets without a viewer reference: the app-wide registered theme.
+    return _CURRENT_THEME
 
 
 def mpl_chrome_colors(mode: str) -> dict:
@@ -711,6 +727,75 @@ def style_figure_chrome(fig, mode: str):
     for ax in getattr(fig, "axes", []) or []:
         style_axes_chrome(ax, colors)
     return colors
+
+
+def toggle_pill_palette(dark: bool) -> dict:
+    """Palette for the Profile/Spectrum dialogs' pill toggle buttons and
+    side panels.  The amber app theme wins over the per-dialog dark flag;
+    otherwise the historical blue dark/light sets are returned verbatim."""
+    if current_theme() == THEME_AMBER:
+        t = AMBER
+        return {
+            "inactive_bg": t["panel_bg"],
+            "inactive_border": t["border"],
+            "inactive_text": t["text_primary"],
+            "active_bg": t["selection_bg"],
+            "active_border": t["border_active"],
+            "active_text": t["amber_bright"],
+            "hint_color": t["text_secondary"],
+            "panel_text": t["text_primary"],
+            "list_bg": t["input_bg"],
+            "list_alt": t["panel_bg"],
+            "list_border": t["border"],
+            "compose_button_bg": t["panel_bg"],
+            "compose_button_border": t["border"],
+            "compose_button_text": t["text_primary"],
+            "compose_button_hover_border": t["border_active"],
+            "compose_drop_bg": t["selection_bg"],
+            "compose_drop_border": t["amber_bright"],
+            "radius": "3px",
+        }
+    if dark:
+        return {
+            "inactive_bg": "#1e2430",
+            "inactive_border": "#46556e",
+            "inactive_text": "#d4deee",
+            "active_bg": "#2f6fcb",
+            "active_border": "#79a9f2",
+            "active_text": "#ffffff",
+            "hint_color": "#b9c6d8",
+            "panel_text": "#dce5f3",
+            "list_bg": "#10151f",
+            "list_alt": "#171d29",
+            "list_border": "#445167",
+            "compose_button_bg": "#202633",
+            "compose_button_border": "#5a6880",
+            "compose_button_text": "#e4ebf7",
+            "compose_button_hover_border": "#82aef1",
+            "compose_drop_bg": "#26477a",
+            "compose_drop_border": "#a8ceff",
+            "radius": "12px",
+        }
+    return {
+        "inactive_bg": "#f3f5f9",
+        "inactive_border": "#aeb7c5",
+        "inactive_text": "#1f2a3d",
+        "active_bg": "#1f6fd7",
+        "active_border": "#5b97e8",
+        "active_text": "#ffffff",
+        "hint_color": "#4b5b73",
+        "panel_text": "#314056",
+        "list_bg": "#ffffff",
+        "list_alt": "#f7f9fc",
+        "list_border": "#c2cad6",
+        "compose_button_bg": "#f5f7fa",
+        "compose_button_border": "#b8c2cf",
+        "compose_button_text": "#314056",
+        "compose_button_hover_border": "#5b97e8",
+        "compose_drop_bg": "#e6f0ff",
+        "compose_drop_border": "#4f8fe3",
+        "radius": "12px",
+    }
 
 
 class TitleBarThemer(QtCore.QObject):

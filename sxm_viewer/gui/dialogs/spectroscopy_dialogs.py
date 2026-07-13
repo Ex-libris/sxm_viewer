@@ -1131,45 +1131,25 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             self.advanced_toggle_btn.blockSignals(False)
 
     def _apply_toggle_button_styles(self):
-        dark = bool(self._dark_background)
-        if dark:
-            inactive_bg = "#1e2430"
-            inactive_border = "#46556e"
-            inactive_text = "#d4deee"
-            active_bg = "#2f6fcb"
-            active_border = "#79a9f2"
-            active_text = "#ffffff"
-            panel_text = "#dce5f3"
-            list_bg = "#10151f"
-            list_alt = "#171d29"
-            list_border = "#445167"
-        else:
-            inactive_bg = "#f3f5f9"
-            inactive_border = "#aeb7c5"
-            inactive_text = "#1f2a3d"
-            active_bg = "#1f6fd7"
-            active_border = "#5b97e8"
-            active_text = "#ffffff"
-            panel_text = "#314056"
-            list_bg = "#ffffff"
-            list_alt = "#f7f9fc"
-            list_border = "#c2cad6"
+        # Chrome palette follows the app theme (amber wins), falling back to
+        # the historical blue dark/light sets — see theme.toggle_pill_palette.
+        p = ui_theme.toggle_pill_palette(bool(self._dark_background))
         style = (
             "QToolButton#spectroToggleButton {"
-            f"background-color: {inactive_bg};"
-            f"color: {inactive_text};"
-            f"border: 1px solid {inactive_border};"
-            "border-radius: 12px;"
+            f"background-color: {p['inactive_bg']};"
+            f"color: {p['inactive_text']};"
+            f"border: 1px solid {p['inactive_border']};"
+            f"border-radius: {p['radius']};"
             "padding: 4px 12px;"
             "font-weight: 600;"
             "}"
             "QToolButton#spectroToggleButton:checked {"
-            f"background-color: {active_bg};"
-            f"color: {active_text};"
-            f"border: 1px solid {active_border};"
+            f"background-color: {p['active_bg']};"
+            f"color: {p['active_text']};"
+            f"border: 1px solid {p['active_border']};"
             "}"
             "QToolButton#spectroToggleButton:hover {"
-            f"border: 1px solid {active_border};"
+            f"border: 1px solid {p['active_border']};"
             "}"
         )
         for btn in self._toggle_buttons:
@@ -1179,9 +1159,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                 pass
         list_style = (
             "QListWidget {"
-            f"background: {list_bg};"
-            f"alternate-background-color: {list_alt};"
-            f"border: 1px solid {list_border};"
+            f"background: {p['list_bg']};"
+            f"alternate-background-color: {p['list_alt']};"
+            f"border: 1px solid {p['list_border']};"
             "border-radius: 6px;"
             "}"
         )
@@ -1190,11 +1170,11 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         except Exception:
             pass
         try:
-            self.meta_label.setStyleSheet(f"color: {panel_text};")
+            self.meta_label.setStyleSheet(f"color: {p['panel_text']};")
         except Exception:
             pass
         try:
-            self.fit_result_label.setStyleSheet(f"color: {panel_text};")
+            self.fit_result_label.setStyleSheet(f"color: {p['panel_text']};")
         except Exception:
             pass
 

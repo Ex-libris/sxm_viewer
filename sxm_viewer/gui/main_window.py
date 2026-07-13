@@ -1983,6 +1983,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         if app is None:
             return
         name = ui_theme.normalize(name)
+        ui_theme.set_current_theme(name)
         if name == ui_theme.THEME_AMBER:
             app.setStyle('Fusion')
             app.setPalette(ui_theme.amber_palette())
@@ -2066,6 +2067,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         try:
             self._refresh_thumb_selection_styles()
             self._refresh_spectro_thumb_selection_styles()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "compact_histogram", None) is not None:
+                self.compact_histogram.refresh_theme()
         except Exception:
             pass
 

@@ -27,6 +27,7 @@ import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status
 from ...config import load_config, save_config
+from .. import theme as ui_theme
 from .molecular_overlay import (
     Molecule,
     MoleculePropertiesDialog,
@@ -4001,10 +4002,19 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _apply_view_theme(self):
         dark = bool(self._detail_dark)
-        fig_face = '#111217' if dark else '#ffffff'
-        ax_face = '#14161c' if dark else '#ffffff'
-        text_color = '#f5f5f5' if dark else '#111111'
-        grid_color = '#4f5a64' if dark else '#9a9a9a'
+        # Chrome only: the imshow artists keep their user-selected colormaps.
+        # Under the amber app theme the dark chrome uses the warm amber set.
+        if dark and ui_theme.current_theme() == ui_theme.THEME_AMBER:
+            _c = ui_theme.mpl_chrome_colors(ui_theme.THEME_AMBER)
+            fig_face = _c['fig_face']
+            ax_face = _c['ax_face']
+            text_color = _c['text']
+            grid_color = _c['grid']
+        else:
+            fig_face = '#111217' if dark else '#ffffff'
+            ax_face = '#14161c' if dark else '#ffffff'
+            text_color = '#f5f5f5' if dark else '#111111'
+            grid_color = '#4f5a64' if dark else '#9a9a9a'
         try:
             self.fig.set_facecolor(fig_face)
         except Exception:
@@ -4019,6 +4029,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 ax.tick_params(colors=text_color, labelcolor=text_color)
                 ax.xaxis.label.set_color(text_color)
                 ax.yaxis.label.set_color(text_color)
+                ax.title.set_color(text_color)
                 for spine in ax.spines.values():
                     spine.set_color(text_color)
                 if not is_colorbar:
@@ -4061,6 +4072,7 @@ class MultiPreviewCanvas(FigureCanvas):
         sb_settings = getattr(self, '_scale_bar_settings', None) or {}
         return (
             bool(self._detail_dark),
+            ui_theme.current_theme(),
             bool(self._detail_grid),
             sb_settings.get('text_color'),
             sb_settings.get('bar_color'),
