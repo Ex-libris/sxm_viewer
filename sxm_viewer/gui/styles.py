@@ -4,7 +4,8 @@ def lower_control_frame_style(border: str, bg: str) -> str:
     return f"QFrame#lowerControlFrame {{ border-top: 1px solid {border}; background-color: {bg}; }}"
 
 
-def mode_selector_style(mode_border: str, mode_text: str, mode_checked: str) -> str:
+def mode_selector_style(mode_border: str, mode_text: str, mode_checked: str,
+                        mode_checked_text: str = "#ffffff") -> str:
     return (
         "QWidget#modeSelector QToolButton {"
         f" border: 1px solid {mode_border};"
@@ -14,7 +15,7 @@ def mode_selector_style(mode_border: str, mode_text: str, mode_checked: str) -> 
         "}"
         "QWidget#modeSelector QToolButton:checked {"
         f" background: {mode_checked};"
-        " color: #ffffff;"
+        f" color: {mode_checked_text};"
         "}"
         "QWidget#modeSelector QToolButton + QToolButton {"
         " border-left: none;"

@@ -17,6 +17,7 @@ from ...processing.detection import _find_topography_channel
 from .canvas_items import CanvasImageItem
 from . import canvas_window_actions
 from . import canvas_window_ui
+from .. import theme as ui_theme
 from .canvas_state import (
     capture_state,
     delete_selected,
@@ -91,7 +92,11 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self.scene = QtWidgets.QGraphicsScene(self)
         self.view = CanvasGraphicsView(self)
         self.view.setScene(self.scene)
-        self._dark = bool(getattr(self.viewer, "dark_mode", False))
+        self._theme = ui_theme.normalize(
+            getattr(self.viewer, "ui_theme", None)
+            or ("dark" if getattr(self.viewer, "dark_mode", False) else "light")
+        )
+        self._dark = ui_theme.is_dark_theme(self._theme)
         self._apply_styles(self._dark)
         self.view.set_background_color(self._workspace_color(self._dark))
 
@@ -148,6 +153,9 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         splitter.setSizes([left_width, canvas_width, inspector_width])
 
     def _workspace_color(self, dark: bool) -> QtGui.QColor:
+        if ui_theme.is_amber(getattr(self, "_theme", "")):
+            # Warm near-black workspace; tiles themselves keep their own colors.
+            return QtGui.QColor("#14100a")
         return QtGui.QColor("#1f2328" if dark else "#f3efe8")
 
     def _create_icon_button(self, text: str, icon_text: str = "", tooltip: str = "") -> QtWidgets.QPushButton:
@@ -172,7 +180,12 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
 
     def set_dark_mode(self, dark: bool):
         """Update the canvas theme to match the main viewer mode."""
-        self._dark = bool(dark)
+        self.set_ui_theme(ui_theme.THEME_DARK if dark else ui_theme.THEME_LIGHT)
+
+    def set_ui_theme(self, name: str):
+        """Follow the main viewer's named theme (light/dark/amber)."""
+        self._theme = ui_theme.normalize(name)
+        self._dark = ui_theme.is_dark_theme(self._theme)
         self._apply_styles(self._dark)
         try:
             self.view.set_background_color(self._workspace_color(self._dark))
@@ -183,7 +196,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         """Apply scientific GUI styling - high contrast, clear organization."""
         if dark is None:
             dark = bool(getattr(self.viewer, "dark_mode", False))
-        canvas_window_ui.apply_styles(self, dark=bool(dark))
+        canvas_window_ui.apply_styles(self, dark=bool(dark), theme=getattr(self, "_theme", None))
         canvas_window_ui.apply_status_style(self)
         try:
             # Force a re-polish so existing widgets pick up the new stylesheet.

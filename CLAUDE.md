@@ -79,8 +79,9 @@ non-trivial; instead follow the extension pattern below.
 gui/
 ├── main_window.py            # SXMGridViewer: composition root
 ├── main_window_layout.py     # layout helpers, shortcuts panel
-├── main_window_toolbar.py    # toolbar actions, dark-mode toggle
+├── main_window_toolbar.py    # toolbar actions, theme selector button
 ├── main_window_spectro.py    # spectro dock wiring
+├── theme.py                  # named UI themes (light/dark/amber): tokens, QPalette, chrome QSS — never applied to data imagery
 ├── controllers/              # feature controllers, see table below
 ├── viewer/                   # thumbnail loading/rendering, preview, loader, measurement, state
 ├── dialogs/                  # modal dialogs (histogram/profile/filters/spectroscopy/matrix-fit)

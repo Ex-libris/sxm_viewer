@@ -6,6 +6,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from .compact_histogram import CompactHistogramWidget
 from .constants import UI_FONT_FAMILY
 from .styles import MAIN_SHORTCUTS_PANEL_STYLE, lower_control_frame_style, mode_selector_style
+from . import theme as ui_theme
 
 
 def _configure_compact_control(widget):
@@ -509,7 +510,17 @@ def apply_lower_control_theme(viewer):
     if frame is None:
         return
     dark = bool(getattr(viewer, "dark_mode", False))
-    if dark:
+    amber = ui_theme.is_amber(viewer)
+    mode_checked_text = "#ffffff"
+    if amber:
+        t = ui_theme.AMBER
+        border = t["border"]
+        bg = t["panel_bg"]
+        mode_border = t["border"]
+        mode_text = t["text_primary"]
+        mode_checked = t["selection_bg"]
+        mode_checked_text = t["amber_bright"]
+    elif dark:
         border = "#4c4c4c"
         bg = "#2d2d2d"
         mode_border = "#5a5a5a"
@@ -523,7 +534,9 @@ def apply_lower_control_theme(viewer):
         mode_checked = "#3d7dd8"
     frame.setStyleSheet(lower_control_frame_style(border, bg))
     if mode_widget is not None:
-        mode_widget.setStyleSheet(mode_selector_style(mode_border, mode_text, mode_checked))
+        mode_widget.setStyleSheet(
+            mode_selector_style(mode_border, mode_text, mode_checked, mode_checked_text)
+        )
     if molecules_btn is not None:
         molecules_btn.setStyleSheet(
             "QToolButton#modeAccessoryButton {"
@@ -534,7 +547,7 @@ def apply_lower_control_theme(viewer):
             "}"
             "QToolButton#modeAccessoryButton:checked {"
             f" background: {mode_checked};"
-            " color: #ffffff;"
+            f" color: {mode_checked_text};"
             "}"
         )
 

@@ -20,6 +20,7 @@ from ..styles import (
     CANVAS_TOOLBAR_WIDGET_STYLE,
 )
 from ..thumbnail_render import _colormap_icon
+from .. import theme as ui_theme
 from ..text import (
     CANVAS_BUTTON_TEXT,
     CANVAS_CHECKBOX_TEXT,
@@ -510,9 +511,37 @@ def build_inspector(window):
     return scroll
 
 
-def apply_styles(window, dark: bool = False):
-    """Apply a compact canvas stylesheet that follows the main viewer theme."""
-    if dark:
+def apply_styles(window, dark: bool = False, theme: str | None = None):
+    """Apply a compact canvas stylesheet that follows the main viewer theme.
+
+    Chrome only: the QGraphicsView background and panel styling never touch
+    the rendered scan tiles, which keep their user-selected colormaps.
+    """
+    if ui_theme.is_amber(theme or ""):
+        t = ui_theme.AMBER
+        base = ui_theme.amber_canvas_dialog_qss()
+        bg = t["window_bg"]
+        fg = t["text_primary"]
+        panel = t["panel_bg"]
+        border = t["border"]
+        toolbar_bg = t["panel_bg"]
+        group_bg = t["panel_bg_raised"]
+        label_fg = t["text_secondary"]
+        btn_bg = t["panel_bg"]
+        btn_fg = t["text_primary"]
+        btn_hover = t["hover_bg"]
+        btn_press = t["selection_bg"]
+        input_bg = t["input_bg"]
+        input_fg = t["text_primary"]
+        input_border = t["border"]
+        accent = t["panel_bg_raised"]
+        slider = t["selection_bg"]
+        handle = t["amber_primary"]
+        hint = t["text_secondary"]
+        view_bg = "#14100a"
+        tab_sel_bg = t["panel_bg_raised"]
+        tab_sel_fg = t["amber_bright"]
+    elif dark:
         base = CANVAS_DIALOG_STYLE
         bg = "#1d2228"
         fg = "#e2e7ee"
@@ -533,6 +562,8 @@ def apply_styles(window, dark: bool = False):
         handle = "#cbd5e1"
         hint = "#94a3b8"
         view_bg = "#202224"
+        tab_sel_bg = "#ffffff"
+        tab_sel_fg = fg
     else:
         base = CANVAS_DIALOG_STYLE_LIGHT
         bg = "#f6f3ee"
@@ -554,6 +585,8 @@ def apply_styles(window, dark: bool = False):
         handle = "#7a6f63"
         hint = "#7a7a7a"
         view_bg = "#f3efe8"
+        tab_sel_bg = "#ffffff"
+        tab_sel_fg = fg
     window.setStyleSheet(
         base
         + f"""
@@ -660,12 +693,12 @@ QTabBar::tab {{
     color: {label_fg};
 }}
 QTabBar::tab:selected {{
-    background: #ffffff;
+    background: {tab_sel_bg};
     border-color: {border};
-    border-bottom-color: #ffffff;
+    border-bottom-color: {tab_sel_bg};
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    color: {fg};
+    color: {tab_sel_fg};
 }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background-color: {input_bg};
@@ -698,9 +731,15 @@ def apply_status_style(window):
     if not hasattr(window, "status_label") or window.status_label is None:
         return
     dark = bool(getattr(window, "_dark", False))
-    bg = "#26303a" if dark else "#efe7dc"
-    fg = "#c7d2de" if dark else "#5d554d"
-    border = "#3a434f" if dark else "#d7d0c7"
+    if ui_theme.is_amber(getattr(window, "_theme", "")):
+        t = ui_theme.AMBER
+        bg = t["panel_bg"]
+        fg = t["text_secondary"]
+        border = t["border"]
+    else:
+        bg = "#26303a" if dark else "#efe7dc"
+        fg = "#c7d2de" if dark else "#5d554d"
+        border = "#3a434f" if dark else "#d7d0c7"
     window.status_label.setStyleSheet(
         "QLabel {"
         " padding: 5px 10px;"

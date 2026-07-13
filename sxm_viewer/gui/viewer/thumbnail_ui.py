@@ -38,6 +38,12 @@ from ..._shared import (
 )
 from ...config import save_config
 from ..palettes import get_color_cycle, DEFAULT_COLOR_CYCLE
+from .. import theme as ui_theme
+
+
+def _thumb_frame_styles(viewer):
+    """Theme-aware card frame styles (borders only — never over the pixmap)."""
+    return ui_theme.thumb_frame_styles(getattr(viewer, "ui_theme", "light"))
 from ..thumbnail_render import array_to_qimage
 
 
@@ -318,14 +324,15 @@ def _spectro_entry_time(viewer, spec):
 def _refresh_spectro_thumb_selection_styles(viewer):
     sel = str(getattr(viewer, "selected_spectro_thumb_file", "") or "")
     multi = getattr(viewer, "spectro_thumb_multi_select", set())
+    styles = _thumb_frame_styles(viewer)
     for fp, w in list(getattr(viewer, "spectro_thumb_widgets", {}).items()):
         try:
             if str(fp) in multi:
-                w.setStyleSheet("QFrame { border: 2px solid #ff9c3a; border-radius: 10px; background-color: rgba(255,156,58,42); }")
+                w.setStyleSheet(styles["spectro_multi"])
             elif str(fp) == sel and sel:
-                w.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,36); }")
+                w.setStyleSheet(styles["selected"])
             else:
-                w.setStyleSheet("QFrame { border: 1px solid rgba(255,184,77,170); border-radius: 10px; background-color: rgba(255,184,77,22); }")
+                w.setStyleSheet(styles["spectro_card"])
         except Exception:
             continue
 
@@ -770,12 +777,13 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     viewer.thumb_widgets[key] = card
                     viewer._thumb_labels[key] = lbl
                     try:
+                        _card_styles = _thumb_frame_styles(viewer)
                         if key in getattr(viewer, 'thumb_multi_select', set()):
-                            card.setStyleSheet("QFrame { border: 2px solid #a36bff; border-radius: 10px; background-color: rgba(163,107,255,40); }")
+                            card.setStyleSheet(_card_styles["multi"])
                         elif key == str(getattr(viewer, 'selected_file_for_thumbs', None)):
-                            card.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,40); }")
+                            card.setStyleSheet(_card_styles["selected"])
                         else:
-                            card.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
+                            card.setStyleSheet(_card_styles["default"])
                     except Exception:
                         pass
                     if fds and 0 <= thumb_channel_idx < len(fds):
@@ -818,7 +826,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     card = QtWidgets.QFrame()
                     card.setFrameShape(QtWidgets.QFrame.StyledPanel)
                     card.setLineWidth(0)
-                    card.setStyleSheet("QFrame { border: 1px solid rgba(255, 184, 77, 170); border-radius: 10px; background-color: rgba(255, 184, 77, 22); }")
+                    card.setStyleSheet(_thumb_frame_styles(viewer)["spectro_card"])
                     vbox = QtWidgets.QVBoxLayout(card)
                     vbox.setContentsMargins(4, 4, 4, 4)
                     vbox.setSpacing(4)
@@ -847,7 +855,7 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
                     viewer.spectro_thumb_widgets[key] = card
                     viewer._spectro_thumb_labels[key] = lbl
                     if key in getattr(viewer, "spectro_thumb_multi_select", set()):
-                        card.setStyleSheet("QFrame { border: 2px solid #ff9c3a; border-radius: 10px; background-color: rgba(255,156,58,42); }")
+                        card.setStyleSheet(_thumb_frame_styles(viewer)["spectro_multi"])
                 # Advance the grid once per entry so images and spectra stay in the same
                 # acquisition-order stream instead of collapsing into separate blocks.
                 col += 1
@@ -935,12 +943,13 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
         viewer.thumb_widgets[key] = card
         viewer._thumb_labels[key] = lbl
         try:
+            _card_styles = _thumb_frame_styles(viewer)
             if key in getattr(viewer, 'thumb_multi_select', set()):
-                card.setStyleSheet("QFrame { border: 2px solid #a36bff; border-radius: 10px; background-color: rgba(163,107,255,40); }")
+                card.setStyleSheet(_card_styles["multi"])
             elif key == str(getattr(viewer, 'selected_file_for_thumbs', None)):
-                card.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,40); }")
+                card.setStyleSheet(_card_styles["selected"])
             else:
-                card.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
+                card.setStyleSheet(_card_styles["default"])
         except Exception:
             pass
 
@@ -1370,14 +1379,15 @@ def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cma
 def _refresh_thumb_selection_styles(viewer):
     sel = str(getattr(viewer, 'selected_file_for_thumbs', '') or '')
     multi = getattr(viewer, 'thumb_multi_select', set())
+    styles = _thumb_frame_styles(viewer)
     for fp, w in list(getattr(viewer, 'thumb_widgets', {}).items()):
         try:
             if str(fp) in multi:
-                w.setStyleSheet("QFrame { border: 2px solid #a36bff; border-radius: 10px; background-color: rgba(163,107,255,40); }")
+                w.setStyleSheet(styles["multi"])
             elif str(fp) == sel and sel:
-                w.setStyleSheet("QFrame { border: 2px solid #5f8dd3; border-radius: 10px; background-color: rgba(95,141,211,40); }")
+                w.setStyleSheet(styles["selected"])
             else:
-                w.setStyleSheet("QFrame { border: 1px solid rgba(255,255,255,30); border-radius: 10px; background-color: transparent; }")
+                w.setStyleSheet(styles["default"])
         except Exception:
             continue
 

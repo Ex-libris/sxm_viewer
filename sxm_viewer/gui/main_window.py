@@ -99,6 +99,7 @@ from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
 from .system_open import add_source_file_menu
+from . import theme as ui_theme
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
@@ -494,7 +495,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.compact_markers = bool(self.config.get("compact_markers", True))
         self.spectro_single_grid_as_matrix = bool(self.config.get("spectro_single_grid_as_matrix", False))
         self.spectro_force_single_mode = bool(self.config.get("spectro_force_single_mode", False))
-        self.dark_mode = bool(self.config.get('dark_mode', False))
+        # Named UI theme (light/dark/amber). `dark_mode` stays as the derived
+        # legacy flag every existing dark-branch keys off (amber counts as dark).
+        self.ui_theme = ui_theme.resolve_theme_name(self.config)
+        self.dark_mode = ui_theme.is_dark_theme(self.ui_theme)
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
@@ -1266,12 +1270,26 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.toolbar_load_mol_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._molecule_pixmap_size = QtCore.QSize(32, 18)
         self.toolbar_load_mol_btn.mousePressEvent = lambda event: self.on_load_molecule()
-        self.toolbar_dark_btn = QtWidgets.QPushButton("Dark")
-        self.toolbar_dark_btn.setCheckable(True)
-        self.toolbar_dark_btn.setToolTip("Toggle dark mode")
-        self.toolbar_dark_btn.setMinimumWidth(64)
+        # Theme selector (Light / Dark / Amber). Kept on the historical
+        # `toolbar_dark_btn` attribute so existing toolbar wiring still works.
+        self.toolbar_dark_btn = QtWidgets.QPushButton(ui_theme.theme_label(self.ui_theme))
+        self.toolbar_dark_btn.setToolTip("Choose UI theme (Light / Dark / Amber)")
+        self.toolbar_dark_btn.setMinimumWidth(72)
         self.toolbar_dark_btn.setFixedHeight(28)
-        self.toolbar_dark_btn.toggled.connect(self.on_dark_mode_toggled)
+        self.toolbar_theme_menu = QtWidgets.QMenu(self.toolbar_dark_btn)
+        self.toolbar_theme_group = QtWidgets.QActionGroup(self.toolbar_theme_menu)
+        self.toolbar_theme_group.setExclusive(True)
+        self.toolbar_theme_acts = {}
+        for _theme_name in ui_theme.THEMES:
+            _theme_act = self.toolbar_theme_menu.addAction(ui_theme.theme_label(_theme_name))
+            _theme_act.setCheckable(True)
+            _theme_act.setChecked(_theme_name == self.ui_theme)
+            _theme_act.triggered.connect(
+                lambda checked=False, n=_theme_name: self.set_ui_theme(n)
+            )
+            self.toolbar_theme_group.addAction(_theme_act)
+            self.toolbar_theme_acts[_theme_name] = _theme_act
+        self.toolbar_dark_btn.setMenu(self.toolbar_theme_menu)
         preview_workspace_layout.addLayout(preview_header)
 
         self.thumb_cmap_label = QtWidgets.QLabel("Thumb")
@@ -1798,9 +1816,9 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.purge_config_btn.clicked.connect(self._on_purge_config)
         except Exception:
             pass
-        # apply initial dark mode palette
+        # apply initial UI theme (light/dark/amber)
         try:
-            self._apply_dark_mode(self.dark_mode)
+            self._apply_ui_theme(self.ui_theme)
         except Exception:
             pass
         self._update_toolbar_actions(False)
@@ -1876,11 +1894,65 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.load_folder(folder)
 
     def _apply_dark_mode(self, enabled: bool):
+        # Legacy entry point kept for compatibility with older call sites.
+        self._apply_ui_theme(ui_theme.THEME_DARK if enabled else ui_theme.THEME_LIGHT)
+
+    def set_ui_theme(self, name: str):
+        """Switch the named UI theme (light/dark/amber) and persist it."""
+        name = ui_theme.normalize(name)
+        self.ui_theme = name
+        self.dark_mode = ui_theme.is_dark_theme(name)
+        btn = getattr(self, 'toolbar_dark_btn', None)
+        if btn is not None:
+            try:
+                btn.setText(ui_theme.theme_label(name))
+            except Exception:
+                pass
+        for theme_name, act in (getattr(self, 'toolbar_theme_acts', {}) or {}).items():
+            try:
+                act.blockSignals(True)
+                act.setChecked(theme_name == name)
+                act.blockSignals(False)
+            except Exception:
+                pass
+        if getattr(self, "_detail_theme_follows_dark_mode", True):
+            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        self.config['ui_theme'] = name
+        self.config['dark_mode'] = self.dark_mode  # legacy key, kept in sync
+        self.config['detail_dark_view'] = self.detail_dark_view
+        self.config['detail_theme_follows_dark_mode'] = bool(
+            getattr(self, "_detail_theme_follows_dark_mode", True)
+        )
+        save_config(self.config)
+        self._apply_ui_theme(name)
+        if getattr(self, "last_preview", None):
+            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+
+    def _apply_ui_theme(self, name: str):
+        """Apply a named theme to the application chrome.
+
+        Only chrome is themed here (palette + control stylesheets).
+        Scientific imagery — thumbnails, previews, canvas tiles,
+        colorbars — renders through the user-selected colormap and is
+        deliberately untouched by every branch below.
+        """
         app = QtWidgets.QApplication.instance()
         if app is None:
             return
-        if enabled:
+        name = ui_theme.normalize(name)
+        if name == ui_theme.THEME_AMBER:
             app.setStyle('Fusion')
+            app.setPalette(ui_theme.amber_palette())
+            # Chrome-only stylesheet generated from the amber tokens.
+            app.setStyleSheet(ui_theme.amber_app_qss())
+            try:
+                if hasattr(self, 'left_w') and self.left_w is not None:
+                    self.left_w.setStyleSheet(ui_theme.amber_left_panel_qss())
+            except Exception:
+                pass
+        elif name == ui_theme.THEME_DARK:
+            app.setStyle('Fusion')
+            app.setStyleSheet("")
             palette = QtGui.QPalette()
             palette.setColor(QtGui.QPalette.Window, QtGui.QColor(53,53,53))
             palette.setColor(QtGui.QPalette.WindowText, QtCore.Qt.white)
@@ -1902,6 +1974,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             except Exception:
                 pass
         else:
+            app.setStyleSheet("")
             app.setPalette(app.style().standardPalette())
             try:
                 if hasattr(self, 'left_w') and self.left_w is not None:
@@ -1911,8 +1984,15 @@ class SXMGridViewer(QtWidgets.QWidget):
                 pass
         try:
             win = self._canvas_window_ref()
-            if win is not None and hasattr(win, "set_dark_mode"):
-                win.set_dark_mode(bool(enabled))
+            if win is not None:
+                if hasattr(win, "set_ui_theme"):
+                    win.set_ui_theme(name)
+                elif hasattr(win, "set_dark_mode"):
+                    win.set_dark_mode(ui_theme.is_dark_theme(name))
+        except Exception:
+            pass
+        try:
+            self._apply_main_toolbar_theme()
         except Exception:
             pass
         if hasattr(self, 'shortcuts_label'):
@@ -1930,6 +2010,35 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._apply_preview_workspace_theme()
         except Exception:
             pass
+        # Re-style existing thumbnail card frames (borders only; the pixmaps
+        # themselves are untouched and keep their user-selected colormaps).
+        try:
+            self._refresh_thumb_selection_styles()
+            self._refresh_spectro_thumb_selection_styles()
+        except Exception:
+            pass
+
+    def _apply_main_toolbar_theme(self):
+        """Re-style main-toolbar accents that are set once at creation time."""
+        amber = ui_theme.is_amber(self)
+        btn = getattr(self, "toolbar_canvas_btn", None)
+        if btn is not None:
+            try:
+                from .styles import MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
+                btn.setStyleSheet(
+                    ui_theme.amber_canvas_button_qss() if amber else MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
+                )
+            except Exception:
+                pass
+        panel = getattr(self, "shortcuts_panel", None)
+        if panel is not None:
+            try:
+                from .styles import MAIN_SHORTCUTS_PANEL_STYLE
+                panel.setStyleSheet(
+                    ui_theme.amber_shortcuts_panel_qss() if amber else MAIN_SHORTCUTS_PANEL_STYLE
+                )
+            except Exception:
+                pass
 
     def _set_detail_dark_view_state(self, enabled: bool, *, follow_dark_mode=None, persist: bool = True):
         self.detail_dark_view = bool(enabled)
@@ -1961,32 +2070,49 @@ class SXMGridViewer(QtWidgets.QWidget):
 
     def _apply_preview_workspace_theme(self):
         dark = bool(getattr(self, "dark_mode", False))
+        amber = ui_theme.is_amber(self)
+        t = ui_theme.AMBER
         frame = getattr(self, "preview_workspace_frame", None)
         if frame is not None:
-            if dark:
+            if amber:
+                border = t["border"]
+                bg = t["panel_bg"]
+                radius = "2px"
+            elif dark:
                 border = "#4c4c4c"
                 bg = "#2a2a2a"
+                radius = "8px"
             else:
                 border = "#d8dce5"
                 bg = "#f6f8fb"
+                radius = "8px"
             frame.setStyleSheet(
                 f"""
 QFrame#previewWorkspaceFrame {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-radius: {radius};
     background-color: {bg};
 }}
 """
             )
-        combo_style = (
-            "QComboBox { background-color: #1f1f1f; border: 1px solid #444444; color: #f0f0f0; padding: 4px; border-radius: 4px; }"
-            if dark else
-            ""
-        )
+        if amber:
+            combo_style = (
+                f"QComboBox {{ background-color: {t['input_bg']}; border: 1px solid {t['border']};"
+                f" color: {t['text_primary']}; padding: 4px; border-radius: 2px; }}"
+            )
+        elif dark:
+            combo_style = "QComboBox { background-color: #1f1f1f; border: 1px solid #444444; color: #f0f0f0; padding: 4px; border-radius: 4px; }"
+        else:
+            combo_style = ""
         for combo in (getattr(self, "thumb_cmap_combo", None), getattr(self, "preview_cmap_combo", None)):
             if combo is not None:
                 combo.setStyleSheet(combo_style)
-        label_style = "color: #f0f0f0; font-weight: 600;" if dark else "color: #202020; font-weight: 600;"
+        if amber:
+            label_style = f"color: {t['text_primary']}; font-weight: 600;"
+        elif dark:
+            label_style = "color: #f0f0f0; font-weight: 600;"
+        else:
+            label_style = "color: #202020; font-weight: 600;"
         for label in (
             getattr(self, "preview_title_label", None),
             getattr(self, "channel_label", None),
@@ -1997,21 +2123,24 @@ QFrame#previewWorkspaceFrame {{
                 label.setStyleSheet(label_style)
         btn = getattr(self, "toolbar_dark_btn", None)
         if btn is not None:
-            if dark:
+            if amber:
+                button_style = (
+                    f"QPushButton {{ padding: 4px 10px; border: 1px solid {t['border']};"
+                    f" border-radius: 2px; background-color: {t['panel_bg']}; color: {t['text_primary']}; }}"
+                    f"QPushButton:hover {{ background-color: {t['hover_bg']}; border-color: {t['amber_secondary']}; }}"
+                    f"QPushButton:focus {{ border-color: {t['border_active']}; }}"
+                )
+            elif dark:
                 button_style = (
                     "QPushButton { padding: 4px 10px; border: 1px solid #5a5a5a; border-radius: 6px; background-color: #343434; color: #f0f0f0; }"
-                    "QPushButton:checked { background-color: #2b6cb0; border-color: #2b6cb0; color: #ffffff; font-weight: 600; }"
                 )
             else:
                 button_style = (
                     "QPushButton { padding: 4px 10px; border: 1px solid #c8cfdb; border-radius: 6px; background-color: #ffffff; color: #202020; }"
-                    "QPushButton:checked { background-color: #2b6cb0; border-color: #2b6cb0; color: #ffffff; font-weight: 600; }"
                 )
             btn.setStyleSheet(button_style)
             try:
-                btn.blockSignals(True)
-                btn.setChecked(self.dark_mode)
-                btn.blockSignals(False)
+                btn.setText(ui_theme.theme_label(getattr(self, "ui_theme", "light")))
             except Exception:
                 pass
 
@@ -2019,7 +2148,13 @@ QFrame#previewWorkspaceFrame {{
         btn = getattr(self, "toolbar_load_mol_btn", None)
         if btn is None:
             return
-        if getattr(self, "dark_mode", False):
+        if ui_theme.is_amber(self):
+            t = ui_theme.AMBER
+            base = t["panel_bg"]
+            hover = t["hover_bg"]
+            border = t["border"]
+            color = QtGui.QColor(t["text_primary"])
+        elif getattr(self, "dark_mode", False):
             base = "#343434"
             hover = "#3d3d3d"
             border = "#5a5a5a"
@@ -2702,7 +2837,10 @@ QLabel:hover {{
         return main_window_spectro.on_spectro_browser_context_menu(self, pos)
 
     def _shortcuts_html(self):
-        color = "#f0f4ff" if getattr(self, 'dark_mode', False) else "#203050"
+        if ui_theme.is_amber(self):
+            color = ui_theme.AMBER["text_primary"]
+        else:
+            color = "#f0f4ff" if getattr(self, 'dark_mode', False) else "#203050"
         return (
             "<ul style='margin:4px 12px;padding-left:12px;color:%s'>"
             "<li><b>Shift+Click</b> minimap frame = hide entry</li>"
@@ -4332,25 +4470,8 @@ QLabel:hover {{
             pass
 
     def on_dark_mode_toggled(self, checked: bool):
-        self.dark_mode = bool(checked)
-        try:
-            if hasattr(self, 'toolbar_dark_btn'):
-                self.toolbar_dark_btn.blockSignals(True)
-                self.toolbar_dark_btn.setChecked(self.dark_mode)
-                self.toolbar_dark_btn.blockSignals(False)
-        except Exception:
-            pass
-        if getattr(self, "_detail_theme_follows_dark_mode", True):
-            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
-        self.config['dark_mode'] = self.dark_mode
-        self.config['detail_dark_view'] = self.detail_dark_view
-        self.config['detail_theme_follows_dark_mode'] = bool(
-            getattr(self, "_detail_theme_follows_dark_mode", True)
-        )
-        save_config(self.config)
-        self._apply_dark_mode(self.dark_mode)
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        # Legacy binary toggle; routes into the named-theme selector.
+        self.set_ui_theme(ui_theme.THEME_DARK if checked else ui_theme.THEME_LIGHT)
 
     # ---------- folder load & auto-detection ----------
     def open_folder_dialog(self):
@@ -11064,25 +11185,8 @@ QLabel:hover {{
             pass
 
     def on_dark_mode_toggled(self, checked: bool):
-        self.dark_mode = bool(checked)
-        try:
-            if hasattr(self, 'toolbar_dark_btn'):
-                self.toolbar_dark_btn.blockSignals(True)
-                self.toolbar_dark_btn.setChecked(self.dark_mode)
-                self.toolbar_dark_btn.blockSignals(False)
-        except Exception:
-            pass
-        if getattr(self, "_detail_theme_follows_dark_mode", True):
-            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
-        self.config['dark_mode'] = self.dark_mode
-        self.config['detail_dark_view'] = self.detail_dark_view
-        self.config['detail_theme_follows_dark_mode'] = bool(
-            getattr(self, "_detail_theme_follows_dark_mode", True)
-        )
-        save_config(self.config)
-        self._apply_dark_mode(self.dark_mode)
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        # Legacy binary toggle; routes into the named-theme selector.
+        self.set_ui_theme(ui_theme.THEME_DARK if checked else ui_theme.THEME_LIGHT)
 
     # ---------- control callbacks ----------
     def on_channel_dropdown_changed(self, idx):
