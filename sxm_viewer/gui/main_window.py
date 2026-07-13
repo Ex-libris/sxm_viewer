@@ -1969,7 +1969,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         save_config(self.config)
         self._apply_ui_theme(name)
         if getattr(self, "last_preview", None):
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            # Re-render the preview (metadata HTML colors, canvas chrome)
+            # without destroying an open profile measurement: the redraw
+            # only preserves profiles when preserve_profiles_on_channel_change
+            # is set, so force it for this one same-path refresh.
+            saved_pref = getattr(self, "preserve_profiles_on_channel_change", False)
+            if getattr(self, "_profile_dialog", None) is not None:
+                self.preserve_profiles_on_channel_change = True
+            try:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            finally:
+                self.preserve_profiles_on_channel_change = saved_pref
 
     def _apply_ui_theme(self, name: str):
         """Apply a named theme to the application chrome.
@@ -2074,6 +2084,44 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.compact_histogram.refresh_theme()
         except Exception:
             pass
+        try:
+            self._retheme_open_plot_windows()
+        except Exception:
+            pass
+
+    def _retheme_open_plot_windows(self):
+        """Live-retheme already-open plot windows (Spectrum popups, profile
+        dialogs, compare/Z-series, grid maps, KPFM trends) after a theme
+        switch — their chrome is applied at redraw time, so without this
+        they keep the previous theme until something replots them."""
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        dark = bool(self.dark_mode)
+        for tlw in app.topLevelWidgets():
+            if tlw is self or not tlw.isVisible():
+                continue
+            try:
+                # Follow the app theme with each dialog's own Dark plot
+                # toggle (users can still flip it back per-window).
+                for attr in ("dark_bg_cb", "dark_bg_toggle"):
+                    btn = getattr(tlw, attr, None)
+                    if btn is not None:
+                        btn.setChecked(dark)
+                if hasattr(tlw, "_apply_toggle_button_styles"):
+                    tlw._apply_toggle_button_styles()
+                if hasattr(tlw, "_apply_plot_theme"):
+                    tlw._apply_plot_theme()
+                elif hasattr(tlw, "_request_plot_update"):
+                    tlw._request_plot_update(delay_ms=20)
+                elif hasattr(tlw, "_draw_image_layer"):
+                    tlw._draw_image_layer()
+                    if hasattr(tlw, "_update_curve_plot"):
+                        tlw._update_curve_plot()
+                elif hasattr(tlw, "_update_plot"):
+                    tlw._update_plot()
+            except Exception:
+                continue
 
     def _apply_ui_font_scale(self):
         """Scale the application-wide font by ui_font_scale percent.
