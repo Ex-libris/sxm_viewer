@@ -481,7 +481,8 @@ def _on_show_profile_window(viewer):
             y_label = None
             ref_unit = None
         try:
-            viewer._profile_dialog = ProfileDialog(None, [], parent=viewer, unit=ref_unit, y_label=y_label)
+            viewer._profile_dialog = ProfileDialog(None, [], parent=viewer, unit=ref_unit, y_label=y_label,
+                                                  dark_mode=bool(getattr(viewer, 'dark_mode', False)))
             if hasattr(viewer._profile_dialog, "detach_as_workspace_window"):
                 viewer._profile_dialog.detach_as_workspace_window()
             viewer._profile_dialog.move(viewer._next_popup_pos(offset=30))

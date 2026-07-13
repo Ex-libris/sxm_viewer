@@ -292,6 +292,7 @@ class PopupProfileController:
                 add_overlay_callback=add_overlay_cb,
                 style_update_callback=style_update_cb,
                 palette_callback=palette_cb,
+                dark_mode=bool(getattr(self.owner, "dark_mode", False)),
             )
             dlg.setWindowTitle(f"{self.title} (popup)")
             if hasattr(dlg, "detach_as_workspace_window"):

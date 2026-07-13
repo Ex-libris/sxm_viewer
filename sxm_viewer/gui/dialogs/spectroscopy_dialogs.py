@@ -138,6 +138,16 @@ from ..thumbnail_render import (
 )
 from .matrix_fit import MatrixFitDialog
 from ..spectroscopy import overlays as spectro_overlays
+from .. import theme as ui_theme
+
+
+def _style_plot_chrome(owner, fig):
+    """Follow the app theme for a dialog figure's chrome (backgrounds,
+    ticks, labels — never data artists or colormaps).  Light mode is a
+    no-op so the historical white look stays byte-identical."""
+    mode = ui_theme.plot_chrome_mode(owner)
+    if mode != ui_theme.THEME_LIGHT:
+        ui_theme.style_figure_chrome(fig, mode)
 
 _INSET_MARKER_SYMBOLS = ("circle", "square", "triangle", "diamond")
 _INSET_MPL_MARKER_BY_SYMBOL = {"circle": "o", "square": "s", "triangle": "^", "diamond": "D"}
@@ -784,7 +794,9 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self.resize(860, 640)
         self._toggle_buttons = []
         self._advanced_controls_visible = False
-        self._dark_background = False
+        # Follow the app theme by default; the popup's own Dark toggle can
+        # still override per-window.
+        self._dark_background = bool(getattr(parent, "dark_mode", False))
 
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -2868,12 +2880,20 @@ class SpectroscopyPopup(QtWidgets.QDialog):
 
     def _apply_plot_theme(self):
         dark = bool(self._dark_background)
-        fig_face = "#0f1720" if dark else "#ffffff"
-        ax_face = "#111827" if dark else "#ffffff"
-        text = "#e5edf8" if dark else "#1f2937"
-        grid = "#41526a" if dark else "#d7deea"
-        legend_face = "#0f1720" if dark else "#ffffff"
-        legend_edge = "#6f86a5" if dark else "#7d8ea8"
+        # Chrome only (backgrounds/ticks/legend frame); trace colors and any
+        # image colormaps are untouched. Under the amber app theme the dark
+        # plot background uses the warm amber chrome palette.
+        if dark:
+            mode = "amber" if ui_theme.is_amber(getattr(self, "viewer", None)) else "dark"
+        else:
+            mode = "light"
+        colors = ui_theme.mpl_chrome_colors(mode)
+        fig_face = colors["fig_face"]
+        ax_face = colors["ax_face"]
+        text = colors["text"]
+        grid = colors["grid"]
+        legend_face = colors["legend_face"]
+        legend_edge = colors["legend_edge"]
         self.fig.patch.set_facecolor(fig_face)
         self.ax.set_facecolor(ax_face)
         try:
@@ -4982,6 +5002,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             apply_text_style(text, family=self._plot_font_family, **style)
         if show_markers:
             self._update_selection_markers(redraw=False)
+        _style_plot_chrome(self, self.canvas.figure)
         self.canvas.draw_idle()
         if self._current_image_arr is None:
             self.image_value_label.setText("Value: --")
@@ -5627,6 +5648,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.curve_ax.grid(True, alpha=0.3)
         if legend_handles:
             self.curve_ax.legend(loc='upper right', fontsize=8)
+        _style_plot_chrome(self, self.curve_canvas.figure)
         self.curve_canvas.draw_idle()
 
     def _gather_multi_channel_specs(self, matrix_index):
@@ -5655,6 +5677,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.selection_table.setRowCount(0)
         self.curve_ax.clear()
         self._update_selection_markers()
+        _style_plot_chrome(self, self.curve_canvas.figure)
         self.curve_canvas.draw_idle()
 
     def _on_fit_matrix(self):
@@ -5761,6 +5784,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         if nm[0] is not None and nm[1] is not None:
             title += f" @ ({nm[0]:.1f}, {nm[1]:.1f} nm)"
         self.curve_ax.set_title(title, fontsize=9, color=preview_color, style='italic')
+        _style_plot_chrome(self, self.curve_canvas.figure)
+        # the hover title keeps its dedicated grey so it reads as transient
+        self.curve_ax.title.set_color(preview_color)
         self.curve_canvas.draw_idle()
         self._draw_hover_marker(spec)
 
@@ -6078,6 +6104,7 @@ class KPFMFitTrendDialog(QtWidgets.QDialog):
             self.fig.tight_layout()
         except Exception:
             pass
+        _style_plot_chrome(self.parent() or self, self.fig)
         self.canvas.draw_idle()
 
 
@@ -7934,6 +7961,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.set_yscale("log" if self._plot_y_log else "linear")
         self._apply_grid_and_ticks()
         self._update_position_inset_compare()
+        _style_plot_chrome(self, self.fig)
         self._apply_font_scale()
         # canvas.draw_idle() is called in _apply_font_scale
         self._plotted_spec_ids = plotted_spec_ids
@@ -9898,6 +9926,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._clear_curve_data_cache()
         self._update_fit_trend_state()
         self.ax.clear()
+        _style_plot_chrome(self, self.fig)
         self.canvas.draw_idle()
         self.results_table.setRowCount(0)
         self._update_status(0)

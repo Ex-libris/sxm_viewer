@@ -499,6 +499,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         # legacy flag every existing dark-branch keys off (amber counts as dark).
         self.ui_theme = ui_theme.resolve_theme_name(self.config)
         self.dark_mode = ui_theme.is_dark_theme(self.ui_theme)
+        # Global UI font scale in percent (monitor-relative, user-adjustable).
+        try:
+            self.ui_font_scale = max(60, min(200, int(self.config.get('ui_font_scale', 100))))
+        except Exception:
+            self.ui_font_scale = 100
         self.detail_dark_view = bool(self.config.get('detail_dark_view', self.dark_mode))
         self._detail_theme_follows_dark_mode = bool(self.config.get('detail_theme_follows_dark_mode', True))
         self.detail_grid_view = bool(self.config.get('detail_grid_view', False))
@@ -1289,6 +1294,30 @@ class SXMGridViewer(QtWidgets.QWidget):
             )
             self.toolbar_theme_group.addAction(_theme_act)
             self.toolbar_theme_acts[_theme_name] = _theme_act
+        self.toolbar_theme_menu.addSeparator()
+        # Global UI font scale (percent of base, so it adapts to any monitor)
+        _scale_widget = QtWidgets.QWidget()
+        _scale_row = QtWidgets.QHBoxLayout(_scale_widget)
+        _scale_row.setContentsMargins(12, 4, 12, 4)
+        _scale_row.setSpacing(8)
+        _scale_row.addWidget(QtWidgets.QLabel("Font size"))
+        self.ui_font_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.ui_font_scale_slider.setRange(60, 200)
+        self.ui_font_scale_slider.setSingleStep(5)
+        self.ui_font_scale_slider.setPageStep(10)
+        self.ui_font_scale_slider.setValue(self.ui_font_scale)
+        self.ui_font_scale_slider.setFixedWidth(140)
+        self.ui_font_scale_slider.setToolTip(
+            "Scale every UI font by this percentage (relative, so it adapts to your monitor)"
+        )
+        _scale_row.addWidget(self.ui_font_scale_slider)
+        self.ui_font_scale_value_label = QtWidgets.QLabel(f"{self.ui_font_scale}%")
+        self.ui_font_scale_value_label.setMinimumWidth(40)
+        _scale_row.addWidget(self.ui_font_scale_value_label)
+        self.ui_font_scale_slider.valueChanged.connect(self._on_ui_font_scale_slider)
+        _scale_act = QtWidgets.QWidgetAction(self.toolbar_theme_menu)
+        _scale_act.setDefaultWidget(_scale_widget)
+        self.toolbar_theme_menu.addAction(_scale_act)
         self.toolbar_dark_btn.setMenu(self.toolbar_theme_menu)
         preview_workspace_layout.addLayout(preview_header)
 
@@ -1816,9 +1845,21 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.purge_config_btn.clicked.connect(self._on_purge_config)
         except Exception:
             pass
-        # apply initial UI theme (light/dark/amber)
+        # apply initial UI font scale, then theme (theme QSS embeds the scale)
+        try:
+            self._apply_ui_font_scale()
+        except Exception:
+            pass
         try:
             self._apply_ui_theme(self.ui_theme)
+        except Exception:
+            pass
+        # keep native title bars of every window (popups, dialogs) in sync
+        try:
+            self._titlebar_themer = ui_theme.TitleBarThemer(self)
+            _app = QtWidgets.QApplication.instance()
+            if _app is not None:
+                _app.installEventFilter(self._titlebar_themer)
         except Exception:
             pass
         self._update_toolbar_actions(False)
@@ -1915,8 +1956,10 @@ class SXMGridViewer(QtWidgets.QWidget):
                 act.blockSignals(False)
             except Exception:
                 pass
-        if getattr(self, "_detail_theme_follows_dark_mode", True):
-            self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
+        # An explicit theme choice re-couples the plot/detail background to
+        # the theme (a stale detail_dark_view override otherwise leaves the
+        # preview plot white under dark/amber).
+        self._set_detail_dark_view_state(self.dark_mode, follow_dark_mode=True, persist=False)
         self.config['ui_theme'] = name
         self.config['dark_mode'] = self.dark_mode  # legacy key, kept in sync
         self.config['detail_dark_view'] = self.detail_dark_view
@@ -1944,7 +1987,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             app.setStyle('Fusion')
             app.setPalette(ui_theme.amber_palette())
             # Chrome-only stylesheet generated from the amber tokens.
-            app.setStyleSheet(ui_theme.amber_app_qss())
+            app.setStyleSheet(ui_theme.amber_app_qss(getattr(self, 'ui_font_scale', 100)))
             try:
                 if hasattr(self, 'left_w') and self.left_w is not None:
                     self.left_w.setStyleSheet(ui_theme.amber_left_panel_qss())
@@ -1995,6 +2038,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._apply_main_toolbar_theme()
         except Exception:
             pass
+        # Native title bars: dark for dark/amber, default for light.
+        try:
+            dark_tb = ui_theme.is_dark_theme(name)
+            for tlw in QtWidgets.QApplication.topLevelWidgets():
+                if tlw.isWindow():
+                    ui_theme.apply_native_titlebar(tlw, dark_tb)
+        except Exception:
+            pass
         if hasattr(self, 'shortcuts_label'):
             self.shortcuts_label.setText(self._shortcuts_html())
         try:
@@ -2017,6 +2068,62 @@ class SXMGridViewer(QtWidgets.QWidget):
             self._refresh_spectro_thumb_selection_styles()
         except Exception:
             pass
+
+    def _apply_ui_font_scale(self):
+        """Scale the application-wide font by ui_font_scale percent.
+
+        Percent-of-base rather than absolute points, so the same setting
+        adapts across monitors of different resolutions/DPI."""
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        scale = max(60, min(200, int(getattr(self, 'ui_font_scale', 100) or 100)))
+        self.ui_font_scale = scale
+        base = getattr(self, '_ui_base_font_pt', None)
+        if base is None:
+            f0 = app.font()
+            base = f0.pointSizeF() if f0.pointSizeF() > 0 else 11.0
+            self._ui_base_font_pt = base
+        f = app.font()
+        f.setPointSizeF(max(6.0, base * scale / 100.0))
+        app.setFont(f)
+        # Amber's chrome QSS pins its own font-size; regenerate it scaled.
+        if ui_theme.is_amber(self):
+            app.setStyleSheet(ui_theme.amber_app_qss(scale))
+
+    def set_ui_font_scale(self, percent, persist: bool = True):
+        try:
+            self.ui_font_scale = max(60, min(200, int(percent)))
+        except Exception:
+            return
+        if persist:
+            self.config['ui_font_scale'] = self.ui_font_scale
+            save_config(self.config)
+        self._apply_ui_font_scale()
+        label = getattr(self, 'ui_font_scale_value_label', None)
+        if label is not None:
+            try:
+                label.setText(f"{self.ui_font_scale}%")
+            except Exception:
+                pass
+
+    def _on_ui_font_scale_slider(self, value):
+        label = getattr(self, 'ui_font_scale_value_label', None)
+        if label is not None:
+            try:
+                label.setText(f"{int(value)}%")
+            except Exception:
+                pass
+        # Debounce: re-fonting the whole widget tree on every tick is choppy.
+        timer = getattr(self, '_font_scale_apply_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(
+                lambda: self.set_ui_font_scale(self.ui_font_scale_slider.value())
+            )
+            self._font_scale_apply_timer = timer
+        timer.start(200)
 
     def _apply_main_toolbar_theme(self):
         """Re-style main-toolbar accents that are set once at creation time."""

@@ -19,7 +19,7 @@ borders and external frames only.
 """
 from __future__ import annotations
 
-from PyQt5 import QtGui
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 THEME_LIGHT = "light"
 THEME_DARK = "dark"
@@ -151,27 +151,33 @@ def amber_palette() -> QtGui.QPalette:
     return p
 
 
-def amber_app_qss() -> str:
+def amber_app_qss(font_scale: int = 100) -> str:
     """Application-wide stylesheet for the amber theme.
 
     Styles standard controls only.  Deliberately does NOT paint plain
     ``QWidget`` backgrounds (the palette handles those) so custom-painted
     widgets — including matplotlib canvases and pixmap-bearing labels —
-    are never touched.
+    are never touched.  ``font_scale`` is the user's UI font scale in
+    percent (see the main window's font-scale slider).
     """
     t = dict(AMBER)
     t["font"] = AMBER_FONT_STACK
+    try:
+        scale = max(60, min(200, int(font_scale)))
+    except Exception:
+        scale = 100
+    t["font_pt"] = f"{9.0 * scale / 100.0:.1f}"
     return """
 /* ---- chrome typography (monospace instrument panel) ----
-   9pt: monospace at the app's default 11pt is wider than Segoe UI and
-   clips fixed-width buttons; 9pt keeps every existing control label
-   inside its historical hit-target. */
+   Base 9pt: monospace at the app's default 11pt is wider than Segoe UI
+   and clips fixed-width buttons; 9pt keeps every existing control label
+   inside its historical hit-target.  Scaled by the UI font-scale %. */
 QPushButton, QToolButton, QLabel, QComboBox, QLineEdit, QSpinBox,
 QDoubleSpinBox, QCheckBox, QRadioButton, QMenu, QTabBar, QGroupBox,
 QHeaderView, QListView, QTreeView, QTableView, QToolTip, QStatusBar,
 QProgressBar, QPlainTextEdit, QTextEdit, QMenuBar, QToolBar {{
     font-family: {font};
-    font-size: 9pt;
+    font-size: {font_pt}pt;
 }}
 
 /* ---- toolbars / panels ---- */
@@ -617,6 +623,141 @@ def amber_shortcuts_panel_qss() -> str:
     )
 
 
+def plot_chrome_mode(viewer_or_name) -> str:
+    """Which matplotlib *chrome* palette a plot should use for the current
+    app theme: 'amber' under the amber theme, 'dark' under dark, else
+    'light'.  Chrome means figure/axes backgrounds, ticks, labels, grid,
+    legend frame — never data artists, colormaps, or trace colors.
+
+    Accepts a theme name, the viewer, or any object holding a ``viewer``
+    attribute (popups/dialogs)."""
+    if isinstance(viewer_or_name, str):
+        return normalize(viewer_or_name)
+    obj = viewer_or_name
+    candidates = (obj, getattr(obj, "viewer", None))
+    for cand in candidates:
+        name = getattr(cand, "ui_theme", None) if cand is not None else None
+        if name:
+            return normalize(name)
+    for cand in candidates:
+        if cand is not None and getattr(cand, "dark_mode", False):
+            return THEME_DARK
+    return THEME_LIGHT
+
+
+def mpl_chrome_colors(mode: str) -> dict:
+    """Figure/axes chrome colors per theme mode ('light'/'dark'/'amber').
+
+    The light and dark values reproduce the palette the Spectrum popup
+    already used, so existing themes render identically."""
+    mode = normalize(mode)
+    if mode == THEME_AMBER:
+        t = AMBER
+        return {
+            "fig_face": t["window_bg"],
+            "ax_face": "#14100a",
+            "text": t["text_secondary"],
+            "grid": t["selection_bg"],
+            "legend_face": t["panel_bg"],
+            "legend_edge": t["border"],
+            "spine": t["border"],
+        }
+    if mode == THEME_DARK:
+        return {
+            "fig_face": "#0f1720",
+            "ax_face": "#111827",
+            "text": "#e5edf8",
+            "grid": "#41526a",
+            "legend_face": "#0f1720",
+            "legend_edge": "#6f86a5",
+            "spine": "#5a6b82",
+        }
+    return {
+        "fig_face": "#ffffff",
+        "ax_face": "#ffffff",
+        "text": "#1f2937",
+        "grid": "#d7deea",
+        "legend_face": "#ffffff",
+        "legend_edge": "#7d8ea8",
+        "spine": "#4b5563",
+    }
+
+
+def style_axes_chrome(ax, colors: dict):
+    """Restyle one axes' chrome (background, spines, ticks, labels, title,
+    grid line colors).  Never touches images, lines, or collections."""
+    try:
+        ax.set_facecolor(colors["ax_face"])
+        for spine in ax.spines.values():
+            spine.set_color(colors["spine"])
+        ax.tick_params(colors=colors["text"], labelcolor=colors["text"], which="both")
+        ax.xaxis.label.set_color(colors["text"])
+        ax.yaxis.label.set_color(colors["text"])
+        ax.title.set_color(colors["text"])
+        for gline in list(ax.get_xgridlines()) + list(ax.get_ygridlines()):
+            gline.set_color(colors["grid"])
+    except Exception:
+        pass
+
+
+def style_figure_chrome(fig, mode: str):
+    """Apply theme chrome to a whole matplotlib figure (facecolor + every
+    axes).  Safe to call after each redraw; data artists are untouched."""
+    colors = mpl_chrome_colors(mode)
+    try:
+        fig.patch.set_facecolor(colors["fig_face"])
+    except Exception:
+        pass
+    for ax in getattr(fig, "axes", []) or []:
+        style_axes_chrome(ax, colors)
+    return colors
+
+
+class TitleBarThemer(QtCore.QObject):
+    """App-level event filter: whenever any top-level window is shown,
+    stamp the native title bar to match the current theme (dark/amber →
+    dark title bar).  Windows-only effect; harmless elsewhere."""
+
+    def __init__(self, viewer):
+        super().__init__()
+        self._viewer = viewer
+
+    def eventFilter(self, obj, event):
+        try:
+            if (
+                event.type() == QtCore.QEvent.Show
+                and isinstance(obj, QtWidgets.QWidget)
+                and obj.isWindow()
+            ):
+                apply_native_titlebar(
+                    obj, is_dark_theme(getattr(self._viewer, "ui_theme", THEME_LIGHT))
+                )
+        except Exception:
+            pass
+        return False
+
+
+def apply_native_titlebar(widget, dark: bool):
+    """Best-effort dark native title bar on Windows (DWM immersive dark
+    mode).  No-ops silently on other platforms or unsupported builds."""
+    try:
+        # Only on the real Windows platform plugin: offscreen/minimal
+        # platforms return synthetic winIds that are not valid HWNDs.
+        if QtGui.QGuiApplication.platformName() != "windows":
+            return
+        import ctypes
+        hwnd = int(widget.winId())
+        value = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):  # 20 on current Win10/11, 19 on older builds
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+            )
+            if res == 0:
+                break
+    except Exception:
+        pass
+
+
 _THUMB_FRAME_STYLE_CACHE: dict = {}
 
 
@@ -690,6 +831,13 @@ __all__ = [
     "amber_app_qss",
     "amber_left_panel_qss",
     "amber_canvas_button_qss",
+    "amber_canvas_dialog_qss",
     "amber_shortcuts_panel_qss",
     "thumb_frame_styles",
+    "plot_chrome_mode",
+    "mpl_chrome_colors",
+    "style_axes_chrome",
+    "style_figure_chrome",
+    "apply_native_titlebar",
+    "TitleBarThemer",
 ]

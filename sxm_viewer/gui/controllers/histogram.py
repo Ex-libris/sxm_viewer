@@ -8,6 +8,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from ..._shared import QtWidgets, QtCore
+from .. import theme as ui_theme
 
 
 def open_histogram_dialog(owner, canvas):
@@ -41,6 +42,14 @@ def open_histogram_dialog(owner, canvas):
     canvas_hist = FigureCanvas(fig)
     ax = fig.add_subplot(111)
     layout.addWidget(canvas_hist)
+    # Follow the app theme for the figure chrome (light mode stays stock white).
+    _chrome_mode = ui_theme.plot_chrome_mode(owner)
+
+    def _restyle_chrome():
+        if _chrome_mode != ui_theme.THEME_LIGHT:
+            ui_theme.style_figure_chrome(fig, _chrome_mode)
+
+    _restyle_chrome()
 
     spins_layout = QtWidgets.QHBoxLayout()
     spins_layout.addWidget(QtWidgets.QLabel("Min:"))
@@ -87,6 +96,7 @@ def open_histogram_dialog(owner, canvas):
         ax.clear()
         if finite is None:
             ax.set_title("No finite data")
+            _restyle_chrome()
             canvas_hist.draw_idle()
             return
         hist, edges = np.histogram(finite, bins=256)
@@ -108,6 +118,7 @@ def open_histogram_dialog(owner, canvas):
         l1 = ax.axvline(hi, color="#d81b60", linestyle="--")
         state["lines"] = (l0, l1)
         ax.set_title(view.get("title") or Path(str(view.get("path", ""))).name)
+        _restyle_chrome()
         canvas_hist.draw_idle()
 
     def update_lines():
