@@ -1070,9 +1070,9 @@ class ProfileDialog(QtWidgets.QDialog):
         text = self._metadata_text(dataset)
         if not text:
             return
-        dark = bool(self._dark_background)
-        box_face = "#111111" if dark else "#ffffff"
-        text_color = "#f5f5f5" if dark else "#111111"
+        chrome = self._plot_chrome()
+        box_face = chrome["box_face"]
+        text_color = chrome["text"]
         try:
             self._metadata_artist = self.canvas.figure.text(
                 0.02,
@@ -1393,7 +1393,7 @@ class ProfileDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._marker_lines = []
-        line_color = '#f5f5f5' if self._dark_background else '#202020'
+        line_color = self._plot_chrome()["accent"]
         colors = [line_color, line_color]
         for idx, pos in enumerate(self._marker_positions):
             line = self.ax.axvline(
@@ -1429,7 +1429,7 @@ class ProfileDialog(QtWidgets.QDialog):
         else:
             raw_positions = [xmin + 0.3 * span, xmin + 0.7 * span]
         self._marker_positions = [self._clamp_marker(pos) for pos in raw_positions]
-        line_color = '#f5f5f5' if self._dark_background else '#202020'
+        line_color = self._plot_chrome()["accent"]
         colors = [line_color, line_color]
         for idx, pos in enumerate(self._marker_positions):
             line = self.ax.axvline(
@@ -1553,11 +1553,12 @@ class ProfileDialog(QtWidgets.QDialog):
             y_level = y_min + 0.05 * (y_max - y_min)
         y_level = max(y_min + 0.01*(y_max-y_min), min(y_max - 0.01*(y_max-y_min), y_level))
         self._marker_arrow_y = y_level
-        arrow_color = "#f5f5f5" if self._dark_background else "#111111"
+        _chrome = self._plot_chrome()
+        arrow_color = _chrome["accent"]
         display_value, display_unit = self._format_marker_delta(axis_delta)
         text = f"{display_value:.3f} {display_unit}"
         label_size = 9.0 * getattr(self, '_font_scale', 1.0)
-        bbox_face = "#050506" if self._dark_background else "white"
+        bbox_face = _chrome["box_face"] if self._dark_background else "white"
         bbox_alpha = 0.7 if not self._dark_background else 0.6
 
         if self._marker_arrow is not None:
@@ -2602,9 +2603,9 @@ class ProfileDialog(QtWidgets.QDialog):
         self._legend_artist = legend
         if legend is None:
             return
-        dark = bool(self._dark_background)
-        ax_face = '#14161c' if dark else '#ffffff'
-        text = '#f5f5f5' if dark else '#111111'
+        chrome = self._plot_chrome()
+        ax_face = chrome["ax_face"]
+        text = chrome["text"]
         try:
             legend.set_visible(bool(self._legend_visible))
             if self._legend_custom_anchor is not None:
@@ -2624,13 +2625,40 @@ class ProfileDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
-    def _apply_plot_theme(self):
+    def _plot_chrome(self):
+        """Plot chrome colors for the current dark flag + app theme.
+
+        Chrome only (backgrounds, ticks, labels, markers, legend frame) —
+        the profile trace colors themselves are user/palette-driven and
+        never touched here.  ``accent`` is for measurement markers/arrows.
+        """
         dark = bool(self._dark_background)
-        fig_face = '#111217' if dark else '#ffffff'
-        ax_face = '#14161c' if dark else '#ffffff'
-        text = '#f5f5f5' if dark else '#111111'
+        if dark and ui_theme.current_theme() == ui_theme.THEME_AMBER:
+            c = ui_theme.mpl_chrome_colors(ui_theme.THEME_AMBER)
+            return {
+                "fig_face": c["fig_face"],
+                "ax_face": c["ax_face"],
+                "text": c["text"],
+                "grid": c["grid"],
+                "accent": ui_theme.AMBER["amber_bright"],
+                "box_face": ui_theme.AMBER["panel_bg"],
+            }
+        return {
+            "fig_face": '#111217' if dark else '#ffffff',
+            "ax_face": '#14161c' if dark else '#ffffff',
+            "text": '#f5f5f5' if dark else '#111111',
+            "grid": '#4f5a64' if dark else '#b0b0b0',
+            "accent": '#f5f5f5' if dark else '#202020',
+            "box_face": '#111111' if dark else '#ffffff',
+        }
+
+    def _apply_plot_theme(self):
+        chrome = self._plot_chrome()
+        fig_face = chrome["fig_face"]
+        ax_face = chrome["ax_face"]
+        text = chrome["text"]
         grid_on = bool(self.grid_cb.isChecked()) if hasattr(self, 'grid_cb') else False
-        grid_color = '#4f5a64' if dark else '#b0b0b0'
+        grid_color = chrome["grid"]
         try:
             self.canvas.figure.set_facecolor(fig_face)
             self.canvas.figure.set_edgecolor(fig_face)
