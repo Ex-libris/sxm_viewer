@@ -41,6 +41,7 @@ from ...data.io import normalize_unit_and_data
 from ...utils.units import _auto_display_unit, _safe_float
 from ..spectroscopy import overlays as spectro_overlays
 from ..thumbnail_render import detect_valid_scan_region
+from .. import theme as ui_theme
 
 # Tolerance floor (~20 pm) for deciding constant-height by percentile spread
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)
@@ -277,10 +278,25 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
             return ''
     dark = bool(getattr(viewer, 'dark_mode', False))
     show_preview_specs = bool(getattr(viewer, 'show_preview_spectra', getattr(viewer, 'show_spectra', True)))
-    text_color = '#e0e0e0' if dark else '#222'
-    label_color = '#a0a0a0' if dark else '#555'
-    accent_border = '#6fa8ff' if dark else '#4a7edb'
-    accent_bg = 'rgba(111,168,255,0.16)' if dark else 'rgba(74,126,219,0.10)'
+    if ui_theme.is_amber(viewer):
+        t = ui_theme.AMBER
+        text_color = t['text_primary']
+        label_color = t['text_secondary']
+        accent_border = t['border']
+        accent_bg = 'rgba(255,176,0,0.10)'
+        font_family = ui_theme.AMBER_FONT_STACK
+    elif dark:
+        text_color = '#e0e0e0'
+        label_color = '#a0a0a0'
+        accent_border = '#6fa8ff'
+        accent_bg = 'rgba(111,168,255,0.16)'
+        font_family = 'Segoe UI, Arial'
+    else:
+        text_color = '#222'
+        label_color = '#555'
+        accent_border = '#4a7edb'
+        accent_bg = 'rgba(74,126,219,0.10)'
+        font_family = 'Segoe UI, Arial'
     # Respect the user's configured metadata font size (in px). Default to 10px if not present.
     try:
         font_size = int(getattr(viewer, 'config', {}).get('meta_font_size', 10))
@@ -336,7 +352,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         chip_color = None; chip_text = ''
     if chip_color:
         tag_chip = f"<span style='background:{chip_color};color:#fff;border-radius:10px;padding:2px 8px;font-weight:600'>" \
-                   f"{chip_text}</span> <span style='color:#555'>({esc(tag_label)})</span>"
+                   f"{chip_text}</span> <span style='color:{label_color}'>({esc(tag_label)})</span>"
     # abs z + dzs
     ch_lines = ''
     abs_nm = None
@@ -500,7 +516,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         relative_row = f"<tr><td style='color:{label_color}'>Relative zero</td><td style='text-align:right'>{zero_offset:.6g} {esc(unit_display)}</td></tr>"
 
     html = f"""
-    <div style='font-family:Segoe UI, Arial; font-size:{font_size}px; color:{text_color}; background: transparent;'>
+    <div style='font-family:{font_family}; font-size:{font_size}px; color:{text_color}; background: transparent;'>
       <div style='font-weight:600; font-size:1.15em; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
       {key_section}
       <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
@@ -513,7 +529,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
       <div style='height:6px'></div>
       {spec_section}
       <div style='height:6px'></div>
-      <div style='font-weight:600; color:%s; margin-bottom:2px'>Channel</div>
+      <div style='font-weight:600; color:{label_color}; margin-bottom:2px'>Channel</div>
       <table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>
         <tr><td style='color:{label_color}'>Index</td><td style='text-align:right'>{channel_idx}</td></tr>
         <tr><td style='color:{label_color}'>Caption</td><td style='text-align:right'>{esc(cap)}</td></tr>
@@ -527,7 +543,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
       </table>
       <div style='height:6px'></div>
       {ch_lines}
-      {("<div style='height:6px'></div><div style='font-weight:600; color:#333; margin-bottom:2px'>Control params</div>" if params_rows else '')}
+      {(f"<div style='height:6px'></div><div style='font-weight:600; color:{label_color}; margin-bottom:2px'>Control params</div>" if params_rows else '')}
       {("<table style='width:100%; border-collapse:collapse' cellspacing='0' cellpadding='2'>" + params_rows + "</table>") if params_rows else ''}
       {scan_section}
     </div>
