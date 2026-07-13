@@ -2654,7 +2654,11 @@ QLabel:hover {{
             dataset=dataset,
             palette_name=getattr(self, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
         )
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        # Real-window chrome (minimize/maximize buttons, cascade position,
+        # WA_DeleteOnClose) - same helper the Spectroscopy-menu path uses;
+        # without it this thumbnail-click path opened a bare QDialog with
+        # only a close button.
+        spectro_popups._prepare_popup_window(dlg, self)
         dlg.show()
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
@@ -3301,6 +3305,10 @@ QLabel:hover {{
                     dataset=payload.get("dataset"),
                     palette_name=payload.get("palette_name") or DEFAULT_COLOR_CYCLE,
                 )
+                # Window chrome first (min/max buttons + cascade move), then
+                # the payload's saved geometry so the recalled window lands
+                # back where it was, not at the cascade position.
+                spectro_popups._prepare_popup_window(dlg, self)
                 self._apply_window_state_payload(dlg, payload)
                 dlg.show()
                 self._popup_refs.append(dlg)

@@ -3604,7 +3604,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._resolve_anchor_path()
         base_name = self._matrix_file_name()
         self.setWindowTitle(f"Grid map - {base_name}")
-        self.resize(1100, 720)
+        _initial_size = self._initial_window_size()
+        self.resize(_initial_size)
         root = QtWidgets.QVBoxLayout(self)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -3847,6 +3848,11 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
+        # Qt distributes the *initial* splitter space by size hints, not
+        # stretch factors (those only govern extra space on later resizes),
+        # so pin the 2:1 map/curve split explicitly - _initial_window_size's
+        # aspect math assumes the map panel really gets ~2/3 of the width.
+        splitter.setSizes([_initial_size.width() * 2 // 3, _initial_size.width() // 3])
         try:
             log_status(f"[Perf] Matrix explorer init: {(time.perf_counter()-t0)*1000:.0f} ms | specs={len(self.specs)} markers={len(self.specs)}")
         except Exception:
@@ -3860,6 +3866,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._move_timer.setSingleShot(True)
         self._move_timer.timeout.connect(self._end_move_updates)
         self._movement_active = False
+        self.finished.connect(lambda _=None: self._remember_window_size())
 
         # Initialize state and wiring
         self._channel_specs = self._group_specs_by_channel()
@@ -3937,6 +3944,90 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # not just the metric computation.
         self._on_map_mode_changed()
         self._update_matrix_info_label()
+
+    # Rough pixel budget for everything that isn't the map canvas: the
+    # right curve/table panel plus window margins (horizontal), and the
+    # stack of control rows + info label under the map (vertical). Only
+    # used by the first-open size heuristic, so approximate is fine.
+    _CHROME_W = 400
+    _CHROME_H = 340
+
+    def _initial_window_size(self):
+        """Initial window size: whatever size the user last resized a Grid
+        map window to (persisted in the config), else a size derived from
+        the grid's own physical aspect ratio - the old fixed 1100x720 left
+        a tall/narrow grid as a sliver in a wide short canvas and forced a
+        manual re-fit on every open. Always clamped to the current screen's
+        available area."""
+        avail = None
+        try:
+            handle = self.viewer.window().windowHandle() if self.viewer is not None else None
+            screen = handle.screen() if handle is not None else None
+            if screen is None:
+                screen = QtWidgets.QApplication.primaryScreen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+        except Exception:
+            avail = None
+        if avail is None or not avail.isValid():
+            avail = QtCore.QRect(0, 0, 1600, 900)
+        max_w = int(avail.width() * 0.92)
+        max_h = int(avail.height() * 0.92)
+
+        try:
+            saved = load_config().get("matrix_viewer_size")
+            w, h = int(saved[0]), int(saved[1])
+            if w >= 640 and h >= 480:
+                return QtCore.QSize(min(w, max_w), min(h, max_h))
+        except Exception:
+            pass
+
+        # Physical aspect (dy/dx) of the grid's footprint, from the specs'
+        # true nm positions. Clamped: extreme strips still need enough of
+        # the other dimension for controls/labels to be usable.
+        aspect = 1.0
+        try:
+            xs = [float(s['x']) for s in self.specs if s.get('x') is not None]
+            ys = [float(s['y']) for s in self.specs if s.get('y') is not None]
+            if len(xs) >= 2 and len(ys) >= 2:
+                dx = max(xs) - min(xs)
+                dy = max(ys) - min(ys)
+                if dx > 0 and dy > 0:
+                    aspect = min(max(dy / dx, 0.4), 2.4)
+        except Exception:
+            aspect = 1.0
+
+        base = 600  # px budget for the map's longer physical side
+        if aspect >= 1.0:
+            canvas_h = base
+            canvas_w = max(int(base / aspect), 320)
+        else:
+            canvas_w = base
+            canvas_h = max(int(base * aspect), 300)
+        w = min(max(canvas_w + self._CHROME_W, 940), max_w)
+        h = min(max(canvas_h + self._CHROME_H, 640), max_h)
+        return QtCore.QSize(w, h)
+
+    def _remember_window_size(self):
+        # Remember the last user-chosen size so the next Grid map opens at
+        # it instead of the built-in default. Size only, deliberately not
+        # position - these windows open from many contexts and a stale
+        # position can land off-screen; _prepare_popup_window already
+        # cascades them somewhere sensible. Wired to finished (not
+        # closeEvent): Esc dismisses a QDialog via reject() without any
+        # closeEvent, and the title-bar X routes through reject() too, so
+        # finished is the one signal that covers every close path.
+        try:
+            if self.isMaximized() or self.isFullScreen():
+                size = self.normalGeometry().size()
+            else:
+                size = self.size()
+            if size.width() >= 640 and size.height() >= 480:
+                cfg = load_config()
+                cfg["matrix_viewer_size"] = [int(size.width()), int(size.height())]
+                save_config(cfg)
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
