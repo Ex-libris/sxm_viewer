@@ -4832,6 +4832,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
 
         view_extent = grid_extent
         self._current_image_coords = None
+        # Local-mode display flips (see _grid_local_orientation): the value
+        # readout must undo them, since _current_image_arr stays unflipped.
+        self._current_local_flips = (False, False)
         relative_mode = bool(
             agg_mode != "Reference image"
             and getattr(self, "relative_axes_cb", None) is not None
@@ -4864,6 +4867,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     self.ax.imshow(display_metric, cmap=self._metric_cmap, origin='upper', extent=local_extent, aspect='equal')
                     view_extent = local_extent
                     self._current_image_extent = local_extent
+                    self._current_local_flips = (local_row_flip, local_col_flip)
                 else:
                     relative_mode = False
             if not relative_mode:
@@ -4884,9 +4888,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     self.ax.pcolormesh(X, Y, metric, cmap=self._metric_cmap, shading='nearest')
                     self.ax.set_aspect('equal', adjustable='box')
                     self._current_image_coords = (X, Y)
+                    # y is deliberately inverted (max first -> set_ylim(max,
+                    # min) below): every image view in the app (thumbnails,
+                    # main preview, this dialog's own "Reference image" mode
+                    # via _header_extent) renders with y increasing DOWNWARD
+                    # on screen. A standard upward ylim here made this
+                    # absolute view - and the local/relative view, which was
+                    # aligned to it - vertically mirrored against the actual
+                    # image of the same region (confirmed on a real 48x30
+                    # grid vs its anchor scan).
                     view_extent = (
                         float(np.nanmin(X)), float(np.nanmax(X)),
-                        float(np.nanmin(Y)), float(np.nanmax(Y)),
+                        float(np.nanmax(Y)), float(np.nanmin(Y)),
                     )
                 else:
                     self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
@@ -5172,28 +5185,28 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         which end is up, i.e. looking mirrored relative to each other, even
         though each individually rendered its own points/slice consistently.
 
-        The two modes don't share a Y convention to begin with, which this
-        has to account for: _draw_image_layer's local-mode extent is
-        (0, cols*dx, rows*dy, 0) - bottom > top - so with origin='upper' an
-        *unflipped* array already renders row 0 at the top and increasing
-        row moving downward on screen, i.e. row-index and screen-Y move
-        together. The absolute/pcolormesh view instead uses a standard
-        ax.set_ylim(lo, hi) (Y increases upward on screen, un-inverted), so
-        there row-index and screen-Y move together only when real Y
-        *decreases* as row increases; when real Y increases with row
-        (row's north end has the larger index), absolute mode shows that as
-        moving up while local mode's unflipped default would still show it
-        moving down - opposite - hence the flip condition below is
-        inverted relative to the naive "flip when Y decreases" guess.
-        X has no such cross-convention mismatch (both modes increase X
-        rightward), so col_flip only needs the straightforward check."""
+        Both metric views share the app-wide image Y convention (real Y
+        increases DOWNWARD on screen — same as thumbnails, the main
+        preview, and this dialog's "Reference image" mode): the local
+        extent is (0, cols*dx, rows*dy, 0) (inverted, row 0 at top when
+        unflipped), and the absolute/pcolormesh view sets ylim(max, min)
+        (see _draw_image_layer). With Y-down on screen, an unflipped local
+        view (row 0 at top) agrees with the absolute view exactly when
+        row 0 holds the smallest real Y; flip when real Y *decreases* as
+        row index increases. (An earlier revision aligned the local view
+        to an absolute view that still used a standard upward ylim, which
+        made BOTH metric views vertically mirrored against the actual
+        image of the region — the inverted flip condition it needed was a
+        symptom of that, not the fix.)
+        X has no such subtlety (all views increase X rightward), so
+        col_flip is the straightforward check."""
         row_flip = False
         col_flip = False
         if rows > 1:
             y_first = np.nanmean(Y[0, :])
             y_last = np.nanmean(Y[-1, :])
             if np.isfinite(y_first) and np.isfinite(y_last):
-                row_flip = bool(y_last > y_first)
+                row_flip = bool(y_last < y_first)
         if cols > 1:
             x_first = np.nanmean(X[:, 0])
             x_last = np.nanmean(X[:, -1])
@@ -5855,6 +5868,15 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         row = 0.0 if h <= 1 or y_top == y_bottom else (y - y_top) / (y_bottom - y_top) * (h - 1)
         col = int(round(min(max(col, 0), w - 1)))
         row = int(round(min(max(row, 0), h - 1)))
+        # The local/relative view displays a flipped copy of the metric
+        # (see _grid_local_orientation) while arr here stays unflipped —
+        # undo the display flips so the readout matches the pixel under
+        # the cursor.
+        row_flip, col_flip = getattr(self, "_current_local_flips", (False, False))
+        if row_flip:
+            row = (h - 1) - row
+        if col_flip:
+            col = (w - 1) - col
         val = arr[row, col]
         return float(val) if np.isfinite(val) else None
 

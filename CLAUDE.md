@@ -512,6 +512,13 @@ different frame:
   position (`_grid_xy_coords`) — geometrically correct, matches "Reference
   image" mode and the true acquisition angle, and renders as a tilted
   parallelogram for any rotated grid (expected geometry, not a bug).
+  Its `view_extent` packs y as (max, min) so `set_ylim` renders **y
+  increasing downward on screen** — the app-wide image convention every
+  other view (thumbnails, main preview, "Reference image" mode via
+  `_header_extent`) already uses. It originally used a standard upward
+  ylim, which made this view — and the local view aligned to it —
+  vertically mirrored against the actual image of the same region (found
+  on a real 48×30 grid vs. its anchor scan, 2026-07).
 - **"Relative axes"** (the default) — a flattened, always axis-aligned
   view from the grid's own local pixel pitch (`_grid_local_extent`/
   `_grid_local_pitch`), deliberately discarding rotation for a "fill the
@@ -533,22 +540,25 @@ applied consistently to the metric array, marker placement, virtual copy,
 and WSxM export.
 
 **Getting the flip's sign right requires checking against ground truth,
-not self-consistency.** The first attempt at this flip had the row
-condition backwards, because the two views' Y-axis conventions are
-*themselves* inverted relative to each other before rotation even enters
-it: the local view's extent is deliberately built as `(0, cols*dx,
-rows*dy, 0)` (bottom > top) so an *unflipped* array already shows row 0 at
-the top under `origin='upper'` - row-index and screen-Y move together by
-default. The absolute view instead uses a plain `ax.set_ylim(lo, hi)`
-(standard, non-inverted) - there, row-index and screen-Y move together
-only when real Y *decreases* as row increases. Testing "does the local
-view match its own virtual copy" passed even with the sign backwards,
-since both share the same (wrong) code path and were wrong together -
-catching it required checking a specific real feature's position against
-the independently-already-verified-correct absolute view. When comparing
-two views that are supposed to agree, cross-check at least one of them
-against a third, independently-correct reference - comparing them only to
-each other can't catch a bug both sides share.
+not self-consistency — and "ground truth" must be the actual image.**
+This bit twice. First, the flip's row condition was validated by "does the
+local view match its own virtual copy," which passed even with the sign
+backwards since both shared the same code path. Second — and worse — the
+reference used to "independently" verify it was the absolute view, which
+itself turned out to be vertically mirrored: it used a standard upward
+`set_ylim` while every image view in the app renders y increasing
+DOWNWARD on screen. So local-vs-absolute agreement was achieved while
+both were mirrored against the real topography. The fix inverted the
+absolute view's ylim to the app-wide image convention and simplified
+`_grid_local_orientation`'s row condition to the direct check (flip when
+real Y decreases as row index increases); with both metric views sharing
+the image convention, all three now agree with the thumbnail. The lesson,
+sharpened: for orientation questions the ONLY trustworthy reference is
+the anchor image itself ("Reference image" mode / the thumbnail) — any
+metric-derived view can be self-consistently wrong. Also note the value
+readout (`_sample_current_image`) samples the *unflipped* metric and must
+undo the local display flips (`_current_local_flips`) or it reads the
+wrong pixel in flipped local views.
 
 ### Spectroscopy browser (`gui/spectroscopy/browser.py`)
 Follows the same module-function convention as `gui/viewer/*.py` (plain
