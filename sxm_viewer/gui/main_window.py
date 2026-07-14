@@ -86,6 +86,7 @@ from .controllers.spectro_compare import SpectroCompareController
 from .controllers.session import SessionController
 from .controllers.filter_controller import FilterController
 from .controllers.recent_files_controller import RecentFilesController
+from .controllers.report import ReportController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
@@ -485,6 +486,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.filter_controller = FilterController(self)
         self.session_controller = SessionController(self)
         self.collection_controller = CollectionController(self)
+        self.report_controller = ReportController(self)
         self.frame_map_entries = []
         self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
         self.hidden_frame_keys = set()
@@ -2654,7 +2656,7 @@ QLabel:hover {{
             dataset=dataset,
             palette_name=getattr(self, "spectro_color_cycle", DEFAULT_COLOR_CYCLE),
         )
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        spectro_popups._prepare_popup_window(dlg, self)
         dlg.show()
         self._popup_refs.append(dlg)
         dlg.finished.connect(lambda _: self._popup_refs.remove(dlg) if dlg in self._popup_refs else None)
@@ -3301,6 +3303,7 @@ QLabel:hover {{
                     dataset=payload.get("dataset"),
                     palette_name=payload.get("palette_name") or DEFAULT_COLOR_CYCLE,
                 )
+                spectro_popups._prepare_popup_window(dlg, self)
                 self._apply_window_state_payload(dlg, payload)
                 dlg.show()
                 self._popup_refs.append(dlg)
@@ -9911,6 +9914,13 @@ QLabel:hover {{
         export_stp_act = QtWidgets.QAction("Export WSxM STP...", menu)
         export_stp_act.triggered.connect(self.on_export_stp_files)
         menu.addAction(export_stp_act)
+        report_act = QtWidgets.QAction("Generate folder report (PDF)...", menu)
+        report_act.setToolTip("One-click PDF overview of this folder: session map, "
+                              "images with their spectroscopy positions and curves, "
+                              "grid maps with curve-shape clustering, and a "
+                              "needs-attention appendix.")
+        report_act.triggered.connect(self.report_controller.generate_folder_report)
+        menu.addAction(report_act)
         adjust_act = QtWidgets.QAction("Adjust image...", menu)
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)

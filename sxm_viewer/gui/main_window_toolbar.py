@@ -151,6 +151,14 @@ def create_main_toolbar(viewer):
     viewer.toolbar_export_xyz_act = toolbar.addAction(_icon("document-save"), "Export XYZ")
     viewer.toolbar_export_xyz_act.triggered.connect(viewer.on_export_xyz_files)
 
+    viewer.toolbar_report_act = toolbar.addAction(_icon("x-office-document"), "Report")
+    viewer.toolbar_report_act.setToolTip(
+        "Generate a PDF report of the loaded folder: session overview map, images "
+        "with spectroscopy positions and curves, grid maps with curve clustering, "
+        "and a needs-attention appendix")
+    viewer.toolbar_report_act.triggered.connect(
+        lambda: viewer.report_controller.generate_folder_report())
+
     toolbar.addSeparator()
     viewer.toolbar_image_btn = QtWidgets.QToolButton(toolbar)
     viewer.toolbar_image_btn.setText("Image")
@@ -308,7 +316,8 @@ def create_main_toolbar(viewer):
     return toolbar
 
 def update_toolbar_actions(viewer, enabled: bool):
-    for act in (viewer.toolbar_export_png_act, viewer.toolbar_export_xyz_act):
+    for act in (viewer.toolbar_export_png_act, viewer.toolbar_export_xyz_act,
+                getattr(viewer, "toolbar_report_act", None)):
         if act is not None:
             act.setEnabled(bool(enabled))
     btn = getattr(viewer, "preview_adjust_btn", None)
