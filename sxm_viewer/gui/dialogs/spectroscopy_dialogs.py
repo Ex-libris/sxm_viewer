@@ -3710,9 +3710,26 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 _icon = QIcon()
             self.cmap_combo.addItem(_icon, _cmap_name)
         controls.addWidget(self.cmap_combo)
+        self.cmap_star_btn = QtWidgets.QToolButton()
+        self.cmap_star_btn.setText("★")
+        self.cmap_star_btn.setAutoRaise(True)
+        self.cmap_star_btn.setFixedWidth(22)
+        self.cmap_star_btn.setToolTip(
+            "Save the current colormap as your default for grid maps (metric or "
+            "reference-image view, whichever is active; used at startup and in "
+            "reports). Clear via Display → Reset colormap defaults.")
+        self.cmap_star_btn.clicked.connect(self._on_save_cmap_favorite)
+        controls.addWidget(self.cmap_star_btn)
         left_layout.addLayout(controls)
-        self._metric_cmap = "inferno"
-        self._reference_cmap = "gray"
+        # Start from the user's saved favourites (star button), falling back
+        # to the historical defaults.
+        _fav = getattr(self.viewer, "get_favorite_cmap", None)
+        self._metric_cmap = (_fav('grid_metric', 'inferno') if callable(_fav) else 'inferno')
+        self._reference_cmap = (_fav('grid_reference', 'gray') if callable(_fav) else 'gray')
+        if self._metric_cmap not in _cmap_names:
+            self._metric_cmap = "inferno"
+        if self._reference_cmap not in _cmap_names:
+            self._reference_cmap = "gray"
 
         # "Slice at value" mode: instead of an aggregate statistic over each
         # pixel's whole curve, show the channel's value at one specific
@@ -3751,6 +3768,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self.palette_swatch.setFixedSize(96, 16)
         self.palette_swatch.setToolTip("Preview of this color cycle's colors")
         palette_controls.addWidget(self.palette_swatch)
+        self.palette_star_btn = QtWidgets.QToolButton()
+        self.palette_star_btn.setText("★")
+        self.palette_star_btn.setAutoRaise(True)
+        self.palette_star_btn.setFixedWidth(22)
+        self.palette_star_btn.setToolTip(
+            "Save this color cycle as your default for plots (used at startup "
+            "and in reports). Clear via Display → Reset colormap defaults.")
+        self.palette_star_btn.clicked.connect(
+            lambda: getattr(self.viewer, "set_favorite_color_cycle",
+                            lambda *_: None)(self.palette_combo.currentText()))
+        palette_controls.addWidget(self.palette_star_btn)
         left_layout.addLayout(palette_controls)
 
         positions_row = QtWidgets.QHBoxLayout()
@@ -4493,6 +4521,17 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         else:
             self._metric_cmap = name
         self._draw_image_layer()
+
+    def _on_save_cmap_favorite(self):
+        """Star button: persist the active view's colormap as the user's
+        default for that grid-map context (metric map vs reference image)."""
+        setter = getattr(self.viewer, "set_favorite_cmap", None)
+        if not callable(setter):
+            return
+        if self.map_mode_combo.currentText() == "Reference image":
+            setter('grid_reference', self._reference_cmap)
+        else:
+            setter('grid_metric', self._metric_cmap)
 
     def _set_map_mode(self, mode_name):
         """Driven by the view-mode button row - keeps the (hidden)

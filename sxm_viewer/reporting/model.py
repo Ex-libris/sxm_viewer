@@ -121,7 +121,8 @@ def choose_k_elbow(features, k_max, improvement_threshold=0.2, seed=1234):
 
 
 # ---------------------------------------------------------------------------
-# Session chapters (space+time K-Means over images)
+# Sample regions (space+time K-Means over images): scans acquired in the
+# same sample area during the same time window group into one "Region".
 # ---------------------------------------------------------------------------
 
 def _image_features(image):
@@ -139,27 +140,28 @@ def _image_features(image):
     return cx, cy, epoch
 
 
-def build_session_chapters(images, k_max=8):
-    """Cluster images into session "chapters" by (center x, center y, time).
+def build_session_regions(images, k_max=8):
+    """Cluster images into sample "Regions" by (center x, center y, time) -
+    i.e. scans taken in the same area of the sample around the same time.
 
-    Returns (chapters, image_chapter) where chapters is a list of dicts
+    Returns (regions, image_region) where regions is a list of dicts
     ``{"label", "image_keys", "t0", "t1"}`` ordered by mean acquisition
-    time and image_chapter maps every image key to its chapter index.
-    Images without usable features land in the chapter of the closest-in
-    -time clustered image (or chapter 0 as a last resort).
+    time and image_region maps every image key to its region index.
+    Images without usable features land in the region of the closest-in
+    -time clustered image (or region 0 as a last resort).
     """
     usable = []
     for img in images:
         feats = _image_features(img)
         if feats is not None:
             usable.append((img, feats))
-    image_chapter = {}
+    image_region = {}
     if not usable:
         if not images:
             return [], {}
-        chapter = {"label": "Session", "image_keys": [str(i["key"]) for i in images],
-                   "t0": None, "t1": None}
-        return [chapter], {str(i["key"]): 0 for i in images}
+        region = {"label": "Region 1", "image_keys": [str(i["key"]) for i in images],
+                  "t0": None, "t1": None}
+        return [region], {str(i["key"]): 0 for i in images}
 
     have_time = [f[2] is not None for _, f in usable]
     median_epoch = float(np.median([f[2] for _, f in usable if f[2] is not None])) if any(have_time) else 0.0
@@ -178,33 +180,33 @@ def build_session_chapters(images, k_max=8):
         return float(np.mean(times)) if times else float("inf")
 
     ordered = sorted(groups.values(), key=_mean_epoch)
-    chapters = []
+    regions = []
     for idx, imgs in enumerate(ordered):
         imgs.sort(key=lambda i: i.get("time") or datetime.min)
         times = [i["time"] for i in imgs if isinstance(i.get("time"), datetime)]
-        chapters.append({
-            "label": f"Chapter {idx + 1}",
+        regions.append({
+            "label": f"Region {idx + 1}",
             "image_keys": [str(i["key"]) for i in imgs],
             "t0": min(times) if times else None,
             "t1": max(times) if times else None,
         })
         for img in imgs:
-            image_chapter[str(img["key"])] = idx
+            image_region[str(img["key"])] = idx
 
-    # Park images that couldn't be clustered with their nearest-in-time chapter.
-    clustered_times = [(i.get("time"), image_chapter[str(i["key"])])
+    # Park images that couldn't be clustered with their nearest-in-time region.
+    clustered_times = [(i.get("time"), image_region[str(i["key"])])
                        for imgs in ordered for i in imgs if isinstance(i.get("time"), datetime)]
     for img in images:
         key = str(img["key"])
-        if key in image_chapter:
+        if key in image_region:
             continue
         t = img.get("time")
-        chapter_idx = 0
+        region_idx = 0
         if isinstance(t, datetime) and clustered_times:
-            chapter_idx = min(clustered_times, key=lambda ct: abs((ct[0] - t).total_seconds()))[1]
-        image_chapter[key] = chapter_idx
-        chapters[chapter_idx]["image_keys"].append(key)
-    return chapters, image_chapter
+            region_idx = min(clustered_times, key=lambda ct: abs((ct[0] - t).total_seconds()))[1]
+        image_region[key] = region_idx
+        regions[region_idx]["image_keys"].append(key)
+    return regions, image_region
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +582,7 @@ def build_report_model(payload):
     specs = list(payload.get("specs") or [])
     grids = list(payload.get("grids") or [])
 
-    chapters, image_chapter = build_session_chapters(images)
+    regions, image_region = build_session_regions(images)
 
     angle_by_key = {str(i["key"]): float(i.get("angle") or 0.0) for i in images}
     grid_models = []
@@ -603,8 +605,8 @@ def build_report_model(payload):
 
     return {
         "payload": payload,
-        "chapters": chapters,
-        "image_chapter": image_chapter,
+        "regions": regions,
+        "image_region": image_region,
         "specs_by_image": specs_by_image,
         "grids": grid_models,
         "flagged": build_flagged(specs),

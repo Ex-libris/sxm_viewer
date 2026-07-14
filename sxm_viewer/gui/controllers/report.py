@@ -15,6 +15,7 @@ from pathlib import Path
 from ..._shared import QtCore, QtWidgets, log_status, np
 from ...processing.detection import _find_topography_channel
 from ...reporting.channels import pick_image_channels, pick_signal_channels
+from ..palettes import get_color_cycle
 from ..viewer import loader as viewer_loader
 from ..viewer import thumbnail_ui as viewer_thumb_ui
 from ..workers.report_worker import ReportWorker
@@ -331,7 +332,7 @@ class ReportController:
                 picks = pick_image_channels(fds, tag, topo_idx)
                 if not is_featured:
                     picks = picks[:1]  # contact-sheet thumbs only need one
-                for chan_idx, _cls in picks:
+                for chan_idx, cls in picks:
                     fd = fds[chan_idx]
                     try:
                         unit, arr = viewer._get_filtered_channel_array(
@@ -339,6 +340,7 @@ class ReportController:
                         panels.append({
                             "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
                             "unit": str(unit or ""),
+                            "cls": cls,
                             "data": _downsample(
                                 arr,
                                 _TOPO_MAX_DIM_FEATURED if is_featured else _TOPO_MAX_DIM_THUMB),
@@ -354,7 +356,7 @@ class ReportController:
                 if finite.size and float(finite.max() - finite.min()) <= 1e-12 * max(1.0, abs(float(finite.max()))):
                     ch_picks = pick_image_channels(fds, "constant-height", None)
                     retry = []
-                    for chan_idx, _cls in ch_picks[:2 if is_featured else 1]:
+                    for chan_idx, cls in ch_picks[:2 if is_featured else 1]:
                         fd = fds[chan_idx]
                         try:
                             unit, arr = viewer._get_filtered_channel_array(
@@ -370,6 +372,7 @@ class ReportController:
                         retry.append({
                             "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
                             "unit": str(unit or ""),
+                            "cls": cls,
                             "data": arr,
                         })
                     if retry:
@@ -392,9 +395,20 @@ class ReportController:
             })
 
         folder = getattr(viewer, "last_dir", None)
+        # User display preferences the report should honor: the persisted
+        # color cycle (resolved to concrete colors so the Qt-free renderer
+        # never touches palettes.py) and any starred favourite colormaps.
+        get_fav = getattr(viewer, "get_favorite_cmap", None)
+        prefs = {
+            "color_cycle": list(get_color_cycle(
+                getattr(viewer, "spectro_color_cycle", None))),
+            "grid_metric_cmap": get_fav("grid_metric", None) if callable(get_fav) else None,
+            "preview_cmap": get_fav("preview", None) if callable(get_fav) else None,
+        }
         return {
             "folder": str(folder or ""),
             "images": images,
             "specs": specs,
             "grids": list(grids_by_dataset.values()),
+            "prefs": prefs,
         }

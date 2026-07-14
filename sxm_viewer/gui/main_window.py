@@ -444,6 +444,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_cmap = preview_cfg or self.thumb_cmap
         if config_changed:
             save_config(self.config)
+        # Explicit favourites (saved via the star buttons) win over whatever
+        # was merely last-used, so every session starts from the user's
+        # chosen defaults.
+        _fav_cmaps = self.config.get('favorite_cmaps') or {}
+        if _fav_cmaps.get('thumbnails'):
+            self.thumb_cmap = str(_fav_cmaps['thumbnails'])
+        if _fav_cmaps.get('preview'):
+            self.preview_cmap = str(_fav_cmaps['preview'])
         self.spec_folder_path = Path(self.config.get("spectra_folder", str(self.last_dir)))
         self.show_spectra = bool(self.config.get("show_spectra", True))
         self.show_spectro_miniatures = bool(self.config.get("show_spectro_miniatures", False))
@@ -570,7 +578,8 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.spectro_marker_color_stack = QtGui.QColor(c_stack)
         else:
             self.spectro_marker_color_stack = QtGui.QColor(165, 141, 242, 235)
-        self.spectro_color_cycle = self.config.get('spectro_color_cycle', DEFAULT_COLOR_CYCLE)
+        self.spectro_color_cycle = (self.config.get('favorite_color_cycle')
+                                    or self.config.get('spectro_color_cycle', DEFAULT_COLOR_CYCLE))
         self.spectro_marker_symbol = self.config.get('spectro_marker_symbol', 'circle')
         self.spectro_marker_size = float(self.config.get('spectro_marker_size', 5.0))
         self.frame_entry_pixmaps = {}
@@ -1333,14 +1342,33 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_zero_cb.setChecked(self.display_units_relative)
         self.preview_zero_cb.setToolTip("Display values relative to the current zero/reference")
         self.preview_zero_cb.toggled.connect(self.on_unit_relative_toggled)
+        def _cmap_star_button(tooltip, on_click):
+            btn = QtWidgets.QToolButton()
+            btn.setText("★")
+            btn.setAutoRaise(True)
+            btn.setFixedWidth(22)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(on_click)
+            return btn
+
+        self.thumb_cmap_star_btn = _cmap_star_button(
+            "Save the current thumbnail colormap as your default (used at startup and in reports). "
+            "Clear via Display → Reset colormap defaults.",
+            lambda: self.set_favorite_cmap('thumbnails', self.thumb_cmap_combo.currentText()))
+        self.preview_cmap_star_btn = _cmap_star_button(
+            "Save the current preview colormap as your default (used at startup and in reports). "
+            "Clear via Display → Reset colormap defaults.",
+            lambda: self.set_favorite_cmap('preview', self.preview_cmap_combo.currentText()))
         preview_state_row = QtWidgets.QHBoxLayout()
         preview_state_row.setContentsMargins(0, 0, 0, 0)
         preview_state_row.setSpacing(8)
         preview_state_row.addWidget(self.thumb_cmap_label)
         preview_state_row.addWidget(self.thumb_cmap_combo)
+        preview_state_row.addWidget(self.thumb_cmap_star_btn)
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
+        preview_state_row.addWidget(self.preview_cmap_star_btn)
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_zero_cb)
         preview_state_row.addStretch(1)
@@ -11151,6 +11179,41 @@ QLabel:hover {{
             if self.last_preview:
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
             self._schedule_marker_refresh()
+
+    # ---- favourite (default) colormaps -------------------------------
+    # Saved via the small star buttons next to each colormap/color-cycle
+    # selector; applied at startup ahead of merely-last-used values.
+    # Contexts in use: 'preview', 'thumbnails', 'grid_metric',
+    # 'grid_reference'. The folder report reads the same favourites.
+
+    def get_favorite_cmap(self, context, fallback=None):
+        favs = self.config.get('favorite_cmaps') or {}
+        name = favs.get(str(context))
+        return str(name) if name else fallback
+
+    def set_favorite_cmap(self, context, name):
+        if not name:
+            return
+        favs = dict(self.config.get('favorite_cmaps') or {})
+        favs[str(context)] = str(name)
+        self.config['favorite_cmaps'] = favs
+        save_config(self.config)
+        log_status(f"[Colormaps] Saved '{name}' as your default for {context}")
+
+    def set_favorite_color_cycle(self, name):
+        if not name:
+            return
+        self.config['favorite_color_cycle'] = str(name)
+        save_config(self.config)
+        log_status(f"[Colormaps] Saved '{name}' as your default color cycle")
+
+    def clear_colormap_favorites(self):
+        had = ('favorite_cmaps' in self.config) or ('favorite_color_cycle' in self.config)
+        self.config.pop('favorite_cmaps', None)
+        self.config.pop('favorite_color_cycle', None)
+        save_config(self.config)
+        log_status("[Colormaps] Cleared saved colormap defaults"
+                   if had else "[Colormaps] No saved colormap defaults to clear")
 
     def set_spectro_color_cycle(self, name: str):
         cycle = name or DEFAULT_COLOR_CYCLE

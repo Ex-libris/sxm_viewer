@@ -338,6 +338,11 @@ def _ensure_display_menu(viewer):
     viewer.display_scale_bar_act.setChecked(bool(getattr(viewer, "config", {}).get("show_scale_bar", False)))
     viewer.display_scale_bar_act.setToolTip("Show the scale bar in preview and pop-outs")
     viewer.display_scale_bar_act.toggled.connect(viewer.on_scale_bar_toggled)
+    viewer.reset_cmap_favorites_act = viewer.display_menu.addAction("Reset colormap defaults")
+    viewer.reset_cmap_favorites_act.setToolTip(
+        "Forget the favourite colormaps/color cycle saved with the ★ buttons "
+        "(preview, thumbnails, grid map, reports) and go back to the built-in defaults")
+    viewer.reset_cmap_favorites_act.triggered.connect(viewer.clear_colormap_favorites)
     viewer.display_menu.addSeparator()
     viewer.molecules_act = viewer.display_menu.addAction("Show molecules")
     viewer.molecules_act.setCheckable(True)

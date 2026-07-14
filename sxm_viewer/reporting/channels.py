@@ -105,6 +105,19 @@ def pick_image_channels(fds, tag, topo_idx):
                 picks.append((by_class[cls], cls))
         if picks:
             return picks
+    if topo_idx is None:
+        # _find_topography_channel misses Z channels whose PhysUnit is a
+        # bare "m" (Nanonis-converted caches); fall back to caption-based
+        # classification so a "Z (Forward)" panel is still typed as
+        # topography, not "other".
+        for idx, fd in enumerate(fds):
+            text = f"{fd.get('Caption', '')} {fd.get('FileName', '')}"
+            if classify_channel(text) == "z":
+                topo_idx = idx
+                break
     if topo_idx is not None and topo_idx < len(fds):
         return [(topo_idx, "z")]
-    return [(0, "other")] if fds else []
+    if not fds:
+        return []
+    first_cls = classify_channel(f"{fds[0].get('Caption', '')} {fds[0].get('FileName', '')}")
+    return [(0, first_cls)]

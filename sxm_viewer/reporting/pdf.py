@@ -12,13 +12,87 @@ from datetime import datetime
 import numpy as np
 import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
-from matplotlib import patches
+from matplotlib import patches, patheffects
+
+from .channels import classify_channel
 
 PAGE_W, PAGE_H = 11.69, 8.27  # A4 landscape, inches
-_CHAPTER_CMAP = "tab10"
-_TOPO_CMAP = "gray"
+_FALLBACK_CYCLE = [matplotlib.colors.to_hex(matplotlib.colormaps["tab10"](i)) for i in range(10)]
 _MAP_CMAP = "viridis"
+# Default colormap per channel class (user convention): current -> Blues,
+# frequency shift -> gray, topography -> Blues; anything else gray.
+_CLASS_CMAPS = {"current": "Blues", "freq": "gray", "z": "Blues", "other": "gray"}
+
+
+def _prefs(model):
+    return (model.get("payload") or {}).get("prefs") or {}
+
+
+def _cycle_colors(model):
+    """The user's persisted color cycle, as concrete colors."""
+    colors = _prefs(model).get("color_cycle")
+    return list(colors) if colors else list(_FALLBACK_CYCLE)
+
+
+def _class_cmap(cls, override=None):
+    return override or _CLASS_CMAPS.get(str(cls or "other"), "gray")
+
+
+def _panel_cmap(model, panel):
+    """Colormap for an image panel: the user's starred preview favourite
+    for topography, the per-class convention otherwise."""
+    cls = str((panel or {}).get("cls") or "z")
+    if cls == "z":
+        fav = _prefs(model).get("preview_cmap")
+        if fav:
+            return fav
+    return _class_cmap(cls)
+
+
+def _nice_scale_bar_nm(width_nm):
+    """A round 1/2/5x10^k bar length, roughly a quarter of the image."""
+    target = width_nm / 4.0
+    if not math.isfinite(target) or target <= 0:
+        return None
+    base = 10.0 ** math.floor(math.log10(target))
+    for mult in (5.0, 2.0, 1.0):
+        if base * mult <= target:
+            return base * mult
+    return base
+
+
+def _draw_scale_bar(ax, shape, width_nm, fontsize=5):
+    """White scale bar with a black outline, bottom-left, for an image
+    drawn in raster pixel coordinates."""
+    try:
+        width_nm = float(width_nm or 0.0)
+    except Exception:
+        return
+    bar_nm = _nice_scale_bar_nm(width_nm)
+    if bar_nm is None:
+        return
+    h, w = shape[:2]
+    bar_px = bar_nm / width_nm * w
+    x0, y0 = 0.05 * w, 0.93 * h
+    ax.plot([x0, x0 + bar_px], [y0, y0], color="white", linewidth=2,
+            solid_capstyle="butt",
+            path_effects=[patheffects.withStroke(linewidth=3.2, foreground="black")])
+    label = f"{bar_nm:g} nm" if bar_nm >= 1 else f"{bar_nm * 10:g} Å"
+    ax.text(x0 + bar_px / 2.0, y0 - 0.025 * h, label, color="white",
+            fontsize=fontsize, ha="center", va="bottom",
+            path_effects=[patheffects.withStroke(linewidth=1.6, foreground="black")])
+
+
+def _image_width_nm(image):
+    extent = (image or {}).get("extent")
+    if not extent or len(extent) != 4:
+        return None
+    try:
+        return abs(float(extent[1]) - float(extent[0]))
+    except Exception:
+        return None
 
 
 def _fmt_time(t, fmt="%Y-%m-%d %H:%M"):
@@ -43,8 +117,8 @@ def _auto_clim(arr):
     return lo, hi
 
 
-def _imshow_topo(ax, image):
-    """Auto-contrast topo image in raster (pixel) coordinates; returns True
+def _imshow_topo(ax, image, cmap="Blues"):
+    """Auto-contrast image panel in raster (pixel) coordinates; returns True
     when there was something to draw."""
     arr = image.get("topo")
     if arr is None:
@@ -54,7 +128,7 @@ def _imshow_topo(ax, image):
         return False
     arr = np.asarray(arr, dtype=float)
     clim = _auto_clim(arr)
-    ax.imshow(arr, cmap=_TOPO_CMAP, origin="upper", aspect="equal",
+    ax.imshow(arr, cmap=cmap, origin="upper", aspect="equal",
               vmin=clim[0] if clim else None, vmax=clim[1] if clim else None,
               interpolation="nearest")
     ax.set_xticks([]), ax.set_yticks([])
@@ -95,7 +169,7 @@ def page_cover(model):
         (f"{s['n_images']} scans   |   {s['n_specs']} single spectra   |   "
          f"{s['n_grids']} grid datasets ({s['n_grid_points']} grid points)",
          11, "normal", 0.70),
-        (f"{len(model['chapters'])} session chapters (K-Means over scan position + time)",
+        (f"{len(model['regions'])} sample regions (scans grouped by position + acquisition time)",
          10, "normal", 0.64),
         (f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} by SXM Viewer",
          8, "normal", 0.06),
@@ -103,38 +177,46 @@ def page_cover(model):
     for text, size, weight, y in lines:
         ax.text(0.02, y, text, fontsize=size, fontweight=weight, transform=ax.transAxes)
 
-    # Contact sheet of up to 4x8 topo thumbnails.
+    # Contact sheet of up to 4x8 image thumbnails.
     images = [i for i in model["payload"]["images"] if i.get("topo") is not None]
     n = min(len(images), 32)
     if n:
         ncols = 8
-        nrows = math.ceil(n / ncols)
         for i in range(n):
             r, c = divmod(i, ncols)
             sub = fig.add_axes([0.08 + c * 0.105, 0.46 - r * 0.105, 0.095, 0.095])
-            _imshow_topo(sub, images[i])
+            panels = images[i].get("panels") or []
+            _imshow_topo(sub, images[i],
+                         cmap=_panel_cmap(model, panels[0] if panels else None))
+            width_nm = _image_width_nm(images[i])
+            if width_nm:
+                _draw_scale_bar(sub, np.asarray(images[i]["topo"]).shape, width_nm,
+                                fontsize=3.2)
             sub.set_title(images[i].get("name", ""), fontsize=4, pad=1)
     return fig
 
 
 def page_overview(model):
-    fig = _new_page("Session overview - image footprints, spectra and grids by chapter")
+    fig = _new_page("Session overview - image footprints, spectra and grids by sample region")
     ax = fig.add_axes([0.07, 0.09, 0.68, 0.82])
-    cmap = matplotlib.colormaps[_CHAPTER_CMAP]
-    chapters = model["chapters"]
-    image_chapter = model["image_chapter"]
+    colors = _cycle_colors(model)
+    regions = model["regions"]
+    image_region = model["image_region"]
     payload = model["payload"]
+
+    def _region_color(idx):
+        return colors[idx % len(colors)]
 
     for image in payload["images"]:
         extent = image.get("extent")
         if not extent:
             continue
-        chapter_idx = image_chapter.get(str(image["key"]), 0)
-        color = cmap(chapter_idx % 10)
+        region_idx = image_region.get(str(image["key"]), 0)
         corners = _rotated_footprint(extent, image.get("angle") or 0.0)
         ax.add_patch(patches.Polygon(corners, closed=True, fill=False,
-                                     edgecolor=color, linewidth=0.7, alpha=0.75))
-    # Batch points into one artist per (chapter, kind) - a grid alone can
+                                     edgecolor=_region_color(region_idx),
+                                     linewidth=0.7, alpha=0.75))
+    # Batch points into one artist per (region, kind) - a grid alone can
     # contribute thousands of points, one Line2D each would crawl.
     buckets = {}
     for spec in payload["specs"]:
@@ -142,12 +224,12 @@ def page_overview(model):
         if x is None or y is None:
             continue
         key = str(spec.get("image_key") or "")
-        chapter_idx = image_chapter.get(key, 0)
+        region_idx = image_region.get(key, 0)
         kind = "grid" if spec.get("is_matrix") else "single"
-        xs, ys = buckets.setdefault((chapter_idx, kind), ([], []))
+        xs, ys = buckets.setdefault((region_idx, kind), ([], []))
         xs.append(x), ys.append(y)
-    for (chapter_idx, kind), (xs, ys) in buckets.items():
-        color = cmap(chapter_idx % 10)
+    for (region_idx, kind), (xs, ys) in buckets.items():
+        color = _region_color(region_idx)
         if kind == "grid":
             ax.plot(xs, ys, ".", color=color, ms=1.2, alpha=0.5, linestyle="none")
         else:
@@ -160,18 +242,20 @@ def page_overview(model):
 
     legend_ax = fig.add_axes([0.78, 0.09, 0.2, 0.82])
     legend_ax.axis("off")
-    legend_ax.text(0, 1.0, "Chapters", fontsize=10, fontweight="bold",
+    legend_ax.text(0, 1.0, "Sample regions", fontsize=10, fontweight="bold",
                    va="top", transform=legend_ax.transAxes)
-    y = 0.94
-    for idx, chapter in enumerate(chapters):
-        color = cmap(idx % 10)
+    legend_ax.text(0, 0.965, "(same area + same time window)", fontsize=6.5,
+                   color="0.45", va="top", transform=legend_ax.transAxes)
+    y = 0.92
+    for idx, region in enumerate(regions):
         legend_ax.add_patch(patches.Rectangle((0.0, y - 0.012), 0.06, 0.024,
-                                              color=color, transform=legend_ax.transAxes))
-        legend_ax.text(0.09, y, f"{chapter['label']}  ({len(chapter['image_keys'])} scans)",
+                                              color=_region_color(idx),
+                                              transform=legend_ax.transAxes))
+        legend_ax.text(0.09, y, f"{region['label']}  ({len(region['image_keys'])} scans)",
                        fontsize=8, va="center", transform=legend_ax.transAxes)
         # Sessions routinely span days - show dates, not just clock times.
         legend_ax.text(0.09, y - 0.028,
-                       f"{_fmt_time(chapter['t0'], '%m-%d %H:%M')} - {_fmt_time(chapter['t1'], '%m-%d %H:%M')}",
+                       f"{_fmt_time(region['t0'], '%m-%d %H:%M')} - {_fmt_time(region['t1'], '%m-%d %H:%M')}",
                        fontsize=7, color="0.4", va="center", transform=legend_ax.transAxes)
         y -= 0.075
         if y < 0.02:
@@ -183,8 +267,8 @@ def page_overview(model):
     return fig
 
 
-def page_image_specs(model, image, specs, chapter_label=""):
-    title = f"{chapter_label}  -  {image.get('name', '')}" if chapter_label else image.get("name", "")
+def page_image_specs(model, image, specs, region_label=""):
+    title = f"{region_label}  -  {image.get('name', '')}" if region_label else image.get("name", "")
     if image.get("tag"):
         title += f"   [{image['tag']}]"
     fig = _new_page(title)
@@ -202,17 +286,20 @@ def page_image_specs(model, image, specs, chapter_label=""):
     else:
         ax = fig.add_axes([0.05, 0.12, 0.42, 0.76])
         _imshow_topo(ax, {"topo": None})
-    cmap = matplotlib.colormaps[_CHAPTER_CMAP]
+    colors = _cycle_colors(model)
+    width_nm = _image_width_nm(image)
 
     for ax_img, panel in panel_axes:
-        _imshow_topo(ax_img, {"topo": panel["data"]})
+        _imshow_topo(ax_img, {"topo": panel["data"]}, cmap=_panel_cmap(model, panel))
+        if width_nm:
+            _draw_scale_bar(ax_img, np.asarray(panel["data"]).shape, width_nm)
         if panel.get("label"):
             ax_img.set_title(panel["label"], fontsize=7, pad=2)
 
     ax_curves = fig.add_axes([0.55, 0.30, 0.40, 0.58])
     any_curve = False
     for idx, spec in enumerate(specs):
-        color = cmap(idx % 10)
+        color = colors[idx % len(colors)]
         frac = spec.get("marker_frac")
         if frac is not None:
             # Markers come as raster fractions; scale by each *displayed*
@@ -277,7 +364,15 @@ def page_grid(model, grid, images_by_key):
     ax_anchor = fig.add_axes([0.045, 0.36, 0.27, 0.5])
     image = images_by_key.get(str(grid.get("image_key") or ""))
     if image is not None:
-        have_topo = _imshow_topo(ax_anchor, image)
+        anchor_panels = image.get("panels") or []
+        have_topo = _imshow_topo(
+            ax_anchor, image,
+            cmap=_panel_cmap(model, anchor_panels[0] if anchor_panels else None))
+        if have_topo:
+            anchor_width_nm = _image_width_nm(image)
+            if anchor_width_nm:
+                _draw_scale_bar(ax_anchor, np.asarray(image["topo"]).shape,
+                                anchor_width_nm)
         X, Y = grid.get("X"), grid.get("Y")
         extent = image.get("extent")
         if have_topo and X is not None and extent:
@@ -310,12 +405,16 @@ def page_grid(model, grid, images_by_key):
         ax_anchor.text(0.5, 0.5, "(no anchor image)", ha="center", va="center",
                        transform=ax_anchor.transAxes, fontsize=8, color="0.5")
 
-    # 2. Slice map (local frame).
+    # 2. Slice map (local frame). Colormap: the user's starred grid-map
+    # favourite, else the channel-class convention (freq -> gray,
+    # current -> Blues, ...).
     ax_slice = fig.add_axes([0.37, 0.36, 0.27, 0.5])
     slice_map = grid.get("slice_map")
+    slice_cmap = _class_cmap(classify_channel(grid.get("curve_channel")),
+                             override=_prefs(model).get("grid_metric_cmap"))
     if slice_map is not None and np.isfinite(slice_map).any():
         clim = _auto_clim(slice_map)
-        im = ax_slice.imshow(slice_map, cmap=_MAP_CMAP, origin="upper",
+        im = ax_slice.imshow(slice_map, cmap=slice_cmap, origin="upper",
                              extent=local_extent, aspect="equal",
                              vmin=clim[0] if clim else None,
                              vmax=clim[1] if clim else None,
@@ -331,14 +430,18 @@ def page_grid(model, grid, images_by_key):
         ax_slice.text(0.5, 0.5, "(no slice data)", ha="center", va="center",
                       transform=ax_slice.transAxes, fontsize=8, color="0.5")
 
-    # 3. Cluster-label map (local frame).
+    # 3. Cluster-label map (local frame), colored with the user's color
+    # cycle so the map and the curves below stay visually linked.
+    colors = _cycle_colors(model)
+    cluster_cmap = ListedColormap(colors[:10])
     ax_clu = fig.add_axes([0.70, 0.36, 0.27, 0.5])
     cluster_map = grid.get("cluster_map")
     curves = grid.get("cluster_curves") or []
     if cluster_map is not None and np.isfinite(cluster_map).any() and curves:
-        ax_clu.imshow(cluster_map, cmap=_CHAPTER_CMAP, origin="upper",
-                           extent=local_extent, aspect="equal",
-                           vmin=-0.5, vmax=9.5, interpolation="nearest")
+        ax_clu.imshow(cluster_map, cmap=cluster_cmap, origin="upper",
+                      extent=local_extent, aspect="equal",
+                      vmin=-0.5, vmax=len(colors[:10]) - 0.5,
+                      interpolation="nearest")
         ax_clu.set_title(f"curve-shape clusters (k={len(curves)})", fontsize=7)
         ax_clu.set_xlabel("nm", fontsize=6)
         ax_clu.tick_params(labelsize=6)
@@ -351,10 +454,9 @@ def page_grid(model, grid, images_by_key):
     # the cluster centroid), deliberately not an average: averaging grid
     # spectra washes out the physics.
     ax_rep = fig.add_axes([0.08, 0.06, 0.55, 0.22])
-    cmap = matplotlib.colormaps[_CHAPTER_CMAP]
     if curves:
         for entry in curves:
-            color = cmap(int(entry["label"]) % 10)
+            color = colors[int(entry["label"]) % len(colors[:10])]
             ax_rep.plot(entry["V"], entry["curve"], color=color, linewidth=1.1,
                         label=f"cluster {entry['label']} (n={entry['count']})")
         ax_rep.set_xlabel(grid.get("x_label") or "Bias (V)", fontsize=7)
@@ -393,17 +495,20 @@ def page_grid_kpfm(grid):
     rows, cols = grid["rows"], grid["cols"]
     dx, dy = grid["local_dx"], grid["local_dy"]
     local_extent = (0.0, cols * dx, rows * dy, 0.0)
+    # Colormap conventions (user-specified, matching MatrixFitDialog's
+    # PARAM_INFO): LCPD diverging bwr, c in gray (more negative = darker),
+    # errors in viridis.
     panels = (
-        ("LCPD (V)", kpfm["lcpd"], [0.07, 0.52, 0.38, 0.38]),
-        ("LCPD error (V)", kpfm["lcpd_err"], [0.55, 0.52, 0.38, 0.38]),
-        ("c coefficient", kpfm["c"], [0.07, 0.06, 0.38, 0.38]),
-        ("c error", kpfm["c_err"], [0.55, 0.06, 0.38, 0.38]),
+        ("LCPD (V)", kpfm["lcpd"], "bwr", [0.07, 0.52, 0.38, 0.38]),
+        ("LCPD error (V)", kpfm["lcpd_err"], "viridis", [0.55, 0.52, 0.38, 0.38]),
+        ("c coefficient", kpfm["c"], "gray", [0.07, 0.06, 0.38, 0.38]),
+        ("c error", kpfm["c_err"], "viridis", [0.55, 0.06, 0.38, 0.38]),
     )
-    for label, data, rect in panels:
+    for label, data, cmap_name, rect in panels:
         ax = fig.add_axes(rect)
         if data is not None and np.isfinite(data).any():
             clim = _auto_clim(data)
-            im = ax.imshow(data, cmap=_MAP_CMAP, origin="upper",
+            im = ax.imshow(data, cmap=cmap_name, origin="upper",
                            extent=local_extent, aspect="equal",
                            vmin=clim[0] if clim else None,
                            vmax=clim[1] if clim else None,
@@ -472,8 +577,8 @@ def iter_report_figures(model):
         yield "overview", page_overview(model)
 
     specs_by_image = model["specs_by_image"]
-    for chapter in model["chapters"]:
-        for key in chapter["image_keys"]:
+    for region in model["regions"]:
+        for key in region["image_keys"]:
             specs = specs_by_image.get(str(key))
             if not specs:
                 continue
@@ -481,7 +586,7 @@ def iter_report_figures(model):
             if image is None:
                 continue
             yield (f"image {image.get('name', '')}",
-                   page_image_specs(model, image, specs, chapter_label=chapter["label"]))
+                   page_image_specs(model, image, specs, region_label=region["label"]))
 
     for grid in model["grids"]:
         yield f"grid {grid.get('name', '')}", page_grid(model, grid, images_by_key)
