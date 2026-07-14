@@ -63,6 +63,11 @@ python -m sxm_viewer
     unchanged, so warm reloads skip redundant topography re-reads.
   - `nanonis/vendor/` bundles `nanonispy2` upstream — **do not edit**, it
     mirrors an external package and is the only place with its own tests.
+- `reporting/` — PDF folder-report generation, kept import-isolated from
+  GUI/Qt like `providers/` (headlessly testable): `model.py` (K-Means sample
+  regions, per-grid curve clustering, KPFM fit maps, flagged items),
+  `pdf.py` (matplotlib `PdfPages` page rendering), `channels.py` (channel-
+  name classification heuristics — see "Folder reports" below).
 - `utils/` — small helpers (`units.py` unit parsing/formatting, `logging.py`).
 - `gui/` — the Qt UI (see below).
 
@@ -87,7 +92,7 @@ gui/
 ├── dialogs/                  # modal dialogs (histogram/profile/filters/spectroscopy/matrix-fit)
 ├── canvases/                 # canvas workspace window, tiles, rendering, molecule overlays
 ├── spectroscopy/             # spectroscopy browser/controller/overlays/popups
-├── workers/                  # QThread-based background workers (e.g. batch export)
+├── workers/                  # background workers (batch export, folder-report rendering)
 └── thumbnail_render.py, minimap.py, palettes.py, styles.py, ...  # shared widgets/utilities
 ```
 
@@ -108,6 +113,7 @@ mutable state:
 | `filter_controller.py` | image filter pipeline application/state |
 | `image_compare.py` | side-by-side/overlay image comparison workflows |
 | `session.py` | serializes/deserializes full viewer state to session JSON files |
+| `report.py` | folder-report workflow: GUI-thread payload collection, save dialog, progress, launches `ReportWorker` |
 
 **Extending the GUI**: prototype new cross-widget features inline in
 `main_window.py` first; once the workflow solidifies, move it into a new
@@ -635,6 +641,52 @@ mapping" above).
 Both worker classes follow the same
 `QObject.moveToThread(QThread)` + `thread.started.connect(worker.run)`
 pattern rather than `QRunnable`.
+
+### Folder reports (PDF)
+"Generate folder report (PDF)..." (thumbnail context menu + toolbar
+"Report" action) renders a multi-page PDF overview of the loaded folder.
+Two-phase design: `ReportController.collect_payload`
+(`gui/controllers/report.py`) snapshots viewer state on the GUI thread —
+topo/signal arrays (downsampled), marker positions via
+`_map_spec_to_pixels`, assignment metadata, user display prefs — into a
+plain-data payload; `ReportWorker` (`gui/workers/report_worker.py`, a
+`QRunnable` like `BatchExportWorker`) then runs `build_report_model` +
+`render_report_pdf` from the Qt-free `sxm_viewer/reporting/` package
+entirely off-thread. Never let the worker touch the viewer.
+
+- **Sample "Regions"** (`model.build_session_regions`) — K-Means over
+  (scan center x, y, acquisition time), elbow-selected k: scans from the
+  same sample area in the same time window. This is the report's ordering
+  unit ("Region 1..N"); the term replaced "chapters" as clearer for SPM use.
+- **Channel-selection heuristics** (`reporting/channels.py`, user-specified):
+  constant-height images show current + frequency-shift/lock-in panels
+  instead of flat topo (with a dead-flat-Z retry for untagged CH scans);
+  spectroscopy curves prefer freq shift > current > lock-in; z-spectroscopy
+  keeps its Z sweep axis; grid slice defaults to the smallest |bias|.
+- **Presentation conventions** (also user-specified, in `pdf.py`): current →
+  Blues, frequency shift → gray, topography → Blues; KPFM maps bwr (LCPD) /
+  gray (c, more negative = darker) / viridis (errors) — matching
+  `MatrixFitDialog.PARAM_INFO`; a scale bar on every image panel; grid
+  averages are never plotted (representative nearest-centroid member
+  spectra instead).
+- `reporting/model.py`'s grid helpers (`grid_dims`/`spec_grid_row_col`/
+  `grid_local_orientation`/...) are deliberate ports of the
+  `MatrixSpectroViewer` methods (which live on a QDialog and can't be
+  imported Qt-free) — keep them in sync, especially the local-frame flip
+  rules (see "Grid Map Explorer" above).
+
+### Favourite (default) colormaps
+Small ★ buttons next to the thumbnail/preview colormap combos
+(`main_window.py`) and the Grid map's colormap + color-cycle selectors
+(`spectroscopy_dialogs.py`, mode-aware: saves `grid_metric` or
+`grid_reference` depending on the active view) persist the current pick as
+the user's default. Stored in config as `favorite_cmaps` (dict:
+`preview`/`thumbnails`/`grid_metric`/`grid_reference`) and
+`favorite_color_cycle`; helpers on `SXMGridViewer`
+(`get_favorite_cmap`/`set_favorite_cmap`/`set_favorite_color_cycle`/
+`clear_colormap_favorites`). Favourites win over merely-last-used values
+at startup; Display → "Reset colormap defaults" clears them; the folder
+report reads the same favourites via `payload["prefs"]`.
 
 ### Cross-cutting conventions
 
