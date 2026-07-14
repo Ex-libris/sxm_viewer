@@ -531,10 +531,27 @@ swap which end is north/south or east/west (confirmed on a real
 image convention, so the local view (and everything derived from it -
 virtual copies, WSxM export) rendered visibly mirrored relative to the
 correct one. Fixed by `_grid_local_orientation`, which derives the needed
-row/col flip from the grid's own true coordinates (does real Y increase or
-decrease as row increases, etc.) instead of assuming a fixed direction -
-applied consistently to the metric array, marker placement, virtual copy,
-and WSxM export.
+row/col flip from the grid's own true coordinates instead of assuming a
+fixed direction - applied consistently to the metric array, marker
+placement, virtual copy, and WSxM export.
+
+**Which frame the flattening orients into matters as much as the flip
+signs.** The first version of `_grid_local_orientation` oriented into
+absolute north-up (matching the absolute/pcolormesh view) — internally
+consistent, but for a 157° scan north-up is ~180° from the anchor image's
+raster, so the relative view looked point-inverted ("mirrored") next to
+the thumbnail/preview and Nanonis's own grid viewer, which are all
+raster-frame. It now rotates the grid coordinates by the **anchor image's
+scan angle** (`_anchor_scan_angle`, same +θ convention as
+`_map_spec_to_pixels`) before the direction tests, flattening into the
+anchor's raster frame — for angle 0 this reduces exactly to the old
+behaviour, so unrotated data is unaffected. `sxm_viewer/reporting/
+model.py`'s `grid_local_orientation` is a deliberate port and must stay
+in sync. The decisive validation was quantitative and immune to
+stale-cache traps: sample the anchor image at every grid point's
+`_map_spec_to_pixels` position and correlate against the grid's own slice
+values (|r| ≈ 0.98 on the real 30×30 case) — that pins the physically
+correct display orientation regardless of what any cached thumbnail shows.
 
 **Getting the flip's sign right requires checking against ground truth —
 and make sure your ground truth isn't itself corrupted.** This bit three

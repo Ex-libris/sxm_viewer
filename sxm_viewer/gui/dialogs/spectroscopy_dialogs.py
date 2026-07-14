@@ -3604,7 +3604,8 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         self._resolve_anchor_path()
         base_name = self._matrix_file_name()
         self.setWindowTitle(f"Grid map - {base_name}")
-        self.resize(1100, 720)
+        init_w, init_h = self._initial_window_size()
+        self.resize(init_w, init_h)
         root = QtWidgets.QVBoxLayout(self)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -4230,6 +4231,39 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             self.image_channel_combo.setCurrentIndex(default_idx)
         self.image_channel_combo.blockSignals(False)
 
+    def _initial_window_size(self):
+        """Pick a starting window size whose width/height ratio follows the
+        grid's own row/col aspect ratio, instead of always opening the same
+        fixed rectangle - a wide grid (e.g. 32x8) previously opened into the
+        same shape as a tall one (8x32), wasting space on one axis."""
+        rows = max((spec.get('grid_rows') or 0) for spec in self.specs) if self.specs else 0
+        cols = max((spec.get('grid_cols') or 0) for spec in self.specs) if self.specs else 0
+        default_w, default_h = 1100, 720
+        if not rows or not cols:
+            return default_w, default_h
+
+        aspect = cols / rows  # grid width / height
+        right_panel_w = 380  # curve plot + selection table; roughly fixed regardless of grid shape
+        chrome_w = 60  # splitter handle + outer margins
+        controls_h = 300  # mode buttons/combos/checkboxes/action row/info label above the plot
+        chrome_h = 40  # outer margins
+
+        # Keep the plot panel's own area close to what the old fixed default
+        # implied, but let width vs. height follow the grid's real aspect
+        # ratio rather than always being locked to a generic rectangle.
+        plot_area = (default_w - right_panel_w - chrome_w) * (default_h - controls_h - chrome_h)
+        plot_h = (plot_area / aspect) ** 0.5
+        plot_w = plot_h * aspect
+
+        total_w = int(plot_w) + right_panel_w + chrome_w
+        total_h = int(plot_h) + controls_h + chrome_h
+
+        # Clamp so extreme grid shapes (e.g. 4x64) still produce a usable,
+        # on-screen window rather than one absurdly wide/tall or tiny.
+        total_w = max(760, min(1700, total_w))
+        total_h = max(560, min(1000, total_h))
+        return total_w, total_h
+
     def _matrix_file_name(self):
         if self.dataset and getattr(self.dataset, "channels", None):
             first = next((ch for ch in self.dataset.channels if ch.get('filename') or ch.get('path')), None)
@@ -4835,6 +4869,11 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # Local-mode display flips (see _grid_local_orientation): the value
         # readout must undo them, since _current_image_arr stays unflipped.
         self._current_local_flips = (False, False)
+        # Active local/relative display frame, or None when the current view
+        # is in absolute nm (or Reference image) coordinates. Consumed by
+        # _spec_display_xy so hover/click picking and ring placement agree
+        # with where the markers below actually got drawn.
+        self._current_local_frame = None
         relative_mode = bool(
             agg_mode != "Reference image"
             and getattr(self, "relative_axes_cb", None) is not None
@@ -4868,6 +4907,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     view_extent = local_extent
                     self._current_image_extent = local_extent
                     self._current_local_flips = (local_row_flip, local_col_flip)
+                    self._current_local_frame = (rows, cols, zero_based, local_dx, local_dy, local_row_flip, local_col_flip)
                 else:
                     relative_mode = False
             if not relative_mode:
@@ -5169,49 +5209,77 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 dy = float(np.nanmedian(finite)) or 1.0
         return dx, dy
 
-    def _grid_local_orientation(self, X, Y, rows, cols):
+    def _anchor_scan_angle(self):
+        """Scan angle (degrees) of the grid's anchor image, 0.0 when there
+        is no resolvable anchor. Used to flatten the local/relative view
+        into the anchor image's raster frame (see _grid_local_orientation)."""
+        try:
+            header, _fds = self.viewer.headers.get(str(self.anchor_path), (None, None))
+            if header:
+                return float(self.viewer._header_scan_angle(header) or 0.0)
+        except Exception:
+            pass
+        return 0.0
+
+    def _grid_local_orientation(self, X, Y, rows, cols, angle_deg=0.0):
         """(row_flip, col_flip): whether the metric array needs flipping
         along that axis so the local/relative view agrees with the
-        absolute/reference-image view about which end is up/right.
+        **anchor image's raster** (= the thumbnail, the main preview, and
+        "Reference image" mode - also the frame Nanonis's own grid viewer
+        uses) about which end is up/right.
 
         The local/relative view deliberately discards the grid's rotation
-        (that's the whole point of it), but a fixed "row 0 always at the
-        top" rule silently discards more than that for any grid whose
-        acquisition angle happens to flip north/south or east/west (e.g. an
-        angle past ~90 degrees swaps which end of the row axis points
-        "up") - confirmed on real data as the local/relative view and the
-        absolute/reference-image view of the *same* grid disagreeing about
-        which end is up, i.e. looking mirrored relative to each other, even
-        though each individually rendered its own points/slice consistently.
+        (that's the whole point of it), but the flattening needs a target
+        frame to orient into, and there are two candidates that only agree
+        for small scan angles: absolute north-up (the pcolormesh view) and
+        the anchor image's raster. This used to orient into north-up, which
+        is self-consistent but reads as "mirrored/inverted" next to the
+        thumbnail for large angles - a real 157-degree scan put the two a
+        clean 180 degrees apart (the flattening silently swallowed the
+        remaining 23), and the user's natural comparison targets (the
+        thumbnail and Nanonis's grid viewer) are both raster-frame. So the
+        direction tests now run on the grid coordinates *rotated into the
+        anchor's scan frame* (same +theta convention as
+        _map_spec_to_pixels); with angle 0 this reduces exactly to the old
+        north-up behaviour, so unrotated data is unaffected.
 
-        The two modes don't share a Y convention, which this accounts for:
-        _draw_image_layer's local-mode extent is (0, cols*dx, rows*dy, 0)
-        — bottom > top — so with origin='upper' an *unflipped* array
-        already renders row 0 at the top and increasing row moving
-        downward on screen. The absolute/pcolormesh view uses a standard
-        upward ylim (min, max) — physically north-up, matching "Reference
-        image" mode's content — so there, row index and screen direction
-        agree only when real Y *decreases* as row increases; flip when
-        real Y increases with row. (History: this condition was once
-        inverted to chase an apparent mirror vs the anchor thumbnail; the
-        thumbnail itself turned out to be mirrored by a stale
-        pre-row-flip conversion cache — see NANONIS_CACHE_VERSION v5 in
-        providers/nanonis/adapter.py. Verify against a freshly-converted
-        anchor image before touching this sign.)
-        X has no such subtlety (all views increase X rightward), so
-        col_flip is the straightforward check."""
+        Convention details: _draw_image_layer's local-mode extent is
+        (0, cols*dx, rows*dy, 0) - bottom > top - so with origin='upper' an
+        *unflipped* array renders row 0 at the top. In the raster frame,
+        "toward row 0 of the displayed image" is increasing v (frac_y =
+        0.5 - v in _map_spec_to_pixels), so flip rows when v *increases*
+        with grid row; u increases rightward in every view, so flip
+        columns when u decreases with grid col. (History: an earlier
+        version of this condition was once inverted to chase an apparent
+        mirror vs the anchor thumbnail; the thumbnail itself turned out to
+        be mirrored by a stale pre-row-flip conversion cache - see
+        NANONIS_CACHE_VERSION v5 in providers/nanonis/adapter.py. The
+        raster-frame choice here was instead validated quantitatively:
+        image pixels sampled at _map_spec_to_pixels positions correlate
+        |r|~0.98 with the grid's own slice values, pinning the correct
+        display orientation independent of any cache.)"""
         row_flip = False
         col_flip = False
+        try:
+            theta = math.radians(float(angle_deg or 0.0))
+        except Exception:
+            theta = 0.0
+        if theta:
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            U = X * cos_t - Y * sin_t
+            V = X * sin_t + Y * cos_t
+        else:
+            U, V = X, Y
         if rows > 1:
-            y_first = np.nanmean(Y[0, :])
-            y_last = np.nanmean(Y[-1, :])
-            if np.isfinite(y_first) and np.isfinite(y_last):
-                row_flip = bool(y_last > y_first)
+            v_first = np.nanmean(V[0, :])
+            v_last = np.nanmean(V[-1, :])
+            if np.isfinite(v_first) and np.isfinite(v_last):
+                row_flip = bool(v_last > v_first)
         if cols > 1:
-            x_first = np.nanmean(X[:, 0])
-            x_last = np.nanmean(X[:, -1])
-            if np.isfinite(x_first) and np.isfinite(x_last):
-                col_flip = bool(x_last < x_first)
+            u_first = np.nanmean(U[:, 0])
+            u_last = np.nanmean(U[:, -1])
+            if np.isfinite(u_first) and np.isfinite(u_last):
+                col_flip = bool(u_last < u_first)
         return row_flip, col_flip
 
     def _grid_local_extent(self, channel_specs, rows, cols, zero_based):
@@ -5220,16 +5288,18 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         rows*dy) starting at (0, 0). row_flip/col_flip (see
         _grid_local_orientation) say whether the metric array and marker
         placement need flipping along that axis before display, so this
-        flattened view still agrees with the absolute/reference-image view
-        about which end is up/right. Returns (None, None, None, False,
-        False) if true per-point coordinates aren't available (e.g. some
-        pixels missing channel data).
+        flattened view agrees with the anchor image's raster (thumbnail/
+        preview/"Reference image" mode) about which end is up/right.
+        Returns (None, None, None, False, False) if true per-point
+        coordinates aren't available (e.g. some pixels missing channel
+        data).
         """
         X, Y = self._grid_xy_coords(channel_specs, rows, cols, zero_based)
         if X is None or Y is None or np.isnan(X).any() or np.isnan(Y).any():
             return None, None, None, False, False
         dx, dy = self._grid_local_pitch(X, Y, rows, cols)
-        row_flip, col_flip = self._grid_local_orientation(X, Y, rows, cols)
+        row_flip, col_flip = self._grid_local_orientation(
+            X, Y, rows, cols, angle_deg=self._anchor_scan_angle())
         extent = (0.0, cols * dx, rows * dy, 0.0)
         return dx, dy, extent, row_flip, col_flip
 
@@ -5363,6 +5433,23 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         x = float(x)
         y = float(y)
         if self.map_mode_combo.currentText() != "Reference image":
+            # "Relative axes" draws the metric map (and its markers) in the
+            # grid's own local frame, not absolute nm - a spec's raw x/y is
+            # in a completely different coordinate range there, which made
+            # hover/click picking silently latch onto one fixed nearest-by-
+            # wrong-frame point. Reproduce the exact marker placement from
+            # _draw_image_layer's relative branch instead; specs without a
+            # grid row/col (co-located singles) aren't drawn in this frame,
+            # so they're not pickable either.
+            frame = getattr(self, "_current_local_frame", None)
+            if frame is not None:
+                rows, cols, zero_based, local_dx, local_dy, row_flip, col_flip = frame
+                rc = self._spec_grid_row_col(spec, rows, cols, zero_based)
+                if rc is None:
+                    return None, None
+                disp_row = (rows - 1 - rc[0]) if row_flip else rc[0]
+                disp_col = (cols - 1 - rc[1]) if col_flip else rc[1]
+                return (disp_col + 0.5) * local_dx, (disp_row + 0.5) * local_dy
             return x, y
         arr = self._current_image_arr
         extent = self._current_image_extent
