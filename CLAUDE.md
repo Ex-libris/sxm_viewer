@@ -27,6 +27,15 @@ python -m sxm_viewer
   `pyproject.toml`, `setup.cfg`, `pytest.ini`, or CI test workflow) — verify
   changes by running the app manually. The one exception is the vendored
   `nanonispy2` reader (see below), which ships its own `tests/test_read.py`.
+- Headless smoke tests work with `$env:QT_QPA_PLATFORM = "offscreen"` before
+  constructing `SXMGridViewer` in a script. **Trap**: the offscreen viewer is
+  the real app — anything that persists config (e.g. `set_ui_theme`, toggle
+  handlers calling `save_config`) writes to the user's real
+  `~/.sxm_viewer_config.json`. Either avoid config-persisting calls in test
+  scripts or restore the file afterwards.
+- PowerShell 5.1 mangles embedded double quotes when passing args to native
+  executables — write `git commit` messages without `"` characters (or use a
+  `-F` message file).
 - `scripts/install.py` / `scripts/install_sxm_viewer.bat` /
   `scripts/run_sxm_viewer.bat` are Windows installer/launcher helpers, not
   part of the app's runtime import path.
@@ -86,7 +95,7 @@ gui/
 ├── main_window_layout.py     # layout helpers, shortcuts panel
 ├── main_window_toolbar.py    # toolbar actions, theme selector button
 ├── main_window_spectro.py    # spectro dock wiring
-├── theme.py                  # named UI themes (light/dark/amber): tokens, QPalette, chrome QSS — never applied to data imagery
+├── theme.py                  # named UI themes (light/dark/amber): tokens, QPalette, chrome QSS — never applied to data imagery (sole exception: the user-opted "Full amber imagery" toggle, which recolors image artists display-time-only via cmap_registry.effective_cmap; per-file cmaps and exports keep true colormaps)
 ├── controllers/              # feature controllers, see table below
 ├── viewer/                   # thumbnail loading/rendering, preview, loader, measurement, state
 ├── dialogs/                  # modal dialogs (histogram/profile/filters/spectroscopy/matrix-fit)
@@ -674,6 +683,68 @@ entirely off-thread. Never let the worker touch the viewer.
   `MatrixSpectroViewer` methods (which live on a QDialog and can't be
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
+
+### Crop/Rotate (Image menu) vs quick-crop — two tools, one output convention
+Both crop tools are non-destructive and produce **virtual copies**
+(`_create_virtual_view_copy` → `_processed_views`); the original file's
+data is never altered.
+- **Image > Crop/Rotate** (`gui/dialogs/image_adjust.py`,
+  `MainWindow.on_adjust_image`): geometry (crop/rotate/flips) creates an
+  adjacent `[edit]`-tagged copy on Apply, resampled in the rotated frame
+  by `thumbnail_render.resample_geometry` (quick-crop's approach — output
+  never contains NaN padding; the crop rect is clamped to
+  `largest_inscribed_rect`). The dialog's workspace always shows the
+  rotated image and the crop rect lives in that rotated frame; the result
+  preview uses the same `resample_geometry`, so preview == result. Clip/
+  gamma/cmap are **live display adjustments**: clip+gamma go to
+  `viewer.image_adjustments` (tone-only now — geometry is never written
+  there anymore), cmap to `per_file_channel_cmap`. Every
+  `image_adjustments` mutation must run the invalidation trio
+  (`_refresh_adjusted_channel`: per-file thumbnail cache invalidation +
+  grid repopulate + preview re-render) or stale pixmaps linger — that was
+  the tool's historical "persists after undo/reset" bug. Adjusted images
+  show "• adjusted" in the preview title and an amber ADJ chip on the
+  thumbnail; Image > "Reset display adjustments" (and the thumbnail
+  context menu) clears the spec. All these actions push onto
+  `viewer._adjustment_undo_stack`, consumed by `_undo_last_adjustment` in
+  the global Ctrl+Z chain (between quick-crop undo and collection undo).
+  **Legacy sessions**: `apply_adjustment_spec` keeps full geometry
+  support forever so old geometry specs render unchanged; opening the
+  dialog on one seeds its controls (migration-on-touch) and Accept
+  converts it to a copy.
+- **Quick-crop template** (Ctrl+Shift+C, `gui/controllers/quick_crop.py`)
+  is unchanged: `[crop]`-tagged copies via `_on_preview_crop`.
+- **`resample_geometry` frame conventions** (get these wrong and results
+  are silently mirrored/rotated the wrong way): it works in the *display*
+  frame — display array = `flipud(raw)`, `origin='lower'`, extent
+  `(0, w, 0, h)`, y increasing up — with positive `rotate` meaning CCW in
+  that frame; `crop_rect` is `(left, right, bottom, top)` in rotated
+  display-frame pixels (or `None` → largest inscribed rect); flips apply
+  *before* rotation. Trap when writing expectations for it: `np.rot90(a)`
+  is CCW in matrix-print orientation, which is **CW** in the
+  origin-lower display frame — an exact 90° CCW display rotation of a
+  display array `d` equals `np.rot90(d, 1)` only after accounting for the
+  flipud round-trip (`out = flipud(rot90(flipud_input...))` inside the
+  function); validate against the function's own identity/90° cases, not
+  a bare `rot90` guess.
+
+### Central colormap registry (`sxm_viewer/cmap_registry.py`)
+Qt-free single source of truth for colormaps. Registers the custom
+`gui_amber_theme` cmap (stops synced by comment with `gui/theme.py`'s
+AMBER tokens) and, when importable, the optional pratiman-91 `colormaps`
+PyPI package (runtime-detected; never a hard dependency — the package
+lazily registers its cmaps into matplotlib on attribute access, which
+`_register_extra_package` accounts for). All pickers enumerate via
+`all_cmap_names()`/`featured_cmap_names(context)` (curated per-context
+shortlists live in `_FEATURED` here, not in widgets); name→Colormap
+resolution goes through the never-raising `get_cmap(name, fallback)`
+(shared-object cache — never mutate a returned Colormap). Renderers that
+draw data imagery resolve through `effective_cmap`/`effective_cmap_name`,
+which honor the "Full amber imagery" display-time override
+(`set_forced_cmap`, driven by `main_window._sync_forced_cmap`); view
+dicts, `per_file_channel_cmap`, sessions, and file exports always keep
+the user's true cmap names. Display → "Extra colormaps..." shows the
+optional-package status/install hint.
 
 ### Favourite (default) colormaps
 Small ★ buttons next to the thumbnail/preview colormap combos

@@ -65,6 +65,7 @@ try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
     _scipy_signal = None
+from ... import cmap_registry
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -3699,10 +3700,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # Same full colormap set + gradient-swatch icons as the Thumb/Preview
         # cmap pickers in main_window.py, instead of a hand-picked shortlist
         # with no visual cue of what each name actually looks like.
-        try:
-            _cmap_names = sorted(colormaps.keys())
-        except Exception:
-            _cmap_names = ["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "gray", "hot", "coolwarm", "RdBu"]
+        _cmap_names = cmap_registry.all_cmap_names()
         for _cmap_name in _cmap_names:
             try:
                 _icon = _colormap_icon(_cmap_name, width=96, height=14)
@@ -4942,7 +4940,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                         display_metric = np.flipud(display_metric)
                     if local_col_flip:
                         display_metric = np.fliplr(display_metric)
-                    self.ax.imshow(display_metric, cmap=self._metric_cmap, origin='upper', extent=local_extent, aspect='equal')
+                    self.ax.imshow(display_metric, cmap=cmap_registry.effective_cmap_name(self._metric_cmap), origin='upper', extent=local_extent, aspect='equal')
                     view_extent = local_extent
                     self._current_image_extent = local_extent
                     self._current_local_flips = (local_row_flip, local_col_flip)
@@ -4964,7 +4962,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                     # below (which already plot specs' real, correctly-rotated
                     # x/y) on any grid with a non-zero acquisition angle. This
                     # keeps both in the same absolute frame regardless of angle.
-                    self.ax.pcolormesh(X, Y, metric, cmap=self._metric_cmap, shading='nearest')
+                    self.ax.pcolormesh(X, Y, metric, cmap=cmap_registry.effective_cmap_name(self._metric_cmap), shading='nearest')
                     self.ax.set_aspect('equal', adjustable='box')
                     self._current_image_coords = (X, Y)
                     # Standard upward ylim (min, max): physically north-up,
@@ -4980,7 +4978,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                         float(np.nanmin(Y)), float(np.nanmax(Y)),
                     )
                 else:
-                    self.ax.imshow(metric, cmap=self._metric_cmap, origin='upper', extent=grid_extent, aspect='equal')
+                    self.ax.imshow(metric, cmap=cmap_registry.effective_cmap_name(self._metric_cmap), origin='upper', extent=grid_extent, aspect='equal')
                     view_extent = grid_extent
                 self._current_image_extent = grid_extent
             self._current_image_arr = metric
@@ -4994,7 +4992,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
                 fd = fds[idx]
                 arr = self.viewer._get_channel_array(str(path), idx, header, fd)
                 ref_extent = self.viewer._header_extent(header)
-                self.ax.imshow(arr, cmap=self._reference_cmap, origin='upper', extent=ref_extent, aspect='equal')
+                self.ax.imshow(arr, cmap=cmap_registry.effective_cmap_name(self._reference_cmap), origin='upper', extent=ref_extent, aspect='equal')
                 self._current_image_arr = np.asarray(arr, dtype=float)
                 self._current_image_extent = ref_extent
                 self._current_image_unit = fd.get('PhysUnit', '')

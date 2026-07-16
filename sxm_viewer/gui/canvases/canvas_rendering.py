@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..._shared import QtGui, colormaps, np
+from ... import cmap_registry
 
 
 # Date orderings the instrument header may use. An unambiguous date (e.g.
@@ -401,10 +402,9 @@ def render_tile_figure_mpl(
     else:
         ax = fig.add_subplot(1, 1, 1)
 
-    try:
-        cmap_obj = colormaps.get(cmap) if cmap else colormaps.get("viridis")
-    except Exception:
-        cmap_obj = colormaps.get("viridis")
+    # effective_cmap honors the "Full amber imagery" display override
+    # (identity when the mode is off) and never raises on unknown names.
+    cmap_obj = cmap_registry.effective_cmap(cmap)
 
     im = ax.imshow(
         data,

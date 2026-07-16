@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
+from ... import cmap_registry
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame, safe_default_filename
 from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color
 
@@ -33,7 +34,7 @@ def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
     actions["sync_colors_by_channel"].setCheckable(True)
     actions["sync_colors_by_channel"].setChecked(bool(getattr(parent, "_sync_by_channel", False)))
     cmap_actions = {}
-    for cmap_name in ("viridis", "plasma", "magma", "inferno", "cividis", "afmhot", "gray", "Blues_r", "RdBu_r"):
+    for cmap_name in cmap_registry.featured_cmap_names("canvas_tile"):
         cmap_actions[cmap_menu.addAction(cmap_name)] = cmap_name
     actions["cmap_actions"] = cmap_actions
 

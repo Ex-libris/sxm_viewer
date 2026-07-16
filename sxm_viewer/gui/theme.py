@@ -16,6 +16,14 @@ matplotlib artists, and it must stay that way: never add a theme rule
 that paints *over* an image widget (no overlays, no opacity washes, no
 blend tricks).  Selection/hover treatments for image-bearing widgets are
 borders and external frames only.
+
+The single sanctioned exception is the explicit, user-opted "Full amber
+imagery" mode: while the Amber theme is active and the user checks that
+toggle, renderers recolor image artists through
+``sxm_viewer.cmap_registry.effective_cmap`` (a display-time override —
+per-file colormap choices and exports keep the true colormaps).  That
+override lives in the registry, not here; this module still never
+touches data imagery.
 """
 from __future__ import annotations
 
@@ -35,6 +43,10 @@ _THEME_LABELS = {
 # Semantic design tokens for the amber phosphor theme.  The palette aims
 # for a professional laboratory-instrument look: near-black warm
 # backgrounds, warm amber text, restrained bright-amber accents.
+# NOTE: window_bg / amber_muted / amber_primary are duplicated as the
+# "gui_amber_theme" colormap stops in sxm_viewer/cmap_registry.py
+# (AMBER_CMAP_STOPS) — that module must stay Qt-free and cannot import
+# this one. Keep the two in sync.
 AMBER = {
     "window_bg": "#100b05",
     "panel_bg": "#171006",

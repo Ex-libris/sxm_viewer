@@ -30,6 +30,7 @@ from __future__ import annotations
 from matplotlib.ticker import AutoLocator
 
 from ..._shared import np
+from ... import cmap_registry
 from ..plot_typography import apply_text_style
 
 
@@ -48,7 +49,9 @@ def sync_axes_to_view(ax, image, view, *, flip, origin, display_extent, title, s
     arr_plot = np.flipud(arr) if flip else arr
 
     image.set_data(arr_plot)
-    image.set_cmap(view.get("cmap", "viridis"))
+    # effective_cmap honors the "Full amber imagery" display override
+    # (identity when off). The view dict keeps the user's true cmap name.
+    image.set_cmap(cmap_registry.effective_cmap(view.get("cmap", "viridis")))
 
     if display_extent is not None:
         image.set_extent(display_extent)

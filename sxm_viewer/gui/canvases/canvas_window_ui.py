@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..._shared import QtCore, QtGui, QtWidgets, colormaps
+from ... import cmap_registry
 from ..styles import (
     CANVAS_DIALOG_STYLE,
     CANVAS_DIALOG_STYLE_LIGHT,
@@ -410,10 +411,9 @@ def build_inspector(window):
     colormap_layout.setSpacing(10)
 
     window.cmap_combo = QtWidgets.QComboBox()
-    try:
-        cmap_list = sorted(colormaps.keys())
-    except Exception:
-        cmap_list = ["viridis", "plasma", "inferno", "magma", "cividis"]
+    _featured = cmap_registry.featured_cmap_names("general")
+    cmap_list = _featured + [n for n in cmap_registry.all_cmap_names()
+                             if n not in set(_featured)]
     for name in cmap_list:
         try:
             icon = _colormap_icon(name, width=96, height=14)

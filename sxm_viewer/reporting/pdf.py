@@ -16,6 +16,7 @@ from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 from matplotlib import patches, patheffects
 
+from .. import cmap_registry
 from .channels import classify_channel
 
 PAGE_W, PAGE_H = 11.69, 8.27  # A4 landscape, inches
@@ -42,12 +43,15 @@ def _class_cmap(cls, override=None):
 
 def _panel_cmap(model, panel):
     """Colormap for an image panel: the user's starred preview favourite
-    for topography, the per-class convention otherwise."""
+    for topography, the per-class convention otherwise. The favourite is
+    resolved through the central registry so a name from the optional
+    extra-colormaps package degrades to the class default (instead of
+    crashing report generation) when that package isn't installed."""
     cls = str((panel or {}).get("cls") or "z")
     if cls == "z":
         fav = _prefs(model).get("preview_cmap")
         if fav:
-            return fav
+            return cmap_registry.get_cmap(fav, fallback=_class_cmap(cls)).name
     return _class_cmap(cls)
 
 

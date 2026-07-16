@@ -17,6 +17,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from ..._shared import QtCore, QtGui, QtWidgets
+from ... import cmap_registry
 
 try:  # pragma: no cover - optional dependency
     from scipy import ndimage
@@ -1126,7 +1127,7 @@ def _icd_export_diff_csv(self, path):
 class ImageCompareDialog(QtWidgets.QDialog):
     """Popup that aligns B onto A and renders image, scatter, and profile diagnostics."""
 
-    TOPO_CMAPS = ("viridis", "plasma", "magma", "inferno", "cividis", "afmhot", "gray")
+    TOPO_CMAPS = tuple(cmap_registry.featured_cmap_names("topo"))
     IMAGE_ORIGIN = "upper"
 
     def __init__(self, controller, viewer, snapshot_a, snapshot_b):

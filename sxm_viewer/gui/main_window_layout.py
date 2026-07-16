@@ -343,6 +343,11 @@ def _ensure_display_menu(viewer):
         "Forget the favourite colormaps/color cycle saved with the ★ buttons "
         "(preview, thumbnails, grid map, reports) and go back to the built-in defaults")
     viewer.reset_cmap_favorites_act.triggered.connect(viewer.clear_colormap_favorites)
+    viewer.extra_cmaps_status_act = viewer.display_menu.addAction("Extra colormaps...")
+    viewer.extra_cmaps_status_act.setToolTip(
+        "Status of the optional 'colormaps' package (pratiman-91) — when "
+        "installed, its colormaps appear in every colormap picker")
+    viewer.extra_cmaps_status_act.triggered.connect(viewer.on_extra_colormaps_status)
     viewer.display_menu.addSeparator()
     viewer.molecules_act = viewer.display_menu.addAction("Show molecules")
     viewer.molecules_act.setCheckable(True)
