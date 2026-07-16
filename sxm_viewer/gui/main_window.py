@@ -62,6 +62,9 @@ from ..utils.units import (
     _safe_float,
 )
 from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, resample_geometry, robust_limits
+from .colormap_gallery import ColormapGalleryDialog
+from .colormap_manager import ColormapManager
+from ..cmap_sorting import ColormapSorter, DEFAULT_STRATEGY
 from .minimap import FrameMiniMap
 from .workers.batch_export import BatchExportSignals, BatchExportWorker
 from .dialogs.collection_browser import CollectionBrowserDialog
@@ -1387,6 +1390,15 @@ class SXMGridViewer(QtWidgets.QWidget):
             "Save the current preview colormap as your default (used at startup and in reports). "
             "Clear via Display → Reset colormap defaults.",
             lambda: self.set_favorite_cmap('preview', self.preview_cmap_combo.currentText()))
+        self.preview_cmap_gallery_btn = QtWidgets.QToolButton()
+        self.preview_cmap_gallery_btn.setText("🎨")
+        self.preview_cmap_gallery_btn.setAutoRaise(True)
+        self.preview_cmap_gallery_btn.setFixedWidth(22)
+        self.preview_cmap_gallery_btn.setToolTip(
+            "Browse colormaps in a gallery with live preview. "
+            "Click 🔄 on any card to reverse it; sort by function, color, or usage. "
+            "Apply commits, Cancel restores.")
+        self.preview_cmap_gallery_btn.clicked.connect(self.on_open_colormap_gallery)
         preview_state_row = QtWidgets.QHBoxLayout()
         preview_state_row.setContentsMargins(0, 0, 0, 0)
         preview_state_row.setSpacing(8)
@@ -1397,6 +1409,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
         preview_state_row.addWidget(self.preview_cmap_star_btn)
+        preview_state_row.addWidget(self.preview_cmap_gallery_btn)
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_zero_cb)
         preview_state_row.addStretch(1)
@@ -11705,6 +11718,120 @@ QLabel:hover {{
 
     def on_preview_cmap_changed(self, idx):
         return viewer_preview.on_preview_cmap_changed(self, idx)
+
+    def on_open_colormap_gallery(self):
+        """Open the colormap gallery for the preview colormap.
+
+        Pending selections recolor the currently displayed views live via
+        the cheap set_cmap_for_current_views path only; per-file/global
+        cmap state is written exclusively on Apply, through the same
+        preview_cmap_combo path a manual combo change takes (so
+        thumbnails, config persistence, and per-file overrides all behave
+        identically). Cancel/close reverts the live recolor.
+        """
+        current = self.preview_cmap_combo.currentText() or self.preview_cmap
+        if self.last_preview:
+            key, idx = self.last_preview
+            try:
+                current = self.per_file_channel_cmap.get(
+                    (str(key), int(idx)), current)
+            except Exception:
+                pass
+        manager = ColormapManager(current, parent=self)
+        manager.pending_changed.connect(self._on_gallery_cmap_pending)
+        manager.applied_changed.connect(self._on_gallery_cmap_applied)
+        sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
+        strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
+        dlg = ColormapGalleryDialog(
+            manager, sorter=sorter, strategy=strategy, parent=self)
+        dlg.strategy_changed.connect(self._on_gallery_strategy_changed)
+        dlg.exec_()
+        manager.deleteLater()
+
+    def _on_gallery_cmap_pending(self, name, is_reversed):
+        # Resolving first also registers a programmatically-reversed
+        # variant under its joined name, so the string path below (and
+        # every later string consumer) can find it.
+        cmap_registry.get_colormap(name, is_reversed)
+        cmap_name = cmap_registry.join_cmap_name(name, is_reversed)
+        try:
+            cb = getattr(self.preview_canvas, "set_cmap_for_current_views", None)
+            if callable(cb):
+                cb(cmap_name)
+        except Exception:
+            pass
+
+    def _on_gallery_cmap_applied(self, name, is_reversed):
+        cmap_registry.get_colormap(name, is_reversed)
+        cmap_name = cmap_registry.join_cmap_name(name, is_reversed)
+        # Programmatically-reversed / extra-package maps may not be in the
+        # combos yet; add them so both combos can display the applied name.
+        for combo in (getattr(self, "thumb_cmap_combo", None),
+                      getattr(self, "preview_cmap_combo", None)):
+            if combo is not None and combo.findText(cmap_name) < 0:
+                try:
+                    icon = _colormap_icon(cmap_name, width=96, height=14)
+                except Exception:
+                    icon = QIcon()
+                combo.addItem(icon, cmap_name)
+        # Apply to the current thumbnail selection (Ctrl+A / multi-select),
+        # falling back to the highlighted-or-previewed image — the same
+        # targeting the Thumb colormap combo uses (on_thumb_cmap_changed) so
+        # thumbnails AND the preview update, not just the preview.
+        targets = list((getattr(self, "_ordered_thumbnail_selection",
+                                 lambda: [])() or []))
+        if not targets:
+            current = str(getattr(self, "selected_file_for_thumbs", "") or "")
+            if not current and self.last_preview:
+                current = str(self.last_preview[0])
+            if current:
+                targets = [current]
+        image_targets = [str(p) for p in targets
+                         if str(p) in getattr(self, "thumb_widgets", {})]
+        if image_targets:
+            self._set_thumbnail_entry_cmap(image_targets, cmap_name)
+            self._set_combo_text_silent(getattr(self, "preview_cmap_combo", None), cmap_name)
+            self._set_combo_text_silent(getattr(self, "thumb_cmap_combo", None), cmap_name)
+            # Keep the preview truthful if it was live-recolored during the
+            # gallery session but isn't one of the retargeted images.
+            if self.last_preview:
+                pk, pidx = self.last_preview
+                if str(pk) not in image_targets:
+                    try:
+                        self.show_file_channel(str(pk), int(pidx), use_local_cmap=True)
+                    except Exception:
+                        pass
+        else:
+            # Nothing loaded/selected: fall back to the global preview cmap.
+            self.preview_cmap_combo.setCurrentText(cmap_name)
+        try:
+            self._record_cmap_usage(name)
+        except Exception:
+            pass
+
+    def _on_gallery_strategy_changed(self, strategy):
+        self.config['colormap_sort_strategy'] = str(strategy)
+        save_config(self.config)
+
+    def _cmap_usage_stats(self):
+        """Usage provider for ColormapSorter: {base_name: (count, last_used)}."""
+        raw = self.config.get('colormap_usage', {}) or {}
+        stats = {}
+        for base, rec in raw.items():
+            try:
+                count, last = rec
+                stats[str(base)] = (int(count), float(last))
+            except Exception:
+                continue
+        return stats
+
+    def _record_cmap_usage(self, name):
+        base, _rev = cmap_registry.split_cmap_name(name)
+        usage = dict(self.config.get('colormap_usage', {}) or {})
+        count, _last = usage.get(base, (0, 0.0))
+        usage[base] = [int(count) + 1, float(time.time())]
+        self.config['colormap_usage'] = usage
+        save_config(self.config)
 
     def on_show_spectra_toggled(self, checked):
         self.show_spectra = bool(checked)

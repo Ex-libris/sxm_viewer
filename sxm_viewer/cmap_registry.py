@@ -17,6 +17,20 @@ Public surface:
   (when importable). Called lazily by every other public function.
 - ``all_cmap_names()`` / ``featured_cmap_names(context)`` /
   ``grouped_cmap_names()`` — enumeration for the GUI combo boxes.
+- ``split_cmap_name(name)`` / ``join_cmap_name(base, is_reversed)`` —
+  translate between the legacy matplotlib ``X_r`` string convention
+  (still the persistence/interchange format: ``per_file_channel_cmap``,
+  sessions, exports all store joined strings) and the
+  ``(base name, is_reversed)`` pair model used by the gallery/manager.
+- ``get_colormap(name, is_reversed, fallback)`` — never-raising
+  resolution of a ``(base, reversed)`` pair; the flip is programmatic
+  (``Colormap.reversed()``), not a registry-name lookup, so it works
+  for cmaps that have no registered ``_r`` twin (it registers the
+  reversed variant on first use so joined names keep resolving
+  app-wide).
+- ``base_cmap_names()`` / ``grouped_base_cmap_names()`` /
+  ``featured_cmap_entries(context)`` — ``_r``-free enumeration for the
+  colormap gallery (one entry per base map; direction is UI state).
 - ``get_cmap(name, fallback)`` — never-raising name -> Colormap
   resolution with a shared object cache.
 - ``set_forced_cmap(name)`` / ``effective_cmap_name(name)`` /
@@ -54,39 +68,52 @@ _FORCED_CMAP = None
 # Curated per-context featured lists. These are colormap knowledge, not
 # widget knowledge — keeping them here (instead of scattered per-widget
 # constants) is what prevents the lists from drifting apart again.
+# Entries are (base name, is_reversed) pairs: direction is data, never an
+# ``_r`` suffix baked into the name (legacy joined strings come out of
+# featured_cmap_names, which composes them on the fly).
 _FEATURED = {
     # Mirrors the historical `common_cmaps` shortlist from the preview
-    # canvas context menu (Blues_r is the app's default thumbnail/preview
-    # cmap — keep it featured).
+    # canvas context menu (reversed Blues is the app's default
+    # thumbnail/preview cmap — keep it featured).
     "general": [
-        "viridis", "plasma", "inferno", "magma", "cividis",
-        "turbo", "gray", "afmhot", "Blues_r", "RdBu_r", "coolwarm",
+        ("viridis", False), ("plasma", False), ("inferno", False),
+        ("magma", False), ("cividis", False), ("turbo", False),
+        ("gray", False), ("afmhot", False), ("Blues", True),
+        ("RdBu", True), ("coolwarm", False),
     ],
     # Historical gui/controllers/image_compare.py TOPO_CMAPS.
     "topo": [
-        "viridis", "plasma", "magma", "inferno", "cividis", "afmhot", "gray",
+        ("viridis", False), ("plasma", False), ("magma", False),
+        ("inferno", False), ("cividis", False), ("afmhot", False),
+        ("gray", False),
     ],
     # Historical publication-canvas tile context-menu shortlist
     # (gui/canvases/canvas_items.py).
     "canvas_tile": [
-        "viridis", "plasma", "magma", "inferno", "cividis", "afmhot",
-        "gray", "Blues_r", "RdBu_r",
+        ("viridis", False), ("plasma", False), ("magma", False),
+        ("inferno", False), ("cividis", False), ("afmhot", False),
+        ("gray", False), ("Blues", True), ("RdBu", True),
     ],
     # Historical gui/canvases/molecular_overlay.py curated categories,
     # following matplotlib's documented colormap classes. Diverging fits a
     # signed deviation best; sequential is for magnitude-only coloring;
     # qualitative is for categorical data (no implied ordering).
     "molecule_diverging": [
-        "coolwarm", "RdBu", "RdYlBu", "RdYlGn", "PiYG", "PRGn", "BrBG",
-        "PuOr", "Spectral", "seismic", "bwr",
+        ("coolwarm", False), ("RdBu", False), ("RdYlBu", False),
+        ("RdYlGn", False), ("PiYG", False), ("PRGn", False),
+        ("BrBG", False), ("PuOr", False), ("Spectral", False),
+        ("seismic", False), ("bwr", False),
     ],
     "molecule_sequential": [
-        "viridis", "plasma", "inferno", "magma", "cividis", "YlOrRd",
-        "YlGnBu", "OrRd", "PuBu", "BuGn",
+        ("viridis", False), ("plasma", False), ("inferno", False),
+        ("magma", False), ("cividis", False), ("YlOrRd", False),
+        ("YlGnBu", False), ("OrRd", False), ("PuBu", False),
+        ("BuGn", False),
     ],
     "molecule_qualitative": [
-        "tab10", "Set2", "Set1", "Dark2", "Accent", "Paired", "Pastel1",
-        "Pastel2", "tab20",
+        ("tab10", False), ("Set2", False), ("Set1", False),
+        ("Dark2", False), ("Accent", False), ("Paired", False),
+        ("Pastel1", False), ("Pastel2", False), ("tab20", False),
     ],
 }
 
@@ -189,11 +216,27 @@ def all_cmap_names():
     return sorted(matplotlib.colormaps.keys())
 
 
-def featured_cmap_names(context="general"):
-    """Curated shortlist for a context, filtered to registered names."""
+def featured_cmap_entries(context="general"):
+    """Curated shortlist for a context as ``(base_name, is_reversed)``
+    pairs — the primary data model; direction is a flag, never an ``_r``
+    name. Filtered to registered base names."""
     ensure_registered()
-    names = _FEATURED.get(context) or _FEATURED["general"]
-    return [n for n in names if n in matplotlib.colormaps]
+    entries = _FEATURED.get(context) or _FEATURED["general"]
+    return [(n, bool(r)) for (n, r) in entries if n in matplotlib.colormaps]
+
+
+def featured_cmap_names(context="general"):
+    """Legacy joined-string view of ``featured_cmap_entries`` for callers
+    that consume matplotlib-style names (combo boxes, menus). Output is
+    unchanged from the historical ``_r``-suffixed lists."""
+    names = []
+    for base, is_reversed in featured_cmap_entries(context):
+        if is_reversed:
+            # Materialize/register the reversed variant so the joined name
+            # resolves everywhere a plain string is expected.
+            get_colormap(base, True)
+        names.append(join_cmap_name(base, is_reversed))
+    return names
 
 
 def grouped_cmap_names():
@@ -237,6 +280,100 @@ def get_cmap(name, fallback="viridis"):
             cmap = matplotlib.colormaps.get_cmap("viridis")
     _CMAP_OBJECT_CACHE[key] = cmap
     return cmap
+
+
+# --- Base-name / reversed-flag model (colormap gallery + manager) ----------
+
+def split_cmap_name(name):
+    """``"Blues_r"`` -> ``("Blues", True)``; anything else -> ``(name, False)``.
+
+    The ``_r`` suffix is only treated as a reversal marker when the base
+    name is itself registered, so a hypothetical map genuinely named
+    ``*_r`` with no forward twin is left alone."""
+    ensure_registered()
+    s = str(name or "")
+    if s.endswith("_r"):
+        base = s[:-2]
+        if base and base in matplotlib.colormaps:
+            return base, True
+    return s, False
+
+
+def join_cmap_name(base, is_reversed):
+    """Compose the legacy string form of a ``(base, is_reversed)`` pair.
+
+    Joined strings remain the persistence/interchange format
+    (``per_file_channel_cmap``, sessions, exports); ``base`` must already
+    be a base name (use ``split_cmap_name`` first if unsure)."""
+    return str(base) + "_r" if is_reversed else str(base)
+
+
+def get_colormap(name, is_reversed=False, fallback="viridis"):
+    """Resolve a ``(name, is_reversed)`` pair to a Colormap; never raises.
+
+    The transformation is programmatic — ``Colormap.reversed()`` — not a
+    ``_r``-filename lookup, so it works for any registered map (including
+    extra-package maps with no registered reversed twin). An ``_r`` suffix
+    already present in ``name`` is folded into the flag (XOR: asking for
+    the reverse of ``"Blues_r"`` yields forward Blues). On first use of a
+    reversed variant with no registered twin, the variant is registered
+    under the joined name so plain-string call sites (sessions, combos,
+    exports) keep resolving it. Shares ``get_cmap``'s object cache —
+    same rule applies: never mutate a returned Colormap."""
+    ensure_registered()
+    base, name_rev = split_cmap_name(name if name else fallback)
+    is_reversed = bool(is_reversed) ^ name_rev
+    if base not in matplotlib.colormaps:
+        return get_cmap(str(fallback))
+    if not is_reversed:
+        return get_cmap(base, fallback=fallback)
+    joined = join_cmap_name(base, True)
+    cached = _CMAP_OBJECT_CACHE.get(joined)
+    if cached is not None:
+        return cached
+    if joined in matplotlib.colormaps:
+        return get_cmap(joined, fallback=fallback)
+    forward = get_cmap(base, fallback=fallback)
+    try:
+        cmap = forward.reversed(joined)
+    except Exception:
+        return forward
+    try:
+        matplotlib.colormaps.register(cmap, name=joined)
+    except Exception:
+        pass
+    _CMAP_OBJECT_CACHE[joined] = cmap
+    return cmap
+
+
+def base_cmap_names():
+    """Every selectable colormap collapsed to base names, sorted —
+    ``_r`` twins are folded into their forward map (the gallery's
+    enumeration; direction is per-selection UI state, not a list entry)."""
+    ensure_registered()
+    names = set(matplotlib.colormaps)
+    return sorted(n for n in names
+                  if not (n.endswith("_r") and n[:-2] in names))
+
+
+def grouped_base_cmap_names():
+    """``grouped_cmap_names`` counterpart for the gallery: OrderedDict of
+    {group label: [base names]} with ``_r`` twins collapsed."""
+    ensure_registered()
+    featured = []
+    for base, _rev in featured_cmap_entries("general"):
+        if base not in featured:
+            featured.append(base)
+    custom = [AMBER_CMAP_NAME] if AMBER_CMAP_NAME in matplotlib.colormaps else []
+    extras = sorted({split_cmap_name(n)[0] for n in _EXTRA_NAMES})
+    shown = set(featured) | set(custom) | set(extras)
+    rest = [n for n in base_cmap_names() if n not in shown]
+    return OrderedDict((
+        ("Featured", featured),
+        ("Custom", custom),
+        ("Extra (colormaps pkg)", extras),
+        ("Matplotlib", rest),
+    ))
 
 
 # --- Display-time forced override (the "Full amber imagery" hook) ----------

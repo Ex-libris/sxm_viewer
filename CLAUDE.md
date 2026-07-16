@@ -746,6 +746,52 @@ dicts, `per_file_channel_cmap`, sessions, and file exports always keep
 the user's true cmap names. Display → "Extra colormaps..." shows the
 optional-package status/install hint.
 
+**Base-name / reversed-flag model.** `_FEATURED` entries are
+`(base_name, is_reversed)` pairs — the `_r` suffix never appears in the
+primary data lists. `split_cmap_name`/`join_cmap_name` translate to/from
+the legacy `X_r` string form, which stays the persistence/interchange
+format (`per_file_channel_cmap`, sessions, exports, combo texts);
+`featured_cmap_names` is the unchanged legacy string view over
+`featured_cmap_entries`. `get_colormap(name, is_reversed, fallback)`
+resolves a pair with a *programmatic* `Colormap.reversed()` (an `_r`
+suffix in `name` XOR-folds into the flag) and, on first reversal of a map
+with no registered `_r` twin (extra-package maps), registers the variant
+under its joined name so plain-string call sites keep resolving it.
+`base_cmap_names()`/`grouped_base_cmap_names()` enumerate with `_r` twins
+collapsed.
+
+### Colormap gallery (`gui/colormap_manager.py`, `gui/colormap_gallery.py`, `cmap_sorting.py`)
+The 🎨 button next to the preview cmap combo opens `ColormapGalleryDialog`.
+`ColormapManager` (viewer-agnostic `QObject` at `gui/` root, like
+`theme.py` — not a `gui/controllers/` class) holds `(selected base name,
+is_reversed)` as two independently-settable axes, twice: a *pending*
+selection (`pending_changed`, drives live preview) and an *applied* one
+(`applied_changed`, emitted only by `apply()`; `revert()` rolls pending
+back). `ColormapGallery` is a dumb `QListView` card grid over base names
+(never `_r`); its delegate builds gradient pixmaps lazily on first paint,
+so with the extras package (~970 maps) only the visible viewport renders.
+It emits `name_selected`/`reverse_requested` independently and paints
+selection purely from `set_selection` (NoSelection mode — the manager is
+the single source of truth; a 🔄 click toggles the selected card or picks
+a new card reversed). Ordering is delegated to
+`cmap_sorting.ColormapSorter`, which returns `(section_label, [names])`
+sections for a strategy (`functional`/`similarity`/`usage`/`alphabetical`)
+— functional/color inject full-width section headers into the grid.
+Colormap metadata (`cmap_sorting.classify`) is auto-derived: matplotlib's
+documented category tables → name rules (colorcet class letter,
+qualitative family stems) → LUT sampling (lightness profile +
+discreteness), so it also classifies extra-package maps a static table
+never could. Usage stats come from a provider callable
+(`main_window._cmap_usage_stats`, persisted in config as
+`colormap_usage`), keeping the sorter free of config/Qt.
+Main-window wiring (`on_open_colormap_gallery`): pending changes recolor
+the current preview via the cheap `set_cmap_for_current_views` path only;
+Apply commits to the **thumbnail selection** (Ctrl+A / multi-select,
+falling back to the highlighted/previewed image) through
+`_set_thumbnail_entry_cmap` — the same targeting as the Thumb cmap combo
+(`on_thumb_cmap_changed`) — so thumbnails and preview both update, and it
+records usage + persists the sort strategy (`colormap_sort_strategy`).
+
 ### Favourite (default) colormaps
 Small ★ buttons next to the thumbnail/preview colormap combos
 (`main_window.py`) and the Grid map's colormap + color-cycle selectors
