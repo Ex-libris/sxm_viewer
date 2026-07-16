@@ -61,7 +61,7 @@ from ..utils.units import (
     _auto_display_unit,
     _safe_float,
 )
-from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, robust_limits
+from .thumbnail_render import _ThumbnailJob, _colormap_icon, _value_in_nm, apply_adjustment_spec, convert_to_si, detect_valid_scan_region, resample_geometry, robust_limits
 from .minimap import FrameMiniMap
 from .workers.batch_export import BatchExportSignals, BatchExportWorker
 from .dialogs.collection_browser import CollectionBrowserDialog
@@ -726,6 +726,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.virtual_copy_order = []
         self.thumbnail_filters = {}
         self.image_adjustments = defaultdict(dict)
+        # Global-undo entries for Crop/Rotate actions: ("tone", key, ch,
+        # old_spec) restores a display spec, ("copy", key) removes an
+        # [edit] virtual copy. Consumed by _undo_last_adjustment.
+        self._adjustment_undo_stack = []
         self._last_base_array = None
         self._last_base_extent = None
         self._last_base_unit = None
@@ -3712,6 +3716,11 @@ QLabel:hover {{
         except Exception:
             pass
         try:
+            if self._undo_last_adjustment():
+                return
+        except Exception:
+            pass
+        try:
             if self.collection_controller.undo_last_collection_action():
                 self._refresh_collection_tray()
                 return
@@ -5639,6 +5648,23 @@ QLabel:hover {{
             painter.setPen(QtGui.QColor('white'))
             painter.setFont(QtGui.QFont("Segoe UI", 9, QtGui.QFont.Bold))
             painter.drawText(QtCore.QRect(pix.width() - (badge_w + 6), 6, badge_w, 18), QtCore.Qt.AlignCenter, badge_text)
+            painter.end()
+        try:
+            has_adjust = bool(self._get_adjust_spec(file_key, channel_idx))
+        except Exception:
+            has_adjust = False
+        if has_adjust:
+            # Amber "ADJ" chip, bottom-left: this image has live display
+            # adjustments (clip/gamma) applied — see Image > Crop/Rotate.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = QtCore.QRectF(6, pix.height() - 24, 34, 18)
+            painter.setBrush(QtGui.QColor(255, 176, 0, 225))
+            painter.setPen(QtGui.QPen(QtGui.QColor(90, 60, 0), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(30, 20, 0))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, "ADJ")
             painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
@@ -8106,6 +8132,11 @@ QLabel:hover {{
             QtWidgets.QMessageBox.critical(self, "PowerPoint", str(exc))
 
     def on_adjust_image(self):
+        """Image > Crop/Rotate. Geometry (crop/rotate/flips) becomes an
+        adjacent virtual copy — the original is never altered. Clip/gamma
+        stay live display adjustments on the original (or on the new copy
+        when geometry was applied too); cmap goes to per_file_channel_cmap
+        as before."""
         if not self.last_preview or not hasattr(self, '_last_base_array'):
             QtWidgets.QMessageBox.information(self, "Adjust image", "Select an image first.")
             return
@@ -8115,15 +8146,8 @@ QLabel:hover {{
             QtWidgets.QMessageBox.information(self, "Adjust image", "Image data not available.")
             return
         current_cmap = self.per_file_channel_cmap.get((file_key, int(channel_idx)), self.preview_cmap_combo.currentText() or self.preview_cmap)
-        spec = self._get_adjust_spec(file_key, channel_idx) or {
-            'crop': {'x0': 0, 'y0': 0, 'x1': base_arr.shape[1], 'y1': base_arr.shape[0]},
-            'rotate': 0.0,
-            'flip_h': False,
-            'flip_v': False,
-            'clip': {'low': None, 'high': None},
-            'gamma': 1.0,
-            'cmap': current_cmap,
-        }
+        spec = self._get_adjust_spec(file_key, channel_idx) or {}
+        spec = dict(spec)
         spec.setdefault('cmap', current_cmap)
         base_extent = getattr(self, '_last_base_extent', None)
         axis_unit = getattr(self, '_last_axis_unit', 'px')
@@ -8134,13 +8158,111 @@ QLabel:hover {{
                                 axis_unit=axis_unit, colorbar_label=colorbar_label,
                                 base_unit=getattr(self, '_last_base_unit', None),
                                 relative_axes=bool(getattr(self, 'relative_axes', False)))
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            new_spec = dlg.current_spec
-            self._set_adjust_spec(file_key, channel_idx, new_spec)
-            new_cmap = dlg.cmap_combo.currentText()
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        geom = dlg.geometry_spec()
+        tone = dlg.tone_spec()
+        new_cmap = dlg.selected_cmap()
+        old_spec = self._get_adjust_spec(file_key, channel_idx)
+
+        if geom is not None:
+            new_arr, new_extent = resample_geometry(base_arr, base_extent, geom)
+            title = f"{Path(str(file_key)).stem} [edit]"
+            angle = float(geom.get('rotate', 0.0) or 0.0)
+            if abs(angle) > 1e-3:
+                title += f" rot={angle:g}°"
+            view = {
+                'path': str(file_key),
+                'arr': new_arr,
+                'channel_idx': int(channel_idx),
+                'title': title,
+            }
+            if new_extent is not None:
+                view['extent_raw'] = tuple(float(v) for v in new_extent)
+            new_key = self._create_virtual_view_copy(
+                view, insert_after_key=str(file_key), tag="[edit]", op="edit")
+            if not new_key:
+                QtWidgets.QMessageBox.warning(
+                    self, "Crop/Rotate", "Could not create the virtual copy.")
+                return
+            self._adjustment_undo_stack.append(("copy", str(new_key)))
+            # Tone settings ride along on the copy (still live/reversible
+            # there); the ORIGINAL's display spec is untouched by design.
+            if tone is not None:
+                self._set_adjust_spec(new_key, channel_idx, dict(tone))
+            if new_cmap:
+                self.per_file_channel_cmap[(str(new_key), int(channel_idx))] = new_cmap
+            self._refresh_adjusted_channel(new_key, channel_idx)
+            log_status(f"[Crop/Rotate] Created virtual copy '{title}' (Ctrl+Z removes it)")
+        else:
+            # Tone-only Accept: live display adjustment on the original,
+            # with proper cache invalidation and global-undo support.
+            changed = (tone or None) != (old_spec or None)
+            self._set_adjust_spec(file_key, channel_idx, dict(tone) if tone else None)
             if new_cmap:
                 self.per_file_channel_cmap[(str(file_key), int(channel_idx))] = new_cmap
+            if changed:
+                self._adjustment_undo_stack.append(
+                    ("tone", str(file_key), int(channel_idx),
+                     dict(old_spec) if old_spec else None))
+            self._refresh_adjusted_channel(file_key, channel_idx)
+
+    def _refresh_adjusted_channel(self, file_key, channel_idx):
+        """Re-render every surface showing file_key after its display
+        adjustments changed — thumbnail caches key on the spec signature,
+        but the pixmap caches and the visible grid/preview don't refresh
+        by themselves (the old staleness bug)."""
+        try:
+            self._invalidate_thumbnail_cache(paths=[str(file_key)])
+        except Exception:
+            pass
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        try:
             self.show_file_channel(file_key, channel_idx)
+        except Exception:
+            pass
+
+    def on_reset_image_adjustments(self):
+        """Image > Reset display adjustments (also in the thumbnail context
+        menu): clear the previewed file's clip/gamma spec."""
+        if not self.last_preview:
+            return
+        file_key, channel_idx = self.last_preview
+        old_spec = self._get_adjust_spec(file_key, channel_idx)
+        if not old_spec:
+            log_status("[Crop/Rotate] No display adjustments to reset")
+            return
+        self._adjustment_undo_stack.append(
+            ("tone", str(file_key), int(channel_idx), dict(old_spec)))
+        self._set_adjust_spec(file_key, channel_idx, None)
+        self._refresh_adjusted_channel(file_key, channel_idx)
+        log_status("[Crop/Rotate] Display adjustments reset (Ctrl+Z restores)")
+
+    def _undo_last_adjustment(self):
+        """Ctrl+Z step for Crop/Rotate actions: restores the previous
+        tone spec, or removes an [edit] virtual copy. Returns True when
+        something was undone."""
+        stack = getattr(self, '_adjustment_undo_stack', None)
+        while stack:
+            entry = stack.pop()
+            if entry[0] == "tone":
+                _, file_key, channel_idx, old_spec = entry
+                self._set_adjust_spec(file_key, channel_idx,
+                                      dict(old_spec) if old_spec else None)
+                self._refresh_adjusted_channel(file_key, channel_idx)
+                log_status("[Crop/Rotate] Display adjustments restored")
+                return True
+            if entry[0] == "copy":
+                new_key = entry[1]
+                if new_key not in getattr(self, '_processed_views', {}):
+                    continue  # already removed by hand; try the next entry
+                self._remove_virtual_entries([new_key])
+                log_status("[Crop/Rotate] Virtual copy removed")
+                return True
+        return False
 
     def _prepare_render_items(self, header_path, config):
         header_path = Path(header_path)
@@ -10004,6 +10126,29 @@ QLabel:hover {{
             clear_sel = QtWidgets.QAction("Clear filter (selected)", menu)
             clear_sel.triggered.connect(lambda _, paths=list(targets): self._clear_filter_for_paths(paths))
             menu.addAction(clear_sel)
+        has_adjust = False
+        try:
+            ch_for_menu = int(self.channel_dropdown.currentIndex())
+            has_adjust = any(bool(self._get_adjust_spec(p, ch_for_menu)) for p in targets)
+        except Exception:
+            has_adjust = False
+        if has_adjust:
+            reset_adjust_act = QtWidgets.QAction("Reset display adjustments", menu)
+            reset_adjust_act.setToolTip(
+                "Clear the clip/gamma display adjustments from Image > Crop/Rotate (Ctrl+Z restores)")
+
+            def _reset_targets(_=False, paths=list(targets), ch=None):
+                ch = int(self.channel_dropdown.currentIndex()) if ch is None else ch
+                for p in paths:
+                    old = self._get_adjust_spec(p, ch)
+                    if not old:
+                        continue
+                    self._adjustment_undo_stack.append(("tone", str(p), int(ch), dict(old)))
+                    self._set_adjust_spec(p, ch, None)
+                    self._refresh_adjusted_channel(p, ch)
+
+            reset_adjust_act.triggered.connect(_reset_targets)
+            menu.addAction(reset_adjust_act)
         menu.addSeparator()
         add_source_file_menu(menu, fp, self)
 

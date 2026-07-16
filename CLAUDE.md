@@ -675,6 +675,37 @@ entirely off-thread. Never let the worker touch the viewer.
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
 
+### Crop/Rotate (Image menu) vs quick-crop — two tools, one output convention
+Both crop tools are non-destructive and produce **virtual copies**
+(`_create_virtual_view_copy` → `_processed_views`); the original file's
+data is never altered.
+- **Image > Crop/Rotate** (`gui/dialogs/image_adjust.py`,
+  `MainWindow.on_adjust_image`): geometry (crop/rotate/flips) creates an
+  adjacent `[edit]`-tagged copy on Apply, resampled in the rotated frame
+  by `thumbnail_render.resample_geometry` (quick-crop's approach — output
+  never contains NaN padding; the crop rect is clamped to
+  `largest_inscribed_rect`). The dialog's workspace always shows the
+  rotated image and the crop rect lives in that rotated frame; the result
+  preview uses the same `resample_geometry`, so preview == result. Clip/
+  gamma/cmap are **live display adjustments**: clip+gamma go to
+  `viewer.image_adjustments` (tone-only now — geometry is never written
+  there anymore), cmap to `per_file_channel_cmap`. Every
+  `image_adjustments` mutation must run the invalidation trio
+  (`_refresh_adjusted_channel`: per-file thumbnail cache invalidation +
+  grid repopulate + preview re-render) or stale pixmaps linger — that was
+  the tool's historical "persists after undo/reset" bug. Adjusted images
+  show "• adjusted" in the preview title and an amber ADJ chip on the
+  thumbnail; Image > "Reset display adjustments" (and the thumbnail
+  context menu) clears the spec. All these actions push onto
+  `viewer._adjustment_undo_stack`, consumed by `_undo_last_adjustment` in
+  the global Ctrl+Z chain (between quick-crop undo and collection undo).
+  **Legacy sessions**: `apply_adjustment_spec` keeps full geometry
+  support forever so old geometry specs render unchanged; opening the
+  dialog on one seeds its controls (migration-on-touch) and Accept
+  converts it to a copy.
+- **Quick-crop template** (Ctrl+Shift+C, `gui/controllers/quick_crop.py`)
+  is unchanged: `[crop]`-tagged copies via `_on_preview_crop`.
+
 ### Central colormap registry (`sxm_viewer/cmap_registry.py`)
 Qt-free single source of truth for colormaps. Registers the custom
 `gui_amber_theme` cmap (stops synced by comment with `gui/theme.py`'s

@@ -174,8 +174,28 @@ def create_main_toolbar(viewer):
     viewer.toolbar_histogram_reset_act.triggered.connect(lambda: viewer._reset_contrast(viewer.preview_canvas))
     viewer.toolbar_image_menu.addSeparator()
     viewer.toolbar_crop_rotate_act = viewer.toolbar_image_menu.addAction("Crop/Rotate...")
-    viewer.toolbar_crop_rotate_act.setToolTip("Open crop, rotate, flip, clipping, gamma, and colormap controls")
+    viewer.toolbar_crop_rotate_act.setToolTip(
+        "Crop/rotate/flip into a new virtual copy (the original is never "
+        "altered); clip, gamma, and colormap stay live on this image")
     viewer.toolbar_crop_rotate_act.triggered.connect(viewer.on_adjust_image)
+    viewer.toolbar_reset_adjust_act = viewer.toolbar_image_menu.addAction("Reset display adjustments")
+    viewer.toolbar_reset_adjust_act.setToolTip(
+        "Clear the previewed image's clip/gamma display adjustments (Ctrl+Z restores)")
+    viewer.toolbar_reset_adjust_act.triggered.connect(viewer.on_reset_image_adjustments)
+
+    def _sync_image_menu():
+        act = getattr(viewer, "toolbar_reset_adjust_act", None)
+        if act is None:
+            return
+        has_spec = False
+        try:
+            if viewer.last_preview:
+                has_spec = bool(viewer._get_adjust_spec(*viewer.last_preview))
+        except Exception:
+            has_spec = False
+        act.setEnabled(has_spec)
+
+    viewer.toolbar_image_menu.aboutToShow.connect(_sync_image_menu)
     viewer.toolbar_image_btn.setMenu(viewer.toolbar_image_menu)
     toolbar.addWidget(viewer.toolbar_image_btn)
 

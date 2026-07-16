@@ -99,6 +99,7 @@ from ...data.spectroscopy import (
     _mtime,
     _read_text,
 )
+from ... import cmap_registry
 from ..thumbnail_render import (
     array_to_qimage,
     _ThumbnailJobSignals,
@@ -111,6 +112,9 @@ from ..thumbnail_render import (
     _interp_index,
     sample_array_value,
     apply_adjustment_spec,
+    resample_geometry,
+    largest_inscribed_rect,
+    geometry_is_identity,
     _rotate_extent_box,
     _trim_nan_border,
     save_wsxm_xyz,
@@ -119,13 +123,19 @@ from ..thumbnail_render import (
 class ImageAdjustPreviewPanel(QtWidgets.QWidget):
     """
     Two-panel Matplotlib view:
-      - workspace: where user edits crop (and optionally rotation by ctrl+right-drag)
-      - preview: final result preview (with colorbar + optional scalebar)
+      - workspace: always shows the *rotated* image (flips applied); the
+        crop rectangle is drawn and edited in that rotated frame, clamped
+        by the dialog to the largest inscribed rectangle so the result can
+        never contain out-of-source (NaN) pixels. Rotation via
+        ctrl+right-drag or the slider.
+      - preview: final result preview (with colorbar + optional scalebar),
+        rendered by the exact same engine that produces the virtual copy.
 
     IMPORTANT: workspace pan/zoom is view-only and does not affect export.
-    Crop coordinates are pixel indices with end-exclusive convention (x1/y1 are slice end).
+    Crop coordinates are (left, right, bottom, top) in rotated-frame
+    source-pixel units (y up), matching thumbnail_render.resample_geometry.
     """
-    selectionMade = QtCore.pyqtSignal(int, int, int, int)
+    selectionMade = QtCore.pyqtSignal(float, float, float, float)
     rotationChanged = QtCore.pyqtSignal(float)
 
     def __init__(self, parent=None):
@@ -162,9 +172,11 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
             props=dict(edgecolor='#ffca28', facecolor='none', linewidth=1.5),
         )
 
-        self._base_shape = (1, 1)
+        self._ws_bounds = (0.0, 1.0, 0.0, 1.0)  # (x0, x1, y0, y1) workspace extent
         self._axis_unit = 'px'
-        self._crop_spec = {'x0': 0, 'y0': 0, 'x1': 1, 'y1': 1}
+        self._crop_rect = (0.0, 1.0, 0.0, 1.0)  # (left, right, bottom, top)
+        self._inscribed_rect = None
+        self._inscribed_patch = None
 
         self._current_rotation = 0.0
         self._rotation_drag = None
@@ -194,8 +206,9 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
     def set_rotation_angle(self, angle):
         self._current_rotation = float(angle)
 
-    def set_base_geometry(self, shape, axis_unit=None):
-        self._base_shape = tuple(shape)
+    def set_workspace_bounds(self, bounds, axis_unit=None):
+        """bounds = (x0, x1, y0, y1) of the rotated workspace frame."""
+        self._ws_bounds = tuple(float(v) for v in bounds)
         if axis_unit:
             self._axis_unit = axis_unit
         self.reset_workspace_view()
@@ -204,26 +217,42 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
         self._workspace_xlim = None
         self._workspace_ylim = None
 
-    def update_workspace(self, arr, axis_unit, crop_spec, cmap_name):
+    def update_workspace(self, arr, ws_bounds, axis_unit, crop_rect, cmap_name,
+                         inscribed_rect=None):
+        """Show the rotated image (already resampled by the dialog) whose
+        display extent is ws_bounds, with the crop selector at crop_rect
+        and a dashed guide at the largest inscribed rectangle."""
         self._axis_unit = axis_unit or self._axis_unit
-        self._crop_spec = crop_spec or self._crop_spec
+        if ws_bounds is not None and tuple(ws_bounds) != self._ws_bounds:
+            self.set_workspace_bounds(ws_bounds, axis_unit)
+        if crop_rect is not None:
+            self._crop_rect = tuple(float(v) for v in crop_rect)
+        self._inscribed_rect = tuple(float(v) for v in inscribed_rect) if inscribed_rect else None
 
         self.workspace_ax.clear()
-        a = np.asarray(arr)
-        a = np.flipud(a)
-        h, w = a.shape[:2]
-        self.workspace_ax.imshow(a, extent=(0, w, 0, h), origin='lower', aspect='equal', cmap=cmap_name)
+        self._inscribed_patch = None
+        a = np.ma.masked_invalid(np.flipud(np.asarray(arr)))
+        x0, x1, y0, y1 = self._ws_bounds
+        self.workspace_ax.imshow(a, extent=(x0, x1, y0, y1), origin='lower',
+                                 aspect='equal', cmap=cmap_name)
 
         if self._workspace_xlim is None or self._workspace_ylim is None:
-            self.workspace_ax.set_xlim(0, w)
-            self.workspace_ax.set_ylim(0, h)
+            self.workspace_ax.set_xlim(x0, x1)
+            self.workspace_ax.set_ylim(y0, y1)
         else:
             self.workspace_ax.set_xlim(*self._workspace_xlim)
             self.workspace_ax.set_ylim(*self._workspace_ylim)
 
-        self.workspace_ax.set_title("Crop workspace", fontsize=10)
+        self.workspace_ax.set_title("Crop workspace (rotated frame)", fontsize=10)
         self.workspace_ax.set_xlabel(f"x [{self._axis_unit}]")
         self.workspace_ax.set_ylabel(f"y [{self._axis_unit}]")
+
+        if self._inscribed_rect is not None:
+            il, ir, ib, it = self._inscribed_rect
+            self._inscribed_patch = patches.Rectangle(
+                (il, ib), ir - il, it - ib, fill=False,
+                edgecolor='#4dd0e1', linestyle='--', linewidth=1.0, alpha=0.8)
+            self.workspace_ax.add_patch(self._inscribed_patch)
 
         self._apply_crop_rectangle()
         try:
@@ -312,17 +341,14 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
     def _on_workspace_select(self, eclick, erelease):
         if eclick.xdata is None or erelease.xdata is None:
             return
-        h, w = self._base_shape
-        x0f = float(min(eclick.xdata, erelease.xdata))
-        x1f = float(max(eclick.xdata, erelease.xdata))
-        y0f = float(min(eclick.ydata, erelease.ydata))
-        y1f = float(max(eclick.ydata, erelease.ydata))
-
-        x0 = int(np.clip(np.floor(x0f), 0, max(0, w - 1)))
-        y0 = int(np.clip(np.floor(y0f), 0, max(0, h - 1)))
-        x1 = int(np.clip(np.ceil(x1f), x0 + 1, w))
-        y1 = int(np.clip(np.ceil(y1f), y0 + 1, h))
-        self.selectionMade.emit(x0, x1, y0, y1)
+        left = float(min(eclick.xdata, erelease.xdata))
+        right = float(max(eclick.xdata, erelease.xdata))
+        bottom = float(min(eclick.ydata, erelease.ydata))
+        top = float(max(eclick.ydata, erelease.ydata))
+        if right - left < 1.0 or top - bottom < 1.0:
+            return
+        # The dialog clamps to the inscribed rectangle and square lock.
+        self.selectionMade.emit(left, right, bottom, top)
 
     def _on_press(self, event):
         if event.inaxes is not self.workspace_ax:
@@ -349,9 +375,9 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
             dy = sy - float(event.ydata)
             x0, x1 = xlim0[0] + dx, xlim0[1] + dx
             y0, y1 = ylim0[0] + dy, ylim0[1] + dy
-            h, w = self._base_shape
-            x0, x1 = self._clamp_span(x0, x1, 0.0, float(w))
-            y0, y1 = self._clamp_span(y0, y1, 0.0, float(h))
+            wx0, wx1, wy0, wy1 = self._ws_bounds
+            x0, x1 = self._clamp_span(x0, x1, wx0, wx1)
+            y0, y1 = self._clamp_span(y0, y1, wy0, wy1)
             self._workspace_xlim = (x0, x1)
             self._workspace_ylim = (y0, y1)
             self.workspace_ax.set_xlim(x0, x1)
@@ -388,9 +414,9 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
         nx1 = x + (x1 - x) * scale
         ny0 = y - (y - y0) * scale
         ny1 = y + (y1 - y) * scale
-        h, w = self._base_shape
-        nx0, nx1 = self._clamp_span(nx0, nx1, 0.0, float(w))
-        ny0, ny1 = self._clamp_span(ny0, ny1, 0.0, float(h))
+        wx0, wx1, wy0, wy1 = self._ws_bounds
+        nx0, nx1 = self._clamp_span(nx0, nx1, wx0, wx1)
+        ny0, ny1 = self._clamp_span(ny0, ny1, wy0, wy1)
         self._workspace_xlim = (nx0, nx1)
         self._workspace_ylim = (ny0, ny1)
         self.workspace_ax.set_xlim(nx0, nx1)
@@ -399,19 +425,16 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
 
     # ---------- helpers ----------
     def _apply_crop_rectangle(self):
-        if not self._crop_spec:
+        if not self._crop_rect:
             return
-        h, w = self._base_shape
-        x0 = float(self._crop_spec.get('x0', 0))
-        x1 = float(self._crop_spec.get('x1', w))
-        y0 = float(self._crop_spec.get('y0', 0))
-        y1 = float(self._crop_spec.get('y1', h))
-        x0 = max(0.0, min(x0, float(max(0, w - 1))))
-        y0 = max(0.0, min(y0, float(max(0, h - 1))))
-        x1 = max(x0 + 1.0, min(x1, float(w)))
-        y1 = max(y0 + 1.0, min(y1, float(h)))
+        left, right, bottom, top = self._crop_rect
+        wx0, wx1, wy0, wy1 = self._ws_bounds
+        left = max(wx0, min(left, wx1 - 1.0))
+        bottom = max(wy0, min(bottom, wy1 - 1.0))
+        right = max(left + 1.0, min(right, wx1))
+        top = max(bottom + 1.0, min(top, wy1))
         self.workspace_selector.set_active(False)
-        self.workspace_selector.extents = (x0, x1, y0, y1)
+        self.workspace_selector.extents = (left, right, bottom, top)
         self.workspace_selector.set_active(True)
 
     def _workspace_tick_format_x(self, value, pos=None):
@@ -455,36 +478,37 @@ class ImageAdjustPreviewPanel(QtWidgets.QWidget):
         return a, b
 
 class ImageAdjustDialog(QtWidgets.QDialog):
-    """
-    Key change vs the old behavior:
-      - Crop can be applied either on the ORIGINAL image, or AFTER rotation (rotated coordinate space).
-        This fixes the "wonky" feeling where the user rotates then tries to crop, but crop still refers to the original.
+    """Crop/Rotate and display adjustments (redesigned semantics).
+
+    - **Geometry** (crop / rotate / flips) never alters the original:
+      on Apply the caller turns it into an adjacent virtual-copy
+      thumbnail (see ``MainWindow.on_adjust_image``). The workspace
+      always shows the rotated image; the crop rectangle lives in that
+      rotated frame and is clamped to the largest inscribed rectangle,
+      so the result never contains NaN padding (the old
+      small-image-in-an-empty-frame problem is impossible by
+      construction).
+    - **Display** (clip / gamma / colormap) stays a live, reversible
+      per-file adjustment on the original image.
+
+    The result preview is rendered by ``resample_geometry`` — the same
+    function that produces the final copy, so preview == result.
+    Callers read ``geometry_spec()`` / ``tone_spec()`` / ``selected_cmap()``
+    after Accept.
     """
     def __init__(self, parent, base_image, spec, cmap_name, base_extent=None, display_extent=None,
                  axis_unit=None, colorbar_label=None, base_unit=None, relative_axes=False):
         super().__init__(parent)
         self.viewer = parent
-        self.setWindowTitle("Image adjustments")
+        self.setWindowTitle("Crop / Rotate & display adjustments")
 
         self.base_image = np.asarray(base_image)
         self.base_extent = base_extent
         self.axis_unit = axis_unit or 'px'
         self.colorbar_label = colorbar_label or ''
 
-        # spec fields:
-        #   crop: always stored, interpreted depending on crop_mode
-        #   crop_mode: 'pre' or 'post'
-        self.current_spec = json.loads(json.dumps(spec or {}))
-        self.current_spec.setdefault('crop', {'x0': 0, 'y0': 0, 'x1': self.base_image.shape[1], 'y1': self.base_image.shape[0]})
-        self.current_spec.setdefault('rotate', 0.0)
-        self.current_spec.setdefault('flip_h', False)
-        self.current_spec.setdefault('flip_v', False)
-        self.current_spec.setdefault('clip', {'low': None, 'high': None})
-        self.current_spec.setdefault('gamma', 1.0)
-        self.current_spec.setdefault('cmap', cmap_name or 'viridis')
-        self.current_spec.setdefault('crop_mode', 'pre')  # 'pre' = crop before rotate, 'post' = crop after rotate
-        self.current_spec.setdefault('lock_square', False)
-        self.current_spec.setdefault('auto_trim', True)
+        self.current_spec = self._seed_from_legacy(spec, cmap_name)
+        self._last_angle = float(self.current_spec.get('rotate', 0.0) or 0.0)
 
         self._undo_stack = []
         self._redo_stack = []
@@ -504,22 +528,15 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         controls_layout.setSpacing(10)
         main_layout.addWidget(controls, 0)
 
-        # Crop group
-        crop_group = QtWidgets.QGroupBox("Crop (pixels)")
-        crop_form = QtWidgets.QFormLayout(crop_group)
-        self.x0_spin = QtWidgets.QSpinBox(); self.x0_spin.setRange(0, self.base_image.shape[1]-1)
-        self.x1_spin = QtWidgets.QSpinBox(); self.x1_spin.setRange(1, self.base_image.shape[1])
-        self.y0_spin = QtWidgets.QSpinBox(); self.y0_spin.setRange(0, self.base_image.shape[0]-1)
-        self.y1_spin = QtWidgets.QSpinBox(); self.y1_spin.setRange(1, self.base_image.shape[0])
-        crop_form.addRow("X start", self.x0_spin)
-        crop_form.addRow("X end", self.x1_spin)
-        crop_form.addRow("Y start", self.y0_spin)
-        crop_form.addRow("Y end", self.y1_spin)
-        controls_layout.addWidget(crop_group)
-
-        # Geometry group
-        geom_group = QtWidgets.QGroupBox("Geometry")
+        # Geometry group — everything here lands in a virtual copy on Apply.
+        geom_group = QtWidgets.QGroupBox("Geometry — creates a virtual copy")
         geom_layout = QtWidgets.QVBoxLayout(geom_group)
+        geom_hint = QtWidgets.QLabel(
+            "Apply adds a new [edit] thumbnail next to the source; the "
+            "original image is never altered.")
+        geom_hint.setWordWrap(True)
+        geom_hint.setStyleSheet("font-size: 10px;")
+        geom_layout.addWidget(geom_hint)
 
         rot_row = QtWidgets.QHBoxLayout()
         rot_row.addWidget(QtWidgets.QLabel("Rotate (deg)"))
@@ -534,10 +551,26 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         self.flip_v_cb = QtWidgets.QCheckBox("Flip vertically")
         geom_layout.addWidget(self.flip_h_cb)
         geom_layout.addWidget(self.flip_v_cb)
+
+        crop_form = QtWidgets.QFormLayout()
+        # Crop rect in rotated-frame pixels (can be negative once rotated —
+        # the frame's bounding box extends past the source edges).
+        self.left_spin = QtWidgets.QSpinBox(); self.left_spin.setRange(-100000, 100000)
+        self.right_spin = QtWidgets.QSpinBox(); self.right_spin.setRange(-100000, 100000)
+        self.bottom_spin = QtWidgets.QSpinBox(); self.bottom_spin.setRange(-100000, 100000)
+        self.top_spin = QtWidgets.QSpinBox(); self.top_spin.setRange(-100000, 100000)
+        crop_form.addRow("Crop left (px)", self.left_spin)
+        crop_form.addRow("Crop right (px)", self.right_spin)
+        crop_form.addRow("Crop bottom (px)", self.bottom_spin)
+        crop_form.addRow("Crop top (px)", self.top_spin)
+        geom_layout.addLayout(crop_form)
+
+        self.lock_square_cb = QtWidgets.QCheckBox("Square crop")
+        geom_layout.addWidget(self.lock_square_cb)
         controls_layout.addWidget(geom_group)
 
-        # Tone mapping group
-        tone_group = QtWidgets.QGroupBox("Tone mapping")
+        # Display group — live, reversible adjustments on the original.
+        tone_group = QtWidgets.QGroupBox("Display — live on this image")
         tone_form = QtWidgets.QFormLayout(tone_group)
         self.low_pct_spin = QtWidgets.QDoubleSpinBox(); self.low_pct_spin.setRange(0.0, 100.0); self.low_pct_spin.setDecimals(2)
         self.high_pct_spin = QtWidgets.QDoubleSpinBox(); self.high_pct_spin.setRange(0.0, 100.0); self.high_pct_spin.setDecimals(2)
@@ -545,6 +578,18 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         tone_form.addRow("Clip low %", self.low_pct_spin)
         tone_form.addRow("Clip high %", self.high_pct_spin)
         tone_form.addRow("Gamma", self.gamma_spin)
+        self.cmap_combo = QtWidgets.QComboBox()
+        _current_cmap = str(self.current_spec.get('cmap', 'viridis') or 'viridis')
+        _names = cmap_registry.featured_cmap_names("general")
+        if _current_cmap not in _names:
+            _names = [_current_cmap] + _names
+        for name in _names:
+            try:
+                icon = _colormap_icon(name, width=96, height=14)
+            except Exception:
+                icon = QIcon()
+            self.cmap_combo.addItem(icon, name)
+        tone_form.addRow("Colormap", self.cmap_combo)
         controls_layout.addWidget(tone_group)
 
         # buttons
@@ -557,36 +602,11 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.reset_btn)
         controls_layout.addLayout(btn_row)
 
-        # Colormap
-        cmap_row = QtWidgets.QHBoxLayout()
-        cmap_row.addWidget(QtWidgets.QLabel("Colormap:"))
-        self.cmap_combo = QtWidgets.QComboBox()
-        # You already likely populate this elsewhere; keep a safe default here:
-        for name in sorted(set(['viridis', 'plasma', 'inferno', 'magma', 'cividis', str(self.current_spec.get('cmap', 'viridis'))])):
-            self.cmap_combo.addItem(name)
-        cmap_row.addWidget(self.cmap_combo, 1)
-        controls_layout.addLayout(cmap_row)
-
         # Options
         opt_group = QtWidgets.QGroupBox("Options")
         opt_layout = QtWidgets.QVBoxLayout(opt_group)
-
         self.scalebar_cb = QtWidgets.QCheckBox("Show scalebar")
-        self.crop_mode_combo = QtWidgets.QComboBox()
-        self.crop_mode_combo.addItems(["Crop on original", "Crop after rotation"])
-        self.lock_square_cb = QtWidgets.QCheckBox("Square crop")
-        self.auto_trim_cb = QtWidgets.QCheckBox("Auto-crop rotation border")
-
         opt_layout.addWidget(self.scalebar_cb)
-
-        cm_row = QtWidgets.QHBoxLayout()
-        cm_row.addWidget(QtWidgets.QLabel("Crop mode"))
-        cm_row.addWidget(self.crop_mode_combo, 1)
-        opt_layout.addLayout(cm_row)
-
-        opt_layout.addWidget(self.lock_square_cb)
-        opt_layout.addWidget(self.auto_trim_cb)
-
         controls_layout.addWidget(opt_group)
         controls_layout.addStretch(1)
 
@@ -600,12 +620,15 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         main_layout.addWidget(preview_widget, 1)
 
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        ok_btn = btn_box.button(QtWidgets.QDialogButtonBox.Ok)
+        if ok_btn is not None:
+            ok_btn.setText("Apply")
         preview_layout.addWidget(btn_box)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
 
         # connections
-        for spin in (self.x0_spin, self.x1_spin, self.y0_spin, self.y1_spin,
+        for spin in (self.left_spin, self.right_spin, self.bottom_spin, self.top_spin,
                      self.low_pct_spin, self.high_pct_spin, self.gamma_spin):
             spin.valueChanged.connect(self._on_params_changed_live)
             if hasattr(spin, 'editingFinished'):
@@ -615,10 +638,9 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         self.rotate_slider.valueChanged.connect(self._on_params_changed_live)
         self.rotate_slider.sliderReleased.connect(self._commit_live_change)
 
-        for w in (self.flip_h_cb, self.flip_v_cb, self.scalebar_cb, self.lock_square_cb, self.auto_trim_cb):
+        for w in (self.flip_h_cb, self.flip_v_cb, self.scalebar_cb, self.lock_square_cb):
             w.toggled.connect(self._on_discrete_change)
         self.cmap_combo.currentIndexChanged.connect(self._on_discrete_change)
-        self.crop_mode_combo.currentIndexChanged.connect(self._on_crop_mode_changed)
 
         self.undo_btn.clicked.connect(self._on_undo)
         self.redo_btn.clicked.connect(self._on_redo)
@@ -658,14 +680,93 @@ class ImageAdjustDialog(QtWidgets.QDialog):
             self._preview_timer.stop()
         self._preview_timer.start(40)
 
+    # ---------- geometry helpers ----------
+    def _current_bbox(self, angle_deg):
+        """Bounding box (left, right, bottom, top) of the source frame
+        rotated by angle_deg about its center, in rotated-frame px."""
+        h, w = self.base_image.shape[:2]
+        rad = math.radians(float(angle_deg or 0.0))
+        cos_a = abs(math.cos(rad))
+        sin_a = abs(math.sin(rad))
+        bw = w * cos_a + h * sin_a
+        bh = w * sin_a + h * cos_a
+        return (0.5 * w - 0.5 * bw, 0.5 * w + 0.5 * bw,
+                0.5 * h - 0.5 * bh, 0.5 * h + 0.5 * bh)
+
+    def _inscribed_rect_for(self, angle_deg):
+        """Largest centered axis-aligned rect fully inside the rotated
+        source, shrunk half a pixel per side so edge interpolation can
+        never sample outside."""
+        h, w = self.base_image.shape[:2]
+        rw, rh = largest_inscribed_rect(w, h, angle_deg)
+        if abs(float(angle_deg or 0.0)) > 1e-9:
+            rw = max(2.0, rw - 1.0)
+            rh = max(2.0, rh - 1.0)
+        return (0.5 * w - 0.5 * rw, 0.5 * w + 0.5 * rw,
+                0.5 * h - 0.5 * rh, 0.5 * h + 0.5 * rh)
+
+    def _clamp_crop_rect(self, rect, angle_deg, square=False):
+        il, ir, ib, it = self._inscribed_rect_for(angle_deg)
+        left, right, bottom, top = [float(v) for v in rect]
+        left = max(il, min(left, ir - 2.0))
+        bottom = max(ib, min(bottom, it - 2.0))
+        right = max(left + 2.0, min(right, ir))
+        top = max(bottom + 2.0, min(top, it))
+        if square:
+            size = min(right - left, top - bottom)
+            right = left + size
+            top = bottom + size
+        return (left, right, bottom, top)
+
+    def _seed_from_legacy(self, spec, cmap_name):
+        """Build the dialog's spec from a stored one. New (tone-only)
+        specs and old geometry specs both land here; legacy geometry is
+        re-interpreted in the rotated-frame model (a one-time,
+        approximate migration — the live preview shows the exact result
+        before anything is applied)."""
+        src = json.loads(json.dumps(spec or {}))
+        h, w = self.base_image.shape[:2]
+        rotate = float(src.get('rotate', 0.0) or 0.0)
+        clip = src.get('clip') or {}
+        out = {
+            'rotate': rotate,
+            'flip_h': bool(src.get('flip_h', False)),
+            'flip_v': bool(src.get('flip_v', False)),
+            'clip': {'low': clip.get('low'), 'high': clip.get('high')},
+            'gamma': float(src.get('gamma', 1.0) or 1.0),
+            'cmap': str(src.get('cmap') or cmap_name or 'viridis'),
+            'lock_square': bool(src.get('lock_square', False)),
+        }
+        crop_rect = None
+        legacy_crop = src.get('crop') or {}
+        if legacy_crop and abs(rotate) <= 1e-3:
+            # Unrotated legacy crop maps exactly: stored rows are raw
+            # top-origin slices, the rotated-frame rect is bottom-origin.
+            try:
+                x0 = float(legacy_crop.get('x0', 0))
+                x1 = float(legacy_crop.get('x1', w))
+                y0 = float(legacy_crop.get('y0', 0))
+                y1 = float(legacy_crop.get('y1', h))
+                if (x0, x1, y0, y1) != (0.0, float(w), 0.0, float(h)):
+                    crop_rect = (x0, x1, h - y1, h - y0)
+            except Exception:
+                crop_rect = None
+        if crop_rect is None:
+            crop_rect = self._inscribed_rect_for(rotate)
+        left, right, bottom, top = self._clamp_crop_rect(crop_rect, rotate)
+        out['crop'] = {'x0': int(round(left)), 'x1': int(round(right)),
+                       'y0': int(round(bottom)), 'y1': int(round(top))}
+        return out
+
     # ---------- UI <-> spec ----------
     def _apply_spec_to_controls(self):
         self._updating_controls = True
         crop = self.current_spec.get('crop', {})
-        self.x0_spin.setValue(int(crop.get('x0', 0)))
-        self.x1_spin.setValue(int(crop.get('x1', self.base_image.shape[1])))
-        self.y0_spin.setValue(int(crop.get('y0', 0)))
-        self.y1_spin.setValue(int(crop.get('y1', self.base_image.shape[0])))
+        insc = self._inscribed_rect_for(self.current_spec.get('rotate', 0.0))
+        self.left_spin.setValue(int(crop.get('x0', round(insc[0]))))
+        self.right_spin.setValue(int(crop.get('x1', round(insc[1]))))
+        self.bottom_spin.setValue(int(crop.get('y0', round(insc[2]))))
+        self.top_spin.setValue(int(crop.get('y1', round(insc[3]))))
 
         self.rotate_slider.setValue(int(round(float(self.current_spec.get('rotate', 0.0) or 0.0))))
         self.rotate_value_label.setText(f"{self.rotate_slider.value()} deg")
@@ -680,62 +781,45 @@ class ImageAdjustDialog(QtWidgets.QDialog):
 
         self.scalebar_cb.setChecked(True)
         self.lock_square_cb.setChecked(bool(self.current_spec.get('lock_square', False)))
-        self.auto_trim_cb.setChecked(bool(self.current_spec.get('auto_trim', True)))
-
-        mode = self.current_spec.get('crop_mode', 'pre')
-        self.crop_mode_combo.setCurrentIndex(0 if mode == 'pre' else 1)
 
         cmap = self.current_spec.get('cmap', self.cmap_combo.currentText())
-        # If cmap exists in combo, select it; else add.
         if self.cmap_combo.findText(cmap) < 0:
-            self.cmap_combo.addItem(cmap)
+            try:
+                icon = _colormap_icon(cmap, width=96, height=14)
+            except Exception:
+                icon = QIcon()
+            self.cmap_combo.addItem(icon, cmap)
         self.cmap_combo.setCurrentText(cmap)
 
-        self._sanitize_crop_controls()
+        self._last_angle = float(self.current_spec.get('rotate', 0.0) or 0.0)
         self._updating_controls = False
 
-    def _sanitize_crop_controls(self):
-        h, w = self.base_image.shape[:2]
-        x0 = int(self.x0_spin.value())
-        x1 = int(self.x1_spin.value())
-        y0 = int(self.y0_spin.value())
-        y1 = int(self.y1_spin.value())
-
-        x0 = max(0, min(x0, max(0, w - 1)))
-        y0 = max(0, min(y0, max(0, h - 1)))
-        x1 = max(x0 + 1, min(x1, w))
-        y1 = max(y0 + 1, min(y1, h))
-
-        self.x0_spin.blockSignals(True); self.x1_spin.blockSignals(True)
-        self.y0_spin.blockSignals(True); self.y1_spin.blockSignals(True)
-        self.x0_spin.setValue(x0); self.x1_spin.setValue(x1)
-        self.y0_spin.setValue(y0); self.y1_spin.setValue(y1)
-        self.x0_spin.blockSignals(False); self.x1_spin.blockSignals(False)
-        self.y0_spin.blockSignals(False); self.y1_spin.blockSignals(False)
-
-        self.x0_spin.setMaximum(max(0, x1 - 1))
-        self.x1_spin.setMinimum(min(w, x0 + 1))
-        self.y0_spin.setMaximum(max(0, y1 - 1))
-        self.y1_spin.setMinimum(min(h, y0 + 1))
-
     def _collect_spec_from_controls(self):
-        self._sanitize_crop_controls()
         low = float(self.low_pct_spin.value())
         high = float(self.high_pct_spin.value())
         if high < low:
             high = low
+            self.high_pct_spin.blockSignals(True)
             self.high_pct_spin.setValue(high)
+            self.high_pct_spin.blockSignals(False)
 
-        mode = 'pre' if self.crop_mode_combo.currentIndex() == 0 else 'post'
-        spec = {
-            'crop': {
-                'x0': int(self.x0_spin.value()),
-                'x1': int(self.x1_spin.value()),
-                'y0': int(self.y0_spin.value()),
-                'y1': int(self.y1_spin.value()),
-            },
-            'crop_mode': mode,
-            'rotate': float(self.rotate_slider.value()),
+        angle = float(self.rotate_slider.value())
+        rect = (float(self.left_spin.value()), float(self.right_spin.value()),
+                float(self.bottom_spin.value()), float(self.top_spin.value()))
+        left, right, bottom, top = self._clamp_crop_rect(
+            rect, angle, square=self.lock_square_cb.isChecked())
+        crop = {'x0': int(round(left)), 'x1': int(round(right)),
+                'y0': int(round(bottom)), 'y1': int(round(top))}
+        for spin, val in ((self.left_spin, crop['x0']), (self.right_spin, crop['x1']),
+                          (self.bottom_spin, crop['y0']), (self.top_spin, crop['y1'])):
+            if int(spin.value()) != val:
+                spin.blockSignals(True)
+                spin.setValue(val)
+                spin.blockSignals(False)
+
+        return {
+            'crop': crop,
+            'rotate': angle,
             'flip_h': self.flip_h_cb.isChecked(),
             'flip_v': self.flip_v_cb.isChecked(),
             'clip': {
@@ -745,17 +829,58 @@ class ImageAdjustDialog(QtWidgets.QDialog):
             'gamma': float(self.gamma_spin.value()),
             'cmap': self.cmap_combo.currentText(),
             'lock_square': self.lock_square_cb.isChecked(),
-            'auto_trim': self.auto_trim_cb.isChecked(),
         }
-        return spec
+
+    # ---------- result API (read by MainWindow.on_adjust_image) ----------
+    def geometry_spec(self):
+        """Geometry for resample_geometry, or None when it is an identity
+        (no copy should be created)."""
+        c = self.current_spec
+        crop = c.get('crop') or {}
+        geom = {
+            'flip_h': bool(c.get('flip_h')),
+            'flip_v': bool(c.get('flip_v')),
+            'rotate': float(c.get('rotate', 0.0) or 0.0),
+            'crop_rect': (float(crop.get('x0', 0)), float(crop.get('x1', 0)),
+                          float(crop.get('y0', 0)), float(crop.get('y1', 0))),
+        }
+        if geometry_is_identity(geom, self.base_image.shape):
+            return None
+        return geom
+
+    def tone_spec(self):
+        """Clip/gamma display adjustments, or None when identity."""
+        c = self.current_spec
+        clip = c.get('clip') or {}
+        low = clip.get('low')
+        high = clip.get('high')
+        gamma = float(c.get('gamma', 1.0) or 1.0)
+        if low is None and high is None and abs(gamma - 1.0) <= 1e-3:
+            return None
+        return {'clip': {'low': low, 'high': high}, 'gamma': gamma}
+
+    def selected_cmap(self):
+        return self.cmap_combo.currentText()
 
     # ---------- callbacks ----------
     def _on_params_changed_live(self, value=None):
         if self._updating_controls:
             return
+        angle = float(self.rotate_slider.value())
+        if abs(angle - self._last_angle) > 1e-9:
+            # Rotation changed: the old rect lives in a different frame —
+            # reset the crop to the largest inscribed rectangle.
+            self._last_angle = angle
+            insc = self._inscribed_rect_for(angle)
+            self._updating_controls = True
+            self.left_spin.setValue(int(round(insc[0])))
+            self.right_spin.setValue(int(round(insc[1])))
+            self.bottom_spin.setValue(int(round(insc[2])))
+            self.top_spin.setValue(int(round(insc[3])))
+            self._updating_controls = False
         self.current_spec = self._collect_spec_from_controls()
         self.rotate_value_label.setText(f"{int(round(self.rotate_slider.value()))} deg")
-        self.preview_panel.set_rotation_angle(float(self.current_spec.get('rotate', 0.0)))
+        self.preview_panel.set_rotation_angle(angle)
         self._schedule_preview_update()
 
     def _on_discrete_change(self, value=None):
@@ -768,38 +893,19 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         self._push_history(prev)
         self._schedule_preview_update()
 
-    def _on_crop_mode_changed(self, idx):
-        if self._updating_controls:
-            return
-        # Crop coordinates refer to a different image. Do not try to map.
-        # Reset to full frame and let user reselect cleanly.
-        prev = json.loads(json.dumps(self.current_spec))
-        if idx == 0:
-            self.current_spec['crop_mode'] = 'pre'
-            h, w = self.base_image.shape[:2]
-        else:
-            self.current_spec['crop_mode'] = 'post'
-            # rotated workspace shape depends on rotation; we set full crop later in _update_preview
-            h, w = self.base_image.shape[:2]
-        self.current_spec['crop'] = {'x0': 0, 'y0': 0, 'x1': int(w), 'y1': int(h)}
-        self._push_history(prev)
-        self._apply_spec_to_controls()
-        self._schedule_preview_update()
-
-    def _on_crop_selection(self, x0, x1, y0, y1):
+    def _on_crop_selection(self, left, right, bottom, top):
         if self._updating_controls:
             return
         prev = json.loads(json.dumps(self.current_spec))
-        if self.lock_square_cb.isChecked():
-            # shrink to square anchored at (x0,y0)
-            size = max(1, min(int(x1) - int(x0), int(y1) - int(y0)))
-            x1 = int(x0) + size
-            y1 = int(y0) + size
+        angle = float(self.rotate_slider.value())
+        left, right, bottom, top = self._clamp_crop_rect(
+            (left, right, bottom, top), angle,
+            square=self.lock_square_cb.isChecked())
         self._updating_controls = True
-        self.x0_spin.setValue(int(x0))
-        self.x1_spin.setValue(int(x1))
-        self.y0_spin.setValue(int(y0))
-        self.y1_spin.setValue(int(y1))
+        self.left_spin.setValue(int(round(left)))
+        self.right_spin.setValue(int(round(right)))
+        self.bottom_spin.setValue(int(round(bottom)))
+        self.top_spin.setValue(int(round(top)))
         self._updating_controls = False
         self.current_spec = self._collect_spec_from_controls()
         self._push_history(prev)
@@ -833,7 +939,6 @@ class ImageAdjustDialog(QtWidgets.QDialog):
         h, w = self.base_image.shape[:2]
         self.current_spec = {
             'crop': {'x0': 0, 'y0': 0, 'x1': int(w), 'y1': int(h)},
-            'crop_mode': 'pre',
             'rotate': 0.0,
             'flip_h': False,
             'flip_v': False,
@@ -841,7 +946,6 @@ class ImageAdjustDialog(QtWidgets.QDialog):
             'gamma': 1.0,
             'cmap': self.current_spec.get('cmap', 'viridis'),
             'lock_square': False,
-            'auto_trim': True,
         }
         self._push_history(prev)
         self._apply_spec_to_controls()
@@ -849,88 +953,37 @@ class ImageAdjustDialog(QtWidgets.QDialog):
 
     # ---------- processing ----------
     def _update_preview(self):
-        cmap = self.current_spec.get('cmap', 'viridis') or 'viridis'
-        mode = self.current_spec.get('crop_mode', 'pre')
+        spec = self.current_spec
+        cmap = spec.get('cmap', 'viridis') or 'viridis'
+        # Honor the full-amber display override so the dialog matches the
+        # app's rendering while the mode is active.
+        cmap_disp = cmap_registry.effective_cmap_name(cmap)
+        angle = float(spec.get('rotate', 0.0) or 0.0)
+        flips = {'flip_h': bool(spec.get('flip_h')), 'flip_v': bool(spec.get('flip_v'))}
+        crop = spec.get('crop') or {}
+        crop_rect = (float(crop.get('x0', 0)), float(crop.get('x1', 0)),
+                     float(crop.get('y0', 0)), float(crop.get('y1', 0)))
 
-        # 1) Build a "geometry-only" spec to generate the rotated workspace when needed.
-        geom_spec = json.loads(json.dumps(self.current_spec))
-        geom_spec['clip'] = {'low': None, 'high': None}
-        geom_spec['gamma'] = 1.0
+        # Workspace: the whole rotated frame (NaN outside the source is
+        # shown masked), crop selector + inscribed guide on top.
+        bbox = self._current_bbox(angle)
+        ws_geom = dict(flips, rotate=angle, crop_rect=bbox)
+        ws_arr, _ = resample_geometry(self.base_image, None, ws_geom)
+        self.preview_panel.update_workspace(
+            ws_arr, bbox, 'px', crop_rect, cmap_disp,
+            inscribed_rect=self._inscribed_rect_for(angle))
 
-        # For geometry-only pass, do not crop (full frame).
-        h0, w0 = self.base_image.shape[:2]
-        geom_spec['crop'] = {'x0': 0, 'y0': 0, 'x1': int(w0), 'y1': int(h0)}
+        # Result: the exact same engine that will build the virtual copy,
+        # plus the live clip/gamma on top.
+        geom = dict(flips, rotate=angle, crop_rect=crop_rect)
+        arr_result, extent_result = resample_geometry(self.base_image, self.base_extent, geom)
+        tone = self.tone_spec()
+        if tone is not None:
+            arr_result, extent_result = apply_adjustment_spec(arr_result, extent_result, tone)
 
-        # Use your existing engine (thumbnails.py) so export stays consistent.
-        geom_arr, geom_extent = apply_adjustment_spec(self.base_image, self.base_extent, geom_spec)
-
-        if mode == 'post':
-            # Workspace is the rotated image.
-            self.preview_panel.set_base_geometry(geom_arr.shape[:2], axis_unit=self.axis_unit)
-            ws_crop = self.current_spec.get('crop', {'x0': 0, 'y0': 0, 'x1': geom_arr.shape[1], 'y1': geom_arr.shape[0]})
-            self.preview_panel.update_workspace(geom_arr, self.axis_unit, ws_crop, cmap)
-        else:
-            # Workspace is the original image.
-            self.preview_panel.set_base_geometry(self.base_image.shape[:2], axis_unit=self.axis_unit)
-            ws_crop = self.current_spec.get('crop', {'x0': 0, 'y0': 0, 'x1': w0, 'y1': h0})
-            self.preview_panel.update_workspace(self.base_image, self.axis_unit, ws_crop, cmap)
-
-        # 2) Compute final result.
-        if mode == 'pre':
-            arr_result, extent_result = apply_adjustment_spec(self.base_image, self.base_extent, self.current_spec)
-        else:
-            # Apply geometry first, then crop in rotated coordinates, then tone-map.
-            crop = self.current_spec.get('crop', {})
-            x0 = int(crop.get('x0', 0)); x1 = int(crop.get('x1', geom_arr.shape[1]))
-            y0 = int(crop.get('y0', 0)); y1 = int(crop.get('y1', geom_arr.shape[0]))
-            x0 = max(0, min(x0, geom_arr.shape[1]-1))
-            y0 = max(0, min(y0, geom_arr.shape[0]-1))
-            x1 = max(x0+1, min(x1, geom_arr.shape[1]))
-            y1 = max(y0+1, min(y1, geom_arr.shape[0]))
-            cropped = geom_arr[y0:y1, x0:x1]
-            extent_result = self._crop_extent(geom_extent, geom_arr.shape, x0, x1, y0, y1)
-            # Now apply clip/gamma only (no extra geometry).
-            tone_spec = json.loads(json.dumps(self.current_spec))
-            tone_spec['crop'] = {'x0': 0, 'y0': 0, 'x1': cropped.shape[1], 'y1': cropped.shape[0]}
-            tone_spec['rotate'] = 0.0
-            tone_spec['flip_h'] = False
-            tone_spec['flip_v'] = False
-            arr_result, extent_result = apply_adjustment_spec(cropped, extent_result, tone_spec)
-
-        # Optional trim to rectangle after rotation.
-        if self.auto_trim_cb.isChecked() and abs(float(self.current_spec.get('rotate', 0.0) or 0.0)) > 1e-6:
-            arr_result, extent_result = self._trim_finite_border(arr_result, extent_result)
-
-        self.preview_panel.update_result(arr_result, extent_result, self.axis_unit, cmap, self.scalebar_cb.isChecked())
-
-    def _crop_extent(self, extent, full_shape, x0, x1, y0, y1):
-        if extent is None:
-            return None
-        try:
-            xmin, xmax, ymin, ymax = extent
-            h, w = full_shape[:2]
-            dx = (float(xmax) - float(xmin)) / max(1, w)
-            dy = (float(ymax) - float(ymin)) / max(1, h)
-            return [float(xmin) + dx * x0, float(xmin) + dx * x1,
-                    float(ymin) + dy * y0, float(ymin) + dy * y1]
-        except Exception:
-            return extent
-
-    def _trim_finite_border(self, arr, extent):
-        a = np.asarray(arr, dtype=float)
-        if a.size == 0:
-            return arr, extent
-        mask = np.isfinite(a)
-        if not mask.any():
-            return arr, extent
-        ys = np.where(mask.any(axis=1))[0]
-        xs = np.where(mask.any(axis=0))[0]
-        y0 = int(ys[0]); y1 = int(ys[-1]) + 1
-        x0 = int(xs[0]); x1 = int(xs[-1]) + 1
-        trimmed = a[y0:y1, x0:x1]
-        new_extent = self._crop_extent(extent, a.shape, x0, x1, y0, y1)
-        return trimmed, new_extent
-# === END: Image adjustment classes (drop-in replacement) ===
+        self.preview_panel.update_result(arr_result, extent_result, self.axis_unit,
+                                         cmap_disp, self.scalebar_cb.isChecked())
+# === END: Image adjustment classes ===
 
 
 

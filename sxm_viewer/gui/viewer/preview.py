@@ -624,6 +624,11 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     datetime_txt = " ".join([t for t in (date, time_txt) if t]).strip()
     base_title = header_path.name
     title_text = f"{base_title}  {caption}  {datetime_txt}" if datetime_txt else f"{base_title}  {caption}"
+    try:
+        if viewer._get_adjust_spec(file_key, channel_idx):
+            title_text += "  • adjusted"
+    except Exception:
+        pass
     colorbar_label = f"{caption} [{display_unit}]" if display_unit else caption
     acq_overlay = _build_acquisition_overlay_info(viewer, header_path, header, fds, channel_idx)
     meta = {
@@ -809,6 +814,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         title_text = f"{base_title}  {caption}  {datetime_txt}"
     else:
         title_text = f"{base_title}  {caption}"
+    try:
+        if viewer._get_adjust_spec(file_key, channel_idx):
+            title_text += "  • adjusted"
+    except Exception:
+        pass
     colorbar_label = caption
     if display_unit:
         colorbar_label = f"{caption} [{display_unit}]"

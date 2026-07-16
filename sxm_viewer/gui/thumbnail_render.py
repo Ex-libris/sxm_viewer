@@ -125,7 +125,9 @@ def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
     if invalid.any():
         norm = np.array(norm, copy=True)
         norm[invalid] = 0.0
-    cmap = _get_cached_colormap(cmap_name)
+    # effective_cmap honors the "Full amber imagery" display override
+    # (identity when off) — covers every Qt-pixmap surface built here.
+    cmap = cmap_registry.effective_cmap(cmap_name)
     rgba = cmap(norm)
     if invalid.any():
         rgba = np.array(rgba, copy=True)
@@ -502,6 +504,164 @@ def apply_adjustment_spec(arr, extent, spec):
             norm = norm ** gamma
             result = norm * (vmax - vmin) + vmin
     return result, out_extent
+
+
+def largest_inscribed_rect(w, h, angle_deg):
+    """Width/height of the largest axis-aligned rectangle (centered) that
+    fits entirely inside a w x h rectangle rotated by angle_deg.
+
+    Classic closed-form ("rotatedRectWithMaxArea"). Units follow the
+    inputs (used here with display-pixel spans)."""
+    w = float(w)
+    h = float(h)
+    if w <= 0.0 or h <= 0.0:
+        return 0.0, 0.0
+    angle = math.radians(abs(float(angle_deg))) % math.pi
+    if angle > math.pi / 2.0:
+        angle = math.pi - angle
+    sin_a = math.sin(angle)
+    cos_a = math.cos(angle)
+    if sin_a <= 1e-12:
+        return w, h
+    width_is_longer = w >= h
+    side_long, side_short = (w, h) if width_is_longer else (h, w)
+    if side_short <= 2.0 * sin_a * cos_a * side_long or abs(sin_a - cos_a) < 1e-10:
+        x = 0.5 * side_short
+        if width_is_longer:
+            wr, hr = x / sin_a, x / cos_a
+        else:
+            wr, hr = x / cos_a, x / sin_a
+    else:
+        cos_2a = cos_a * cos_a - sin_a * sin_a
+        wr = (w * cos_a - h * sin_a) / cos_2a
+        hr = (h * cos_a - w * sin_a) / cos_2a
+    return max(0.0, wr), max(0.0, hr)
+
+
+def resample_geometry(arr, extent, geom):
+    """Apply the redesigned Crop/Rotate dialog's geometry (flips, free
+    rotation, crop) by resampling in the rotated frame — the approach the
+    quick-crop template already uses (`_extract_rotated_crop`), which never
+    produces the NaN-padded bounding-box frames `scipy.ndimage.rotate(
+    reshape=True)` does.
+
+    Coordinate conventions ("display frame"):
+    - The display array is ``flipud(raw)`` shown with ``origin='lower'``
+      and extent ``(0, w, 0, h)`` in source-pixel units (y up).
+    - ``geom['rotate']`` rotates the displayed image CCW about the display
+      center; ``geom['crop_rect'] = (left, right, bottom, top)`` is an
+      axis-aligned rect *in that rotated display frame*.
+    - Callers keep the rect inside :func:`largest_inscribed_rect` so no
+      output pixel samples outside the source (out-of-bounds samples
+      become NaN so mistakes are visible, not silently wrong).
+
+    Returns ``(out_arr, out_extent)`` with ``out_arr`` in raw row order
+    (row 0 = same end as the input) and ``out_extent`` the axis-aligned
+    physical rect (source-extent units) whose center is the crop-rect
+    center mapped back through the inverse rotation — the same accepted
+    convention as quick-crop virtual copies (the rotation angle itself is
+    not representable in the header). ``out_extent`` is None when
+    ``extent`` is None. Output pixel counts preserve the source pixel
+    pitch."""
+    raw = np.asarray(arr, dtype=float)
+    if raw.ndim < 2 or raw.size == 0:
+        return np.array(raw, copy=True), extent
+    geom = geom or {}
+    if geom.get('flip_h'):
+        raw = np.flip(raw, axis=1)
+    if geom.get('flip_v'):
+        raw = np.flip(raw, axis=0)
+    h, w = raw.shape[:2]
+    angle = float(geom.get('rotate', 0.0) or 0.0)
+    rect = geom.get('crop_rect')
+    if rect is None:
+        rw, rh = largest_inscribed_rect(w, h, angle)
+        left = 0.5 * w - 0.5 * rw
+        right = 0.5 * w + 0.5 * rw
+        bottom = 0.5 * h - 0.5 * rh
+        top = 0.5 * h + 0.5 * rh
+    else:
+        left, right, bottom, top = [float(v) for v in rect]
+        if right < left:
+            left, right = right, left
+        if top < bottom:
+            bottom, top = top, bottom
+    rect_w = max(right - left, 1e-9)
+    rect_h = max(top - bottom, 1e-9)
+    nx = max(2, int(round(rect_w)))
+    ny = max(2, int(round(rect_h)))
+
+    disp = np.flipud(raw)
+    xs = np.linspace(left, right, nx, dtype=np.float64)
+    ys = np.linspace(bottom, top, ny, dtype=np.float64)
+    gx, gy = np.meshgrid(xs, ys)
+    if abs(angle) > 1e-9:
+        # Display point -> source display point: undo the display rotation
+        # about the display center.
+        rad = math.radians(-angle)
+        cos_t = math.cos(rad)
+        sin_t = math.sin(rad)
+        cx = 0.5 * w
+        cy = 0.5 * h
+        dx = gx - cx
+        dy = gy - cy
+        gx = cx + dx * cos_t - dy * sin_t
+        gy = cy + dx * sin_t + dy * cos_t
+    cols = np.clip(gx / float(w) * (w - 1), -1.0, float(w))
+    rows = np.clip(gy / float(h) * (h - 1), -1.0, float(h))
+    if _scipy_ndimage is not None:
+        sampled = _scipy_ndimage.map_coordinates(
+            disp, [rows, cols], order=1, mode='constant', cval=np.nan)
+    else:
+        ri = np.clip(np.rint(rows).astype(np.int64), 0, h - 1)
+        ci = np.clip(np.rint(cols).astype(np.int64), 0, w - 1)
+        sampled = disp[ri, ci]
+        oob = (rows < -0.5) | (rows > h - 0.5) | (cols < -0.5) | (cols > w - 0.5)
+        if np.any(oob):
+            sampled = np.array(sampled, dtype=float, copy=True)
+            sampled[oob] = np.nan
+    out_disp = np.asarray(sampled, dtype=float).reshape((ny, nx))
+    out_arr = np.flipud(out_disp).copy()
+
+    out_extent = None
+    if extent is not None:
+        xmin, xmax, ymin, ymax = [float(v) for v in extent]
+        pitch_x = (xmax - xmin) / float(w)
+        pitch_y = (ymax - ymin) / float(h)
+        rcx = 0.5 * (left + right)
+        rcy = 0.5 * (bottom + top)
+        if abs(angle) > 1e-9:
+            rad = math.radians(-angle)
+            cos_t = math.cos(rad)
+            sin_t = math.sin(rad)
+            dx = rcx - 0.5 * w
+            dy = rcy - 0.5 * h
+            rcx = 0.5 * w + dx * cos_t - dy * sin_t
+            rcy = 0.5 * h + dx * sin_t + dy * cos_t
+        phys_cx = xmin + rcx * pitch_x
+        phys_cy = ymin + rcy * pitch_y
+        half_w = 0.5 * rect_w * pitch_x
+        half_h = 0.5 * rect_h * pitch_y
+        out_extent = [phys_cx - half_w, phys_cx + half_w,
+                      phys_cy - half_h, phys_cy + half_h]
+    return out_arr, out_extent
+
+
+def geometry_is_identity(geom, shape):
+    """True when a dialog geometry spec would leave the image unchanged."""
+    if not geom:
+        return True
+    if geom.get('flip_h') or geom.get('flip_v'):
+        return False
+    if abs(float(geom.get('rotate', 0.0) or 0.0)) > 1e-3:
+        return False
+    rect = geom.get('crop_rect')
+    if rect is None:
+        return True
+    h, w = shape[:2]
+    left, right, bottom, top = [float(v) for v in rect]
+    return (abs(left) < 0.5 and abs(bottom) < 0.5
+            and abs(right - w) < 0.5 and abs(top - h) < 0.5)
 
 
 def _rotate_extent_box(extent, angle_deg):
