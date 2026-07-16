@@ -27,6 +27,15 @@ python -m sxm_viewer
   `pyproject.toml`, `setup.cfg`, `pytest.ini`, or CI test workflow) — verify
   changes by running the app manually. The one exception is the vendored
   `nanonispy2` reader (see below), which ships its own `tests/test_read.py`.
+- Headless smoke tests work with `$env:QT_QPA_PLATFORM = "offscreen"` before
+  constructing `SXMGridViewer` in a script. **Trap**: the offscreen viewer is
+  the real app — anything that persists config (e.g. `set_ui_theme`, toggle
+  handlers calling `save_config`) writes to the user's real
+  `~/.sxm_viewer_config.json`. Either avoid config-persisting calls in test
+  scripts or restore the file afterwards.
+- PowerShell 5.1 mangles embedded double quotes when passing args to native
+  executables — write `git commit` messages without `"` characters (or use a
+  `-F` message file).
 - `scripts/install.py` / `scripts/install_sxm_viewer.bat` /
   `scripts/run_sxm_viewer.bat` are Windows installer/launcher helpers, not
   part of the app's runtime import path.
@@ -705,6 +714,19 @@ data is never altered.
   converts it to a copy.
 - **Quick-crop template** (Ctrl+Shift+C, `gui/controllers/quick_crop.py`)
   is unchanged: `[crop]`-tagged copies via `_on_preview_crop`.
+- **`resample_geometry` frame conventions** (get these wrong and results
+  are silently mirrored/rotated the wrong way): it works in the *display*
+  frame — display array = `flipud(raw)`, `origin='lower'`, extent
+  `(0, w, 0, h)`, y increasing up — with positive `rotate` meaning CCW in
+  that frame; `crop_rect` is `(left, right, bottom, top)` in rotated
+  display-frame pixels (or `None` → largest inscribed rect); flips apply
+  *before* rotation. Trap when writing expectations for it: `np.rot90(a)`
+  is CCW in matrix-print orientation, which is **CW** in the
+  origin-lower display frame — an exact 90° CCW display rotation of a
+  display array `d` equals `np.rot90(d, 1)` only after accounting for the
+  flipud round-trip (`out = flipud(rot90(flipud_input...))` inside the
+  function); validate against the function's own identity/90° cases, not
+  a bare `rot90` guess.
 
 ### Central colormap registry (`sxm_viewer/cmap_registry.py`)
 Qt-free single source of truth for colormaps. Registers the custom
