@@ -1024,11 +1024,14 @@ class MultiPreviewCanvas(FigureCanvas):
                     changed = True
             except Exception:
                 continue
+        # The model above keeps the user's true cmap name; artists honor the
+        # "Full amber imagery" display override (identity when off).
+        display_cmap = cmap_registry.effective_cmap_name(cmap_name)
         for ax in self.fig.axes:
             for child in ax.get_children():
                 if hasattr(child, "get_cmap") and hasattr(child, "set_cmap"):
                     try:
-                        child.set_cmap(cmap_name)
+                        child.set_cmap(display_cmap)
                         changed = True
                     except Exception:
                         pass

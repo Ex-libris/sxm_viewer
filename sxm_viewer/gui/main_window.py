@@ -445,6 +445,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_cmap = preview_cfg or self.thumb_cmap
         if config_changed:
             save_config(self.config)
+        # "Full amber imagery": while the Amber theme is active, render all
+        # data imagery with the amber phosphor colormap (display-time only —
+        # per-file colormap choices are preserved and restored on toggle-off).
+        self.amber_full_imagery = bool(self.config.get('amber_full_imagery', False))
         # Explicit favourites (saved via the star buttons) win over whatever
         # was merely last-used, so every session starts from the user's
         # chosen defaults.
@@ -510,6 +514,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         # legacy flag every existing dark-branch keys off (amber counts as dark).
         self.ui_theme = ui_theme.resolve_theme_name(self.config)
         self.dark_mode = ui_theme.is_dark_theme(self.ui_theme)
+        # Arm the display-time colormap override before anything renders so
+        # a session persisted with Amber + full-amber-imagery starts amber.
+        self._sync_forced_cmap()
         # Global UI font scale in percent (monitor-relative, user-adjustable).
         try:
             self.ui_font_scale = max(60, min(200, int(self.config.get('ui_font_scale', 100))))
@@ -1310,6 +1317,19 @@ class SXMGridViewer(QtWidgets.QWidget):
             self.toolbar_theme_group.addAction(_theme_act)
             self.toolbar_theme_acts[_theme_name] = _theme_act
         self.toolbar_theme_menu.addSeparator()
+        # "Full amber imagery": only meaningful while the Amber theme is
+        # active; per-file colormap choices are preserved (display-time
+        # override only) and restored on toggle-off/theme switch.
+        self.amber_full_imagery_act = self.toolbar_theme_menu.addAction("Full amber imagery")
+        self.amber_full_imagery_act.setCheckable(True)
+        self.amber_full_imagery_act.setChecked(bool(self.amber_full_imagery))
+        self.amber_full_imagery_act.setEnabled(ui_theme.is_amber(self.ui_theme))
+        self.amber_full_imagery_act.setToolTip(
+            "Render all images with the amber phosphor colormap while the "
+            "Amber theme is active. Per-file colormap choices are kept and "
+            "restored when turned off. Exports keep the true colormaps.")
+        self.amber_full_imagery_act.toggled.connect(self.on_amber_full_imagery_toggled)
+        self.toolbar_theme_menu.addSeparator()
         # Global UI font scale (percent of base, so it adapts to any monitor)
         _scale_widget = QtWidgets.QWidget()
         _scale_row = QtWidgets.QHBoxLayout(_scale_widget)
@@ -2002,6 +2022,17 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         save_config(self.config)
         self._apply_ui_theme(name)
+        # Full-amber imagery is only meaningful under the Amber theme: keep
+        # the menu action's enabled state in sync, and if the effective
+        # override changed with this switch (e.g. Amber+toggle -> Dark),
+        # re-render cached imagery (the preview re-render below runs anyway).
+        act = getattr(self, 'amber_full_imagery_act', None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setEnabled(ui_theme.is_amber(name))
+            act.blockSignals(False)
+        if self._sync_forced_cmap():
+            self._refresh_all_imagery(include_preview=False)
         if getattr(self, "last_preview", None):
             # Re-render the preview (metadata HTML colors, canvas chrome)
             # without destroying an open profile measurement: the redraw
@@ -2014,6 +2045,63 @@ class SXMGridViewer(QtWidgets.QWidget):
                 self.show_file_channel(self.last_preview[0], self.last_preview[1])
             finally:
                 self.preserve_profiles_on_channel_change = saved_pref
+
+    def _sync_forced_cmap(self):
+        """Point the registry's display-time colormap override at the amber
+        cmap when (Amber theme AND full-amber toggle), else clear it.
+        Returns True when the effective override changed."""
+        force = ui_theme.is_amber(self.ui_theme) and bool(getattr(self, 'amber_full_imagery', False))
+        prev = cmap_registry.forced_cmap_name()
+        cmap_registry.set_forced_cmap(cmap_registry.AMBER_CMAP_NAME if force else None)
+        return prev != cmap_registry.forced_cmap_name()
+
+    def on_amber_full_imagery_toggled(self, checked):
+        self.amber_full_imagery = bool(checked)
+        self.config['amber_full_imagery'] = self.amber_full_imagery
+        save_config(self.config)
+        if self._sync_forced_cmap():
+            self._refresh_all_imagery()
+
+    def _refresh_all_imagery(self, include_preview=True):
+        """Invalidate every cached rendering of image data and re-render.
+
+        Needed when a display-time override (full-amber imagery) changes:
+        nothing in any per-file state or cache key changes, so the pixmap
+        caches would otherwise happily keep serving the old colors."""
+        try:
+            self._invalidate_thumbnail_cache()
+        except Exception:
+            pass
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        if include_preview and getattr(self, 'last_preview', None):
+            try:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1])
+            except Exception:
+                pass
+        for canv in list(getattr(self, '_popup_canvases', []) or []):
+            try:
+                canv._redraw()
+            except Exception:
+                continue
+        # Publication-canvas tiles rebuild their pixmaps through
+        # canvas_rendering (which resolves via effective_cmap).
+        try:
+            win = self._canvas_window_ref()
+            if win is not None and getattr(win, 'scene', None) is not None:
+                from .canvases.canvas_items import CanvasImageItem
+                for item in win.scene.items():
+                    if isinstance(item, CanvasImageItem):
+                        item._update_rendered_pixmap()
+        except Exception:
+            pass
+        # Open grid maps / plot dialogs re-render their image layers.
+        try:
+            self._retheme_open_plot_windows()
+        except Exception:
+            pass
 
     def _apply_ui_theme(self, name: str):
         """Apply a named theme to the application chrome.

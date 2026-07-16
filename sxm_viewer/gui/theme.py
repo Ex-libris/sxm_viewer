@@ -16,6 +16,14 @@ matplotlib artists, and it must stay that way: never add a theme rule
 that paints *over* an image widget (no overlays, no opacity washes, no
 blend tricks).  Selection/hover treatments for image-bearing widgets are
 borders and external frames only.
+
+The single sanctioned exception is the explicit, user-opted "Full amber
+imagery" mode: while the Amber theme is active and the user checks that
+toggle, renderers recolor image artists through
+``sxm_viewer.cmap_registry.effective_cmap`` (a display-time override —
+per-file colormap choices and exports keep the true colormaps).  That
+override lives in the registry, not here; this module still never
+touches data imagery.
 """
 from __future__ import annotations
 

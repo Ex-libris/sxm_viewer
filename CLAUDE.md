@@ -86,7 +86,7 @@ gui/
 ├── main_window_layout.py     # layout helpers, shortcuts panel
 ├── main_window_toolbar.py    # toolbar actions, theme selector button
 ├── main_window_spectro.py    # spectro dock wiring
-├── theme.py                  # named UI themes (light/dark/amber): tokens, QPalette, chrome QSS — never applied to data imagery
+├── theme.py                  # named UI themes (light/dark/amber): tokens, QPalette, chrome QSS — never applied to data imagery (sole exception: the user-opted "Full amber imagery" toggle, which recolors image artists display-time-only via cmap_registry.effective_cmap; per-file cmaps and exports keep true colormaps)
 ├── controllers/              # feature controllers, see table below
 ├── viewer/                   # thumbnail loading/rendering, preview, loader, measurement, state
 ├── dialogs/                  # modal dialogs (histogram/profile/filters/spectroscopy/matrix-fit)
@@ -674,6 +674,24 @@ entirely off-thread. Never let the worker touch the viewer.
   `MatrixSpectroViewer` methods (which live on a QDialog and can't be
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
+
+### Central colormap registry (`sxm_viewer/cmap_registry.py`)
+Qt-free single source of truth for colormaps. Registers the custom
+`gui_amber_theme` cmap (stops synced by comment with `gui/theme.py`'s
+AMBER tokens) and, when importable, the optional pratiman-91 `colormaps`
+PyPI package (runtime-detected; never a hard dependency — the package
+lazily registers its cmaps into matplotlib on attribute access, which
+`_register_extra_package` accounts for). All pickers enumerate via
+`all_cmap_names()`/`featured_cmap_names(context)` (curated per-context
+shortlists live in `_FEATURED` here, not in widgets); name→Colormap
+resolution goes through the never-raising `get_cmap(name, fallback)`
+(shared-object cache — never mutate a returned Colormap). Renderers that
+draw data imagery resolve through `effective_cmap`/`effective_cmap_name`,
+which honor the "Full amber imagery" display-time override
+(`set_forced_cmap`, driven by `main_window._sync_forced_cmap`); view
+dicts, `per_file_channel_cmap`, sessions, and file exports always keep
+the user's true cmap names. Display → "Extra colormaps..." shows the
+optional-package status/install hint.
 
 ### Favourite (default) colormaps
 Small ★ buttons next to the thumbnail/preview colormap combos
