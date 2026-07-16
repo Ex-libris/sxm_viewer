@@ -35,6 +35,10 @@ _THEME_LABELS = {
 # Semantic design tokens for the amber phosphor theme.  The palette aims
 # for a professional laboratory-instrument look: near-black warm
 # backgrounds, warm amber text, restrained bright-amber accents.
+# NOTE: window_bg / amber_muted / amber_primary are duplicated as the
+# "gui_amber_theme" colormap stops in sxm_viewer/cmap_registry.py
+# (AMBER_CMAP_STOPS) — that module must stay Qt-free and cannot import
+# this one. Keep the two in sync.
 AMBER = {
     "window_bg": "#100b05",
     "panel_bg": "#171006",

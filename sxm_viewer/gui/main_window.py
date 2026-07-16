@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
+from .. import cmap_registry
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
@@ -871,11 +872,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.channel_next_btn.setToolTip("Next channel")
         self.thumb_cmap_combo = QtWidgets.QComboBox(); self.preview_cmap_combo = QtWidgets.QComboBox()
         
-        # populate colormap combos with all available matplotlib colormaps and icons
-        try:
-            cmap_list = sorted(colormaps.keys())
-        except Exception:
-            cmap_list = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+        # Populate colormap combos from the central registry (registers the
+        # custom amber cmap and any optional extra-package cmaps first, so
+        # every picker in the app sees the same set). Featured names first,
+        # then the rest alphabetically.
+        cmap_registry.ensure_registered()
+        _featured = cmap_registry.featured_cmap_names("general")
+        cmap_list = _featured + [n for n in cmap_registry.all_cmap_names()
+                                 if n not in set(_featured)]
         for m in cmap_list:
             try:
                 icon = _colormap_icon(m, width=96, height=14)

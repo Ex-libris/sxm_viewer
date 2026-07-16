@@ -34,6 +34,7 @@ from .._shared import (
     log_status,
     matplotlib,
 )
+from .. import cmap_registry
 from ..config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -100,22 +101,12 @@ from ..data.spectroscopy import (
 )
 
 
-_COLORMAP_CACHE: dict = {}
-
-
 def _get_cached_colormap(name):
-    """colormaps.get_cmap(name) rebuilds the LUT from scratch on every call
-    (matplotlib always returns a fresh Colormap copy) - confirmed 661ms
-    across 208 real thumbnails, 147ms just in _create_lookup_table. Neither
-    call site mutates the returned Colormap (no set_bad/set_over/set_under
-    anywhere in this codebase), so it's safe to build each name's LUT once
-    and reuse the same object - colormap evaluation (cmap(x)) is a pure
-    read over the object's own table."""
-    cmap = _COLORMAP_CACHE.get(name)
-    if cmap is None:
-        cmap = colormaps.get_cmap(name)
-        _COLORMAP_CACHE[name] = cmap
-    return cmap
+    """Shim kept for existing callers: resolution + the shared-object
+    cache now live in ``sxm_viewer.cmap_registry.get_cmap`` (which keeps
+    this module's original invariant: cached Colormap objects are shared
+    and must never be mutated — no set_bad/set_over/set_under)."""
+    return cmap_registry.get_cmap(name)
 
 
 def array_to_qimage(arr, cmap_name='viridis', vmin=None, vmax=None, gamma=1.0):
