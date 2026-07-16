@@ -26,6 +26,7 @@ from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status
+from ... import cmap_registry
 from ...config import load_config, save_config
 from .. import theme as ui_theme
 from .molecular_overlay import (
@@ -8855,23 +8856,8 @@ class MultiPreviewCanvas(FigureCanvas):
         cmap_actions = {}
         cmap_group = QtWidgets.QActionGroup(self)
         cmap_group.setExclusive(True)
-        common_cmaps = [
-            "viridis",
-            "plasma",
-            "inferno",
-            "magma",
-            "cividis",
-            "turbo",
-            "gray",
-            "afmhot",
-            "Blues_r",
-            "RdBu_r",
-            "coolwarm",
-        ]
-        try:
-            available_cmaps = sorted(str(name) for name in matplotlib.colormaps.keys())
-        except Exception:
-            available_cmaps = list(common_cmaps)
+        common_cmaps = cmap_registry.featured_cmap_names("general")
+        available_cmaps = cmap_registry.all_cmap_names()
         seen_cmaps = []
         for cmap_name in common_cmaps + available_cmaps:
             if cmap_name not in seen_cmaps:

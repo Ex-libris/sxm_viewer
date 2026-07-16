@@ -37,6 +37,7 @@ from ..._shared import (
     log_status,
     matplotlib,
 )
+from ... import cmap_registry
 from ..ppt_mixin import PPTContextMenuMixin
 from ..system_open import add_source_file_menu
 from ..thumbnail_render import (
@@ -131,10 +132,9 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
                 self.matrix_filter_combo.currentIndexChanged.connect(self._on_matrix_filter_changed)
                 side_v.addWidget(self.matrix_filter_combo)
             # Colormap selector for matrix preview
-            try:
-                cmap_list = sorted(colormaps.keys())
-            except Exception:
-                cmap_list = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+            _featured = cmap_registry.featured_cmap_names("general")
+            cmap_list = _featured + [n for n in cmap_registry.all_cmap_names()
+                                     if n not in set(_featured)]
             self.matrix_cmap_combo = QtWidgets.QComboBox()
             for name in cmap_list:
                 self.matrix_cmap_combo.addItem(name)

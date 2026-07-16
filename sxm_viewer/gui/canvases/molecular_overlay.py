@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from pathlib import Path
 from ..._shared import QtWidgets, QtCore, QtGui
+from ... import cmap_registry
 
 # Atom palettes (simplified, hex)
 CPK_COLORS = {
@@ -55,24 +56,17 @@ ATOM_PALETTES = {
     }
 }
 
-# Curated colormap categories for coloring bonds by a data value, following
-# matplotlib's own documented colormap classes
-# (https://matplotlib.org/stable/users/explain/colors/colormaps.html).
-# Diverging fits a signed deviation (shorter/longer than reference) best;
-# sequential is offered for users who only care about magnitude.
-DIVERGING_COLORMAPS = [
-    "coolwarm", "RdBu", "RdYlBu", "RdYlGn", "PiYG", "PRGn", "BrBG", "PuOr", "Spectral", "seismic", "bwr",
-]
-SEQUENTIAL_COLORMAPS = [
-    "viridis", "plasma", "inferno", "magma", "cividis", "YlOrRd", "YlGnBu", "OrRd", "PuBu", "BuGn",
-]
+# Curated colormap categories for coloring bonds by a data value. The
+# lists themselves now live in the central registry
+# (sxm_viewer/cmap_registry.py _FEATURED) — these are thin aliases kept
+# for existing importers.
+DIVERGING_COLORMAPS = cmap_registry.featured_cmap_names("molecule_diverging")
+SEQUENTIAL_COLORMAPS = cmap_registry.featured_cmap_names("molecule_sequential")
 QUANTITATIVE_COLORMAPS = DIVERGING_COLORMAPS + SEQUENTIAL_COLORMAPS
 
 # Qualitative/discrete colormaps, for categorical data (bond order, binned
 # length categories) where color shouldn't imply a magnitude ordering.
-QUALITATIVE_COLORMAPS = [
-    "tab10", "Set2", "Set1", "Dark2", "Accent", "Paired", "Pastel1", "Pastel2", "tab20",
-]
+QUALITATIVE_COLORMAPS = cmap_registry.featured_cmap_names("molecule_qualitative")
 
 MOLECULE_RENDER_STYLE_OPTIONS = [
     ("Shaded", "shaded"),

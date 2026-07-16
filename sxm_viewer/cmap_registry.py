@@ -56,24 +56,37 @@ _FORCED_CMAP = None
 # constants) is what prevents the lists from drifting apart again.
 _FEATURED = {
     # Mirrors the historical `common_cmaps` shortlist from the preview
-    # canvas context menu.
+    # canvas context menu (Blues_r is the app's default thumbnail/preview
+    # cmap — keep it featured).
     "general": [
         "viridis", "plasma", "inferno", "magma", "cividis",
-        "gray", "hot", "afmhot", "coolwarm", "RdBu_r", "turbo",
+        "turbo", "gray", "afmhot", "Blues_r", "RdBu_r", "coolwarm",
     ],
-    # Mirrors gui/controllers/image_compare.py's TOPO_CMAPS.
+    # Historical gui/controllers/image_compare.py TOPO_CMAPS.
     "topo": [
         "viridis", "plasma", "magma", "inferno", "cividis", "afmhot", "gray",
     ],
-    # Mirror gui/canvases/molecular_overlay.py's curated lists.
+    # Historical publication-canvas tile context-menu shortlist
+    # (gui/canvases/canvas_items.py).
+    "canvas_tile": [
+        "viridis", "plasma", "magma", "inferno", "cividis", "afmhot",
+        "gray", "Blues_r", "RdBu_r",
+    ],
+    # Historical gui/canvases/molecular_overlay.py curated categories,
+    # following matplotlib's documented colormap classes. Diverging fits a
+    # signed deviation best; sequential is for magnitude-only coloring;
+    # qualitative is for categorical data (no implied ordering).
     "molecule_diverging": [
-        "coolwarm", "bwr", "seismic", "RdBu_r", "PiYG", "Spectral",
+        "coolwarm", "RdBu", "RdYlBu", "RdYlGn", "PiYG", "PRGn", "BrBG",
+        "PuOr", "Spectral", "seismic", "bwr",
     ],
     "molecule_sequential": [
-        "viridis", "plasma", "inferno", "magma", "cividis", "Greys",
+        "viridis", "plasma", "inferno", "magma", "cividis", "YlOrRd",
+        "YlGnBu", "OrRd", "PuBu", "BuGn",
     ],
     "molecule_qualitative": [
-        "tab10", "tab20", "Set1", "Set2", "Set3", "Paired",
+        "tab10", "Set2", "Set1", "Dark2", "Accent", "Paired", "Pastel1",
+        "Pastel2", "tab20",
     ],
 }
 
@@ -92,6 +105,11 @@ def _register_amber():
 
 def _register_extra_package():
     global _EXTRA_STATUS, _EXTRA_NAMES
+    # Recent package versions self-register their colormaps into
+    # matplotlib's global registry as a side effect of the import, so
+    # snapshot the registry first: anything that appears afterwards was
+    # contributed by the package.
+    before = set(matplotlib.colormaps)
     try:
         import colormaps as _pkg  # pratiman-91, PyPI "colormaps"
     except Exception as exc:
@@ -104,12 +122,13 @@ def _register_extra_package():
         }
         return
 
-    registered = 0
     skipped = 0
-    names = []
-    # The package exposes its colormaps as module attributes (matplotlib
-    # Colormap subclasses), so attribute scanning is the enumeration that
-    # works across package versions.
+    # The package exposes its colormaps as module attributes; accessing an
+    # attribute lazily builds the Colormap AND (in current versions)
+    # registers it into matplotlib as a side effect. So: touch every
+    # attribute, register manually only when the access didn't already do
+    # it, and treat a name matplotlib had *before* the import as a genuine
+    # collision (matplotlib's own colormap wins).
     for attr in dir(_pkg):
         if attr.startswith("_"):
             continue
@@ -120,28 +139,21 @@ def _register_extra_package():
         if not isinstance(obj, _mcolors.Colormap):
             continue
         name = str(getattr(obj, "name", attr)) or attr
-        if name in matplotlib.colormaps:
-            # matplotlib's own (or an earlier registrant's) name wins.
+        if name in before:
             skipped += 1
             continue
-        try:
-            matplotlib.colormaps.register(obj, name=name)
-        except Exception:
-            skipped += 1
-            continue
-        names.append(name)
-        registered += 1
-        reversed_name = name + "_r"
-        if reversed_name not in matplotlib.colormaps:
+        if name not in matplotlib.colormaps:
             try:
-                matplotlib.colormaps.register(obj.reversed(reversed_name))
-                names.append(reversed_name)
+                matplotlib.colormaps.register(obj, name=name)
             except Exception:
-                pass
-    _EXTRA_NAMES = names
+                skipped += 1
+    # Everything that appeared in matplotlib's registry since the snapshot
+    # came from the package (attribute side effects included).
+    names = set(matplotlib.colormaps) - before
+    _EXTRA_NAMES = sorted(names)
     _EXTRA_STATUS = {
         "available": True,
-        "count": registered,
+        "count": len(names),
         "skipped": skipped,
         "error": None,
     }

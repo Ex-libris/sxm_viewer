@@ -7578,11 +7578,10 @@ QLabel:hover {{
         hm = QtWidgets.QHBoxLayout()
         hm.addWidget(QtWidgets.QLabel("Cmap:"))
         cmapcombo = QtWidgets.QComboBox()
-        # Populate cmap list with icons, falling back to a fixed list if colormaps is unavailable
-        try:
-            cmap_names = sorted(colormaps.keys())
-        except Exception:
-            cmap_names = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+        # Populate cmap list with icons from the central registry (featured first)
+        _featured = cmap_registry.featured_cmap_names("general")
+        cmap_names = _featured + [n for n in cmap_registry.all_cmap_names()
+                                  if n not in set(_featured)]
         for name in cmap_names:
             try:
                 icon = _colormap_icon(name, width=96, height=14)
@@ -9969,10 +9968,7 @@ QLabel:hover {{
         if virtual_targets:
             virt_menu.addSeparator()
             cmap_menu = virt_menu.addMenu("Colormap")
-            try:
-                cmap_names = sorted(colormaps.keys())
-            except Exception:
-                cmap_names = ['viridis','plasma','inferno','magma','cividis','gray','hot','coolwarm','turbo']
+            cmap_names = cmap_registry.all_cmap_names()
             featured = []
             for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
                 if name in cmap_names and name not in featured:
@@ -10638,10 +10634,7 @@ QLabel:hover {{
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel("Colormap:"))
         cmap_combo = QtWidgets.QComboBox()
-        try:
-            cmap_combo.addItems(sorted(colormaps.keys()))
-        except Exception:
-            cmap_combo.addItems(["gray", "viridis", "plasma", "magma", "cividis"])
+        cmap_combo.addItems(cmap_registry.all_cmap_names())
         if hasattr(self, "thumb_cmap"):
             idx = cmap_combo.findText(self.thumb_cmap)
             if idx >= 0:
@@ -11218,6 +11211,35 @@ QLabel:hover {{
         save_config(self.config)
         log_status("[Colormaps] Cleared saved colormap defaults"
                    if had else "[Colormaps] No saved colormap defaults to clear")
+
+    def on_extra_colormaps_status(self):
+        """Display → Extra colormaps...: status of the optional pratiman-91
+        'colormaps' package (never a hard dependency — see cmap_registry)."""
+        status = cmap_registry.extra_colormaps_status()
+        if status.get("available"):
+            skipped = int(status.get("skipped") or 0)
+            skipped_note = (
+                f"\n({skipped} name(s) were skipped because matplotlib "
+                "already provides a colormap with the same name.)" if skipped else "")
+            QtWidgets.QMessageBox.information(
+                self, "Extra colormaps",
+                f"The optional 'colormaps' package is installed — "
+                f"{int(status.get('count') or 0)} extra colormaps are "
+                f"registered and available in every colormap picker."
+                f"{skipped_note}")
+        else:
+            err = status.get("error")
+            err_note = f"\n\n(Import problem detected: {err})" if err else ""
+            QtWidgets.QMessageBox.information(
+                self, "Extra colormaps",
+                "The optional 'colormaps' package (pratiman-91) is not "
+                "installed, so only matplotlib's built-in colormaps (plus "
+                "the viewer's own) are available.\n\n"
+                "To add ~100+ extra scientific colormaps, install it into "
+                "this Python environment:\n\n"
+                f"    {cmap_registry.EXTRA_PACKAGE_INSTALL_HINT}\n\n"
+                "then restart the viewer. Existing sessions and settings "
+                f"are unaffected either way.{err_note}")
 
     def set_spectro_color_cycle(self, name: str):
         cycle = name or DEFAULT_COLOR_CYCLE

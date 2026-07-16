@@ -65,6 +65,7 @@ try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
     _scipy_signal = None
+from ... import cmap_registry
 from ...config import (
     CONFIG_PATH,
     HEADER_CACHE_PATH,
@@ -3699,10 +3700,7 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         # Same full colormap set + gradient-swatch icons as the Thumb/Preview
         # cmap pickers in main_window.py, instead of a hand-picked shortlist
         # with no visual cue of what each name actually looks like.
-        try:
-            _cmap_names = sorted(colormaps.keys())
-        except Exception:
-            _cmap_names = ["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "gray", "hot", "coolwarm", "RdBu"]
+        _cmap_names = cmap_registry.all_cmap_names()
         for _cmap_name in _cmap_names:
             try:
                 _icon = _colormap_icon(_cmap_name, width=96, height=14)
