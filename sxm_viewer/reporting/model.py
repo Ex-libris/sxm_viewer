@@ -7,6 +7,10 @@ Input payload schema (plain data, built by ``gui/controllers/report.py``):
     key (str), name (str), time (datetime|None),
     extent ([x0, x1, y1, y0] nm, same convention as _header_extent),
     angle (deg), xpix, ypix,
+    bias_v (float|None), z_level_nm (float|None, median of the raw topo
+    channel - for a constant-height scan this is the absolute tip height),
+    z_spread_nm (float|None, p98-p2 of the raw topo channel: ~0 means a
+    genuinely flat constant-height plane),
     topo (2D np.ndarray|None), topo_unit (str),
     meta (dict of short display strings)
 
@@ -207,6 +211,162 @@ def build_session_regions(images, k_max=8):
         image_region[key] = region_idx
         regions[region_idx]["image_keys"].append(key)
     return regions, image_region
+
+
+# ---------------------------------------------------------------------------
+# Image sequences (data-sets): the same frame re-scanned while stepping one
+# acquisition parameter - e.g. constant-height current/df images taken at a
+# series of tip-sample distances (z_rel), or scans of the same spot at a
+# series of biases. Detected by footprint identity (center + size + angle
+# within tolerance), then classified by which parameter actually varies.
+# ---------------------------------------------------------------------------
+
+_SEQ_CENTER_FRAC = 0.25   # allowed center drift, as a fraction of frame size
+_SEQ_SIZE_FRAC = 0.10     # allowed relative width/height mismatch
+_SEQ_ANGLE_TOL_DEG = 2.0
+_SEQ_BIAS_TOL_V = 2e-3    # bias span below this counts as "constant"
+_SEQ_Z_TOL_NM = 5e-3      # 5 pm; z-level span below this is just noise
+_SEQ_Z_FLAT_NM = 0.02     # topo spread above this is real topography, so the
+                          # median z is surface, not a controlled tip height
+
+
+def _sequence_geometry(image):
+    """(cx, cy, w, h, angle) of an image's frame in nm, or None."""
+    extent = image.get("extent")
+    if not extent or len(extent) != 4:
+        return None
+    x0, x1, y1, y0 = [float(v) for v in extent]
+    if not all(math.isfinite(v) for v in (x0, x1, y0, y1)):
+        return None
+    w, h = abs(x1 - x0), abs(y1 - y0)
+    if w <= 0 or h <= 0:
+        return None
+    return (0.5 * (x0 + x1), 0.5 * (y0 + y1), w, h,
+            float(image.get("angle") or 0.0))
+
+
+def _same_footprint(g1, g2):
+    cx1, cy1, w1, h1, a1 = g1
+    cx2, cy2, w2, h2, a2 = g2
+    if abs(w1 - w2) > _SEQ_SIZE_FRAC * max(w1, w2):
+        return False
+    if abs(h1 - h2) > _SEQ_SIZE_FRAC * max(h1, h2):
+        return False
+    da = abs(a1 - a2) % 360.0
+    if min(da, 360.0 - da) > _SEQ_ANGLE_TOL_DEG:
+        return False
+    mean_span = 0.25 * (w1 + h1 + w2 + h2)
+    return math.hypot(cx1 - cx2, cy1 - cy2) <= _SEQ_CENTER_FRAC * mean_span
+
+
+def _finite_or_none(value):
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
+def build_image_sequences(images, image_region=None):
+    """Group images that re-scan the same frame into parameter series.
+
+    Returns a list of dicts ordered by first-acquisition time::
+
+        label (str), kind ("height"|"bias"|"bias+height"|"repeat"),
+        kind_label (str), region (int|None),
+        bias_span_v (float), z_span_nm (float),
+        t0, t1 (datetime|None),
+        members: [{key, name, time, tag, bias_v, z_level_nm, z_rel_pm}]
+
+    ``z_rel_pm`` is the tip height relative to the sequence's first image
+    (image 0 at z_rel = 0, positive = retracted), only set for genuinely
+    flat (constant-height) frames. Footprint-matched pairs with nothing
+    varying are dropped as plain re-scans; groups of >= 3 are kept even
+    then (a time series at one spot is itself worth reporting).
+    """
+    usable = []
+    for img in images:
+        geom = _sequence_geometry(img)
+        if geom is not None:
+            usable.append((img, geom))
+    # Time-ordered so "image 0" of each sequence is the earliest one.
+    usable.sort(key=lambda ig: (ig[0].get("time") is None,
+                                ig[0].get("time") or datetime.min,
+                                str(ig[0].get("name") or "")))
+    groups = []
+    for img, geom in usable:
+        for grp in groups:
+            if _same_footprint(geom, grp["geom"]):
+                grp["images"].append(img)
+                break
+        else:
+            groups.append({"geom": geom, "images": [img]})
+
+    sequences = []
+    for grp in groups:
+        members = grp["images"]
+        if len(members) < 2:
+            continue
+        biases = [_finite_or_none(i.get("bias_v")) for i in members]
+        # A median-z value is only a *controlled* tip height when the frame
+        # is genuinely flat (constant-height); on real topography it tracks
+        # the surface and would fake a height series from drift alone.
+        zs = []
+        for img in members:
+            z = _finite_or_none(img.get("z_level_nm"))
+            spread = _finite_or_none(img.get("z_spread_nm"))
+            zs.append(z if (z is not None and spread is not None
+                            and spread <= _SEQ_Z_FLAT_NM) else None)
+        bias_vals = [b for b in biases if b is not None]
+        z_vals = [z for z in zs if z is not None]
+        bias_span = (max(bias_vals) - min(bias_vals)) if len(bias_vals) >= 2 else 0.0
+        z_span = (max(z_vals) - min(z_vals)) if len(z_vals) >= 2 else 0.0
+        bias_varies = bias_span > _SEQ_BIAS_TOL_V
+        z_varies = z_span > _SEQ_Z_TOL_NM
+        if bias_varies and z_varies:
+            kind, kind_label = "bias+height", "Bias + height series"
+        elif bias_varies:
+            kind, kind_label = "bias", "Bias series"
+        elif z_varies:
+            kind, kind_label = "height", "Height (tip-sample distance) series"
+        else:
+            kind, kind_label = "repeat", "Repeated frame (time series)"
+        if kind == "repeat" and len(members) < 3:
+            continue  # a single re-scan of a frame is not a data-set
+        z_ref = next((z for z in zs if z is not None), None)
+        entries = []
+        for img, bias, z in zip(members, biases, zs):
+            entries.append({
+                "key": str(img["key"]),
+                "name": img.get("name") or "",
+                "time": img.get("time"),
+                "tag": img.get("tag"),
+                "bias_v": bias,
+                "z_level_nm": z,
+                "z_rel_pm": ((z - z_ref) * 1e3)
+                            if (z is not None and z_ref is not None) else None,
+            })
+        times = [e["time"] for e in entries if isinstance(e["time"], datetime)]
+        region = None
+        if image_region:
+            votes = [image_region.get(e["key"]) for e in entries
+                     if image_region.get(e["key"]) is not None]
+            if votes:
+                region = max(set(votes), key=votes.count)
+        sequences.append({
+            "kind": kind,
+            "kind_label": kind_label,
+            "region": region,
+            "bias_span_v": float(bias_span),
+            "z_span_nm": float(z_span),
+            "t0": min(times) if times else None,
+            "t1": max(times) if times else None,
+            "members": entries,
+        })
+    sequences.sort(key=lambda s: (s["t0"] is None, s["t0"] or datetime.min))
+    for idx, seq in enumerate(sequences):
+        seq["label"] = f"Sequence {idx + 1}"
+    return sequences
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +743,7 @@ def build_report_model(payload):
     grids = list(payload.get("grids") or [])
 
     regions, image_region = build_session_regions(images)
+    sequences = build_image_sequences(images, image_region)
 
     angle_by_key = {str(i["key"]): float(i.get("angle") or 0.0) for i in images}
     grid_models = []
@@ -607,12 +768,14 @@ def build_report_model(payload):
         "payload": payload,
         "regions": regions,
         "image_region": image_region,
+        "sequences": sequences,
         "specs_by_image": specs_by_image,
         "grids": grid_models,
         "flagged": build_flagged(specs),
         "summary": {
             "folder": payload.get("folder") or "",
             "n_images": len(images),
+            "n_sequences": len(sequences),
             "n_specs": len(single_specs),
             "n_grid_points": sum(1 for s in specs if s.get("is_matrix")),
             "n_grids": len(grid_models),

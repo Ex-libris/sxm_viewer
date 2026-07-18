@@ -667,6 +667,31 @@ entirely off-thread. Never let the worker touch the viewer.
   (scan center x, y, acquisition time), elbow-selected k: scans from the
   same sample area in the same time window. This is the report's ordering
   unit ("Region 1..N"); the term replaced "chapters" as clearer for SPM use.
+- **Image sequences (data-sets)** (`model.build_image_sequences`) — images
+  re-scanning the same footprint (center/size/angle within tolerance,
+  time-ordered) are grouped and classified by which acquisition parameter
+  actually steps: bias series, height series (constant-height scans at a
+  series of tip-sample distances), both, or plain repeats (kept only at
+  ≥3 members). Per-image `z_level_nm` is the median of the **raw**
+  topography channel (`_topo_z_stats_nm` in `gui/controllers/report.py` -
+  unfiltered on purpose: background subtraction would erase the flat CH
+  plane that *is* the tip height), and only counts as a controlled height
+  when the frame is genuinely flat (`z_spread_nm` gate) so drifting
+  topography can't fake a height series. `z_rel` is reported relative to
+  the sequence's first image (image 0 = 0, positive = retracted).
+  Nanonis-converted scans caption their Z channel "Z (Forward)" with bare
+  unit "m", which `_find_topography_channel` deliberately doesn't match -
+  `_z_channel_index` adds the report-local fallback. `pages_sequence`
+  (pdf.py) renders annotated member panels, capped per sequence;
+  `collect_payload` backfills panels for sequence members past the
+  contact-sheet limit using the same Qt-free detector so the two always
+  agree, rebuilding two-channel picks for members that only carried one.
+  Members with both current and frequency-shift channels (constant-height)
+  render in *paired rows* - per column one file, current on top in
+  `Blues_r`, frequency shift below in `gray` (`_SEQ_CLASS_CMAPS`, a
+  sequence-page-specific convention that deliberately differs from the
+  general current -> Blues rule) - so both channels of the same file
+  always correspond vertically.
 - **Channel-selection heuristics** (`reporting/channels.py`, user-specified):
   constant-height images show current + frequency-shift/lock-in panels
   instead of flat topo (with a dead-flat-Z retry for untagged CH scans);

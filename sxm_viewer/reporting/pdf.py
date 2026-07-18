@@ -178,6 +178,11 @@ def page_cover(model):
         (f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} by SXM Viewer",
          8, "normal", 0.06),
     ]
+    sequences = model.get("sequences") or []
+    if sequences:
+        lines.insert(5, (
+            f"{len(sequences)} image data-set(s): same frame re-scanned "
+            "stepping bias / tip height", 10, "normal", 0.58))
     for text, size, weight, y in lines:
         ax.text(0.02, y, text, fontsize=size, fontweight=weight, transform=ax.transAxes)
 
@@ -353,6 +358,145 @@ def page_image_specs(model, image, specs, region_label=""):
                      "(squares = off-frame, clamped to nearest edge)",
                      fontsize=7, color="0.35", transform=img_meta_ax.transAxes)
     return fig
+
+
+def _fmt_bias_v(bias_v):
+    if bias_v is None:
+        return "?"
+    if abs(bias_v) < 1.0:
+        return f"{bias_v * 1e3:.4g} mV"
+    return f"{bias_v:.4g} V"
+
+
+def _fmt_z_rel_pm(z_rel_pm):
+    if z_rel_pm is None:
+        return "z rel = ?"
+    if abs(z_rel_pm) < 0.05:
+        return "z rel = 0 (ref)"
+    return f"z rel = {z_rel_pm:+.3g} pm"
+
+
+def _sequence_member_annotation(seq, member):
+    """The stepped parameter for one member, e.g. 'z rel = +20 pm'."""
+    kind = seq.get("kind")
+    parts = []
+    if kind in ("height", "bias+height"):
+        parts.append(_fmt_z_rel_pm(member.get("z_rel_pm")))
+    if kind in ("bias", "bias+height"):
+        parts.append(f"bias = {_fmt_bias_v(member.get('bias_v'))}")
+    if not parts:
+        parts.append(_fmt_time(member.get("time"), "%H:%M:%S"))
+    return "   ".join(parts)
+
+
+# Sequence pages pin the channel colormaps explicitly (user convention):
+# current in reversed Blues, frequency shift / lock-in in gray.
+_SEQ_CLASS_CMAPS = {"current": "Blues_r", "freq": "gray", "lockin": "gray"}
+
+
+def _sequence_member_pair(image):
+    """(current_panel, signal_panel) for one sequence member: the current
+    channel and the frequency-shift (or lock-in) channel, either None when
+    the member doesn't carry it."""
+    cur = sig = None
+    for panel in (image or {}).get("panels") or []:
+        cls = str(panel.get("cls") or "")
+        if cls == "current" and cur is None:
+            cur = panel
+        elif cls in ("freq", "lockin") and sig is None:
+            sig = panel
+    return cur, sig
+
+
+def _seq_panel_cmap(model, panel):
+    cls = str((panel or {}).get("cls") or "")
+    return _SEQ_CLASS_CMAPS.get(cls) or _panel_cmap(model, panel)
+
+
+def pages_sequence(model, seq, images_by_key, max_members=None):
+    """Figures for one image sequence (data-set): the same frame re-scanned
+    while stepping bias and/or tip-sample distance. Panels are annotated
+    with each member's value of the stepped parameter (z rel is relative to
+    the sequence's first image); the first page adds a member table.
+
+    Constant-height members carrying both channels render in *paired rows*
+    - per column one member, current on the top row (Blues_r), frequency
+    shift on the bottom row (gray) - so the two channels of the same file
+    always correspond vertically. Members with a single display channel use
+    the plain 2x4 panel grid. Long sequences (drift-corrected movies can
+    run to dozens of frames) are capped with a note instead of flooding
+    the report."""
+    members = seq.get("members") or []
+    paired = any(all(_sequence_member_pair(images_by_key.get(str(m.get("key") or ""))))
+                 for m in members)
+    per_page = 4 if paired else 8
+    if max_members is None:
+        max_members = 16 if paired else 24
+    shown = members[:max_members]
+    n_hidden = len(members) - len(shown)
+    n_pages = max(1, math.ceil(len(shown) / per_page))
+    for page_idx in range(n_pages):
+        chunk = shown[page_idx * per_page:(page_idx + 1) * per_page]
+        title = (f"{seq.get('label', '')}  -  {seq.get('kind_label', '')}   "
+                 f"({len(members)} images)")
+        if seq.get("region") is not None:
+            title += f"   -   Region {int(seq['region']) + 1}"
+        if n_pages > 1:
+            title += f"   [{page_idx + 1}/{n_pages}]"
+        fig = _new_page(title)
+        row_labels = [None, None]
+        for i, member in enumerate(chunk):
+            idx = page_idx * per_page + i
+            image = images_by_key.get(str(member.get("key") or ""))
+            width_nm = _image_width_nm(image)
+            member_title = (f"{idx}: {member.get('name', '')}\n"
+                            f"{_sequence_member_annotation(seq, member)}")
+            if paired:
+                cur, sig = _sequence_member_pair(image)
+                cells = ((0, cur), (1, sig))
+            else:
+                panels = (image or {}).get("panels") or []
+                cells = ((i // 4, panels[0] if panels else None),)
+            for row, panel in cells:
+                col = i if paired else i % 4
+                ax = fig.add_axes([0.05 + col * 0.235, 0.56 - row * 0.325, 0.20, 0.28])
+                have = _imshow_topo(
+                    ax, {"topo": panel.get("data") if panel else None},
+                    cmap=_seq_panel_cmap(model, panel))
+                if have and width_nm:
+                    _draw_scale_bar(ax, np.asarray(panel["data"]).shape, width_nm,
+                                    fontsize=4)
+                if paired and panel and row_labels[row] is None:
+                    row_labels[row] = str(panel.get("label") or "")
+                if not paired or row == 0:
+                    ax.set_title(member_title, fontsize=6, pad=2)
+        if paired:
+            for row, label in enumerate(row_labels):
+                if label:
+                    fig.text(0.035, 0.56 - row * 0.325 + 0.14, label,
+                             fontsize=6.5, color="0.35", rotation=90,
+                             ha="center", va="center")
+        if page_idx == 0:
+            info_ax = fig.add_axes([0.05, 0.015, 0.9, 0.17])
+            info_ax.axis("off")
+            head = [f"{'#':>2}  {'image':<36} {'time':<17} {'bias':>10} {'z rel':>12}"]
+            rows = []
+            for idx, member in enumerate(members[:5]):
+                z_txt = (f"{member['z_rel_pm']:+.4g} pm"
+                         if member.get("z_rel_pm") is not None else "-")
+                rows.append(f"{idx:>2}  {str(member.get('name', '')):<36.36} "
+                            f"{_fmt_time(member.get('time'), '%m-%d %H:%M:%S'):<17} "
+                            f"{_fmt_bias_v(member.get('bias_v')):>10} {z_txt:>12}")
+            if len(members) > 5:
+                extra = (f"(first {len(shown)} shown as panels)"
+                         if n_hidden else "(all shown as panels)")
+                rows.append(f"    ... and {len(members) - 5} more {extra}")
+            info_ax.text(0, 1, "\n".join(head + rows), fontsize=6, va="top",
+                         family="monospace", transform=info_ax.transAxes)
+        if page_idx == n_pages - 1 and n_hidden:
+            fig.text(0.97, 0.02, f"... {n_hidden} more image(s) not shown",
+                     fontsize=7, ha="right", color="0.4")
+        yield fig
 
 
 def page_grid(model, grid, images_by_key):
@@ -579,6 +723,10 @@ def iter_report_figures(model):
     yield "cover", page_cover(model)
     if payload["images"]:
         yield "overview", page_overview(model)
+
+    for seq in model.get("sequences") or []:
+        for fig in pages_sequence(model, seq, images_by_key):
+            yield f"sequence {seq.get('label', '')}", fig
 
     specs_by_image = model["specs_by_image"]
     for region in model["regions"]:

@@ -9,12 +9,16 @@ entirely off-thread.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
 from ..._shared import QtCore, QtWidgets, log_status, np
+from ...data.io import normalize_unit_and_data
 from ...processing.detection import _find_topography_channel
 from ...reporting.channels import pick_image_channels, pick_signal_channels
+from ...reporting.model import build_image_sequences
+from ...utils.units import _safe_float
 from ..palettes import get_color_cycle
 from ..viewer import loader as viewer_loader
 from ..viewer import thumbnail_ui as viewer_thumb_ui
@@ -24,6 +28,7 @@ from ..workers.report_worker import ReportWorker
 # is pointless at report page sizes and 200+ scans of float64 would not be.
 _TOPO_MAX_DIM_FEATURED = 512   # images that host spectra / anchor a grid
 _TOPO_MAX_DIM_THUMB = 96       # contact-sheet-only images
+_TOPO_MAX_DIM_SEQ = 256        # sequence members backfilled past the limit
 _CONTACT_SHEET_LIMIT = 32
 
 
@@ -42,6 +47,128 @@ def _spec_display_name(spec):
     if idx is not None:
         name = f"{name} [{idx}]"
     return name
+
+
+_BIAS_HEADER_KEYS = ("GapVoltage", "BiasVoltage", "Bias", "UBias", "Voltage")
+
+
+def _header_bias_v(header):
+    """Numeric sample bias in V from the header, or None."""
+    for key in _BIAS_HEADER_KEYS:
+        val = header.get(key)
+        if val in (None, ""):
+            continue
+        num = _safe_float(val)
+        if num is not None:
+            return float(num)
+    return None
+
+
+_Z_LENGTH_UNITS = {"m", "mm", "um", "nm", "pm", "a", "ang", "angstrom"}
+
+
+def _z_channel_index(fds):
+    """Index of the Z/topography channel for z-level extraction.
+
+    `_find_topography_channel` misses Nanonis-converted scans: their Z
+    channel is captioned "Z (Forward)" with bare unit "m", which matches
+    neither the topo/height caption steps nor the length-unit tokens (bare
+    "m" is deliberately ambiguous there). Fall back to the first channel
+    whose caption is a standalone word "z" with a length unit - that never
+    matches "Oc D1 Amplitude" (also unit m) or signal channels.
+    """
+    idx = _find_topography_channel(fds)
+    if idx is not None:
+        return idx
+    for i, fd in enumerate(fds):
+        caption = str(fd.get("Caption") or "")
+        unit = str(fd.get("PhysUnit") or "").strip().lower()
+        if unit in _Z_LENGTH_UNITS and re.search(r"(?i)\bz\b", caption):
+            return i
+    return None
+
+
+def _topo_z_stats_nm(viewer, key, header, fds):
+    """(median, p98-p2 spread) of the raw topography channel in nm.
+
+    Deliberately reads the *unfiltered* channel: for a constant-height scan
+    the dead-flat Z plane IS the absolute tip height, which any background-
+    subtraction filter would erase. The spread lets the report model tell a
+    genuine constant-height level (spread ~ 0) apart from real topography.
+    Returns (None, None) when there is no length-unit topo channel.
+    """
+    topo_idx = _z_channel_index(fds)
+    if topo_idx is None:
+        return None, None
+    fd = fds[topo_idx]
+    try:
+        raw = viewer._get_channel_array(key, topo_idx, header, fd)
+        unit, arr = normalize_unit_and_data(raw, fd.get("PhysUnit", ""))
+    except Exception:
+        return None, None
+    if str(unit) != "nm":
+        return None, None
+    finite = np.asarray(arr, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return None, None
+    lo, hi = np.percentile(finite, [2.0, 98.0])
+    return float(np.median(finite)), float(hi - lo)
+
+
+def _collect_panels(viewer, key, header, fds, tag, is_featured, max_dim=None):
+    """Representative image panels for one scan (see pick_image_channels):
+    constant-height scans get current + frequency-shift/lock-in panels,
+    everything else its topography channel; includes the dead-flat-Z retry
+    for untagged constant-height scans."""
+    if max_dim is None:
+        max_dim = _TOPO_MAX_DIM_FEATURED if is_featured else _TOPO_MAX_DIM_THUMB
+    panels = []
+    topo_idx = _find_topography_channel(fds)
+    picks = pick_image_channels(fds, tag, topo_idx)
+    if not is_featured:
+        picks = picks[:1]  # contact-sheet thumbs only need one
+    for chan_idx, cls in picks:
+        fd = fds[chan_idx]
+        try:
+            unit, arr = viewer._get_filtered_channel_array(key, chan_idx, header, fd)
+            panels.append({
+                "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
+                "unit": str(unit or ""),
+                "cls": cls,
+                "data": _downsample(arr, max_dim),
+            })
+        except Exception:
+            continue
+    # An untagged constant-height scan sneaks past the tag check with a
+    # dead-flat Z channel (all the signal lives in current/df) - a solid
+    # black panel. Detect that and re-pick as if CH-tagged.
+    if panels and tag != "constant-height":
+        first_arr = panels[0]["data"]
+        finite = first_arr[np.isfinite(first_arr)]
+        if finite.size and float(finite.max() - finite.min()) <= 1e-12 * max(1.0, abs(float(finite.max()))):
+            ch_picks = pick_image_channels(fds, "constant-height", None)
+            retry = []
+            for chan_idx, cls in ch_picks[:2 if is_featured else 1]:
+                fd = fds[chan_idx]
+                try:
+                    unit, arr = viewer._get_filtered_channel_array(
+                        key, chan_idx, header, fd)
+                except Exception:
+                    continue
+                arr = _downsample(arr, max_dim)
+                finite = arr[np.isfinite(arr)]
+                if not finite.size or float(finite.max() - finite.min()) <= 0.0:
+                    continue
+                retry.append({
+                    "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
+                    "unit": str(unit or ""),
+                    "cls": cls,
+                    "data": arr,
+                })
+            if retry:
+                panels = retry
+    return panels
 
 
 def _image_meta_summary(header, xpix, ypix, angle):
@@ -328,55 +455,10 @@ class ReportController:
                 tag = None
             panels = []
             if is_featured or order < _CONTACT_SHEET_LIMIT:
-                topo_idx = _find_topography_channel(fds)
-                picks = pick_image_channels(fds, tag, topo_idx)
-                if not is_featured:
-                    picks = picks[:1]  # contact-sheet thumbs only need one
-                for chan_idx, cls in picks:
-                    fd = fds[chan_idx]
-                    try:
-                        unit, arr = viewer._get_filtered_channel_array(
-                            key, chan_idx, header, fd)
-                        panels.append({
-                            "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
-                            "unit": str(unit or ""),
-                            "cls": cls,
-                            "data": _downsample(
-                                arr,
-                                _TOPO_MAX_DIM_FEATURED if is_featured else _TOPO_MAX_DIM_THUMB),
-                        })
-                    except Exception:
-                        continue
-            # An untagged constant-height scan sneaks past the tag check with
-            # a dead-flat Z channel (all the signal lives in current/df) - a
-            # solid black panel. Detect that and re-pick as if CH-tagged.
-            if panels and tag != "constant-height":
-                first_arr = panels[0]["data"]
-                finite = first_arr[np.isfinite(first_arr)]
-                if finite.size and float(finite.max() - finite.min()) <= 1e-12 * max(1.0, abs(float(finite.max()))):
-                    ch_picks = pick_image_channels(fds, "constant-height", None)
-                    retry = []
-                    for chan_idx, cls in ch_picks[:2 if is_featured else 1]:
-                        fd = fds[chan_idx]
-                        try:
-                            unit, arr = viewer._get_filtered_channel_array(
-                                key, chan_idx, header, fd)
-                        except Exception:
-                            continue
-                        arr = _downsample(
-                            arr,
-                            _TOPO_MAX_DIM_FEATURED if is_featured else _TOPO_MAX_DIM_THUMB)
-                        finite = arr[np.isfinite(arr)]
-                        if not finite.size or float(finite.max() - finite.min()) <= 0.0:
-                            continue
-                        retry.append({
-                            "label": str(fd.get("Caption") or fd.get("FileName") or f"ch{chan_idx}"),
-                            "unit": str(unit or ""),
-                            "cls": cls,
-                            "data": arr,
-                        })
-                    if retry:
-                        panels = retry
+                panels = _collect_panels(viewer, key, header, fds, tag, is_featured)
+            # Acquisition parameters for sequence (data-set) detection: same
+            # frame re-scanned while stepping bias or tip height.
+            z_level_nm, z_spread_nm = _topo_z_stats_nm(viewer, key, header, fds)
             images.append({
                 "key": key,
                 "name": Path(key).stem,
@@ -386,6 +468,9 @@ class ReportController:
                 "xpix": xpix,
                 "ypix": ypix,
                 "tag": tag,
+                "bias_v": _header_bias_v(header),
+                "z_level_nm": z_level_nm,
+                "z_spread_nm": z_spread_nm,
                 "panels": panels,
                 # First panel doubles as the generic "picture of this image"
                 # (contact sheet, overview, grid anchor pane).
@@ -393,6 +478,39 @@ class ReportController:
                 "topo_unit": panels[0]["unit"] if panels else "",
                 "meta": _image_meta_summary(header, xpix, ypix, angle),
             })
+
+        # Sequence members must render as panels in the report even when the
+        # folder is larger than the contact-sheet limit - detect sequences
+        # now (same Qt-free helper the report model uses, so the two always
+        # agree) and rebuild panels for members that don't yet carry both
+        # display channels: sequence pages pair current (top row) with
+        # frequency shift (bottom row) per member, so constant-height
+        # members need is_featured-style two-channel picks even when the
+        # contact-sheet pass only gave them one.
+        try:
+            # [:24] mirrors pages_sequence's member cap - members past it
+            # never render, so reading their channels would be wasted.
+            member_keys = {m["key"] for seq in build_image_sequences(images)
+                           for m in seq["members"][:24]}
+        except Exception:
+            member_keys = set()
+        for img in images:
+            key = str(img["key"])
+            if key not in member_keys or key in featured or key not in headers:
+                continue
+            if len(img.get("panels") or []) >= 2:
+                continue
+            header, fds = headers[key]
+            try:
+                panels = _collect_panels(
+                    viewer, key, header, fds, img.get("tag"), True,
+                    max_dim=_TOPO_MAX_DIM_SEQ)
+            except Exception:
+                continue
+            if panels:
+                img["panels"] = panels
+                img["topo"] = panels[0]["data"]
+                img["topo_unit"] = panels[0]["unit"]
 
         folder = getattr(viewer, "last_dir", None)
         # User display preferences the report should honor: the persisted
