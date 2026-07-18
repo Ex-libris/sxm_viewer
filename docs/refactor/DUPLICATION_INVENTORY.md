@@ -197,6 +197,34 @@ handover docs rather than refactoring.
 
 ---
 
+---
+
+## Progress
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Smoke test | ✅ done | `scripts/smoke_test.py`, 13/13 on a 224-scan folder |
+| Regression counters | ✅ done | `scripts/analysis/check_regressions.py` + `baseline.json` |
+| G1 `set_silent` | 🟨 in progress | helper landed + `main_window.py` batch: **245 → 215** sites |
+| G2 dead code | ⬜ queued | 58 clean candidates in `A4_USAGE.md` |
+| G3 `Debouncer` | ⬜ queued | 4 instances identified |
+| A1 settings registry | ⬜ queued | depends on G1 |
+| A2 grid geometry | ⬜ queued | needs the correlation check from CLAUDE.md |
+| A3 strategy tables | ⬜ queued | 4 families |
+| A4 target resolution | ⬜ queued | |
+
+**G1 remaining call sites** (215), by file - the migration worklist:
+
+Run `python scripts/analysis/find_idioms.py` and read the
+`block_signals_triad` section of `A1_IDIOMS.md` for exact file:line
+locations. Largest remaining concentrations are
+`gui/dialogs/spectroscopy_dialogs.py`, `gui/canvases/canvas_window.py`,
+`gui/controllers/quick_crop.py`, and `gui/canvases/detail_preview_canvas.py`.
+
+Migrate in batches of ≤40 sites, running the smoke test and
+`check_regressions.py` between batches, and merging each batch to `master`
+before starting the next.
+
 ## Recommended sequence
 
 1. **Smoke test first** (`scripts/smoke_test.py`) - prerequisite for all

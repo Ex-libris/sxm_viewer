@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
 from .. import cmap_registry
+from .qt_helpers import set_silent, set_many_silent
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
@@ -2021,12 +2022,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             except Exception:
                 pass
         for theme_name, act in (getattr(self, 'toolbar_theme_acts', {}) or {}).items():
-            try:
-                act.blockSignals(True)
-                act.setChecked(theme_name == name)
-                act.blockSignals(False)
-            except Exception:
-                pass
+            set_silent(act, checked=theme_name == name)
         # An explicit theme choice re-couples the plot/detail background to
         # the theme (a stale detail_dark_view override otherwise leaves the
         # preview plot white under dark/amber).
@@ -2043,11 +2039,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         # the menu action's enabled state in sync, and if the effective
         # override changed with this switch (e.g. Amber+toggle -> Dark),
         # re-render cached imagery (the preview re-render below runs anyway).
-        act = getattr(self, 'amber_full_imagery_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setEnabled(ui_theme.is_amber(name))
-            act.blockSignals(False)
+        set_silent(getattr(self, 'amber_full_imagery_act', None),
+                   enabled=ui_theme.is_amber(name))
         if self._sync_forced_cmap():
             self._refresh_all_imagery(include_preview=False)
         if getattr(self, "last_preview", None):
@@ -2344,14 +2337,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.detail_dark_view = bool(enabled)
         if follow_dark_mode is not None:
             self._detail_theme_follows_dark_mode = bool(follow_dark_mode)
-        act = getattr(self, "detail_dark_act", None)
-        if act is not None:
-            try:
-                act.blockSignals(True)
-                act.setChecked(self.detail_dark_view)
-                act.blockSignals(False)
-            except Exception:
-                pass
+        set_silent(getattr(self, "detail_dark_act", None),
+                   checked=self.detail_dark_view)
         if persist:
             self.config["detail_dark_view"] = self.detail_dark_view
             self.config["detail_theme_follows_dark_mode"] = bool(
@@ -2572,9 +2559,7 @@ QLabel:hover {{
         self.current_mode = mode
         btn = getattr(self, 'mode_buttons', {}).get(mode)
         if btn and not btn.isChecked():
-            btn.blockSignals(True)
-            btn.setChecked(True)
-            btn.blockSignals(False)
+            set_silent(btn, checked=True)
         if remember:
             settings = QtCore.QSettings()
             settings.setValue("lowerPane/lastMode", self._mode_name(mode))
@@ -3657,14 +3642,8 @@ QLabel:hover {{
                 except Exception:
                     pass
         for attr in ("session_recovery_enable_act", "toolbar_session_recovery_enable_act"):
-            act = getattr(self, attr, None)
-            if act is not None:
-                try:
-                    act.blockSignals(True)
-                    act.setChecked(self._session_recovery_enabled)
-                    act.blockSignals(False)
-                except Exception:
-                    pass
+            set_silent(getattr(self, attr, None),
+                       checked=self._session_recovery_enabled)
         recovery_exists = self._session_recovery_path().exists()
         for attr in ("session_recovery_open_act", "toolbar_session_recovery_open_act", "session_recovery_discard_act", "toolbar_session_recovery_discard_act"):
             act = getattr(self, attr, None)
@@ -3675,11 +3654,10 @@ QLabel:hover {{
                     pass
         for minutes, act in dict(getattr(self, "session_recovery_interval_actions", {}) or {}).items():
             try:
-                act.blockSignals(True)
-                act.setChecked(int(minutes) == int(self._session_recovery_interval_min))
-                act.blockSignals(False)
+                is_current = int(minutes) == int(self._session_recovery_interval_min)
             except Exception:
-                pass
+                continue
+            set_silent(act, checked=is_current)
 
     def on_save_session_as(self):
         self.session_controller.save_session_as()
@@ -5870,14 +5848,9 @@ QLabel:hover {{
         return (key, idx, bool(relative_zero))
 
     def _set_combo_text_silent(self, widget, text):
-        if widget is None:
-            return
-        try:
-            prev = widget.blockSignals(True)
-            widget.setCurrentText(str(text) if text is not None else "")
-            widget.blockSignals(prev)
-        except Exception:
-            pass
+        # Thin alias kept for the existing call sites; the shared helper is
+        # the single implementation (see gui/qt_helpers.py).
+        set_silent(widget, current_text=str(text) if text is not None else "")
 
     def _sync_cmap_controls_for_selection(self, file_key=None, channel_idx=None, *, thumb_cmap=None, preview_cmap=None):
         file_key = str(file_key or "")
@@ -6455,18 +6428,10 @@ QLabel:hover {{
 
     def on_unit_display_toggled(self, checked: bool):
         self.display_units_si = bool(checked)
-        for widget in (
+        set_many_silent((
             getattr(self, "unit_display_cb", None),
             getattr(self, "display_units_si_act", None),
-        ):
-            if widget is None:
-                continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(self.display_units_si)
-                widget.blockSignals(False)
-            except Exception:
-                pass
+        ), checked=self.display_units_si)
         self.config['display_units_si'] = self.display_units_si
         save_config(self.config)
         if self.last_preview:
@@ -6474,19 +6439,11 @@ QLabel:hover {{
 
     def on_unit_relative_toggled(self, checked: bool):
         self.display_units_relative = bool(checked)
-        for widget in (
+        set_many_silent((
             getattr(self, "unit_relative_cb", None),
             getattr(self, "preview_zero_cb", None),
             getattr(self, "display_units_relative_act", None),
-        ):
-            if widget is None:
-                continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(self.display_units_relative)
-                widget.blockSignals(False)
-            except Exception:
-                pass
+        ), checked=self.display_units_relative)
         self.config['display_units_relative'] = self.display_units_relative
         save_config(self.config)
         if self.last_preview:
@@ -6494,18 +6451,10 @@ QLabel:hover {{
 
     def on_relative_axes_toggled(self, checked: bool):
         self.relative_axes = bool(checked)
-        for widget in (
+        set_many_silent((
             getattr(self, "relative_axes_cb", None),
             getattr(self, "relative_axes_act", None),
-        ):
-            if widget is None:
-                continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(self.relative_axes)
-                widget.blockSignals(False)
-            except Exception:
-                pass
+        ), checked=self.relative_axes)
         self.config['relative_axes'] = self.relative_axes
         save_config(self.config)
         # Prevent restoring stale profile state when switching axes mode
@@ -6559,18 +6508,10 @@ QLabel:hover {{
                     pass
 
     def on_scale_bar_toggled(self, checked: bool):
-        for widget in (
+        set_many_silent((
             getattr(self, "scale_bar_cb", None),
             getattr(self, "display_scale_bar_act", None),
-        ):
-            if widget is None:
-                continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(bool(checked))
-                widget.blockSignals(False)
-            except Exception:
-                pass
+        ), checked=bool(checked))
         options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
         options["scale_bar_enabled"] = bool(checked)
         self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
@@ -6748,9 +6689,7 @@ QLabel:hover {{
         val = self._zoom_to_slider_value(factor)
         if self.frame_zoom_slider.value() == val:
             return
-        self.frame_zoom_slider.blockSignals(True)
-        self.frame_zoom_slider.setValue(val)
-        self.frame_zoom_slider.blockSignals(False)
+        set_silent(self.frame_zoom_slider, value=val)
         self.config['frame_map_zoom'] = val
         save_config(self.config)
 
@@ -9432,12 +9371,7 @@ QLabel:hover {{
             widget = getattr(self, attr, None)
             if widget is None or value is None:
                 continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(bool(value))
-                widget.blockSignals(False)
-            except Exception:
-                pass
+            set_silent(widget, checked=bool(value))
 
     def on_open_current_spectro_site(self):
         if not self._spectros_loaded:
@@ -9477,14 +9411,8 @@ QLabel:hover {{
             current_image_only=bool(current_image_only),
             low_conf_only=True,
         )
-        search = getattr(self, "spectro_search", None)
-        if search is not None:
-            try:
-                search.blockSignals(True)
-                search.clear()
-                search.blockSignals(False)
-            except Exception:
-                pass
+        # spectro_search is a QLineEdit, so text="" == clear().
+        set_silent(getattr(self, "spectro_search", None), text="")
         self._filter_spectro_browser()
         try:
             main_window_spectro.select_first_spectro_browser_match(
@@ -9513,14 +9441,8 @@ QLabel:hover {{
             current_image_only=bool(current_image_only),
             off_frame_only=True,
         )
-        search = getattr(self, "spectro_search", None)
-        if search is not None:
-            try:
-                search.blockSignals(True)
-                search.clear()
-                search.blockSignals(False)
-            except Exception:
-                pass
+        # spectro_search is a QLineEdit, so text="" == clear().
+        set_silent(getattr(self, "spectro_search", None), text="")
         self._filter_spectro_browser()
         try:
             main_window_spectro.select_first_spectro_browser_match(
@@ -11580,18 +11502,10 @@ QLabel:hover {{
 
     def on_preview_lock_toggled(self, checked: bool):
         self.preview_locked = bool(checked)
-        for widget in (
+        set_many_silent((
             getattr(self, "preview_lock_cb", None),
             getattr(self, "tools_preview_lock_act", None),
-        ):
-            if widget is None:
-                continue
-            try:
-                widget.blockSignals(True)
-                widget.setChecked(self.preview_locked)
-                widget.blockSignals(False)
-            except Exception:
-                pass
+        ), checked=self.preview_locked)
         self.config["preview_locked"] = self.preview_locked; save_config(self.config)
         self._update_preview_detach_button()
         if self.preview_locked and getattr(self, "preview_detached", False):
