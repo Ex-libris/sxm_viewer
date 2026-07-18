@@ -52,6 +52,70 @@ See the full installation guide in the MkDocs site for the Windows installer hel
 
 
 
+### 2026-07-18 UPDATES (folder-report data-sets & colormap gallery fixes)
+
+**Folder reports now recognize "data-sets" (image sequences).** If a folder
+contains the same frame scanned over and over while one acquisition
+parameter is stepped, the report groups those images into a sequence and
+gives it its own section instead of scattering them through the report:
+- **Height (tip-sample distance) series** — constant-height current and
+  frequency-shift images taken at a ladder of tip heights. Each image is
+  labelled with how far the tip was retracted/approached relative to the
+  first one (image 0 = 0, then +20 pm, +40 pm, …), read from the raw Z
+  plane so a background-subtraction filter can't hide it. Drift alone can't
+  fake a series — a frame only counts as a controlled height when it's
+  genuinely flat.
+- **Bias series** — the same spot scanned at a sequence of biases (STM
+  current/topography vs. voltage).
+- For constant-height data-sets the two channels are shown in **paired
+  rows**, one file per column: current on top (in reversed Blues),
+  frequency shift directly below (in gray), so the two channels of the same
+  image always line up vertically.
+- Validated on a real 224-scan folder: a 65-image height series came out
+  correctly laddered in exact 10 pm steps.
+
+**Report button works without selecting anything.** The toolbar **Report**
+button used to stay greyed out until you clicked a thumbnail to preview an
+image; it's now clickable as soon as a folder is loaded — the report
+describes the whole folder, so no selection is needed.
+
+**Colormap gallery reversal fix.** Because the default colormap is a
+reversed map (`Blues_r`), opening the colormap gallery and clicking a plain
+card used to silently give you the *reversed* version of that colormap
+(click "Accent", get "Accent_r"), which could quietly become your session's
+preview default. A plain card click now selects the colormap the normal way;
+the little 🔄 on a card is still how you ask for a reversed version.
+
+**Optional extra colormaps — how to add them if you already have SXM Viewer
+installed.** SXM Viewer can use a big library of extra scientific colormaps
+(the [`colormaps`](https://pratiman-91.github.io/colormaps/) package by
+pratiman-91, ~970 maps) if it's present, but it's completely optional and
+not required for anything. If you'd like them in the gallery and dropdowns:
+
+1. Open a terminal (Anaconda Prompt on Windows) and activate the same
+   environment you run SXM Viewer in — if you followed the Quick start
+   above that's:
+   ```powershell
+   conda activate sxmviewer
+   ```
+2. Install the package with pip:
+   ```powershell
+   pip install colormaps
+   ```
+3. Restart SXM Viewer. The extra maps show up automatically in the colormap
+   gallery (🎨) and the thumbnail/preview colormap dropdowns. You can check
+   status any time under **Display → "Extra colormaps..."**, which also shows
+   this install hint if the package isn't found.
+
+Not comfortable at the command line? You can literally paste this to any AI
+assistant: *"I have a Python app installed in a conda environment called
+`sxmviewer`. Please give me the exact commands to activate that environment
+and `pip install colormaps` into it, on Windows."* — and it'll walk you
+through it. If you used a different environment name (or a plain
+`python -m venv` virtual environment instead of conda), just activate that
+one first; the only actual step is `pip install colormaps` into whatever
+environment SXM Viewer runs in.
+
 ### 2026-07-10 UPDATES (spectroscopy position accuracy & browser overhaul)
 A deep pass on where spectroscopy points actually land and how you find
 them — this was the biggest correctness fix to spectroscopy in a while,
