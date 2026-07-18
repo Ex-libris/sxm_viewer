@@ -1066,6 +1066,13 @@ def load_files(
         t_specs = time.perf_counter()
 
     QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
+    # Refresh toolbar action state now that files are loaded: no image is
+    # previewed yet (that path passes True), but the folder report only needs
+    # a loaded folder, so this enables it without requiring a thumbnail click.
+    try:
+        viewer._update_toolbar_actions(False)
+    except Exception:
+        pass
     log_status(f"{source_label.capitalize()} load complete.")
     log_status(
         f"[Perf] Load stages: headers { (t_headers - t0)*1000:.0f} ms | "

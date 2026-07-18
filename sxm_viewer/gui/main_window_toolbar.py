@@ -336,10 +336,17 @@ def create_main_toolbar(viewer):
     return toolbar
 
 def update_toolbar_actions(viewer, enabled: bool):
-    for act in (viewer.toolbar_export_png_act, viewer.toolbar_export_xyz_act,
-                getattr(viewer, "toolbar_report_act", None)):
+    for act in (viewer.toolbar_export_png_act, viewer.toolbar_export_xyz_act):
         if act is not None:
             act.setEnabled(bool(enabled))
+    # The folder report describes the whole loaded folder, not the previewed
+    # image, so it must be clickable as soon as a folder is loaded - gate it
+    # on whether any files are present rather than on a preview/thumbnail
+    # selection (the `enabled` flag, which only goes True once an image is
+    # previewed).
+    report_act = getattr(viewer, "toolbar_report_act", None)
+    if report_act is not None:
+        report_act.setEnabled(bool(getattr(viewer, "files", None)))
     btn = getattr(viewer, "preview_adjust_btn", None)
     if btn is not None:
         btn.setEnabled(bool(enabled))
