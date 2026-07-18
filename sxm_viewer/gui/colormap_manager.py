@@ -13,9 +13,10 @@ suffix) and an ``is_reversed`` flag — twice over:
 Renderers subscribe to the signals and resolve pairs through
 ``cmap_registry.get_colormap`` (programmatic ``Colormap.reversed()``, no
 ``_r`` filename lookups); widgets call the setters. The name and the
-flag are set independently (``select_name`` preserves the current
-direction; ``set_reversed``/``toggle_reversed`` preserve the name), so
-UI components can emit the two values separately.
+flag are set independently (``select_name`` resets the direction to
+forward when the name actually changes, keeping reversal an explicit
+per-pick gesture; ``set_reversed``/``toggle_reversed`` preserve the
+name), so UI components can emit the two values separately.
 
 Deliberately viewer-agnostic (no ``SXMGridViewer`` coupling), which is
 why it lives here next to ``theme.py``/``palettes.py`` rather than in
@@ -49,12 +50,20 @@ class ColormapManager(QtCore.QObject):
         return self._pending[1]
 
     def select_name(self, name):
-        """Set the name axis only; the current direction is preserved.
+        """Select a colormap by name.
 
-        A legacy ``_r``-suffixed string is accepted as an explicit full
-        spec (it forces the reversed direction)."""
+        Picking a *different* map resets the direction to forward -
+        otherwise a session sitting on any ``_r`` map (Blues_r is the
+        app default) turns every plain card click into the reversed
+        twin ("clicked Accent, got Accent_r"). Reversal stays an
+        explicit gesture: the 🔄 region (``set_reversed``/``select``) or
+        a legacy ``_r``-suffixed name, which forces reversed.
+        Re-selecting the current map keeps its direction."""
         base, name_rev = cmap_registry.split_cmap_name(name)
-        self._set_pending(base, True if name_rev else self._pending[1])
+        if base == self._pending[0]:
+            self._set_pending(base, True if name_rev else self._pending[1])
+        else:
+            self._set_pending(base, name_rev)
 
     def set_reversed(self, flag):
         """Set the direction axis only; the current name is preserved."""
