@@ -63,19 +63,38 @@ Track with `python scripts/analysis/class_size.py`.
 | Extract `spectroscopy/overrides.py` | ✅ done | 7 methods → delegations, ~150 lines out |
 | Extract `spectroscopy/details.py` | ✅ done | ~85 lines out, now pure/testable |
 | Extract `spectroscopy/loading.py` | ✅ done | 9 methods → delegations, ~200 lines out |
+| **Split `__init__` (1588 lines)** | ✅ done | **−451 lines**; state phase now `main_window_state.py` |
 | Move remaining spectroscopy interaction handlers | ⬜ next | `_handle_spec_hover`, `_handle_spec_marker_click`, `_on_spectro_thumb_context_menu` (~200 lines) |
 | Move thumbnail logic to `gui/viewer/` | ⬜ queued | up to −63 methods / −88 attrs |
 | Delete shims; have callers import modules directly | ⬜ queued | this is what finally drops the **method** count |
 
-**Current: 536 methods, 798 attributes, 11,482 lines**
-(from 541 / 814 / ~12,050 — **−568 lines, −16 attributes**).
+**Current: 536 methods, 714 attributes, 11,037 class lines**
+(from 541 / 814 / ~12,050 — **−1,013 lines, −100 attributes**).
+`main_window.py` as a file: **10,674 lines** (was ~11,800).
 
-The method count barely moves because extraction replaces a body with a
-short delegating call - the *logic* leaves, the entry point stays. Lines
-and attributes are the more honest metric, and `main_window.py` is now
-~190 lines lighter with 9 fewer attributes. Method count only drops
-materially once callers import the new modules directly and the shims are
-deleted (see step 1 of the strategy above).
+### Reading these numbers honestly
+
+- **Lines** is the real signal: ~1,000 lines of logic now live in focused
+  modules instead of one file.
+- **Attributes** dropped by 100, but ~85 of those simply moved to
+  `main_window_state.py` - the object still *has* them at runtime. What
+  changed is that they are now declared in one readable place instead of
+  being scattered through a 1,588-line constructor.
+- **Methods** has barely moved, and will not until the shims go. 153 of
+  the 536 methods (29%) are now pure delegation - see
+  `SHIM_CENSUS_SXMGridViewer.md`, which groups them by forwarding target
+  so a whole group can be retired at once by pointing callers at the
+  module directly.
+
+### Verification for the `__init__` split
+
+Moving 451 lines of constructor is the riskiest change on this branch, so
+it was checked by **runtime attribute fingerprint**: construct the viewer
+before and after, dump every `vars(viewer)` entry with its type/size, and
+diff. Result - 7 attributes removed, 3 added, 1 changed, all of them the
+intended debouncer/activity-log replacements, plus a timestamp. Nothing
+unintended. (`_init_locals.py` in the branch history also proved the block
+had no local-variable coupling to the rest of `__init__` before the move.)
 
 ### Completed detail
 
