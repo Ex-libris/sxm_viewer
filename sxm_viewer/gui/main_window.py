@@ -1566,10 +1566,6 @@ class SXMGridViewer(QtWidgets.QWidget):
         if has_images:
             self.load_folder(folder)
 
-    def _apply_dark_mode(self, enabled: bool):
-        # Legacy entry point kept for compatibility with older call sites.
-        self._apply_ui_theme(ui_theme.THEME_DARK if enabled else ui_theme.THEME_LIGHT)
-
     def set_ui_theme(self, name: str):
         """Switch the named UI theme (light/dark/amber) and persist it."""
         name = ui_theme.normalize(name)
@@ -2606,7 +2602,7 @@ QLabel:hover {{
             path = view.get("path") or (view.get("meta") or {}).get("path")
             if path:
                 if auto_virtual_copy:
-                    self._create_virtual_crop_view(view)
+                    virtual_copies.create_virtual_crop_view(self, view)
                 elif not skip_virtual_copy_prompt:
                     ret = QtWidgets.QMessageBox.question(
                         self,
@@ -2616,7 +2612,7 @@ QLabel:hover {{
                         QtWidgets.QMessageBox.No,
                     )
                     if ret == QtWidgets.QMessageBox.Yes:
-                        self._create_virtual_crop_view(view)
+                        virtual_copies.create_virtual_crop_view(self, view)
         except Exception:
             pass
         title = view.get("title") or "Cropped view"
@@ -3183,6 +3179,11 @@ QLabel:hover {{
                 continue
             set_silent(act, checked=is_current)
 
+    # NOTE: implemented but NOT wired to any menu, toolbar or
+    # shortcut - 'Save session' (Ctrl+S) and 'Load session' are,
+    # this is not. Kept deliberately: SessionController.
+    # save_session_as() works, it just has no way to be invoked.
+    # See docs/refactor/SHIM_CENSUS_SXMGridViewer.md.
     def on_save_session_as(self):
         self.session_controller.save_session_as()
 
@@ -3697,7 +3698,7 @@ QLabel:hover {{
         except Exception:
             global_pos = QtGui.QCursor.pos()
         anchor_key = self._thumbnail_drop_insert_anchor(global_pos)
-        created = self._create_virtual_copy_from_drag_payload(payload, insert_after_key=anchor_key)
+        created = virtual_copies.create_virtual_copy_from_drag_payload(self, payload, insert_after_key=anchor_key)
         if created:
             event.acceptProposedAction()
         else:
@@ -4814,15 +4815,11 @@ QLabel:hover {{
         except Exception:
             pass
 
-    def _spectroscopy_metadata_lines(self, spec):
-        """Format spectroscopy metadata for the Details panel."""
-        return spectro_details.metadata_lines(spec)
-
 
     def show_spectroscopy_details(self, spec):
         """Show a spectroscopy entry in the left Details panel."""
         try:
-            self.meta_box.setPlainText("\n".join(self._spectroscopy_metadata_lines(spec)))
+            self.meta_box.setPlainText("\n".join(spectro_details.metadata_lines(spec)))
         except Exception:
             pass
         try:
@@ -8324,18 +8321,11 @@ QLabel:hover {{
     def _schedule_pending_spectro_load(self, delay_ms: int = 1200):
         spectro_loading.schedule_pending_load(self, delay_ms=delay_ms)
 
-    def _run_pending_spectro_load(self):
-        spectro_loading.run_pending_load(self)
-
     def _run_pending_spectro_load_async(self):
         spectro_loading.run_pending_load_async(self, _SpectroScanWorker)
 
     def _reload_spectros(self, refresh=True):
         spectro_loading.reload_spectros(self, refresh=refresh)
-
-    def _apply_spectro_scan_results(self, specs, spec_stats, *, refresh, scan_ms):
-        spectro_loading.apply_scan_results(
-            self, specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
 
 
     def _scan_spectros(self, folder:Path):
@@ -8355,9 +8345,6 @@ QLabel:hover {{
 
     def _flush_spectro_manifest_save(self):
         spectro_loading.flush_manifest_save(self)
-
-    def _on_spectro_manifest_save_finished(self):
-        spectro_loading.on_manifest_save_finished(self)
 
 
     def _assign_spectros_to_images(self):
@@ -8384,23 +8371,11 @@ QLabel:hover {{
     def _current_spectro_assignment_target_image_key(self):
         return spectro_overrides.current_target_image_key(self)
 
-    def _spectro_override_signature(self, spec):
-        return spectro_overrides.override_signature(spec)
-
-    def _resolve_spectro_override_targets(self, specs):
-        return spectro_overrides.resolve_override_targets(self, specs)
-
-    def _refresh_spectro_assignment_overrides(self, *, focus_specs=None):
-        spectro_overrides.refresh_after_override(self, focus_specs=focus_specs)
-
     def _apply_spectro_assignment_override(self, specs, image_key=""):
         spectro_overrides.apply_override(self, specs, image_key=image_key)
 
     def _clear_spectro_assignment_override(self, specs):
         spectro_overrides.clear_override(self, specs)
-
-    def _current_spectro_focus_spec(self):
-        return spectro_overrides.current_focus_spec(self)
 
 
     def _spec_matches_image_key(self, spec, image_key):
@@ -8429,7 +8404,7 @@ QLabel:hover {{
     def on_open_current_spectro_site(self):
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
-        spec = self._current_spectro_focus_spec()
+        spec = spectro_overrides.current_focus_spec(self)
         if spec is not None:
             image_key = str(spec.get("image_key") or spec.get("primary_image_key") or self._current_spectro_assignment_target_image_key() or "")
             self._open_spectro_summary_for_site(spec, file_key=image_key, quiet=True)
@@ -8578,19 +8553,8 @@ QLabel:hover {{
         cache[key] = (entries, len(entries), bounds)
         return bounds
 
-    def _apply_thumb_crop_to_coords(self, col, row, xpix, ypix, thumb_crop):
-        return spec_mapping.apply_thumb_crop(col, row, thumb_crop)
-
-    def _map_spec_by_grid(self, spec, xpix, ypix):
-        return spec_mapping.map_spec_by_grid(spec, xpix, ypix)
-
     def _fallback_spec_coords(self, idx, xpix, ypix):
         return spec_mapping.fallback_spec_coords(idx, xpix, ypix)
-
-    def _map_spec_by_spec_extent(self, file_key, spec, xpix, ypix):
-        """Fallback mapping using the min/max of all specs for this image."""
-        return spec_mapping.map_spec_by_cloud_bounds(
-            spec, self._spec_cloud_bounds(file_key, spec), xpix, ypix)
 
     def _render_spectroscopy_overlays(
         self,
@@ -9165,10 +9129,10 @@ QLabel:hover {{
 
         menu.addSeparator()
         drift_act = QtWidgets.QAction("Drift-correct and export...", menu)
-        drift_act.triggered.connect(lambda _, paths=list(targets): self._on_drift_correct(paths))
+        drift_act.triggered.connect(lambda _, paths=list(targets): drift_animation.on_drift_correct(self, paths))
         menu.addAction(drift_act)
         anim_act = QtWidgets.QAction("Create animation from selection...", menu)
-        anim_act.triggered.connect(lambda _, paths=list(targets): self._on_create_animation(paths))
+        anim_act.triggered.connect(lambda _, paths=list(targets): drift_animation.on_create_animation(self, paths))
         menu.addAction(anim_act)
 
         menu.exec_(label_widget.mapToGlobal(pos))
@@ -9289,35 +9253,18 @@ QLabel:hover {{
         if controller:
             return controller.clear_multi_spec_selection()
 
-    def _on_drift_correct(self, paths):
-        return drift_animation.on_drift_correct(self, paths)
-
-    def _on_create_animation(self, paths):
-        return drift_animation.on_create_animation(self, paths)
-
-    def _show_alignment_preview(self, names, aligned, shifts, channel_idx,
-                                source_paths=None, crop_bounds=None):
-        return drift_animation.show_alignment_preview(
-            self, names, aligned, shifts, channel_idx,
-            source_paths=source_paths, crop_bounds=crop_bounds)
-
-    def _virtual_copy_source_anchor(self, view):
-        return virtual_copies.virtual_copy_source_anchor(self, view)
-
     def _create_virtual_copy_from_popup_view(self, view):
+        # Kept as a bound method on purpose: it is passed by reference
+        # as a callback (set_virtual_copy_callback) rather than called,
+        # and preview_popup.py reaches it through a receiver named
+        # `owner`. Neither form is visible to a call-site scan.
         return virtual_copies.create_virtual_copy_from_popup_view(self, view)
-
-    def _create_virtual_copy_from_drag_payload(self, payload, insert_after_key=None):
-        return virtual_copies.create_virtual_copy_from_drag_payload(self, payload, insert_after_key=insert_after_key)
 
     def _create_virtual_channel_copies(self, paths, channel_idx=None, insert_after_key=None):
         return virtual_copies.create_virtual_channel_copies(self, paths, channel_idx=channel_idx, insert_after_key=insert_after_key)
 
     def _create_virtual_view_copy(self, view, insert_after_key=None, tag=None, op=None):
         return virtual_copies.create_virtual_view_copy(self, view, insert_after_key=insert_after_key, tag=tag, op=op)
-
-    def _create_virtual_crop_view(self, view, insert_after_key=None):
-        return virtual_copies.create_virtual_crop_view(self, view, insert_after_key=insert_after_key)
 
     def _create_virtual_copy_from_history(self, seq):
         return virtual_copies.create_virtual_copy_from_history(self, seq)
@@ -9648,10 +9595,6 @@ QLabel:hover {{
             self._update_preview_detach_button()
         except Exception:
             pass
-
-    def on_dark_mode_toggled(self, checked: bool):
-        # Legacy binary toggle; routes into the named-theme selector.
-        self.set_ui_theme(ui_theme.THEME_DARK if checked else ui_theme.THEME_LIGHT)
 
     # ---------- control callbacks ----------
     def on_channel_dropdown_changed(self, idx):

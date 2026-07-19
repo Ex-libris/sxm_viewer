@@ -69,21 +69,53 @@ def find_reachability(names, owner_file):
        invisible to any attribute scan. ``session.py`` reaches
        ``_record_recent_session`` this way.
 
-    Returns {name: {"attr": [files], "string": [files]}}.
+    Two refinements learned by breaking things on this branch:
+
+    * an attribute reference counts even **without a call** - a bound
+      method passed as a callback (``set_virtual_copy_callback(
+      self._create_virtual_copy_from_popup_view)``) never appears as a
+      ``Call`` node;
+    * the receiver is **not always** named ``viewer``/``self`` -
+      ``preview_popup.py`` reaches the viewer through ``owner``. Any
+      attribute access with a matching name is therefore treated as a
+      potential caller, accepting false positives: wrongly keeping a shim
+      costs a few lines, wrongly deleting one breaks the app.
+
+    Returns {name: {"attr": [files], "string": [files], "internal": [...]}}.
     """
-    hits = {n: {"attr": set(), "string": set()} for n in names}
+    hits = {n: {"attr": set(), "string": set(), "internal": set()}
+            for n in names}
+    owner_name = Path(owner_file).name
     for path in iter_source_files():
         tree = parse(path)
         if tree is None:
             continue
-        same_file = path.name == Path(owner_file).name
+        same_file = path.name == owner_name
+        # Inside the owning file, a `self.X` reference only counts as a
+        # *caller* when it appears in some OTHER method - the shim's own
+        # body obviously mentions nothing, but a same-named method
+        # elsewhere would produce a false positive.
+        if same_file:
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                for child in node.body:
+                    if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    for n in ast.walk(child):
+                        if (isinstance(n, ast.Attribute)
+                                and isinstance(n.value, ast.Name)
+                                and n.value.id == "self"
+                                and n.attr in names
+                                and n.attr != child.name):
+                            hits[n.attr]["internal"].add(child.name)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in names:
-                recv = node.value
-                is_viewer = isinstance(recv, ast.Name) and recv.id in ("viewer", "self")
-                is_viewer = is_viewer or (isinstance(recv, ast.Attribute)
-                                          and recv.attr == "viewer")
-                if is_viewer and not same_file:
+                # Deliberately NOT filtered by receiver name: the viewer is
+                # reached as `viewer`, `self`, `self.viewer` and `owner`
+                # depending on the module. False positives are cheap;
+                # a missed caller is a crash.
+                if not same_file:
                     hits[node.attr]["attr"].add(path.name)
             elif (isinstance(node, ast.Constant)
                   and isinstance(node.value, str) and node.value in names):
@@ -154,17 +186,37 @@ def main():
     # Which shims are reachable from outside, and by which route?
     shim_names = {n for n, _t, _l, _c in shims}
     reach = find_reachability(shim_names, file)
-    unreachable = sorted(n for n in shim_names
-                         if not reach[n]["attr"] and not reach[n]["string"])
+    target_of = {n: t for n, t, _l, _c in shims}
+    unreachable = sorted(
+        n for n in shim_names
+        if not reach[n]["attr"] and not reach[n]["string"]
+        and not reach[n]["internal"])
+    internal_only = sorted(
+        n for n in shim_names
+        if reach[n]["internal"] and not reach[n]["attr"]
+        and not reach[n]["string"])
+
     report.line(f"## Retirement candidates ({len(unreachable)})\n")
-    report.line("> Shims with **no** external `viewer.X` / `self.X` access and "
-                "**no** string reference. Still verify each against call sites "
-                "inside the owning file, then delete. Run the smoke test after "
-                "- static analysis has missed a live call site here before.\n")
+    report.line("> No caller by **any** of the three routes: external "
+                "`viewer.X`/`self.X`, `self.X` inside the owning class, or a "
+                "string literal (getattr dispatch). Still run the smoke test "
+                "after deleting - static analysis has already missed a live "
+                "call site on this branch.\n")
     if unreachable:
         report.table(("Shim", "Forwards to"),
-                     [(f"`{n}`", f"`{dict((a, b) for a, b, _l, _c in [(x[0], x[1], x[2], x[3]) for x in shims])[n]}`")
-                      for n in unreachable])
+                     [(f"`{n}`", f"`{target_of[n]}`") for n in unreachable])
+    else:
+        report.line("_None - every remaining shim has a caller._\n")
+
+    report.line(f"## Internal-only shims ({len(internal_only)})\n")
+    report.line("> Called only from other methods of this class. Retiring "
+                "these means rewriting those call sites to use the target "
+                "object directly, then deleting the shim.\n")
+    if internal_only:
+        report.table(("Shim", "Forwards to", "Called by"),
+                     [(f"`{n}`", f"`{target_of[n]}`",
+                       ", ".join(sorted(reach[n]["internal"])[:4]))
+                      for n in internal_only[:30]])
     string_only = sorted(n for n in shim_names
                          if reach[n]["string"] and not reach[n]["attr"])
     if string_only:
