@@ -4392,26 +4392,19 @@ QLabel:hover {{
             except Exception:
                 pass
 
-    def _clear_recent_dirs(self):
-        return self.recent_files_controller._clear_recent_dirs()
-
     def _refresh_recent_session_dirs_menu(self):
         return self.recent_files_controller._refresh_recent_session_dirs_menu()
 
     def _normalize_recent_session_history(self, persist=False):
-        return self.recent_files_controller._normalize_recent_session_history(persist=persist)
+        # Called from main_window_state.init_state via self.* - note that
+        # neither a `viewer.X` scan nor a main_window.py-internal scan
+        # sees that call site, which is how deleting this shim slipped
+        # past static analysis and was caught only by the smoke test.
+        return self.recent_files_controller._normalize_recent_session_history(
+            persist=persist)
 
     def _record_recent_session(self, session_path: Path):
         return self.recent_files_controller._record_recent_session(session_path)
-
-    def _clear_recent_session_dirs(self):
-        return self.recent_files_controller._clear_recent_session_dirs()
-
-    def _resolve_recent_session_target(self, session_path: Path):
-        return self.recent_files_controller._resolve_recent_session_target(session_path)
-
-    def on_load_recent_session(self, session_path: Path):
-        return self.recent_files_controller.on_load_recent_session(session_path)
 
     def _on_recent_molecules_updated(self, paths):
         """Persist recent molecule file paths to config (up to 8)."""
@@ -6542,9 +6535,6 @@ QLabel:hover {{
             cfg['vmin_vmax'][key] = None
         return cfg
 
-    def _apply_filters_to_array(self, file_path, arr):
-        return self.filter_controller._apply_filters_to_array(file_path, arr)
-
     def on_save_session(self):
         """Legacy hook delegating to SessionController for compatibility."""
         self.session_controller.save_session()
@@ -6909,17 +6899,8 @@ QLabel:hover {{
     def _clone_filter_source_views(self, canvas, views):
         return self.filter_controller._clone_filter_source_views(canvas, views)
 
-    def _normalize_preview_filter_steps(self, steps):
-        return self.filter_controller._normalize_preview_filter_steps(steps)
-
     def _filter_pipeline_label_from_steps(self, steps, default="Custom"):
         return self.filter_controller._filter_pipeline_label_from_steps(steps, default=default)
-
-    def _canvas_filter_steps(self, canvas, view=None):
-        return self.filter_controller._canvas_filter_steps(canvas, view=view)
-
-    def _canvas_filter_label(self, canvas, view=None):
-        return self.filter_controller._canvas_filter_label(canvas, view=view)
 
     def _thumbnail_filter_steps(self, file_key):
         return self.filter_controller._thumbnail_filter_steps(file_key)
@@ -6933,66 +6914,14 @@ QLabel:hover {{
     def _filter_pipeline_tooltip(self, label, steps):
         return self.filter_controller._filter_pipeline_tooltip(label, steps)
 
-    def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
-        return self.filter_controller._set_filter_pipeline_on_canvas(canvas, steps, label=label, source_views=source_views, push_undo=push_undo)
-
-    def _build_canvas_filter_preview_callback(self, canvas, source_views):
-        return self.filter_controller._build_canvas_filter_preview_callback(canvas, source_views)
-
-    def _restore_filter_views_on_canvas(self, canvas, source_views):
-        return self.filter_controller._restore_filter_views_on_canvas(canvas, source_views)
-
-    def _base_filter_image_from_views(self, views):
-        return self.filter_controller._base_filter_image_from_views(views)
-
-    def _load_filter_base_array_for_path(self, focus_path):
-        return self.filter_controller._load_filter_base_array_for_path(focus_path)
-
-    def _normalize_filter_preview_clim(self, clim):
-        return self.filter_controller._normalize_filter_preview_clim(clim)
-
-    def _filter_preview_render_state(self, view=None):
-        return self.filter_controller._filter_preview_render_state(view=view)
-
-    def _filter_preview_context_for_path(self, focus_path):
-        return self.filter_controller._filter_preview_context_for_path(focus_path)
-
-    def _single_filter_step_spec(
-        self,
-        filter_key,
-        parent=None,
-        base_image=None,
-        preview_callback=None,
-        preview_target_text="current image",
-        preview_cmap_name="viridis",
-        preview_clim=None,
-        show_preview_thumbnail=True,
-    ):
-        return self.filter_controller._single_filter_step_spec(
-            filter_key,
-            parent=parent,
-            base_image=base_image,
-            preview_callback=preview_callback,
-            preview_target_text=preview_target_text,
-            preview_cmap_name=preview_cmap_name,
-            preview_clim=preview_clim,
-            show_preview_thumbnail=show_preview_thumbnail,
-        )
-
     def _populate_canvas_filter_menu(self, menu, canvas, view=None):
         return self.filter_controller._populate_canvas_filter_menu(menu, canvas, view=view)
 
     def _apply_filter_to_canvas(self, canvas, filter_key=None, pipeline=None, label=None):
         return self.filter_controller._apply_filter_to_canvas(canvas, filter_key=filter_key, pipeline=pipeline, label=label)
 
-    def _open_custom_filter_for_canvas(self, canvas):
-        return self.filter_controller._open_custom_filter_for_canvas(canvas)
-
     def _apply_filter_pipeline(self, arr, steps):
         return self.filter_controller._apply_filter_pipeline(arr, steps)
-
-    def _run_filter_step_on_valid_region(self, arr, step):
-        return self.filter_controller._run_filter_step_on_valid_region(arr, step)
 
     def _friendly_view_title(self, view, default="Preview"):
         if not view:
@@ -7014,9 +6943,6 @@ QLabel:hover {{
         if label:
             return label
         return default
-
-    def _run_filter_step(self, arr, step):
-        return self.filter_controller._run_filter_step(arr, step)
 
     # ---------- dz helpers ----------
     def _dz_vs_previous_ch(self, header_path:Path):

@@ -51,6 +51,46 @@ def _delegation_target(node):
     return None
 
 
+def find_reachability(names, owner_file):
+    """Where each name is reachable from - all three routes that matter.
+
+    Deleting a shim requires proving nothing reaches it, and there are
+    three distinct ways it can be reached. Missing any of them deletes
+    live code:
+
+    1. ``viewer.X`` / ``self.viewer.X`` - the documented convention.
+    2. ``self.X`` **in another module** - modules like
+       ``main_window_state.py`` take the viewer as ``self`` so their code
+       reads identically to when it lived in the class. Neither a
+       ``viewer.X`` scan nor an "inside the owning file" scan sees these.
+       This gap deleted a live shim on this branch; the smoke test caught
+       it, static analysis did not.
+    3. **String literals** - ``getattr(viewer, "X")`` dynamic dispatch,
+       invisible to any attribute scan. ``session.py`` reaches
+       ``_record_recent_session`` this way.
+
+    Returns {name: {"attr": [files], "string": [files]}}.
+    """
+    hits = {n: {"attr": set(), "string": set()} for n in names}
+    for path in iter_source_files():
+        tree = parse(path)
+        if tree is None:
+            continue
+        same_file = path.name == Path(owner_file).name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in names:
+                recv = node.value
+                is_viewer = isinstance(recv, ast.Name) and recv.id in ("viewer", "self")
+                is_viewer = is_viewer or (isinstance(recv, ast.Attribute)
+                                          and recv.attr == "viewer")
+                if is_viewer and not same_file:
+                    hits[node.attr]["attr"].add(path.name)
+            elif (isinstance(node, ast.Constant)
+                  and isinstance(node.value, str) and node.value in names):
+                hits[node.value]["string"].add(path.name)
+    return hits
+
+
 def census(class_name):
     for path in iter_source_files():
         tree = parse(path)
@@ -110,6 +150,28 @@ def main():
             for target, items in sorted(by_target.items(),
                                         key=lambda kv: -len(kv[1]))]
     report.table(("Target", "Shims", "Methods"), rows)
+
+    # Which shims are reachable from outside, and by which route?
+    shim_names = {n for n, _t, _l, _c in shims}
+    reach = find_reachability(shim_names, file)
+    unreachable = sorted(n for n in shim_names
+                         if not reach[n]["attr"] and not reach[n]["string"])
+    report.line(f"## Retirement candidates ({len(unreachable)})\n")
+    report.line("> Shims with **no** external `viewer.X` / `self.X` access and "
+                "**no** string reference. Still verify each against call sites "
+                "inside the owning file, then delete. Run the smoke test after "
+                "- static analysis has missed a live call site here before.\n")
+    if unreachable:
+        report.table(("Shim", "Forwards to"),
+                     [(f"`{n}`", f"`{dict((a, b) for a, b, _l, _c in [(x[0], x[1], x[2], x[3]) for x in shims])[n]}`")
+                      for n in unreachable])
+    string_only = sorted(n for n in shim_names
+                         if reach[n]["string"] and not reach[n]["attr"])
+    if string_only:
+        report.line("### Reached ONLY by string/getattr - never delete blindly\n")
+        report.table(("Shim", "Referenced as a string in"),
+                     [(f"`{n}`", ", ".join(sorted(reach[n]['string'])))
+                      for n in string_only])
 
     report.line("## Largest remaining real-logic methods\n")
     real.sort(key=lambda r: -r[2])
