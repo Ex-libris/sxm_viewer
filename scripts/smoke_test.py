@@ -230,6 +230,31 @@ def main():
             checks.check("override targets resolve copies to originals",
                          override_target_resolution)
 
+            # Virtual copies are the output of every non-destructive edit
+            # (crop/rotate/channel extract); exercise the real creation
+            # path and confirm the source file is untouched.
+            def virtual_copy_roundtrip():
+                before_files = list(viewer.files)
+                before_views = dict(getattr(viewer, "_processed_views", {}))
+                src = str(viewer.files[0])
+                created = viewer._create_virtual_channel_copies([src], channel_idx=0)
+                app.processEvents()
+                views = getattr(viewer, "_processed_views", {})
+                if len(views) <= len(before_views):
+                    return False
+                new_keys = [k for k in views if k not in before_views]
+                if not new_keys:
+                    return False
+                # the copy must carry data and must not have removed the source
+                data = views[new_keys[0]]
+                if not isinstance(data, dict):
+                    return False
+                if src not in [str(f) for f in viewer.files]:
+                    return False
+                return len(viewer.files) >= len(before_files)
+            checks.check("virtual copy created, source intact",
+                         virtual_copy_roundtrip)
+
             def preview_first():
                 viewer.show_file_channel(str(viewer.files[0]), 0)
                 app.processEvents()
