@@ -264,6 +264,24 @@ def main():
             checks.check("report action enabled after load",
                          lambda: viewer.toolbar_report_act.isEnabled())
 
+            # Export figures are built on a throwaway Figure, separate from
+            # the live canvas artists - exercise both the single-view and
+            # grid paths and confirm they produce a real drawable figure.
+            def export_figures():
+                canvas = viewer.preview_canvas
+                views = list(getattr(canvas, "views", []) or [])
+                if not views:
+                    return False
+                fig = canvas._render_view_figure(views[0])
+                if fig is None or not fig.get_axes():
+                    return False
+                grid = canvas._render_views_grid(views)
+                if grid is None or not grid.get_axes():
+                    return False
+                # must not have disturbed the live canvas
+                return list(canvas.views) == views
+            checks.check("export figure render (single + grid)", export_figures)
+
             if args.report:
                 out = tmp / "smoke_report.pdf"
 

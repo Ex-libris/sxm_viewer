@@ -84,12 +84,43 @@ phases, Qt event overrides, and thin delegating entry points.
    builds locals used by later layout code; do it only with the same
    local-coupling check that phase 1 used.
 
-## `MultiPreviewCanvas` is now the larger problem
+## `MultiPreviewCanvas`
 
-439 methods, 603 attributes, **12,435 lines** - bigger than
-`SXMGridViewer` is now. It has not been touched. The same playbook
-applies, and `preview_axes_sync.py` is the precedent for peeling shared
-rendering logic out of it.
+439 methods, **12,158 lines** - now larger than `SXMGridViewer`. Started,
+but this file needs more care than the main window did: CLAUDE.md records
+three separate bugs from one earlier attempt to share rendering setup
+between the live path and a hand-rolled copy.
+
+A domain scan (`scripts/analysis/_canvas_domains.py` in branch history)
+measured each domain's size **and its coupling to render state**
+(`_redraw`, `_images`, `_axes`, `set_extent`, `apply_aspect`, ...):
+
+| Domain | Methods | Lines | Render-coupled |
+| --- | --- | --- | --- |
+| profile line | 79 | 1981 | 22 |
+| molecule overlay | 66 | 1822 | 20 |
+| crop/template | 52 | 1504 | 15 |
+| SVG molecule overlay | ~40 | ~1200 | some |
+| **export figures** | **3** | **286** | **0** ✅ |
+| angle measure | 31 | 485 | 4 |
+| outline | 14 | 453 | 4 |
+| redraw core | 6 | 399 | 5 |
+
+**Rule for this file: prefer the zero-render-coupled groups.** The export
+figure trio (`_render_view_figure`, `_render_views_grid`,
+`_style_export_figure`) qualified - they build a throwaway Figure and
+never touch live artists - and are now
+`gui/canvases/preview_export_figures.py`, covered by a smoke check that
+renders both paths and asserts the live canvas is undisturbed.
+
+Next candidates there, in increasing risk: the SVG molecule *export*
+formats (XYZ/MOL/PDB text generation - pure formatting), then outline,
+then angle. Leave `redraw core` alone.
+
+**A trap worth recording**: these three methods are *not* contiguous -
+nine unrelated methods sit between them. An extraction that lifts the
+whole line span silently deletes those neighbours. Extract per method,
+and assert the class's method count afterwards (`class_size.py`).
 
 ## Verification standard
 
