@@ -30,6 +30,8 @@ from .._shared import log_status, log_emitter
 from .. import cmap_registry
 from .qt_helpers import set_silent, set_many_silent
 from .activity_log import ActivityLog
+from .debounce import ACCUMULATE, LATEST, Debouncer
+from ..geometry import spec_mapping
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
@@ -610,14 +612,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._marker_refresh_timer = QtCore.QTimer(self)
         self._marker_refresh_timer.setSingleShot(True)
         self._marker_refresh_timer.timeout.connect(self._refresh_thumbnail_markers)
-        self._thumbnail_render_state_timer = QtCore.QTimer(self)
-        self._thumbnail_render_state_timer.setSingleShot(True)
-        self._thumbnail_render_state_timer.timeout.connect(self._flush_thumbnail_render_state_refresh)
-        self._thumbnail_render_state_pending_paths = set()
-        self._preview_request_timer = QtCore.QTimer(self)
-        self._preview_request_timer.setSingleShot(True)
-        self._preview_request_timer.timeout.connect(self._flush_preview_request)
-        self._pending_preview_request = None
+        # Debounced refreshes (see gui/debounce.py). Each of these used to
+        # be a hand-rolled pending/timer/flush attribute triple.
+        self._thumbnail_render_debounce = Debouncer(
+            self._flush_thumbnail_render_state_refresh,
+            interval_ms=120, mode=ACCUMULATE, parent=self)
+        self._preview_request_debounce = Debouncer(
+            self._flush_preview_request,
+            interval_ms=0, mode=LATEST, parent=self)
         self._preview_render_in_progress = False
         self._compact_histogram_apply_timer = QtCore.QTimer(self)
         self._compact_histogram_apply_timer.setSingleShot(True)
@@ -5936,15 +5938,10 @@ QLabel:hover {{
         path_set = {str(Path(p)) for p in list(paths or []) if p}
         if not path_set:
             return
-        self._thumbnail_render_state_pending_paths.update(path_set)
-        try:
-            self._thumbnail_render_state_timer.start(120)
-        except Exception:
-            self._flush_thumbnail_render_state_refresh()
+        self._thumbnail_render_debounce.schedule(path_set)
 
     def _flush_thumbnail_render_state_refresh(self):
-        paths = list(getattr(self, "_thumbnail_render_state_pending_paths", set()) or [])
-        self._thumbnail_render_state_pending_paths.clear()
+        paths = list(self._thumbnail_render_debounce.take())
         if not paths:
             return
         try:
@@ -6871,18 +6868,15 @@ QLabel:hover {{
             return
         if not key:
             return
-        self._pending_preview_request = (key, idx, bool(use_local_cmap))
-        try:
-            if not self._preview_request_timer.isActive():
-                self._preview_request_timer.start(0)
-        except Exception:
-            self._flush_preview_request()
+        self._preview_request_debounce.schedule((key, idx, bool(use_local_cmap)))
 
     def _flush_preview_request(self):
+        # Deliberately does NOT take() the payload while a render is in
+        # progress: leaving it pending means the request survives to the
+        # next flush instead of being silently dropped.
         if getattr(self, "_preview_render_in_progress", False):
             return
-        request = getattr(self, "_pending_preview_request", None)
-        self._pending_preview_request = None
+        request = self._preview_request_debounce.take()
         if not request:
             return
         try:
@@ -6906,11 +6900,8 @@ QLabel:hover {{
             self.show_file_channel(key, idx, use_local_cmap=bool(use_local_cmap))
         finally:
             self._preview_render_in_progress = False
-        if getattr(self, "_pending_preview_request", None):
-            try:
-                self._preview_request_timer.start(0)
-            except Exception:
-                self._flush_preview_request()
+        # A newer request may have arrived while the render was running.
+        self._preview_request_debounce.rearm()
 
     def show_file_channel(self, header_path_str, channel_idx:int, use_local_cmap=False):
         highlight = getattr(self, '_highlighted_spec', None)
@@ -9425,213 +9416,74 @@ QLabel:hover {{
         return spectro_controller._match_spec_to_image_by_hint(self, spec, images, with_score=with_score)
 
     def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None, thumb_crop=None):
-        try:
-            x = float(spec.get('x'))
-            y = float(spec.get('y'))
-        except Exception:
-            x = y = None
-        if x is None or y is None:
-            # fallback placement using a stable order index if present
-            try:
-                idx = int(spec.get('order_idx', 1))
-            except Exception:
-                idx = 1
-            return self._fallback_spec_coords(idx, xpix, ypix)
-        try:
-            extent = self._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
-        except Exception:
-            extent = [0.0, 1.0, 1.0, 0.0]
-        x0, x1, y1, y0 = extent
-        xspan = x1 - x0
-        yspan = y1 - y0
-        if xspan <= 0 or yspan <= 0:
-            # try to map using spectroscopy cloud extents if available
-            fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
-            if fallback is not None:
-                col, row = fallback
-                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
-            grid_fallback = self._map_spec_by_grid(spec, xpix, ypix)
-            if grid_fallback is not None:
-                col, row = grid_fallback
-                return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
-            return None
-        cx = 0.5 * (x0 + x1)
-        cy = 0.5 * (y0 + y1)
-        dx = x - cx
-        dy = y - cy
-        angle_deg = self._header_scan_angle(header)
-        if angle_deg:
-            theta = math.radians(angle_deg)
-            cos_t = math.cos(theta)
-            sin_t = math.sin(theta)
-            # Rotate the spec's absolute-frame offset (still in real nm,
-            # isotropic) by +theta *before* normalizing by width/height - the
-            # +theta direction was empirically confirmed via brightness
-            # correlation (see git history). Rotating first matters whenever
-            # Width != Height (e.g. a 2.5nm x 7.5nm scan): normalizing by two
-            # different divisors ahead of a rotation mixes non-uniformly
-            # scaled components inside the rotation matrix, which shears the
-            # result instead of rotating it - invisible on square scans, but
-            # it visibly smeared/distorted the point cloud on elongated ones.
-            u_nm = dx * cos_t - dy * sin_t
-            v_nm = dx * sin_t + dy * cos_t
-        else:
-            u_nm = dx
-            v_nm = dy
-        u = u_nm / xspan
-        v = v_nm / yspan
-        frac_x = (u + 0.5)
-        frac_y = (0.5 - v)
-        if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y <= 1.0):
-            # A spec already confirmed off-frame at assignment time (see
-            # _assign_spectros_to_images/_spec_frame_offset_info) should
-            # land exactly on the real frame's nearest edge/vertex, not get
-            # remapped into the spec-cloud's bounding box - that fallback
-            # produces a plausible-looking interior position (stretching to
-            # include the outlier) that's indistinguishable from a normal
-            # in-frame point - exactly the "invisible off-frame marker"
-            # complaint this branch used to cause. This applies to grid/
-            # matrix points too (off_frame_direction is computed for them
-            # the same way as singles - see _assign_spectros_to_images).
-            #
-            # Gate on KEY PRESENCE, not truthiness - _spec_frame_offset_info
-            # returns direction=None whenever a point is right at the edge
-            # (over_x_nm/over_y_nm both below its 1e-9 threshold), which is
-            # a valid, deliberately-computed "basically in bounds" result,
-            # not "off-frame status unknown". Gating on truthiness treated
-            # that case identically to "never assigned/checked at all" and
-            # sent it through the bad fallback anyway - confirmed on real
-            # data as a rotated grid whose extent was built to exactly touch
-            # its anchored image's edge (a common, sensible acquisition
-            # pattern): floating-point noise in the rotation trig put an
-            # entire boundary row/column of points at u or v = +/-0.500000
-            # ...0007 instead of exactly +/-0.5, so every one of them (not
-            # just true outliers) got off_frame_direction=None and fell
-            # through to the cloud-bbox fallback, producing a visibly
-            # warped/fanned line of points along what should have been a
-            # perfectly straight grid edge. Only skip the clamp-only path
-            # (i.e. still use the fallback) when this spec's off-frame
-            # status was never evaluated at all (key absent - e.g. no valid
-            # header extent existed for its image at assignment time).
-            if 'off_frame_direction' not in spec:
-                fallback = self._map_spec_by_spec_extent(file_key, spec, xpix, ypix)
-                if fallback is not None:
-                    col, row = fallback
-                    return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
-                grid_pt = self._map_spec_by_grid(spec, xpix, ypix)
-                if grid_pt is not None:
-                    col, row = grid_pt
-                    return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
-            frac_x = min(max(frac_x, 0.0), 1.0)
-            frac_y = min(max(frac_y, 0.0), 1.0)
-        cols = max(1, int(xpix) - 1)
-        rows = max(1, int(ypix) - 1)
-        col = frac_x * cols
-        row = frac_y * rows
-        return self._apply_thumb_crop_to_coords(col, row, xpix, ypix, thumb_crop)
+        """Map a spec's absolute nm position to (col, row) in this image.
 
-    def _apply_thumb_crop_to_coords(self, col, row, xpix, ypix, thumb_crop):
-        if thumb_crop is None:
-            return col, row
-        try:
-            r0 = int(thumb_crop.get("r0"))
-            r1 = int(thumb_crop.get("r1"))
-        except Exception:
-            return col, row
-        if r1 <= r0:
-            return col, row
-        crop_rows = r1 - r0 + 1
-        try:
-            row = float(row) - float(r0)
-        except Exception:
-            return col, row
-        row = min(max(row, 0.0), max(0.0, crop_rows - 1))
-        return col, row
+        The geometry itself lives in the Qt-free
+        ``sxm_viewer.geometry.spec_mapping`` (extracted so it is unit-
+        testable and so the rotation/off-frame rules live in one place -
+        see that module and CLAUDE.md). The viewer supplies only what
+        needs viewer state: the spec-cloud bounding box, passed as a
+        *callable* so it stays lazy - it is used only on fallback paths
+        and computing it eagerly per marker was O(n^2) on large grids.
+        """
+        return spec_mapping.map_spec_to_pixels(
+            spec,
+            spec_mapping.header_extent(header),
+            spec_mapping.header_scan_angle(header),
+            xpix, ypix,
+            thumb_crop=thumb_crop,
+            cloud_bounds=lambda: self._spec_cloud_bounds(file_key, spec),
+        )
 
-    def _map_spec_by_spec_extent(self, file_key, spec, xpix, ypix):
-        """Fallback mapping using the min/max of all specs for this image to keep real-space layout."""
+    def _spec_cloud_bounds(self, file_key, spec):
+        """(xmin, xmax, ymin, ymax) over every spec assigned to an image.
+
+        Cached: rebuilding is an O(len(entries)) scan called once per spec
+        whenever the header extent is degenerate (routine for grid files),
+        so uncached it is O(n^2) in the grid's point count - measured 5-9+
+        seconds opening a real 2400-point .3ds grid. `entries` is a list
+        owned by spectros_by_image that gets replaced wholesale (not
+        appended to) on every rescan, so identity + length is a cheap,
+        correct staleness check.
+        """
         if not file_key:
             file_key = spec.get('image_key')
         if not file_key:
             return None
-        entries = self.spectros_by_image.get(str(file_key), [])
+        key = str(file_key)
+        entries = self.spectros_by_image.get(key, [])
         cache = getattr(self, '_spec_extent_cache', None)
         if cache is None:
             cache = {}
             self._spec_extent_cache = cache
-        key = str(file_key)
         cached = cache.get(key)
-        # Rebuilding this bounding box is an O(len(entries)) scan; called once
-        # per spec whenever the header extent is degenerate (routine for grid
-        # files), so an uncached version is O(n^2) in the grid's point count -
-        # measured 5-9+ seconds opening/interacting with a real 2400-point
-        # .3ds grid. `entries` is a list object owned by spectros_by_image
-        # that gets replaced wholesale (not appended-to) on every rescan, so
-        # identity + length is a cheap, correct staleness check: a real
-        # rescan always produces a new list object, and a same-object length
-        # change (e.g. a manual reassignment) still invalidates the cache.
         if cached is not None and cached[0] is entries and cached[1] == len(entries):
-            xmin, xmax, ymin, ymax = cached[2]
-        else:
-            xs = [s.get('x') for s in entries if s.get('x') is not None]
-            ys = [s.get('y') for s in entries if s.get('y') is not None]
-            if not xs or not ys:
-                return None
-            try:
-                xmin, xmax = float(min(xs)), float(max(xs))
-                ymin, ymax = float(min(ys)), float(max(ys))
-            except Exception:
-                return None
-            cache[key] = (entries, len(entries), (xmin, xmax, ymin, ymax))
-        # pad spans to avoid zero division
-        span_x = xmax - xmin
-        span_y = ymax - ymin
-        if span_x == 0 or span_y == 0:
-            span_x = span_x or 1.0
-            span_y = span_y or 1.0
-        try:
-            x = float(spec.get('x')); y = float(spec.get('y'))
-        except Exception:
+            return cached[2]
+        xs = [s.get('x') for s in entries if s.get('x') is not None]
+        ys = [s.get('y') for s in entries if s.get('y') is not None]
+        if not xs or not ys:
             return None
-        frac_x = (x - xmin) / span_x
-        frac_y = (ymax - y) / span_y
-        frac_x = min(max(frac_x, 0.0), 1.0)
-        frac_y = min(max(frac_y, 0.0), 1.0)
-        col = frac_x * max(1, xpix - 1)
-        row = frac_y * max(1, ypix - 1)
-        return col, row
+        try:
+            bounds = (float(min(xs)), float(max(xs)),
+                      float(min(ys)), float(max(ys)))
+        except (TypeError, ValueError):
+            return None
+        cache[key] = (entries, len(entries), bounds)
+        return bounds
+
+    def _apply_thumb_crop_to_coords(self, col, row, xpix, ypix, thumb_crop):
+        return spec_mapping.apply_thumb_crop(col, row, thumb_crop)
 
     def _map_spec_by_grid(self, spec, xpix, ypix):
-        grid_cols = spec.get('grid_cols')
-        grid_rows = spec.get('grid_rows')
-        if not grid_cols or not grid_rows:
-            return None
-        try:
-            col_idx = int(spec.get('grid_col', 0))
-            row_idx = int(spec.get('grid_row', 0))
-        except Exception:
-            return None
-        cols = max(1, int(grid_cols) - 1)
-        rows = max(1, int(grid_rows) - 1)
-        if grid_cols <= 0 or grid_rows <= 0:
-            return None
-        col_frac = col_idx / cols if cols > 0 else 0.0
-        row_frac = row_idx / rows if rows > 0 else 0.0
-        col = col_frac * max(1, xpix - 1)
-        row = row_frac * max(1, ypix - 1)
-        return col, row
+        return spec_mapping.map_spec_by_grid(spec, xpix, ypix)
 
     def _fallback_spec_coords(self, idx, xpix, ypix):
-        """Fallback placement for specs lacking coordinates: spread markers on a 3x3 grid."""
-        slots = [
-            (0.15, 0.15), (0.50, 0.15), (0.85, 0.15),
-            (0.15, 0.50), (0.50, 0.50), (0.85, 0.50),
-            (0.15, 0.85), (0.50, 0.85), (0.85, 0.85),
-        ]
-        frac_x, frac_y = slots[(idx - 1) % len(slots)]
-        col = frac_x * max(1, xpix - 1)
-        row = frac_y * max(1, ypix - 1)
-        return col, row
+        return spec_mapping.fallback_spec_coords(idx, xpix, ypix)
+
+    def _map_spec_by_spec_extent(self, file_key, spec, xpix, ypix):
+        """Fallback mapping using the min/max of all specs for this image."""
+        return spec_mapping.map_spec_by_cloud_bounds(
+            spec, self._spec_cloud_bounds(file_key, spec), xpix, ypix)
 
     def _render_spectroscopy_overlays(
         self,

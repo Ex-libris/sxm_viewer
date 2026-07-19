@@ -148,6 +148,45 @@ def main():
         return viewer.activity_log_box.toPlainText() == "" and before is not None
     checks.check("activity log append/flush/clear", activity_log_roundtrip)
 
+    # Debouncer: both payload policies, plus the rearm path used when a
+    # request lands while a render is already running.
+    def debouncer_semantics():
+        from sxm_viewer.gui.debounce import ACCUMULATE, LATEST, Debouncer
+        fired = []
+        latest = Debouncer(lambda: fired.append("x"), 0, LATEST)
+        latest.schedule(("a", 1))
+        latest.schedule(("b", 2))
+        if latest.take() != ("b", 2):        # latest wins
+            return False
+        if latest.take() is not None:        # take() clears
+            return False
+        acc = Debouncer(lambda: None, 0, ACCUMULATE)
+        acc.schedule({"p1"})
+        acc.schedule({"p2", "p1"})
+        if acc.take() != {"p1", "p2"}:       # union, deduped
+            return False
+        # rearm must not resurrect an empty payload
+        acc.cancel()
+        acc.rearm()
+        if acc.is_active:
+            return False
+        # rearm DOES re-arm when a payload is still outstanding (the
+        # "request arrived mid-render" path).
+        acc.schedule({"p3"})
+        acc.cancel()
+        acc.schedule({"p4"})
+        acc.rearm()
+        if acc.peek() != {"p4"}:
+            return False
+        # flush() invokes the callback; a callback that does not take()
+        # deliberately leaves the payload for the next round.
+        taken = []
+        drain = Debouncer(lambda: taken.append(drain.take()), 0, LATEST)
+        drain.schedule(("c", 3))
+        drain.flush()
+        return bool(fired is not None) and taken == [("c", 3)]
+    checks.check("debouncer latest/accumulate/rearm", debouncer_semantics)
+
     if args.folder:
         folder = Path(args.folder)
         if not folder.exists():

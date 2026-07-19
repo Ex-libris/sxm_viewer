@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .._shared import QtCore, QtWidgets
+from .debounce import ACCUMULATE, Debouncer
 
 FLUSH_INTERVAL_MS = 60
 MAX_BLOCKS = 500
@@ -38,10 +39,12 @@ class ActivityLog(QtCore.QObject):
     def __init__(self, box: QtWidgets.QPlainTextEdit, parent=None):
         super().__init__(parent)
         self._box = box
+        # Ordered payload, so entries are kept here rather than in the
+        # Debouncer's set (which is unordered by design); the debouncer
+        # only owns the timing.
         self._pending: list[str] = []
-        self._timer = QtCore.QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self.flush)
+        self._debounce = Debouncer(self.flush, interval_ms=FLUSH_INTERVAL_MS,
+                                   mode=ACCUMULATE, parent=self)
         try:
             self._box.document().setMaximumBlockCount(MAX_BLOCKS)
         except Exception:
@@ -57,50 +60,44 @@ class ActivityLog(QtCore.QObject):
             return
         entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
         self._pending.append(entry)
-        if not self._timer.isActive():
-            self._timer.start(FLUSH_INTERVAL_MS)
+        # Payload lives in self._pending (order matters); pass a sentinel
+        # so the debouncer knows something is outstanding.
+        self._debounce.schedule(("pending",))
 
     def flush(self):
         """Write everything queued, in one append."""
+        self._debounce.take()
         if self._box is None:
             self._pending = []
             return
         pending, self._pending = self._pending, []
         if not pending:
             return
+        # RuntimeError = Qt "wrapped C++ object deleted" during teardown;
+        # that is the only failure mode worth surviving here, so catch it
+        # narrowly rather than swallowing every exception.
         try:
             self._box.appendPlainText("\n".join(pending))
             self._scroll_to_end()
-        except Exception:
-            # Fall back to line-at-a-time so one bad entry cannot lose the
-            # rest of the batch.
-            for entry in pending:
-                try:
-                    self._box.appendPlainText(entry)
-                except Exception:
-                    pass
-        try:
-            # Keep the log visibly moving during long synchronous work
-            # (folder loads) without letting the user click mid-operation.
-            QtWidgets.QApplication.processEvents(
-                QtCore.QEventLoop.ExcludeUserInputEvents, 5)
-        except Exception:
-            pass
+        except RuntimeError:
+            return
+        # Keep the log visibly moving during long synchronous work (folder
+        # loads) without letting the user click mid-operation.
+        QtWidgets.QApplication.processEvents(
+            QtCore.QEventLoop.ExcludeUserInputEvents, 5)
 
     def clear(self):
         self._pending = []
+        self._debounce.cancel()
         if self._box is not None:
             try:
                 self._box.clear()
-            except Exception:
+            except RuntimeError:
                 pass
 
     def _scroll_to_end(self):
-        try:
-            bar = self._box.verticalScrollBar()
-            bar.setValue(bar.maximum())
-        except Exception:
-            pass
+        bar = self._box.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
 
 __all__ = ["ActivityLog"]

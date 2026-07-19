@@ -52,15 +52,26 @@ independently shippable and verified by `scripts/smoke_test.py`.
 
 ## Progress
 
+Track with `python scripts/analysis/class_size.py`.
+
 | Step | Status | Effect |
 | --- | --- | --- |
 | Remove shadowed/dead definitions | ✅ done | −4 methods, 3 latent `AttributeError`s removed |
 | Extract `ActivityLog` | ✅ done | −3 attrs, −2 methods, new tested class |
-| Extract remaining debouncers | ⬜ next | ~12 attrs across 3 groups |
-| Move spectroscopy logic to `gui/spectroscopy/` | ⬜ queued | up to −69 methods / −146 attrs |
+| Extract `geometry/spec_mapping` | ✅ done | −4 attrs, ~190 lines of logic out; now Qt-free + testable |
+| Extract `Debouncer` | ✅ done | −4 attrs, 3 hand-rolled copies unified |
+| Move rest of spectroscopy to `gui/spectroscopy/` | ⬜ next | up to −65 methods / −140 attrs |
 | Move thumbnail logic to `gui/viewer/` | ⬜ queued | up to −63 methods / −88 attrs |
 
-**Current: 535 methods, 810 attributes** (from 541 / 814).
+**Current: 536 methods, 805 attributes, 11,862 lines** (from 541 / 814 /
+~12,050).
+
+The method count barely moves because extraction replaces a body with a
+short delegating call - the *logic* leaves, the entry point stays. Lines
+and attributes are the more honest metric, and `main_window.py` is now
+~190 lines lighter with 9 fewer attributes. Method count only drops
+materially once callers import the new modules directly and the shims are
+deleted (see step 1 of the strategy above).
 
 ### Completed detail
 
