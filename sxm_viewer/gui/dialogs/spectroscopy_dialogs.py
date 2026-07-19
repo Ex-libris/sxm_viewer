@@ -6527,11 +6527,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plot_update_pending = False
         self._update_plot()
 
-    def _get_icon(self, name):
-        """Get a themed icon, falling back to empty icon if not available."""
-        icon = QIcon.fromTheme(name)
-        return icon if icon and not icon.isNull() else QIcon()
-
     def _display_name(self, spec):
         name = Path(spec.get('path', '')).name
         idx = spec.get('matrix_index')

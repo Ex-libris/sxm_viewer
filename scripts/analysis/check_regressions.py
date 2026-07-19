@@ -26,14 +26,21 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import find_idioms  # noqa: E402
 import call_graph  # noqa: E402
+import find_shadowed  # noqa: E402
 from common import check_coverage  # noqa: E402
 
 BASELINE_PATH = Path(__file__).parent / "baseline.json"
 
-# Counters that must never increase. `phantom_calls` is special: it is 0 and
-# must stay 0 - any increase means a call to something that does not exist
-# (the _show_spectro_popup bug class: silently dead behind a hasattr guard).
-ZERO_TOLERANCE = ("phantom_calls",)
+# Counters that must stay at 0 - each represents code that cannot work:
+#   phantom_calls       call to a name defined nowhere (the
+#                       _show_spectro_popup bug class)
+#   shadowed_defs       same method defined twice in one class; the first
+#                       is dead. Found three such pairs in SXMGridViewer.
+#   broken_delegations  `module.func(...)` where module has no `func` -
+#                       AttributeError if reached. All three found were
+#                       *also* shadowed, so nothing failed until someone
+#                       would have deleted the shadowing copy.
+ZERO_TOLERANCE = ("phantom_calls", "shadowed_defs", "broken_delegations")
 
 
 def measure():
@@ -43,6 +50,9 @@ def measure():
     defs = call_graph.collect_definitions()
     phantoms, _injected = call_graph.find_phantom_calls(defs)
     counts["phantom_calls"] = len(phantoms)
+    counts["shadowed_defs"] = len(find_shadowed.find_shadowed_methods())
+    counts["broken_delegations"] = len(
+        find_shadowed.find_broken_delegations(find_shadowed.module_exports()))
     return counts
 
 

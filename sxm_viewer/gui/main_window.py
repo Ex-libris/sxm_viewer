@@ -29,6 +29,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
 from .. import cmap_registry
 from .qt_helpers import set_silent, set_many_silent
+from .activity_log import ActivityLog
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
@@ -820,10 +821,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self._session_activity_hide_timer = QtCore.QTimer(self)
         self._session_activity_hide_timer.setSingleShot(True)
         self._session_activity_hide_timer.timeout.connect(self._hide_session_activity)
-        self._activity_log_pending = []
-        self._activity_log_flush_timer = QtCore.QTimer(self)
-        self._activity_log_flush_timer.setSingleShot(True)
-        self._activity_log_flush_timer.timeout.connect(self._flush_activity_log_pending)
+        # Activity-log batching state lives in ActivityLog (gui/activity_log.py),
+        # constructed once the text box exists in _create_lower_controls.
+        self.activity_log = None
 
         # UI: left controls + meta + inspector; middle thumbs; right preview
         left_v = QtWidgets.QVBoxLayout(); left_v.setSpacing(LEFT_PANEL_SPACING)
@@ -1001,15 +1001,12 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.activity_log_box.setReadOnly(True)
         self.activity_log_box.setMaximumHeight(140)
         self.activity_log_box.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-        try:
-            self.activity_log_box.document().setMaximumBlockCount(500)
-        except Exception:
-            pass
         activity_layout.addWidget(self.activity_log_box)
         details_layout.addWidget(self.activity_group)
-        self._activity_log_entries = []
+        # ActivityLog owns the batching/flush state and the block-count cap.
+        self.activity_log = ActivityLog(self.activity_log_box, parent=self)
         self.activity_group.toggled.connect(self.activity_log_box.setVisible)
-        self.activity_clear_btn.clicked.connect(self._on_clear_activity_log)
+        self.activity_clear_btn.clicked.connect(self.activity_log.clear)
         self.meta_box.setVisible(True)
         details_group.toggled.connect(self.meta_box.setVisible)
 
@@ -2485,45 +2482,9 @@ QLabel:hover {{
             btn.setText("Mol")
 
     def _append_activity_log(self, message: str):
-        box = getattr(self, "activity_log_box", None)
-        if box is None:
-            return
-        try:
-            self._activity_log_pending.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-            if not self._activity_log_flush_timer.isActive():
-                self._activity_log_flush_timer.start(60)
-        except Exception:
-            entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
-            box.appendPlainText(entry)
-            box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
-
-    def _flush_activity_log_pending(self):
-        box = getattr(self, "activity_log_box", None)
-        if box is None:
-            self._activity_log_pending = []
-            return
-        pending = list(getattr(self, "_activity_log_pending", []) or [])
-        if not pending:
-            return
-        self._activity_log_pending = []
-        try:
-            box.appendPlainText("\n".join(pending))
-            box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
-        except Exception:
-            for entry in pending:
-                try:
-                    box.appendPlainText(entry)
-                except Exception:
-                    pass
-        try:
-            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents, 5)
-        except Exception:
-            pass
-
-    def _on_clear_activity_log(self):
-        if hasattr(self, "activity_log_box"):
-            self.activity_log_box.clear()
-        self._activity_log_pending = []
+        """Delegates to ActivityLog; kept as the signal slot target."""
+        if self.activity_log is not None:
+            self.activity_log.append(message)
 
     def _create_lower_controls(self):
         return main_window_layout.create_lower_controls(self)
@@ -4753,10 +4714,6 @@ QLabel:hover {{
         except Exception:
             pass
 
-    def on_dark_mode_toggled(self, checked: bool):
-        # Legacy binary toggle; routes into the named-theme selector.
-        self.set_ui_theme(ui_theme.THEME_DARK if checked else ui_theme.THEME_LIGHT)
-
     # ---------- folder load & auto-detection ----------
     def open_folder_dialog(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select data folder", str(self.last_dir))
@@ -5581,14 +5538,12 @@ QLabel:hover {{
     def _downsample_for_thumbnail(self, arr, thumb_w, thumb_h):
         return viewer_thumbnails._downsample_for_thumbnail(self, arr, thumb_w, thumb_h)
 
-    def _map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None):
-        return viewer_preview._map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=file_key)
-
-    def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None):
-        return viewer_preview._matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=file_key)
-
-    def _fallback_spec_coords(self, idx, xpix, ypix):
-        return viewer_preview._fallback_spec_coords(self, idx, xpix, ypix)
+    # NOTE: _map_spec_to_pixels / _matrix_bbox_pixels / _fallback_spec_coords
+    # were previously *also* defined here as shims delegating to
+    # viewer_preview.*, which defines none of them - they would have raised
+    # AttributeError if reached. They never were, because the real
+    # implementations later in this class body shadowed them. Removed; see
+    # docs/refactor/A6_SHADOWED.md and scripts/analysis/find_shadowed.py.
 
     def _decorate_thumbnail_pixmap(self, pix, file_key, channel_idx, header, fds, thumb_crop=None):
         """Draw tag borders, filter badges, and spectroscopy markers."""

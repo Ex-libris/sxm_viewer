@@ -147,6 +147,42 @@ def analyse(target, report):
             report.line(f"- `self.{attr}` - {len(methods_by_attr[attr])} methods")
         report.line("\n</details>\n")
 
+    # Extraction manifests: for the most isolated groups, list exactly which
+    # methods move with the state. A group is only worth extracting when its
+    # "pure" methods (touching nothing outside the group) form a coherent
+    # unit - those become the new class's API; the rest stay behind as
+    # delegating call sites.
+    report.line("### Extraction manifests (most isolated groups)\n")
+    report.line("`pure` methods touch only this group's attributes and can "
+                "move wholesale. `mixed` methods touch the group *and* other "
+                "state - they stay put and call into the extracted object.\n")
+    for score, pure_n, touching_n, group in scored[:8]:
+        group_set = set(group)
+        touching = set()
+        for attr in group:
+            touching |= methods_by_attr[attr]
+        pure_methods = sorted(m for m in touching
+                              if m2a[m] and m2a[m] <= group_set)
+        mixed_methods = sorted(m for m in touching if m not in set(pure_methods))
+        report.line(f"<details><summary><b>{len(group)} attrs, "
+                    f"{score:.0%} isolated</b> - "
+                    f"{', '.join('`' + a + '`' for a in sorted(group)[:4])}"
+                    f"{' ...' if len(group) > 4 else ''}</summary>\n")
+        report.line(f"**State to move ({len(group)}):**")
+        for attr in sorted(group):
+            report.line(f"- `self.{attr}`")
+        report.line(f"\n**Pure methods ({len(pure_methods)}) - move these:**")
+        for method in pure_methods:
+            report.line(f"- `{method}()`")
+        report.line(f"\n**Mixed methods ({len(mixed_methods)}) - keep, "
+                    "delegate:**")
+        for method in mixed_methods[:20]:
+            others = sorted(m2a[method] - group_set)[:5]
+            report.line(f"- `{method}()` - also touches "
+                        f"{', '.join('`' + o + '`' for o in others)}"
+                        f"{' ...' if len(m2a[method] - group_set) > 5 else ''}")
+        report.line("\n</details>\n")
+
     # Attributes touched by a huge share of methods are the "spine" - they
     # cannot be extracted and identify the true core responsibility.
     spine = sorted(methods_by_attr.items(), key=lambda kv: -len(kv[1]))[:15]

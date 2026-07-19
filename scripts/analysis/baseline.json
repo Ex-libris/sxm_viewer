@@ -1,8 +1,10 @@
 {
   "block_signals_triad": 215,
+  "broken_delegations": 0,
   "config_write_then_save": 88,
-  "defensive_getattr": 1227,
+  "defensive_getattr": 1224,
   "header_field_unpack": 43,
   "phantom_calls": 0,
-  "try_except_pass": 1354
+  "shadowed_defs": 0,
+  "try_except_pass": 1356
 }

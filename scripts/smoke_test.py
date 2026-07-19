@@ -131,6 +131,23 @@ def main():
         return not fired
     checks.check("blockSignals suppresses handler", combo_silent)
 
+    # ActivityLog batches through a timer, so a message is only visible in
+    # the widget after a flush - assert the whole round trip, not just that
+    # append() did not raise.
+    def activity_log_roundtrip():
+        log = getattr(viewer, "activity_log", None)
+        if log is None:
+            return False
+        before = viewer.activity_log_box.toPlainText()
+        log.append("smoke-test-marker")
+        log.flush()
+        after = viewer.activity_log_box.toPlainText()
+        if "smoke-test-marker" not in after:
+            return False
+        log.clear()
+        return viewer.activity_log_box.toPlainText() == "" and before is not None
+    checks.check("activity log append/flush/clear", activity_log_roundtrip)
+
     if args.folder:
         folder = Path(args.folder)
         if not folder.exists():
