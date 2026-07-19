@@ -101,7 +101,10 @@ from .plot_typography import add_font_menu_action, normalize_font_family, set_ma
 from .canvases.molecular_overlay import available_atom_palettes
 from .ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt, _bridge as _ppt_bridge
 from .spectroscopy import controller as spectro_controller
+from .spectroscopy import details as spectro_details
+from .spectroscopy import loading as spectro_loading
 from .spectroscopy import overlays as spectro_overlays
+from .spectroscopy import overrides as spectro_overrides
 from .spectroscopy import popups as spectro_popups
 from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
@@ -5261,87 +5264,9 @@ QLabel:hover {{
             pass
 
     def _spectroscopy_metadata_lines(self, spec):
-        """Format spectroscopy metadata for the Details panel without dumping large arrays."""
-        if not spec:
-            return ["No spectroscopy metadata."]
+        """Format spectroscopy metadata for the Details panel."""
+        return spectro_details.metadata_lines(spec)
 
-        def _fmt(value):
-            if value is None:
-                return "None"
-            if isinstance(value, (str, int, float, bool)):
-                return str(value)
-            if isinstance(value, Path):
-                return str(value)
-            if isinstance(value, dict):
-                return f"dict({len(value)})"
-            if isinstance(value, (list, tuple, set)):
-                return f"{type(value).__name__}({len(value)})"
-            if hasattr(value, "shape"):
-                try:
-                    arr = np.asarray(value)
-                    return f"array(shape={arr.shape}, dtype={arr.dtype})"
-                except Exception:
-                    return type(value).__name__
-            return str(value)
-
-        lines = ["Spectroscopy details", ""]
-        for key in ("path", "source", "time", "file_mtime", "image_key", "primary_image_key", "matrix_dataset", "matrix_index", "x", "y", "AxisLabel", "AxisUnit", "AltAxisLabel", "AltAxisUnit"):
-            if key in spec:
-                lines.append(f"{key}: {_fmt(spec.get(key))}")
-        site_summary = str(spec.get("site_summary") or "").strip()
-        site_display = str(spec.get("site_display") or "").strip()
-        site_key = str(spec.get("site_key") or "").strip()
-        if site_summary or site_display or site_key:
-            lines.append("")
-            lines.append("Position:")
-            if site_display:
-                lines.append(f"  display: {site_display}")
-            if site_key:
-                lines.append(f"  key: {site_key}")
-            if site_summary:
-                lines.append(f"  summary: {site_summary}")
-        assignment_summary = str(spec.get("assignment_summary") or "").strip()
-        assignment_conf = str(spec.get("assignment_confidence") or "").strip()
-        assignment_reason = str(spec.get("assignment_reason_label") or spec.get("assignment_reason") or "").strip()
-        if assignment_summary or assignment_conf or assignment_reason:
-            lines.append("")
-            lines.append("Assignment:")
-            if assignment_conf:
-                lines.append(f"  confidence: {assignment_conf}")
-            if assignment_reason:
-                lines.append(f"  reason: {assignment_reason}")
-            if assignment_summary:
-                lines.append(f"  summary: {assignment_summary}")
-            shared_keys = spec.get("shared_image_keys") or []
-            if shared_keys:
-                lines.append(f"  shared_image_keys: {_fmt(shared_keys)}")
-        channels = spec.get("channels") or {}
-        if channels:
-            lines.append("")
-            lines.append(f"Channels ({len(channels)}):")
-            for name, values in channels.items():
-                try:
-                    arr = np.asarray(values)
-                    shape = arr.shape
-                except Exception:
-                    shape = "?"
-                lines.append(f"  - {name}: shape={shape}")
-        axis_choices = spec.get("AxisChoices") or []
-        if axis_choices:
-            lines.append("")
-            lines.append(f"Axis choices ({len(axis_choices)}):")
-            for ax in axis_choices:
-                key = ax.get("key") or ax.get("label") or "Axis"
-                label = ax.get("label") or "Axis"
-                unit = ax.get("unit") or ""
-                lines.append(f"  - {key}: {label}" + (f" ({unit})" if unit else ""))
-        lines.append("")
-        lines.append("Raw fields:")
-        for key in sorted(spec.keys(), key=lambda s: str(s).lower()):
-            if key in {"channels", "AxisChoices"}:
-                continue
-            lines.append(f"  {key}: {_fmt(spec.get(key))}")
-        return lines
 
     def show_spectroscopy_details(self, spec):
         """Show a spectroscopy entry in the left Details panel."""
@@ -8910,165 +8835,24 @@ QLabel:hover {{
 
     def ensure_spectros_loaded(self, refresh: bool = True):
         """Load spectroscopies on-demand if they were deferred."""
-        if self._spectros_loaded:
-            return True
-        if getattr(self, "_spectros_loading", False):
-            return False
-        try:
-            self._spectro_autoload_timer.stop()
-        except Exception:
-            pass
-        self._spectros_loading = True
-        self._spectros_pending = False
-        try:
-            log_status("[Lazy] Loading spectroscopy references...")
-            self._reload_spectros(refresh=refresh)
-            if not refresh and self._spectros_loaded:
-                self._schedule_marker_refresh()
-                if self.last_preview:
-                    try:
-                        self.show_file_channel(self.last_preview[0], self.last_preview[1])
-                    except Exception:
-                        pass
-        finally:
-            self._spectros_loading = False
-        return True
+        return spectro_loading.ensure_loaded(self, refresh=refresh)
 
     def _schedule_pending_spectro_load(self, delay_ms: int = 1200):
-        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
-            return
-        if getattr(self, "_spectros_loading", False):
-            return
-        try:
-            self._spectro_autoload_timer.start(max(0, int(delay_ms)))
-        except Exception:
-            pass
+        spectro_loading.schedule_pending_load(self, delay_ms=delay_ms)
 
     def _run_pending_spectro_load(self):
-        """Synchronous fallback path - kept for the case where the async
-        worker setup itself fails (see _run_pending_spectro_load_async)."""
-        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
-            return
-        if getattr(self, "_spectros_loading", False):
-            return
-        self.ensure_spectros_loaded(refresh=bool(getattr(self, "show_spectro_miniatures", False)))
+        spectro_loading.run_pending_load(self)
 
     def _run_pending_spectro_load_async(self):
-        """Background-threaded variant of _run_pending_spectro_load, used
-        only for the deferred post-folder-load autoload trigger
-        (_spectro_autoload_timer). The scan (_scan_spectros: file I/O,
-        parsing, matrix anchoring - all plain data work, audited for Qt
-        thread-safety) runs off the GUI thread so the window stays
-        responsive; previously this ran synchronously and froze the entire
-        UI (including resize/maximize handling) for as long as the scan
-        took (1-2+ seconds on real folders). Every other caller of
-        ensure_spectros_loaded/_reload_spectros elsewhere in the app is
-        left untouched and stays fully synchronous, since several of them
-        rely on self.spectros being populated immediately after the call
-        returns."""
-        if self._spectros_loaded or not getattr(self, "_spectros_pending", False):
-            return
-        if getattr(self, "_spectros_loading", False):
-            return
-        refresh = bool(getattr(self, "show_spectro_miniatures", False))
-        self._spectros_loading = True
-        self._spectros_pending = False
-        self._spectros_loaded = False
-        self._spectro_miniature_cache.clear()
-        try:
-            folder = getattr(self, 'spec_folder_path', None) or self.last_dir
-            folder = Path(folder)
-        except Exception:
-            folder = self.last_dir
-        log_status("[Lazy] Loading spectroscopy references...")
-        log_status(f"Scanning spectroscopy files in: {folder}")
-        t_scan_start = time.perf_counter()
-
-        thread = QtCore.QThread(self)
-        worker = _SpectroScanWorker(self, folder)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-
-        def _cleanup_thread():
-            thread.quit()
-            thread.wait()
-            self._spectro_scan_thread = None
-            self._spectro_scan_worker = None
-
-        def _on_finished(specs, spec_stats):
-            scan_ms = (time.perf_counter() - t_scan_start) * 1000.0
-            _cleanup_thread()
-            self._apply_spectro_scan_results(specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
-            self._spectros_loading = False
-            if not refresh and self._spectros_loaded:
-                self._schedule_marker_refresh()
-                if self.last_preview:
-                    try:
-                        self.show_file_channel(self.last_preview[0], self.last_preview[1])
-                    except Exception:
-                        pass
-
-        def _on_failed(error_msg):
-            log_status(f"Spectroscopy scan failed: {error_msg}")
-            _cleanup_thread()
-            self._spectros_loading = False
-
-        worker.finished.connect(_on_finished)
-        worker.failed.connect(_on_failed)
-        # Keep references alive for the thread's lifetime (a local-only
-        # QThread/QObject can be garbage-collected out from under itself).
-        self._spectro_scan_thread = thread
-        self._spectro_scan_worker = worker
-        thread.start()
+        spectro_loading.run_pending_load_async(self, _SpectroScanWorker)
 
     def _reload_spectros(self, refresh=True):
-        # unless we complete a successful reload, consider spectra cache stale
-        self._spectros_loaded = False
-        self._spectros_pending = False
-        self._spectro_miniature_cache.clear()
-        t_scan_start = time.perf_counter()
-        try:
-            folder = getattr(self, 'spec_folder_path', None) or self.last_dir
-            folder = Path(folder)
-        except Exception:
-            folder = self.last_dir
-        log_status(f"Scanning spectroscopy files in: {folder}")
-        specs, spec_stats = self._scan_spectros(folder)
-        scan_ms = (time.perf_counter() - t_scan_start) * 1000.0
-        self._apply_spectro_scan_results(specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
+        spectro_loading.reload_spectros(self, refresh=refresh)
 
     def _apply_spectro_scan_results(self, specs, spec_stats, *, refresh, scan_ms):
-        """Everything _reload_spectros does after _scan_spectros returns -
-        factored out so both the synchronous path and the background-thread
-        completion handler (_run_pending_spectro_load_async) share the exact
-        same result-applying logic, always running on the GUI thread."""
-        self.spectros = specs
-        if not spec_stats:
-            # keep stats for UI but avoid duplicate terminal spam (loader already logged)
-            log_status(f"Loaded {len(self.spectros)} spectroscopy entries")
-        if getattr(self, "_spectro_manifest_pending_save", False):
-            self._spectro_manifest_pending_save = False
-            self._schedule_spectro_manifest_save()
-        t_assign_start = time.perf_counter()
-        self._assign_spectros_to_images()
-        t_assign_end = time.perf_counter()
-        self.matrix_spectros = [spec for spec in self.spectros if spec.get('matrix_index') is not None]
-        self._clear_multi_spec_selection()
-        self._update_spectro_stats_label(spec_stats)
-        self._spectros_loaded = True
-        self._update_matrix_summary_banner()
-        if refresh:
-            t_thumb_start = time.perf_counter()
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-            if self.last_preview:
-                self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            t_thumb_end = time.perf_counter()
-        else:
-            t_thumb_start = t_assign_end
-            t_thumb_end = t_assign_end
-        assign_ms = (t_assign_end - t_assign_start) * 1000.0
-        thumb_ms = (t_thumb_end - t_thumb_start) * 1000.0
-        log_status(f"[Perf] Spectros: scan {scan_ms:.0f} ms | assign {assign_ms:.0f} ms | thumbs {thumb_ms:.0f} ms")
+        spectro_loading.apply_scan_results(
+            self, specs, spec_stats, refresh=refresh, scan_ms=scan_ms)
+
 
     def _scan_spectros(self, folder:Path):
         return viewer_loader._scan_spectros(self, folder)
@@ -9083,41 +8867,14 @@ QLabel:hover {{
         return viewer_loader.refresh_spectro_manifest_from_viewer(self)
 
     def _schedule_spectro_manifest_save(self):
-        self._spectro_manifest_save_pending = True
-        try:
-            self._spectro_manifest_save_timer.start(400)
-        except Exception:
-            self._flush_spectro_manifest_save()
+        spectro_loading.schedule_manifest_save(self)
 
     def _flush_spectro_manifest_save(self):
-        if self._spectro_manifest_save_inflight:
-            self._spectro_manifest_save_pending = True
-            return
-        folder = getattr(self, "spec_folder_path", None) or getattr(self, "last_dir", None)
-        manifest_entries = dict(getattr(self, "_spectro_manifest_entries", {}) or {})
-        if not folder or not manifest_entries:
-            self._spectro_manifest_save_pending = False
-            return
-        self._spectro_manifest_save_pending = False
-        self._spectro_manifest_save_inflight = True
-
-        def _persist(snapshot_folder, snapshot_manifest):
-            try:
-                viewer_loader.save_spectro_manifest_snapshot(snapshot_folder, snapshot_manifest)
-            finally:
-                QtCore.QTimer.singleShot(0, self._on_spectro_manifest_save_finished)
-
-        threading.Thread(
-            target=_persist,
-            args=(folder, manifest_entries),
-            name="spectro-manifest-save",
-            daemon=True,
-        ).start()
+        spectro_loading.flush_manifest_save(self)
 
     def _on_spectro_manifest_save_finished(self):
-        self._spectro_manifest_save_inflight = False
-        if self._spectro_manifest_save_pending:
-            self._schedule_spectro_manifest_save()
+        spectro_loading.on_manifest_save_finished(self)
+
 
     def _assign_spectros_to_images(self):
         spectro_controller._assign_spectros_to_images(self)
@@ -9141,160 +8898,26 @@ QLabel:hover {{
         self._update_matrix_summary_banner()
 
     def _current_spectro_assignment_target_image_key(self):
-        candidates = []
-        try:
-            if self.last_preview:
-                candidates.append(str(self.last_preview[0]))
-        except Exception:
-            pass
-        try:
-            selected = str(getattr(self, "selected_file_for_thumbs", "") or "").strip()
-            if selected:
-                candidates.append(selected)
-        except Exception:
-            pass
-        image_keys = {
-            str(img.get("path"))
-            for img in list(getattr(self, "image_meta", []) or [])
-            if img and img.get("path")
-        }
-        for key in candidates:
-            if key and key in image_keys:
-                return key
-        return ""
+        return spectro_overrides.current_target_image_key(self)
 
     def _spectro_override_signature(self, spec):
-        if not spec:
-            return None
-        path = str(spec.get("path") or "")
-        if path:
-            try:
-                path = str(Path(path))
-            except Exception:
-                pass
-            if os.name == "nt":
-                path = path.lower()
-        matrix_index = spec.get("matrix_index")
-        try:
-            x_val = round(float(spec.get("x")), 6) if spec.get("x") is not None else None
-        except Exception:
-            x_val = spec.get("x")
-        try:
-            y_val = round(float(spec.get("y")), 6) if spec.get("y") is not None else None
-        except Exception:
-            y_val = spec.get("y")
-        channel_name = str(spec.get("channel_name") or "").strip()
-        source = str(spec.get("source") or "").strip()
-        order_idx = spec.get("order_idx")
-        return (path, matrix_index, x_val, y_val, channel_name, source, order_idx)
+        return spectro_overrides.override_signature(spec)
 
     def _resolve_spectro_override_targets(self, specs):
-        originals = list(getattr(self, "spectros", []) or [])
-        if not originals:
-            return []
-        original_ids = {id(spec) for spec in originals}
-        by_signature = defaultdict(list)
-        for original in originals:
-            signature = self._spectro_override_signature(original)
-            if signature is not None:
-                by_signature[signature].append(original)
-        resolved = []
-        seen_ids = set()
-        for spec in list(specs or []):
-            candidates = []
-            if id(spec) in original_ids:
-                candidates = [spec]
-            else:
-                signature = self._spectro_override_signature(spec)
-                candidates = list(by_signature.get(signature) or [])
-            for candidate in candidates:
-                candidate_id = id(candidate)
-                if candidate_id in seen_ids:
-                    continue
-                seen_ids.add(candidate_id)
-                resolved.append(candidate)
-        return resolved
+        return spectro_overrides.resolve_override_targets(self, specs)
 
     def _refresh_spectro_assignment_overrides(self, *, focus_specs=None):
-        self._assign_spectros_to_images()
-        self.matrix_spectros = [spec for spec in self.spectros if spec.get("matrix_index") is not None]
-        self._update_spectro_stats_label()
-        try:
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        except Exception:
-            pass
-        try:
-            if self.last_preview:
-                self.show_file_channel(self.last_preview[0], self.last_preview[1])
-        except Exception:
-            pass
-        try:
-            if getattr(self, "spectro_dock", None):
-                self._filter_spectro_browser()
-        except Exception:
-            pass
-        focus_entries = self._resolve_spectro_override_targets(focus_specs or [])
-        if focus_entries:
-            try:
-                self._highlight_spectrum_entry(focus_entries[0])
-            except Exception:
-                pass
+        spectro_overrides.refresh_after_override(self, focus_specs=focus_specs)
 
     def _apply_spectro_assignment_override(self, specs, image_key=""):
-        targets = self._resolve_spectro_override_targets(specs)
-        if not targets:
-            return
-        image_key = str(image_key or self._current_spectro_assignment_target_image_key() or "").strip()
-        if not image_key:
-            QtWidgets.QMessageBox.information(self, "Spectroscopy", "Open or select an image first, then assign the spectroscopy to it.")
-            return
-        changed = 0
-        for spec in targets:
-            if str(spec.get("assignment_override_image_key") or "") == image_key:
-                continue
-            spec["assignment_override_image_key"] = image_key
-            changed += 1
-        if changed <= 0:
-            return
-        log_status(f"[Spectro] Manual assignment override: {changed} spectrum/s -> {Path(image_key).name}")
-        self._refresh_spectro_assignment_overrides(focus_specs=targets)
+        spectro_overrides.apply_override(self, specs, image_key=image_key)
 
     def _clear_spectro_assignment_override(self, specs):
-        targets = self._resolve_spectro_override_targets(specs)
-        if not targets:
-            return
-        changed = 0
-        for spec in targets:
-            if spec.pop("assignment_override_image_key", None) not in (None, ""):
-                changed += 1
-        if changed <= 0:
-            return
-        log_status(f"[Spectro] Cleared manual assignment override on {changed} spectrum/s")
-        self._refresh_spectro_assignment_overrides(focus_specs=targets)
+        spectro_overrides.clear_override(self, specs)
 
     def _current_spectro_focus_spec(self):
-        for candidate in (
-            getattr(self, "_highlighted_spec", None),
-            getattr(self, "_last_clicked_spec", None),
-        ):
-            if candidate is not None:
-                return candidate
-        current_item = getattr(getattr(self, "spectro_list", None), "currentItem", lambda: None)()
-        if current_item is not None:
-            try:
-                payload = current_item.data(0, QtCore.Qt.UserRole)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict):
-                kind = str(payload.get("kind") or "")
-                if kind in {"site", "spec"}:
-                    spec = payload.get("spec")
-                    if spec is not None:
-                        return spec
-        selected = list(getattr(self, "_multi_spec_selection", []) or [])
-        if selected:
-            return selected[0]
-        return None
+        return spectro_overrides.current_focus_spec(self)
+
 
     def _spec_matches_image_key(self, spec, image_key):
         image_key = str(image_key or "").strip()

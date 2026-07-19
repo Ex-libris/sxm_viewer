@@ -60,11 +60,15 @@ Track with `python scripts/analysis/class_size.py`.
 | Extract `ActivityLog` | ✅ done | −3 attrs, −2 methods, new tested class |
 | Extract `geometry/spec_mapping` | ✅ done | −4 attrs, ~190 lines of logic out; now Qt-free + testable |
 | Extract `Debouncer` | ✅ done | −4 attrs, 3 hand-rolled copies unified |
-| Move rest of spectroscopy to `gui/spectroscopy/` | ⬜ next | up to −65 methods / −140 attrs |
+| Extract `spectroscopy/overrides.py` | ✅ done | 7 methods → delegations, ~150 lines out |
+| Extract `spectroscopy/details.py` | ✅ done | ~85 lines out, now pure/testable |
+| Extract `spectroscopy/loading.py` | ✅ done | 9 methods → delegations, ~200 lines out |
+| Move remaining spectroscopy interaction handlers | ⬜ next | `_handle_spec_hover`, `_handle_spec_marker_click`, `_on_spectro_thumb_context_menu` (~200 lines) |
 | Move thumbnail logic to `gui/viewer/` | ⬜ queued | up to −63 methods / −88 attrs |
+| Delete shims; have callers import modules directly | ⬜ queued | this is what finally drops the **method** count |
 
-**Current: 536 methods, 805 attributes, 11,862 lines** (from 541 / 814 /
-~12,050).
+**Current: 536 methods, 798 attributes, 11,482 lines**
+(from 541 / 814 / ~12,050 — **−568 lines, −16 attributes**).
 
 The method count barely moves because extraction replaces a body with a
 short delegating call - the *logic* leaves, the entry point stays. Lines

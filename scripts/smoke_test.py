@@ -204,6 +204,32 @@ def main():
                          lambda: viewer.ensure_spectros_loaded(refresh=False) or True)
             pump(app, 5)
 
+            # The load-bearing behaviour of spectroscopy/overrides.py: a
+            # selection may carry COPIES of spec dicts, and an override
+            # written to a copy silently does nothing. Copies must resolve
+            # back to the originals by content signature.
+            def override_target_resolution():
+                from sxm_viewer.gui.spectroscopy import overrides
+                originals = list(viewer.spectros or [])
+                if not originals:
+                    return True                      # nothing to check
+                original = originals[0]
+                by_identity = overrides.resolve_override_targets(
+                    viewer, [original])
+                if by_identity != [original]:
+                    return False
+                copy = dict(original)                # a detached copy
+                by_signature = overrides.resolve_override_targets(
+                    viewer, [copy])
+                if not by_signature:
+                    return False
+                # must return the ORIGINAL object, not the copy
+                if by_signature[0] is copy:
+                    return False
+                return by_signature[0] is original
+            checks.check("override targets resolve copies to originals",
+                         override_target_resolution)
+
             def preview_first():
                 viewer.show_file_channel(str(viewer.files[0]), 0)
                 app.processEvents()
