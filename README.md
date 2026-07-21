@@ -116,6 +116,16 @@ through it. If you used a different environment name (or a plain
 one first; the only actual step is `pip install colormaps` into whatever
 environment SXM Viewer runs in.
 
+### 2026-07-21 UPDATES (compare-all-spectra reachability)
+- **"Compare All Spectra on This Image"** — the action that overlays every
+  point spectrum acquired on an image in one comparison window — moved from
+  the preview's *Overlays* submenu to its **Analysis** submenu (it opens a
+  window, so it never really belonged among the paint-on-image toggles), and
+  is now **also on the thumbnail right-click menu**, so you can launch it
+  straight from the grid without opening the image first. It appears whenever
+  an image has 2+ point spectra; grid/CITS points stay in the Grid Map
+  Explorer.
+
 ### 2026-07-10 UPDATES (spectroscopy position accuracy & browser overhaul)
 A deep pass on where spectroscopy points actually land and how you find
 them — this was the biggest correctness fix to spectroscopy in a while,

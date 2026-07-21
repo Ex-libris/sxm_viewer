@@ -10106,6 +10106,22 @@ QLabel:hover {{
         star_act.triggered.connect(lambda _, paths=list(targets): self.toggle_star_for_paths(paths))
         menu.addAction(star_act)
         menu.addSeparator()
+        # Compare all point spectra assigned to the clicked image - mirrors the
+        # preview canvas' Analysis action so it's reachable from the grid too
+        # (matrix/grid points are excluded; those belong in the Grid Map).
+        try:
+            image_specs = self.spectro_compare_controller.all_specs_for_image(fp)
+        except Exception:
+            image_specs = []
+        if len(image_specs) >= 2:
+            compare_all_specs_act = QtWidgets.QAction(
+                f"Compare All Spectra on This Image ({len(image_specs)})...", menu)
+            compare_all_specs_act.setToolTip(
+                "Open every point spectrum assigned to this image together in a comparison window")
+            compare_all_specs_act.triggered.connect(
+                lambda _, key=fp: self.spectro_compare_controller.open_all_specs_popup(key))
+            menu.addAction(compare_all_specs_act)
+            menu.addSeparator()
         current_thumb_steps = self._thumbnail_filter_steps(fp)
         current_thumb_summary = self._filter_pipeline_label_from_steps(current_thumb_steps)
         sub = menu.addMenu("Filters")

@@ -8769,6 +8769,10 @@ class MultiPreviewCanvas(FigureCanvas):
         show_spectra_overlay_act = overlays_menu.addAction("Display Spectroscopy Positions")
         show_spectra_overlay_act.setCheckable(True)
         show_spectra_overlay_act.setChecked(bool(self._show_spectra_overlays))
+        analysis_menu = menu.addMenu("Analysis")
+        # "Compare all spectra on this image" opens a comparison *window*, so it
+        # belongs under Analysis (an action) rather than Overlays (which are
+        # paint-on-image toggles); it's the first, most prominent Analysis item.
         compare_all_specs_act = None
         compare_all_file_key = view.get("path") if isinstance(view, dict) else None
         if callable(self._spectra_compare_all_callback) and compare_all_file_key:
@@ -8776,12 +8780,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 s for s in (view.get("spectra") or [])
                 if not (isinstance(s, dict) and s.get("matrix_index") is not None)
             ])
-            compare_all_specs_act = overlays_menu.addAction(
+            compare_all_specs_act = analysis_menu.addAction(
                 f"Compare All Spectra on This Image ({compare_all_count})..."
             )
             compare_all_specs_act.setEnabled(compare_all_count >= 2)
-
-        analysis_menu = menu.addMenu("Analysis")
+            analysis_menu.addSeparator()
         # Filters (provided by parent viewer)
         if callable(self._filter_menu_callback):
             try:
