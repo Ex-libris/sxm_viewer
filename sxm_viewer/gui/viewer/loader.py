@@ -1467,6 +1467,49 @@ def _parse_spectro_file_payload(filepath: Path, mtime: float):
     return spec_list, parse_error
 
 
+def _reconcile_spectro_path(viewer, filepath):
+    """Recover a spectrum whose recorded absolute path no longer exists.
+
+    Data copied between machines/locations (e.g. an old ``C:\\DATA\\...``
+    path after the folder was moved under the user profile) leaves specs
+    pointing at dead absolute paths, so hydration reads nothing -> the
+    Spectrum popup shows "No channels". Fall back to the same *filename*
+    inside a folder we currently know about (the loaded spec folder, the
+    last opened dir, or the parent of any already-resolved spectrum).
+    Returns a real ``Path`` or ``None``. This keeps spectroscopy openable
+    across moves without wiping the disk cache each time.
+    """
+    try:
+        name = filepath.name
+    except Exception:
+        name = ""
+    if not name:
+        return None
+    candidates = []
+    for attr in ("spec_folder_path", "last_dir"):
+        folder = getattr(viewer, attr, None)
+        if folder:
+            candidates.append(folder)
+    for spec in (getattr(viewer, "spectros", None) or []):
+        p = spec.get("path") if isinstance(spec, dict) else None
+        if p:
+            candidates.append(Path(p).parent)
+    seen = set()
+    for folder in candidates:
+        try:
+            folder = Path(folder)
+            key = str(folder).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cand = folder / name
+            if cand.exists():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
 def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_stage: bool = False):
     if not spec_or_path:
         return None
@@ -1476,6 +1519,18 @@ def hydrate_spectro_file(viewer, spec_or_path, *, log_perf: bool = True, return_
         return None
     if not filepath:
         return None
+    # Self-heal stale absolute paths from a moved/synced data folder before
+    # anything keys off them (norm_key, caches, parse). Only pays the cost
+    # when the recorded file is actually missing.
+    try:
+        if not filepath.exists():
+            reconciled = _reconcile_spectro_path(viewer, filepath)
+            if reconciled is not None:
+                filepath = reconciled
+                if isinstance(spec_or_path, dict):
+                    spec_or_path["path"] = str(filepath)
+    except Exception:
+        pass
     norm_key = _normalize_spectro_path_key(filepath)
     try:
         st = filepath.stat()
