@@ -9058,11 +9058,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 block(False)
         self._show_position_inset = checked
         self._update_position_inset_compare()
-    def _gather_plotted_traces(self):
+    def _gather_plotted_traces(self, for_export=False):
         traces = []
         channel = self.channel_combo.currentText()
-        relative_nm = self.relative_cb.isChecked()
-        waterfall = self.waterfall_cb.isChecked()
+        # "Relative Z (zero at min)" (a single global offset) and waterfall
+        # stacking are *display* transforms only. A data export must carry the
+        # true measured axis and un-offset Y, so exports gather with these
+        # disabled; background subtraction and data filters are analysis
+        # choices the user configured, so those are kept in both paths.
+        relative_nm = self.relative_cb.isChecked() and not for_export
+        waterfall = self.waterfall_cb.isChecked() and not for_export
         offset_val = self.offset_spin.value()
         rel_zero = 0.0
         if relative_nm:
@@ -9125,7 +9130,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return traces
 
     def _copy_all_traces_to_clipboard(self):
-        traces = self._gather_plotted_traces()
+        # Export true measured data, not the display view: absolute Z axis
+        # (no arbitrary global "zero at min" shift) and un-offset Y (no
+        # waterfall stacking). See _gather_plotted_traces(for_export=...).
+        traces = self._gather_plotted_traces(for_export=True)
         if not traces:
             QtWidgets.QMessageBox.information(self, "Copy spectra", "No spectra to copy.")
             return
