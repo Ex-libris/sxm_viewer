@@ -349,6 +349,16 @@ dialog to open:
   `_build_spectro_sites`, `_annotate_xy_stacks`) that groups spectra into
   "sites"/"stacks" before `SpectroCompareController` opens a popup for them.
 - `gui/spectroscopy/overlays.py` — marker/badge drawing (see Overlays above).
+- **"Compare All Spectra on This Image (N)…"** —
+  `SpectroCompareController.open_all_specs_popup(file_key)` gathers every
+  non-matrix point spectrum assigned to one image (`all_specs_for_image`;
+  matrix/grid points are excluded — they belong in the Grid Map Explorer) and
+  opens them together in a `SpectroscopyCompareDialog`. It opens a comparison
+  *window*, so it lives under the preview canvas' right-click **Analysis**
+  submenu (wired via `MultiPreviewCanvas.set_spectra_compare_all_callback`),
+  **not** the Overlays paint-toggle group, and is mirrored onto the thumbnail
+  right-click menu (`_on_thumb_context_menu`) so it's reachable from the grid
+  without opening the image. Shown only when the image has ≥2 point spectra.
 
 ### Spectroscopy position mapping (rotation/frame gotchas)
 This bug class ate an entire session before being nailed down, across three
