@@ -600,6 +600,24 @@ data; and any change to conversion-time data-orientation semantics MUST
 bump `NANONIS_CACHE_VERSION`, or the fix silently applies only to
 never-before-converted files while every existing cache keeps the bug.
 
+### Spectroscopy stale-path reconciliation (`hydrate_spectro_file`)
+Specs persist **absolute** file paths, so data copied between machines or
+locations (an old `C:\DATA\...` path after the folder moved under the user
+profile; or an OneDrive-synced `.sxmviewer_spectro_cache` whose `meta.json`
+recorded a relative `../DATA/...` path plus an empty `spec_count:0` result)
+leaves specs pointing at dead files. Hydration then reads nothing and the
+Spectrum popup shows "No channels" while Grid-map points go missing — and
+the poisoned cache keeps serving the empty result until it's cleared.
+`_reconcile_spectro_path` (`gui/viewer/loader.py`) guards against this: when
+a spec's recorded path is absent, `hydrate_spectro_file` falls back to the
+same *filename* inside a folder we currently know about (the loaded spec
+folder, `last_dir`, or the parent of any already-resolved spectrum) and
+rewrites the spec's `path` to the real location, so the disk cache heals on
+the next store. The lookup only runs when the recorded file is actually
+missing, so normal loads pay nothing. (The `.dat` parser itself always
+records the true on-disk path — the stale paths come from persisted
+caches/manifests, not the parse.)
+
 ### Spectroscopy browser (`gui/spectroscopy/browser.py`)
 Follows the same module-function convention as `gui/viewer/*.py` (plain
 functions taking `viewer` first, shimmed onto `SXMGridViewer` as one-liners)
