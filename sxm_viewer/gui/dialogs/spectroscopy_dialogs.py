@@ -5393,7 +5393,9 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
             if xs is None or ys is None:
                 continue
             try:
-                grid[rc[0], rc[1]] = np.trapz(ys, xs)
+                # np.trapz removed in NumPy 2.0 -> np.trapezoid
+                _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+                grid[rc[0], rc[1]] = _trapz(ys, xs)
             except Exception:
                 continue
         return grid
@@ -7351,7 +7353,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.fit_vs_z_btn.clicked.connect(self._show_fit_vs_z_dialog)
         self.bg_set_btn.clicked.connect(self._on_set_background)
         self.bg_clear_btn.clicked.connect(self._on_clear_background)
-        self.force_btn.clicked.connect(self._on_convert_force)
+        self.force_btn.setCheckable(True)
+        self.force_btn.toggled.connect(self._on_toggle_force)
+        # Force conversion adds a channel to the (shared) spec dicts while
+        # active; make sure it's removed if the window is closed while on.
+        self.finished.connect(lambda *_: self._cleanup_force_on_close())
         self.copy_btn.clicked.connect(self._copy_selected_to_clipboard)
         self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
         self.clear_sel_btn.clicked.connect(self._clear_selected)
@@ -7737,8 +7743,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             scale = 1e-9
         elif unit in ("pm",):
             scale = 1e-12
-        elif unit in ("um",):
+        elif unit in ("um", "µm", "μm"):
             scale = 1e-6
+        elif unit in ("å", "ang", "angstrom", "angstroms"):
+            scale = 1e-10
         if scale is None:
             return None, None
         axis_m = np.asarray(axis_vals, dtype=float) * scale
@@ -7750,6 +7758,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         """Sader-Jarvis style force reconstruction (numeric trapz)."""
         if f0 <= 0 or k <= 0 or amp_m <= 0:
             return None
+        # np.trapz was removed in NumPy 2.0 in favour of np.trapezoid; support both.
+        trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
         z = np.asarray(z_m, dtype=float)
         df = np.asarray(df_hz, dtype=float)
         if z.size < 2 or df.size != z.size:
@@ -7764,15 +7774,18 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if u.size == 0:
                 continue
             integrand = (df_sorted[i + 1 :] / f0) * np.sin(u / amp_m)
-            F_sorted[i] = 2.0 * k * amp_m * np.trapz(integrand, u)
+            F_sorted[i] = 2.0 * k * amp_m * trapz(integrand, u)
         if n > 1:
             F_sorted[-1] = F_sorted[-2]
         F = np.empty_like(F_sorted)
         F[order] = F_sorted
         return F
 
-    def _on_convert_force(self):
-        # Prompt for parameters
+    _FORCE_LABEL = "Force (N)"
+
+    def _prompt_force_params(self):
+        """Modal entry for the Sader-Jarvis parameters; returns a params dict
+        (f0/k/A/Q/method) or None if cancelled/invalid."""
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Convert to force")
         form = QtWidgets.QFormLayout(dlg)
@@ -7786,25 +7799,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         form.addRow("Amplitude A (m)", a_edit)
         form.addRow("Q", q_edit)
         form.addRow("Method", method_combo)
-        # load persisted params if available
         cfg = load_config()
         last_force = cfg.get("force_params", {})
-        try:
-            f0_edit.setValue(float(last_force.get("f0", f0_edit.value())))
-        except Exception:
-            pass
-        try:
-            k_edit.setValue(float(last_force.get("k", k_edit.value())))
-        except Exception:
-            pass
-        try:
-            a_edit.setValue(float(last_force.get("A", a_edit.value())))
-        except Exception:
-            pass
-        try:
-            q_edit.setValue(float(last_force.get("Q", q_edit.value())))
-        except Exception:
-            pass
+        for edit, pkey in ((f0_edit, "f0"), (k_edit, "k"), (a_edit, "A"), (q_edit, "Q")):
+            try:
+                edit.setValue(float(last_force.get(pkey, edit.value())))
+            except Exception:
+                pass
         mth = str(last_force.get("method") or "")
         if mth in [method_combo.itemText(i) for i in range(method_combo.count())]:
             method_combo.setCurrentText(mth)
@@ -7818,76 +7819,158 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         form.addRow(btns)
         btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        def _params():
+            return {"f0": f0_edit.value(), "k": k_edit.value(), "A": a_edit.value(),
+                    "Q": q_edit.value(), "method": method_combo.currentText()}
         def _remember():
-            params = {
-                "f0": f0_edit.value(),
-                "k": k_edit.value(),
-                "A": a_edit.value(),
-                "Q": q_edit.value(),
-                "method": method_combo.currentText(),
-            }
-            cfg = load_config()
-            cfg["force_params"] = params
-            save_config(cfg)
+            c = load_config(); c["force_params"] = _params(); save_config(c)
         def _clear():
-            cfg = load_config()
-            if "force_params" in cfg:
-                cfg.pop("force_params", None)
-                save_config(cfg)
+            c = load_config()
+            if "force_params" in c:
+                c.pop("force_params", None); save_config(c)
         remember_btn.clicked.connect(_remember)
         clear_btn.clicked.connect(_clear)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
-            return
-        f0 = f0_edit.value(); k = k_edit.value(); A = a_edit.value(); Q = q_edit.value(); method = method_combo.currentText()
-        if f0 <= 0 or k <= 0 or A <= 0:
+            return None
+        params = _params()
+        if params["f0"] <= 0 or params["k"] <= 0 or params["A"] <= 0:
             QtWidgets.QMessageBox.information(self, "Force conversion", "Enter positive values for f0, k, and A.")
+            return None
+        return params
+
+    def _force_source_channel(self):
+        """A non-force channel to reconstruct force from (the current one, or
+        the first available)."""
+        cur = self.channel_combo.currentText()
+        if cur and cur != self._FORCE_LABEL:
+            return cur
+        for i in range(self.channel_combo.count()):
+            name = self.channel_combo.itemText(i)
+            if name and name != self._FORCE_LABEL:
+                return name
+        return ""
+
+    def _on_toggle_force(self, checked):
+        # Reversible parallel channel: on -> add "Force (N)" alongside the raw
+        # channels; off -> remove it. Raw data is never overwritten.
+        if getattr(self, "_force_toggle_guard", False):
             return
-        items = self._selected_items() or self._checked_items()
-        if not items:
-            QtWidgets.QMessageBox.information(self, "Force conversion", "Select spectra to convert.")
-            return
-        new_specs = []
-        failed = 0
-        channel = self.channel_combo.currentText()
-        for item in items:
+        if checked:
+            if not self._activate_force():
+                self._force_toggle_guard = True
+                self.force_btn.setChecked(False)
+                self._force_toggle_guard = False
+        else:
+            self._deactivate_force()
+        self._update_force_button_label()
+
+    def _update_force_button_label(self):
+        on = self.force_btn.isChecked()
+        self.force_btn.setText("Force channel: on" if on else "Convert to force")
+        self.force_btn.setToolTip(
+            "A reconstructed 'Force (N)' channel is available in the channel list; "
+            "raw data is kept. Toggle off to remove it."
+            if on else
+            "Add a Sader-Jarvis force channel alongside the raw data (reversible - "
+            "toggle off to remove). Needs a Z/distance axis and a frequency-shift channel.")
+
+    def _activate_force(self):
+        params = self._prompt_force_params()
+        if params is None:
+            return False
+        source = self._force_source_channel()
+        if not source:
+            QtWidgets.QMessageBox.information(self, "Force conversion", "No source channel to convert.")
+            return False
+        f0, k, A = params["f0"], params["k"], params["A"]
+        label = self._FORCE_LABEL
+        modified_items = []
+        bad_unit = 0
+        # PyQt returns a *copy* of the spec stored on each list item, so add the
+        # force channel to that copy and write it back with setData; the plot/
+        # gather/copy read the item data, and the shared viewer spec dicts are
+        # never mutated.
+        root = self.spec_list.invisibleRootItem()
+        self.spec_list.blockSignals(True)
+        for i in range(root.childCount()):
+            item = root.child(i)
             spec = item.data(0, QtCore.Qt.UserRole)
             if not spec:
                 continue
-            axis_vals, axis_label, axis_unit = self._axis_for_spec(spec)
-            axis_m, axis_nm = self._axis_to_meters(axis_vals, axis_unit)
-            if axis_m is None or axis_nm is None:
-                failed += 1
-                continue
             channels = spec.get("channels") or {}
-            if channel not in channels:
-                failed += 1
+            if source not in channels:
                 continue
-            y_vals = np.asarray(channels.get(channel), dtype=float)
-            bg = self._background_for(spec)
-            y_vals = self._subtract_background(axis_vals, y_vals, bg)
+            # The conversion depends on the z-axis *displacement* unit, so the
+            # axis is taken in metres from its own unit (m/nm/pm/um/A).
+            axis_vals, _axis_label, axis_unit = self._axis_for_spec(spec)
+            axis_m, _axis_nm = self._axis_to_meters(axis_vals, axis_unit)
+            if axis_m is None:
+                bad_unit += 1
+                continue
+            y_vals = np.asarray(channels.get(source), dtype=float)
+            y_vals = self._subtract_background(axis_vals, y_vals, self._background_for(spec))
             force_curve = self._force_from_freq_shift(axis_m, y_vals, f0=f0, k=k, amp_m=A)
             if force_curve is None:
-                failed += 1
                 continue
-            force_label = f"Force_{channel}"
-            new_spec = dict(spec)
-            new_spec["channels"] = {force_label: force_curve}
-            new_spec["unit_map"] = {force_label: "N"}
-            new_spec["AxisLabel"] = "Z"
-            new_spec["AxisUnit"] = "nm"
-            new_spec["V"] = axis_nm
-            new_spec["AxisChoices"] = [{"key": "primary", "label": "Z", "unit": "nm", "values": axis_nm}]
-            new_spec["ForceMethod"] = method
-            new_spec["ForceParams"] = {"f0": f0, "A": A, "Q": Q, "k": k}
-            new_specs.append(new_spec)
-        if not new_specs:
-            QtWidgets.QMessageBox.information(self, "Force conversion", "Could not convert the selected spectra (check that the axis is Z/distance and parameters are valid).")
-            return
-        # Open a twin dialog with converted data
-        twin = SpectroscopyCompareDialog(new_specs, parent=self.parent(), palette_name=self._palette_name)
-        twin.setWindowTitle("Compare spectra (force-converted)")
-        twin.show()
-        self._popup_refs.append(twin)
+            channels[label] = force_curve
+            spec["channels"] = channels
+            unit_map = spec.get("unit_map") or {}
+            unit_map[label] = "N"
+            spec["unit_map"] = unit_map
+            spec["ForceMethod"] = params["method"]
+            spec["ForceParams"] = {"f0": f0, "A": A, "Q": params["Q"], "k": k, "source": source}
+            item.setData(0, QtCore.Qt.UserRole, spec)
+            modified_items.append(item)
+        self.spec_list.blockSignals(False)
+        if not modified_items:
+            msg = ("Could not convert: the Z axis must be a distance (m/nm/pm/µm/Å). "
+                   "Select a Z/distance axis (not bias) and a frequency-shift channel."
+                   if bad_unit else
+                   "Could not convert the selected channel to force. Check the parameters "
+                   "and that the channel is a frequency shift (Δf).")
+            QtWidgets.QMessageBox.information(self, "Force conversion", msg)
+            return False
+        self._force_source = source
+        self._force_modified_items = modified_items
+        # Expose the parallel channel and select it, without a full repopulate
+        # (which would reset the channel to 'df').
+        if self.channel_combo.findText(label) < 0:
+            self.channel_combo.addItem(label)
+        self.channel_combo.setCurrentText(label)
+        self._update_plot()
+        return True
+
+    def _remove_force_from_items(self):
+        label = self._FORCE_LABEL
+        self.spec_list.blockSignals(True)
+        for item in getattr(self, "_force_modified_items", []) or []:
+            try:
+                spec = item.data(0, QtCore.Qt.UserRole)
+                if not spec:
+                    continue
+                (spec.get("channels") or {}).pop(label, None)
+                (spec.get("unit_map") or {}).pop(label, None)
+                item.setData(0, QtCore.Qt.UserRole, spec)
+            except Exception:
+                continue
+        self.spec_list.blockSignals(False)
+        self._force_modified_items = []
+
+    def _deactivate_force(self):
+        label = self._FORCE_LABEL
+        self._remove_force_from_items()
+        source = getattr(self, "_force_source", None)
+        if source and self.channel_combo.findText(source) >= 0:
+            self.channel_combo.setCurrentText(source)
+        idx = self.channel_combo.findText(label)
+        if idx >= 0:
+            self.channel_combo.removeItem(idx)
+        self._update_plot()
+
+    def _cleanup_force_on_close(self):
+        """Drop the force channel from the list items if the window is closed
+        while the toggle is still on (original specs are never touched)."""
+        self._remove_force_from_items()
 
     def _channel_unit_for_spec(self, spec, channel_label):
         unit_map = spec.get('unit_map') or {}
