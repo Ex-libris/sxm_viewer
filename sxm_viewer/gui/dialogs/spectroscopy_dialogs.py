@@ -7754,32 +7754,81 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return axis_m, axis_nm
 
     @staticmethod
-    def _force_from_freq_shift(z_m: np.ndarray, df_hz: np.ndarray, f0: float, k: float, amp_m: float) -> Optional[np.ndarray]:
-        """Sader-Jarvis style force reconstruction (numeric trapz)."""
-        if f0 <= 0 or k <= 0 or amp_m <= 0:
-            return None
-        # np.trapz was removed in NumPy 2.0 in favour of np.trapezoid; support both.
+    def _force_sader_jarvis(z_m, df_hz, f0, k, amp_m):
+        """Sader-Jarvis force inversion (Sader & Jarvis, APL 84, 1801 (2004)).
+
+        z in metres, df in Hz, amp_m in metres, k in N/m, f0 in Hz -> force in
+        newtons. Stable analytic form (recommended); a few-percent to ~10%
+        approximation vs the exact matrix inverse at finite amplitude."""
         trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
         z = np.asarray(z_m, dtype=float)
         df = np.asarray(df_hz, dtype=float)
-        if z.size < 2 or df.size != z.size:
+        if z.size < 3 or df.size != z.size:
             return None
         order = np.argsort(z)
-        z_sorted = z[order]
-        df_sorted = df[order]
-        F_sorted = np.zeros_like(df_sorted)
-        n = len(z_sorted)
-        for i in range(n - 1):
-            u = z_sorted[i + 1 :] - z_sorted[i]
-            if u.size == 0:
-                continue
-            integrand = (df_sorted[i + 1 :] / f0) * np.sin(u / amp_m)
-            F_sorted[i] = 2.0 * k * amp_m * trapz(integrand, u)
+        t = z[order]
+        Omega = df[order] / f0
+        dOmega = np.gradient(Omega, t)
+        A = float(amp_m)
+        n = len(t)
+        F = np.zeros(n)
+        for j in range(n - 1):
+            tt = t[j + 1:]
+            dt = tt - t[j]
+            integrand = (1.0 + np.sqrt(A) / (8.0 * np.sqrt(np.pi * dt))) * Omega[j + 1:] \
+                - (A ** 1.5) / np.sqrt(2.0 * dt) * dOmega[j + 1:]
+            F[j] = 2.0 * k * trapz(integrand, tt)
         if n > 1:
-            F_sorted[-1] = F_sorted[-2]
-        F = np.empty_like(F_sorted)
-        F[order] = F_sorted
-        return F
+            F[-1] = F[-2]
+        out = np.empty_like(F)
+        out[order] = F
+        return out
+
+    @staticmethod
+    def _force_matrix(z_m, df_hz, f0, k, amp_m):
+        """Giessibl matrix-method force inversion.
+
+        Deconvolves the semicircle amplitude-weighted force gradient
+        (df = (f0/2k)<k_ts>). Exact on clean data, but being a deconvolution it
+        amplifies noise, so Sader-Jarvis is preferred for noisy curves."""
+        trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+        z = np.asarray(z_m, dtype=float)
+        df = np.asarray(df_hz, dtype=float)
+        if z.size < 3 or df.size != z.size:
+            return None
+        order = np.argsort(z)
+        zt = z[order]
+        dft = df[order]
+        A = float(amp_m)
+        n = len(zt)
+        # Normalised semicircle averaging matrix over [z_i, z_i + 2A].
+        M = np.zeros((n, n))
+        for i in range(n):
+            u = zt - (zt[i] + A)
+            w = np.where(np.abs(u) <= A, np.sqrt(np.maximum(A * A - u * u, 0.0)), 0.0)
+            s = w.sum()
+            if s > 0:
+                M[i] = w / s
+        try:
+            kts = (2.0 * k / f0) * np.linalg.lstsq(M, dft, rcond=None)[0]
+        except Exception:
+            return None
+        F = np.array([trapz(kts[i:], zt[i:]) for i in range(n)])
+        out = np.empty_like(F)
+        out[order] = F
+        return out
+
+    @staticmethod
+    def _force_from_freq_shift(z_m, df_hz, f0, k, amp_m, method="Sader-Jarvis"):
+        """Dispatch to the selected force-inversion method; never raises."""
+        if f0 <= 0 or k <= 0 or amp_m <= 0:
+            return None
+        try:
+            if str(method).lower().startswith("matrix"):
+                return SpectroscopyCompareDialog._force_matrix(z_m, df_hz, f0, k, amp_m)
+            return SpectroscopyCompareDialog._force_sader_jarvis(z_m, df_hz, f0, k, amp_m)
+        except Exception:
+            return None
 
     _FORCE_LABEL = "Force (N)"
 
@@ -7791,17 +7840,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(dlg)
         f0_edit = QtWidgets.QDoubleSpinBox(); f0_edit.setRange(0, 1e9); f0_edit.setDecimals(3); f0_edit.setValue(0.0)
         k_edit = QtWidgets.QDoubleSpinBox(); k_edit.setRange(0, 1e6); k_edit.setDecimals(3); k_edit.setValue(0.0)
-        a_edit = QtWidgets.QDoubleSpinBox(); a_edit.setRange(0, 1e-3); a_edit.setDecimals(11); a_edit.setSingleStep(1e-11); a_edit.setValue(50e-12)
+        a_edit = QtWidgets.QDoubleSpinBox(); a_edit.setRange(0.0, 100000.0); a_edit.setDecimals(2); a_edit.setSingleStep(1.0); a_edit.setSuffix(" pm"); a_edit.setValue(50.0)
         q_edit = QtWidgets.QDoubleSpinBox(); q_edit.setRange(0, 1e6); q_edit.setDecimals(2); q_edit.setValue(0.0)
-        method_combo = QtWidgets.QComboBox(); method_combo.addItems(["saderF", "matrixF"])
+        method_combo = QtWidgets.QComboBox(); method_combo.addItems(["Sader-Jarvis", "Matrix (Giessibl)"])
         form.addRow("f0 (Hz)", f0_edit)
         form.addRow("Spring constant k (N/m)", k_edit)
-        form.addRow("Amplitude A (m)", a_edit)
+        form.addRow("Amplitude A (pm)", a_edit)
         form.addRow("Q", q_edit)
         form.addRow("Method", method_combo)
         cfg = load_config()
         last_force = cfg.get("force_params", {})
-        for edit, pkey in ((f0_edit, "f0"), (k_edit, "k"), (a_edit, "A"), (q_edit, "Q")):
+        for edit, pkey in ((f0_edit, "f0"), (k_edit, "k"), (a_edit, "A_pm"), (q_edit, "Q")):
             try:
                 edit.setValue(float(last_force.get(pkey, edit.value())))
             except Exception:
@@ -7820,7 +7869,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         form.addRow(btns)
         btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
         def _params():
-            return {"f0": f0_edit.value(), "k": k_edit.value(), "A": a_edit.value(),
+            a_pm = a_edit.value()
+            return {"f0": f0_edit.value(), "k": k_edit.value(),
+                    "A_pm": a_pm, "A": a_pm * 1e-12,  # A in metres for the SI calc
                     "Q": q_edit.value(), "method": method_combo.currentText()}
         def _remember():
             c = load_config(); c["force_params"] = _params(); save_config(c)
@@ -7909,7 +7960,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 continue
             y_vals = np.asarray(channels.get(source), dtype=float)
             y_vals = self._subtract_background(axis_vals, y_vals, self._background_for(spec))
-            force_curve = self._force_from_freq_shift(axis_m, y_vals, f0=f0, k=k, amp_m=A)
+            force_curve = self._force_from_freq_shift(axis_m, y_vals, f0=f0, k=k, amp_m=A,
+                                                      method=params.get("method"))
             if force_curve is None:
                 continue
             channels[label] = force_curve
