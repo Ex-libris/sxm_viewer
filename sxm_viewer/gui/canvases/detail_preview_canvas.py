@@ -7217,8 +7217,8 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
             return
-        # Allow outlining via Alt+left click OR middle click as a fallback shortcut
-        want_outline = ((event.button == 1 and alt_pressed) or event.button == 2) and not want_rect and not want_square
+        # Outlining is Alt+left-click only (middle click is reserved for panning)
+        want_outline = (event.button == 1 and alt_pressed) and not want_rect and not want_square
         if want_outline and view is not None:
             # Alt+click: outline dominant blob around clicked point (no drag needed)
             if event.xdata is not None and event.ydata is not None:
