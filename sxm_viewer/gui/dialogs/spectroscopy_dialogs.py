@@ -61,6 +61,7 @@ from ..figure_layout_presets import (
     save_figure_with_dialog,
 )
 from ..mpl_compat import InsetPosition
+from . import potential_fits
 try:
     from scipy import signal as _scipy_signal
 except Exception:  # pragma: no cover
@@ -6006,15 +6007,97 @@ class MatrixSpectroViewer(QtWidgets.QDialog):
         val = arr[row, col]
         return float(val) if np.isfinite(val) else None
 
+def _lj_force_model(z, eps, sigma, off):
+    """Lennard-Jones force shape F(z) = 24*eps*(2*sigma^12/z^13 - sigma^6/z^7)
+    + off. z<=0 -> nan (the potential diverges at contact)."""
+    zz = np.where(np.asarray(z, dtype=float) > 0, z, np.nan)
+    r6 = (sigma / zz) ** 6
+    return 24.0 * eps * (2.0 * r6 * r6 - r6) / zz + off
+
+
+def _morse_force_model(z, De, a, ze, off):
+    """Morse force shape F(z) = 2*De*a*(e^{-2a(z-ze)} - e^{-a(z-ze)}) + off."""
+    e = np.exp(-a * (np.asarray(z, dtype=float) - ze))
+    return 2.0 * De * a * (e * e - e) + off
+
+
+def _fit_guess(z, y):
+    z = np.asarray(z, dtype=float)
+    y = np.asarray(y, dtype=float)
+    m = np.isfinite(z) & np.isfinite(y)
+    z, y = z[m], y[m]
+    order = np.argsort(z)
+    z, y = z[order], y[order]
+    if z.size < 4:
+        return z, y, 1e-3, 0.0, 1.0, 1e-3
+    imin = int(np.argmin(y))
+    zmin = max(float(z[imin]), 1e-3)
+    tail = max(3, len(y) // 10)
+    off = float(np.median(y[-tail:]))
+    amp = abs(float(y[imin]) - off) + 1e-30
+    span = max(float(z.max() - z.min()), 1e-3)
+    return z, y, zmin, off, amp, span
+
+
+def _fit_shape(z, y, model_fn, p0, bounds, model_name, param_names):
+    """Bounded least-squares fit of model_fn to (z, y); returns a result dict
+    matching the parabola fit's shape (func/rmse/params). Never evaluates the
+    model at z<=0 (LJ/Morse explode there); the data z-range is used as-is."""
+    from scipy.optimize import curve_fit
+    z = np.asarray(z, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(z) & np.isfinite(y)
+    zz, yy = z[mask], y[mask]
+    if zz.size < len(p0) + 1:
+        raise ValueError("not enough finite points to fit")
+    popt, pcov = curve_fit(model_fn, zz, yy, p0=p0, bounds=bounds, maxfev=30000)
+    resid = yy - model_fn(zz, *popt)
+    rmse = float(np.sqrt(np.mean(resid ** 2)))
+    try:
+        perr = np.sqrt(np.diag(pcov))
+    except Exception:
+        perr = np.full(len(popt), np.nan)
+    popt_arr = np.asarray(popt, dtype=float)
+
+    def func(zv, _p=popt_arr):
+        return model_fn(np.asarray(zv, dtype=float), *_p)
+
+    return {
+        "func": func, "rmse": rmse, "model": model_name,
+        "params": dict(zip(param_names, [float(v) for v in popt_arr])),
+        "param_errors": dict(zip(param_names, [float(v) for v in perr])),
+    }
+
+
+def fit_lj_force(z, y):
+    """Fit the Lennard-Jones force shape to a curve (empirical fit to df)."""
+    z, y, zmin, off, amp, _span = _fit_guess(z, y)
+    sigma0 = max(zmin / 1.2447, 1e-3)  # LJ force minimum sits at ~1.2447*sigma
+    return _fit_shape(z, y, _lj_force_model, [amp, sigma0, off],
+                      ([0.0, 1e-4, -np.inf], [np.inf, 1e4, np.inf]),
+                      "Lennard-Jones", ("epsilon", "sigma", "offset"))
+
+
+def fit_morse_force(z, y):
+    """Fit the Morse force shape to a curve (empirical fit to df)."""
+    z, y, zmin, off, amp, span = _fit_guess(z, y)
+    a0 = 5.0 / span
+    ze0 = zmin - np.log(2.0) / a0
+    return _fit_shape(z, y, _morse_force_model, [amp, a0, ze0, off],
+                      ([0.0, 1e-3, -np.inf, -np.inf], [np.inf, np.inf, np.inf, np.inf]),
+                      "Morse", ("De", "a", "ze", "offset"))
+
+
 class _SpectroFitWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(list, list)
     progress = QtCore.pyqtSignal(int, str)
 
-    def __init__(self, specs, channel, axis_key, filter_cfg=None):
+    def __init__(self, specs, channel, axis_key, filter_cfg=None, model="parabola"):
         super().__init__()
         self.specs = list(specs)
         self.channel = channel
         self.axis_key = axis_key or "primary"
+        self.model = model or "parabola"  # "parabola" | "lj" | "morse"
         # Plain dict copy, not a reference to the dialog's live _filter_cfg -
         # this worker runs on its own QThread, so it must not touch a Qt
         # widget's state directly.
@@ -6059,24 +6142,34 @@ class _SpectroFitWorker(QtCore.QObject):
             # section is disabled, which is the default filter_cfg state.
             data, _ = _apply_signal_filter_chain(V, data, "", axis_unit, self.filter_cfg)
             try:
-                res = fit_parabola_bias(V, data)
+                if self.model == "lj":
+                    res = fit_lj_force(V, data)
+                elif self.model == "morse":
+                    res = fit_morse_force(V, data)
+                else:
+                    res = fit_parabola_bias(V, data)
                 res['spec'] = spec
                 res['axis_key'] = self.axis_key
                 res['axis_label'] = axis_label
                 res['axis_unit'] = axis_unit
-                a = res.get('a'); b = res.get('b')
-                v0 = None; v0_err = None
-                if a is not None and b is not None and np.isfinite(a) and np.isfinite(b) and a != 0:
-                    v0 = -b / (2.0 * a)
-                    da = res.get('a_err', 0.0)
-                    db = res.get('b_err', 0.0)
-                    term1 = (db / (2.0 * a)) ** 2 if a != 0 else 0.0
-                    term2 = ((b * da) / (2.0 * (a ** 2))) ** 2 if a != 0 else 0.0
-                    v0_err = math.sqrt(max(term1 + term2, 0.0))
-                res['v0'] = v0
-                res['v0_err'] = v0_err
+                if self.model in ("lj", "morse"):
+                    # LJ/Morse have no CPD-style vertex; skip the v0 marker.
+                    res['v0'] = None
+                    res['v0_err'] = None
+                else:
+                    a = res.get('a'); b = res.get('b')
+                    v0 = None; v0_err = None
+                    if a is not None and b is not None and np.isfinite(a) and np.isfinite(b) and a != 0:
+                        v0 = -b / (2.0 * a)
+                        da = res.get('a_err', 0.0)
+                        db = res.get('b_err', 0.0)
+                        term1 = (db / (2.0 * a)) ** 2 if a != 0 else 0.0
+                        term2 = ((b * da) / (2.0 * (a ** 2))) ** 2 if a != 0 else 0.0
+                        v0_err = math.sqrt(max(term1 + term2, 0.0))
+                    res['v0'] = v0
+                    res['v0_err'] = v0_err
                 results.append(res)
-                logs.append(f"{name}: fit ok (RMSE {res['rmse']:.3g})")
+                logs.append(f"{name}: {res.get('model', 'parabola')} fit ok (RMSE {res['rmse']:.3g})")
             except Exception as e:
                 logs.append(f"{name}: {e}")
         self.progress.emit(100, "Fit complete")
@@ -6256,6 +6349,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._fit_thread = None
         self._fit_worker = None
         self._fit_trend_dialog = None
+        # Analytic potential-fit (Lennard-Jones / Morse) overlay state.
+        self._potential_fit_cache = {}   # signature -> fit result (or None if it failed)
+        self._potential_fit_overlay = False
+        self._potential_model = potential_fits.MODELS[0]
+        # Optional [zmin, zmax] window (display units) the fit is restricted to;
+        # None means "use the whole displayed curve".
+        self._potential_fit_range = None
+        # Set to force the next _update_plot through the full (clearing) redraw
+        # path instead of the incremental one - needed when removing overlays.
+        self._force_full_replot = False
         self._popup_refs = []
         self._compare_inset_image_cache = OrderedDict()
         self._curve_data_cache = OrderedDict()
@@ -6452,6 +6555,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _clear_curve_data_cache(self):
         self._curve_data_cache.clear()
+        if hasattr(self, "_potential_fit_cache"):
+            self._potential_fit_cache.clear()
 
     def _decimate_curve_for_display(self, x_vals, y_vals, plotted_count=1):
         try:
@@ -6584,10 +6689,43 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 pass
             self._legend_map[leg_line] = spec_id
 
+    def _relative_zero_shift(self):
+        """The x-offset applied to nm axes when 'Relative Z' is on: the smallest
+        min-Z across the selected/checked spectra (0.0 when the mode is off or no
+        nm axis is present). Display x = axis_vals - this shift."""
+        if not self._relative_zero_enabled:
+            return 0.0
+        mins = []
+        for item in self._selected_items() or self._checked_items():
+            spec = item.data(0, QtCore.Qt.UserRole)
+            if not spec:
+                continue
+            axis_vals, _, unit = self._axis_for_spec(spec)
+            if axis_vals.size and unit == "nm":
+                mins.append(np.nanmin(axis_vals))
+        return float(min(mins)) if mins else 0.0
+
+    def _display_x_for_spec(self, spec, axis_vals=None, axis_unit=None, rel_zero=None):
+        """axis_vals shifted into the same display coordinates the plot uses, so
+        the fit-range window (read off the visible x-axis) means the same thing
+        here as on screen - the key to making the window relative-Z-aware."""
+        if axis_vals is None or axis_unit is None:
+            axis_vals, _lbl, axis_unit = self._axis_for_spec(spec)
+        axis_vals = np.asarray(axis_vals, dtype=float)
+        if rel_zero is None:
+            rel_zero = self._relative_zero_shift()
+        if self._relative_zero_enabled and (axis_unit or "").lower() == "nm":
+            return axis_vals - rel_zero
+        return axis_vals
+
     def _can_incremental_plot_update(self):
+        if getattr(self, "_force_full_replot", False):
+            return False
         if not self._line_map:
             return False
         if getattr(self, "_fit_results", None):
+            return False
+        if getattr(self, "_potential_fit_overlay", False):
             return False
         if getattr(self, "_minima_meta", None):
             return False
@@ -6613,18 +6751,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         filter_sig = self._filter_signature()
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         visible_count = max(1, len(plot_items))
-        rel_zero = 0.0
-        if relative_nm:
-            mins = []
-            for item in self._selected_items() or self._checked_items():
-                spec = item.data(0, QtCore.Qt.UserRole)
-                if not spec:
-                    continue
-                axis_vals, _, unit = self._axis_for_spec(spec)
-                if axis_vals.size and unit == "nm":
-                    mins.append(np.nanmin(axis_vals))
-            if mins:
-                rel_zero = min(mins)
+        rel_zero = self._relative_zero_shift()
         y_units_after_filters = []
         plotted = 0
         plotted_spec_ids = []
@@ -7030,6 +7157,27 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.filter_edit.textChanged.connect(self._apply_filter)
         self.filter_edit.setAccessibleName("Spectrum filter")
         self.filter_edit.setAccessibleDescription("Enter text to filter the list of spectra")
+
+        # Bulk check controls - tick/untick many spectra at once instead of one
+        # box at a time. They act on the currently *visible* (filtered) rows, so
+        # they compose with the filter box above.
+        select_row = QtWidgets.QHBoxLayout()
+        select_row.setContentsMargins(0, 0, 0, 0)
+        select_row.setSpacing(4)
+        self.select_all_btn = QtWidgets.QPushButton("All")
+        self.select_all_btn.setToolTip("Tick every spectrum shown (respects the filter)")
+        self.select_all_btn.clicked.connect(lambda: self._set_all_checks("all"))
+        self.select_none_btn = QtWidgets.QPushButton("None")
+        self.select_none_btn.setToolTip("Untick every spectrum shown (respects the filter)")
+        self.select_none_btn.clicked.connect(lambda: self._set_all_checks("none"))
+        self.select_invert_btn = QtWidgets.QPushButton("Invert")
+        self.select_invert_btn.setToolTip("Toggle every spectrum shown (respects the filter)")
+        self.select_invert_btn.clicked.connect(lambda: self._set_all_checks("invert"))
+        for _b in (self.select_all_btn, self.select_none_btn, self.select_invert_btn):
+            _b.setFocusPolicy(QtCore.Qt.NoFocus)
+            select_row.addWidget(_b)
+        select_row.addStretch(1)
+
         self.spec_list = QtWidgets.QTreeWidget()
         self.spec_list.setHeaderLabels(["File", "Type", "Pos (nm)", "Time", "Chans"])
         self.spec_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -7044,6 +7192,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.spec_list.setAccessibleName("Spectra list")
         self.spec_list.setAccessibleDescription("List of available spectra. Check boxes to include in plot, select for additional operations")
         left_layout.addWidget(self.filter_edit)
+        left_layout.addLayout(select_row)
         left_layout.addWidget(self.spec_list, 1)
         left.setMinimumWidth(180)
         splitter.addWidget(left)
@@ -7281,27 +7430,137 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
         analysis_layout.addWidget(kpfm_group)
 
-        # Forces/Background subsection
-        forces_group = QtWidgets.QGroupBox("Forces/Background")
-        forces_layout = QtWidgets.QVBoxLayout(forces_group)
+        scipy_ok = potential_fits.scipy_available()
 
+        def _hint(text):
+            lbl = QtWidgets.QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: gray; font-size: 11px;")
+            return lbl
+
+        # --- Force workflow, ordered: Background -> Fit -> Force --------------
+        # Step 1: Background
+        background_group = QtWidgets.QGroupBox("1 · Background")
+        background_layout = QtWidgets.QVBoxLayout(background_group)
+        background_layout.addWidget(_hint(
+            "Optional. Subtract a reference curve (e.g. a far/off-site spectrum). "
+            "Right-click any spectrum in the list to set it here."))
         bg_row = QtWidgets.QHBoxLayout()
         self.bg_set_btn = QtWidgets.QPushButton(self._get_icon("list-add"), "Set background")
-        self.bg_set_btn.setToolTip("Set selected spectrum as background for subtraction")
+        self.bg_set_btn.setToolTip("Set the selected spectrum as background for subtraction "
+                                   "(or right-click a spectrum in the list).")
         self.bg_clear_btn = QtWidgets.QPushButton(self._get_icon("list-remove"), "Clear background")
         self.bg_clear_btn.setToolTip("Remove background subtraction")
         bg_row.addWidget(self.bg_set_btn)
         bg_row.addWidget(self.bg_clear_btn)
-        forces_layout.addLayout(bg_row)
+        background_layout.addLayout(bg_row)
+        analysis_layout.addWidget(background_group)
+
+        # Step 2: Fit a smooth Δf model (Lennard-Jones / Morse)
+        potential_group = QtWidgets.QGroupBox("2 · Fit Δf (potential model)")
+        potential_layout = QtWidgets.QVBoxLayout(potential_group)
+        potential_layout.addWidget(_hint(
+            "Fit a smooth Lennard-Jones / Morse model to Δf. Drives the dashed "
+            "overlay and, if chosen below, gives a clean input to the force."))
+
+        pot_model_row = QtWidgets.QHBoxLayout()
+        pot_model_row.addWidget(QtWidgets.QLabel("Model:"))
+        self.potential_model_combo = QtWidgets.QComboBox()
+        for name in potential_fits.MODELS:
+            self.potential_model_combo.addItem(name)
+        self.potential_model_combo.setToolTip(
+            "Analytic model fitted to each displayed Δf curve."
+        )
+        self.potential_model_combo.currentTextChanged.connect(self._on_potential_model_changed)
+        pot_model_row.addWidget(self.potential_model_combo, 1)
+        potential_layout.addLayout(pot_model_row)
+
+        self.potential_overlay_cb = QtWidgets.QCheckBox("Show potential fit")
+        self.potential_overlay_cb.setToolTip(
+            "Overlay the fit (dashed) on each displayed curve. Only the currently "
+            "plotted/selected spectra are fitted. Not required for the fitted-Δf "
+            "force below - that fits on demand."
+        )
+        self.potential_overlay_cb.toggled.connect(self._on_potential_overlay_toggled)
+        potential_layout.addWidget(self.potential_overlay_cb)
+
+        # Fit range: restrict which x (Z) samples feed the fit. Curves that run
+        # too far into the repulsive wall - or where the CO tip bends and adds a
+        # spurious minimum - break the fit; clipping the window fixes that
+        # without touching the raw data. Independent of the overlay so it also
+        # governs the fitted-Δf force.
+        self.potential_range_cb = QtWidgets.QCheckBox("Limit fit range (x)")
+        self.potential_range_cb.setToolTip(
+            "Fit only the samples whose x (Z) falls inside [min, max]. Use it to "
+            "exclude the far repulsive wall or a CO-bending artefact that would "
+            "otherwise distort the fit. Applies to every fitted curve; the raw "
+            "data is unchanged."
+        )
+        self.potential_range_cb.setEnabled(scipy_ok)
+        self.potential_range_cb.toggled.connect(self._on_potential_range_toggled)
+        potential_layout.addWidget(self.potential_range_cb)
+
+        pot_range_row = QtWidgets.QHBoxLayout()
+        pot_range_row.addWidget(QtWidgets.QLabel("min"))
+        self.potential_zmin_spin = QtWidgets.QDoubleSpinBox()
+        self.potential_zmin_spin.setRange(-1e6, 1e6)
+        self.potential_zmin_spin.setDecimals(4)
+        self.potential_zmin_spin.setEnabled(False)
+        self.potential_zmin_spin.valueChanged.connect(self._on_potential_range_edited)
+        pot_range_row.addWidget(self.potential_zmin_spin, 1)
+        pot_range_row.addWidget(QtWidgets.QLabel("max"))
+        self.potential_zmax_spin = QtWidgets.QDoubleSpinBox()
+        self.potential_zmax_spin.setRange(-1e6, 1e6)
+        self.potential_zmax_spin.setDecimals(4)
+        self.potential_zmax_spin.setEnabled(False)
+        self.potential_zmax_spin.valueChanged.connect(self._on_potential_range_edited)
+        pot_range_row.addWidget(self.potential_zmax_spin, 1)
+        self.potential_range_view_btn = QtWidgets.QPushButton("From view")
+        self.potential_range_view_btn.setToolTip("Set min/max to the current x-axis view limits.")
+        self.potential_range_view_btn.setEnabled(False)
+        self.potential_range_view_btn.clicked.connect(self._on_potential_range_from_view)
+        pot_range_row.addWidget(self.potential_range_view_btn)
+        potential_layout.addLayout(pot_range_row)
+        analysis_layout.addWidget(potential_group)
+
+        # Step 3: Force conversion (Sader-Jarvis / Matrix inversion)
+        force_group = QtWidgets.QGroupBox("3 · Force conversion")
+        force_layout = QtWidgets.QVBoxLayout(force_group)
+        force_layout.addWidget(_hint(
+            "Invert Δf to a reversible 'Force' channel (in pN). Needs a Z/distance "
+            "axis and a frequency-shift channel."))
+
+        src_row = QtWidgets.QHBoxLayout()
+        src_row.addWidget(QtWidgets.QLabel("Force from:"))
+        self.force_source_combo = QtWidgets.QComboBox()
+        # userData is the internal mode key read by _force_source_mode().
+        self.force_source_combo.addItem("Raw Δf (filtered)", "raw")
+        if scipy_ok:
+            self.force_source_combo.addItem("Fitted Δf (step 2)", "fit")
+        self.force_source_combo.setToolTip(
+            "Input the Sader-Jarvis / Matrix inversion works on:\n"
+            "• Raw Δf (filtered): the displayed, background-subtracted, filtered "
+            "curve. Honest measurement, but noise and the steep repulsive edge can "
+            "make the inversion spike.\n"
+            "• Fitted Δf (step 2): the smooth Lennard-Jones/Morse fit of Δf. No "
+            "noise, no edge spike; respects the fit range. Needs a usable fit."
+        )
+        self.force_source_combo.currentIndexChanged.connect(self._on_force_source_changed)
+        src_row.addWidget(self.force_source_combo, 1)
+        force_layout.addLayout(src_row)
 
         force_row = QtWidgets.QHBoxLayout()
         self.force_btn = QtWidgets.QPushButton(self._get_icon("transform-scale"), "Convert to force")
         self.force_btn.setToolTip("Convert spectra to force curves (experimental)")
         force_row.addWidget(self.force_btn)
         force_row.addStretch(1)
-        forces_layout.addLayout(force_row)
+        force_layout.addLayout(force_row)
+        analysis_layout.addWidget(force_group)
 
-        analysis_layout.addWidget(forces_group)
+        if not scipy_ok:
+            self.potential_overlay_cb.setEnabled(False)
+            self.potential_model_combo.setEnabled(False)
+            potential_group.setToolTip("SciPy is required for potential fitting and is not available.")
 
         right_layout.addWidget(analysis_group)
 
@@ -7653,6 +7912,32 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_status()
         self._request_plot_update(delay_ms=90)
 
+    def _set_all_checks(self, mode):
+        """Bulk tick/untick the visible (filtered) spectra. mode is one of
+        'all', 'none', 'invert'. Signals are blocked during the loop so the plot
+        is redrawn once at the end rather than per row."""
+        root = self.spec_list.invisibleRootItem()
+        self.spec_list.blockSignals(True)
+        try:
+            for i in range(root.childCount()):
+                item = root.child(i)
+                if item.isHidden():
+                    continue
+                if mode == "all":
+                    new_state = QtCore.Qt.Checked
+                elif mode == "none":
+                    new_state = QtCore.Qt.Unchecked
+                else:  # invert
+                    new_state = (QtCore.Qt.Unchecked
+                                 if item.checkState(0) == QtCore.Qt.Checked
+                                 else QtCore.Qt.Checked)
+                item.setCheckState(0, new_state)
+        finally:
+            self.spec_list.blockSignals(False)
+        self._record_user_action(f"Bulk check: {mode}")
+        self._update_status()
+        self._request_plot_update(delay_ms=20)
+
     def _checked_items(self):
         items = []
         root = self.spec_list.invisibleRootItem()
@@ -7692,19 +7977,29 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return vals, spec.get("AxisLabel") or "Axis", spec.get("AxisUnit") or ""
 
     def _on_set_background(self):
-        self._record_user_action("Set background")
         items = self._selected_items() or self._checked_items()
         if not items:
             QtWidgets.QMessageBox.information(self, "Background", "Select a spectrum to set as background.")
             return
-        spec = items[0].data(0, QtCore.Qt.UserRole)
-        self._background_spec_id = self._spec_id(spec) if spec else None
-        self._log(f"Background set: {Path(spec.get('path','')).name if spec else ''}")
+        self._set_background_spec(items[0].data(0, QtCore.Qt.UserRole))
+
+    def _set_background_spec(self, spec):
+        """Set *spec* as the subtraction background (shared by the button and the
+        list right-click menu)."""
+        if not spec:
+            return
+        self._record_user_action("Set background")
+        self._background_spec_id = self._spec_id(spec)
+        self._log(f"Background set: {Path(spec.get('path','')).name}")
+        # If a force channel is live it was computed against the old background;
+        # rebuild it so the subtraction stays consistent.
+        self._refresh_force_if_active()
         self._request_plot_update()
 
     def _on_clear_background(self):
         self._record_user_action("Clear background")
         self._background_spec_id = None
+        self._refresh_force_if_active()
         self._request_plot_update()
 
     def _background_for(self, spec):
@@ -7830,7 +8125,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         except Exception:
             return None
 
-    _FORCE_LABEL = "Force (N)"
+    _FORCE_LABEL = "Force"
+    # Force is stored/plotted in piconewtons; the inversion works in SI (N), so
+    # the raw result is scaled by this factor before it becomes the channel.
+    _FORCE_UNIT = "pN"
+    _FORCE_SCALE = 1e12  # N -> pN
 
     def _prompt_force_params(self):
         """Modal entry for the Sader-Jarvis parameters; returns a params dict
@@ -7889,6 +8188,36 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return None
         return params
 
+    def _force_source_mode(self):
+        """'raw' (filtered Δf) or 'fit' (smooth fitted Δf) - the input the force
+        inversion runs on."""
+        combo = getattr(self, "force_source_combo", None)
+        if combo is None:
+            return "raw"
+        data = combo.currentData()
+        return data if data in ("raw", "fit") else "raw"
+
+    def _on_force_source_changed(self, _idx=None):
+        self._record_user_action(f"Force source → {self._force_source_mode()}")
+        self._refresh_force_if_active()
+
+    def _refresh_force_if_active(self):
+        """Rebuild the live force channel in place (reusing the last parameters,
+        no re-prompt) after a change - source, background - that invalidates it.
+        No-op when the force channel is off."""
+        if not getattr(self, "force_btn", None) or not self.force_btn.isChecked():
+            return
+        params = getattr(self, "_last_force_params", None)
+        self._deactivate_force()
+        self._force_toggle_guard = True
+        self.force_btn.setChecked(False)
+        self._force_toggle_guard = False
+        if self._activate_force(params=params):
+            self._force_toggle_guard = True
+            self.force_btn.setChecked(True)
+            self._force_toggle_guard = False
+        self._update_force_button_label()
+
     def _force_source_channel(self):
         """A non-force channel to reconstruct force from (the current one, or
         the first available)."""
@@ -7902,7 +8231,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return ""
 
     def _on_toggle_force(self, checked):
-        # Reversible parallel channel: on -> add "Force (N)" alongside the raw
+        # Reversible parallel channel: on -> add the "Force" (pN) channel alongside the raw
         # channels; off -> remove it. Raw data is never overwritten.
         if getattr(self, "_force_toggle_guard", False):
             return
@@ -7919,24 +8248,29 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         on = self.force_btn.isChecked()
         self.force_btn.setText("Force channel: on" if on else "Convert to force")
         self.force_btn.setToolTip(
-            "A reconstructed 'Force (N)' channel is available in the channel list; "
+            "A reconstructed 'Force' channel (pN) is available in the channel list; "
             "raw data is kept. Toggle off to remove it."
             if on else
             "Add a Sader-Jarvis force channel alongside the raw data (reversible - "
             "toggle off to remove). Needs a Z/distance axis and a frequency-shift channel.")
 
-    def _activate_force(self):
-        params = self._prompt_force_params()
+    def _activate_force(self, params=None):
+        if params is None:
+            params = self._prompt_force_params()
         if params is None:
             return False
+        self._last_force_params = params
         source = self._force_source_channel()
         if not source:
             QtWidgets.QMessageBox.information(self, "Force conversion", "No source channel to convert.")
             return False
         f0, k, A = params["f0"], params["k"], params["A"]
+        mode = self._force_source_mode()
+        rel_zero = self._relative_zero_shift()  # for display-coordinate fitting
         label = self._FORCE_LABEL
         modified_items = []
         bad_unit = 0
+        no_fit = 0
         # PyQt returns a *copy* of the spec stored on each list item, so add the
         # force channel to that copy and write it back with setData; the plot/
         # gather/copy read the item data, and the shared viewer spec dicts are
@@ -7958,32 +8292,82 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             if axis_m is None:
                 bad_unit += 1
                 continue
-            y_vals = np.asarray(channels.get(source), dtype=float)
-            y_vals = self._subtract_background(axis_vals, y_vals, self._background_for(spec))
-            force_curve = self._force_from_freq_shift(axis_m, y_vals, f0=f0, k=k, amp_m=A,
-                                                      method=params.get("method"))
-            if force_curve is None:
-                continue
-            channels[label] = force_curve
+            spec_id = item.data(0, QtCore.Qt.UserRole + 1)
+            # Δf that feeds the inversion: background-subtracted and filtered, so
+            # the displayed smoothing actually tames the inversion.
+            y_raw = np.asarray(channels.get(source), dtype=float)
+            y_base = self._subtract_background(axis_vals, y_raw, self._background_for(spec))
+            y_unit_raw = self._channel_unit_for_spec(spec, source)
+            df_used, _yu = self._apply_data_filters(axis_vals, y_base, y_unit_raw, axis_unit)
+            df_used = np.asarray(df_used, dtype=float)
+            if mode == "fit":
+                # Replace the noisy Δf with the smooth fitted model. Fit, window
+                # and evaluate in *display* coordinates (so the range window,
+                # read off the visible axis, lines up even with Relative Z on),
+                # but invert against absolute z in metres. Evaluate/invert only
+                # over the fit's valid span [x_min, x_max]; outside it the model
+                # may be an unphysical extrapolation (LJ is NaN left of its
+                # pinned singularity), so those samples stay undefined.
+                disp_x = self._display_x_for_spec(spec, axis_vals, axis_unit, rel_zero)
+                res = self._potential_fit_for_curve(spec_id, disp_x, df_used)
+                if not res:
+                    no_fit += 1
+                    continue
+                xmin, xmax = res.get("x_min"), res.get("x_max")
+                mask = np.isfinite(disp_x) & (disp_x >= xmin) & (disp_x <= xmax)
+                if int(mask.sum()) < 5:
+                    no_fit += 1
+                    continue
+                try:
+                    df_sub = np.asarray(res["func"](disp_x[mask]), dtype=float)
+                except Exception:
+                    no_fit += 1
+                    continue
+                force_sub = self._force_from_freq_shift(axis_m[mask], df_sub, f0=f0, k=k,
+                                                        amp_m=A, method=params.get("method"))
+                if force_sub is None:
+                    continue
+                # Full-length channel, NaN where the fit is not defined so the
+                # plot simply leaves those z blank.
+                force_curve = np.full(axis_vals.shape, np.nan, dtype=float)
+                force_curve[mask] = force_sub
+            else:
+                force_curve = self._force_from_freq_shift(axis_m, df_used, f0=f0, k=k, amp_m=A,
+                                                          method=params.get("method"))
+                if force_curve is None:
+                    continue
+            channels[label] = np.asarray(force_curve, dtype=float) * self._FORCE_SCALE
             spec["channels"] = channels
             unit_map = spec.get("unit_map") or {}
-            unit_map[label] = "N"
+            unit_map[label] = self._FORCE_UNIT
             spec["unit_map"] = unit_map
             spec["ForceMethod"] = params["method"]
-            spec["ForceParams"] = {"f0": f0, "A": A, "Q": params["Q"], "k": k, "source": source}
+            spec["ForceParams"] = {"f0": f0, "A": A, "Q": params["Q"], "k": k,
+                                   "source": source, "input": mode}
             item.setData(0, QtCore.Qt.UserRole, spec)
             modified_items.append(item)
         self.spec_list.blockSignals(False)
         if not modified_items:
-            msg = ("Could not convert: the Z axis must be a distance (m/nm/pm/µm/Å). "
-                   "Select a Z/distance axis (not bias) and a frequency-shift channel."
-                   if bad_unit else
-                   "Could not convert the selected channel to force. Check the parameters "
-                   "and that the channel is a frequency shift (Δf).")
+            if no_fit and mode == "fit":
+                msg = ("Could not convert from the fit: no usable potential fit for the "
+                       "displayed spectra. Check 'Show potential fit' produces a fit "
+                       "(and, if set, that the fit range keeps enough points), or switch "
+                       "'Force from' to Raw Δf.")
+            elif bad_unit:
+                msg = ("Could not convert: the Z axis must be a distance (m/nm/pm/µm/Å). "
+                       "Select a Z/distance axis (not bias) and a frequency-shift channel.")
+            else:
+                msg = ("Could not convert the selected channel to force. Check the parameters "
+                       "and that the channel is a frequency shift (Δf).")
             QtWidgets.QMessageBox.information(self, "Force conversion", msg)
             return False
         self._force_source = source
         self._force_modified_items = modified_items
+        # The 'Force' channel's *contents* just changed (e.g. raw -> fitted),
+        # but the plot's per-curve cache keys on the channel *name*, which is
+        # unchanged. Drop the stale Force entries so the plot re-reads the new
+        # values instead of redrawing the previous force curve.
+        self._invalidate_force_curve_cache()
         # Expose the parallel channel and select it, without a full repopulate
         # (which would reset the channel to 'df').
         if self.channel_combo.findText(label) < 0:
@@ -7992,8 +8376,19 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._update_plot()
         return True
 
+    def _invalidate_force_curve_cache(self):
+        """Purge cached plot curves for the reconstructed Force channel (its
+        name is stable but its data is rebuilt on every conversion)."""
+        label = self._FORCE_LABEL
+        cache = getattr(self, "_curve_data_cache", None)
+        if not cache:
+            return
+        for key in [k for k in cache if isinstance(k, tuple) and len(k) > 1 and k[1] == label]:
+            cache.pop(key, None)
+
     def _remove_force_from_items(self):
         label = self._FORCE_LABEL
+        self._invalidate_force_curve_cache()
         self.spec_list.blockSignals(True)
         for item in getattr(self, "_force_modified_items", []) or []:
             try:
@@ -8069,6 +8464,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _update_plot(self):
         if self._can_incremental_plot_update() and self._update_plot_incremental():
             return
+        # We are now committed to a full, clearing redraw; consume the flag.
+        self._force_full_replot = False
         channel = self.channel_combo.currentText()
         self.ax.clear()
         self._empty_plot_text = None
@@ -8100,18 +8497,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         filter_sig = self._filter_signature()
 
         # Precompute relative zero if needed
-        rel_zero = 0.0
-        if relative_nm:
-            mins = []
-            for item in self._selected_items() or self._checked_items():
-                spec = item.data(0, QtCore.Qt.UserRole)
-                if not spec:
-                    continue
-                axis_vals, _, unit = self._axis_for_spec(spec)
-                if axis_vals.size and unit == "nm":
-                    mins.append(np.nanmin(axis_vals))
-            if mins:
-                rel_zero = min(mins)
+        rel_zero = self._relative_zero_shift()
 
         # Plot both checked items AND selected items (even if unchecked) for quick preview
         y_units_after_filters = []
@@ -8130,6 +8516,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             # Apply waterfall offset
             y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
             x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
+            x_disp_full = x_plot  # pre-decimation display x, used for fitting
             x_plot, y_plot = self._decimate_curve_for_display(x_plot, y_data, visible_count)
             y_units_after_filters.append(y_unit_final or y_unit_raw)
             color = self._auto_color_for_spec(spec_id)
@@ -8173,6 +8560,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             plotted += 1
             if spec_id in self._fit_results:
                 self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
+            # The potential fit models Δf, so its overlay only makes sense on the
+            # Δf (or similar) channel - never on the reconstructed Force channel,
+            # where fitting a Morse/LJ shape to force data is meaningless.
+            if self._potential_fit_overlay and channel != self._FORCE_LABEL:
+                self._draw_potential_fit_for_curve(
+                    spec_id, x_disp_full, y_filtered, color,
+                    offset=(plotted - 1) * offset_val if waterfall else 0.0,
+                )
         if plotted == 0:
             self._set_empty_plot_text()
         elif self._plot_legend_enabled:
@@ -8641,6 +9036,156 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 "display_name": self._display_name(spec),
             }
 
+    # ------------------------------------------------------------------
+    # Analytic potential fits (Lennard-Jones / Morse)
+    # ------------------------------------------------------------------
+    def _refresh_fit_consumers(self):
+        """Re-run whatever currently depends on the potential fit after its
+        configuration (model/range) changed: the dashed overlay and/or the
+        fitted-Δf force channel. The fit cache is dropped first so both refit."""
+        self._potential_fit_cache.clear()
+        if self._potential_fit_overlay:
+            self._force_full_replot = True
+            self._update_plot()
+        if self._force_source_mode() == "fit":
+            self._refresh_force_if_active()
+
+    def _on_potential_model_changed(self, name):
+        self._potential_model = name or potential_fits.MODELS[0]
+        self._record_user_action(f"Potential model → {self._potential_model}")
+        self._refresh_fit_consumers()
+
+    def _on_potential_overlay_toggled(self, checked):
+        self._potential_fit_overlay = bool(checked)
+        self._record_user_action(f"Potential fit overlay → {'on' if checked else 'off'}")
+        # Turning the overlay off must clear the dashed fits already on the
+        # canvas; the incremental path would leave them, so force a full redraw.
+        self._force_full_replot = True
+        self._update_plot()
+
+    def _set_potential_range_enabled(self):
+        """Enable the min/max/view widgets only when 'Limit fit range' is on
+        (and fitting is available). The range is independent of the overlay so
+        it can shape the fitted-Δf force without drawing the overlay."""
+        cb = getattr(self, "potential_range_cb", None)
+        active = bool(cb and cb.isEnabled() and cb.isChecked())
+        for w in (self.potential_zmin_spin, self.potential_zmax_spin, self.potential_range_view_btn):
+            w.setEnabled(active)
+
+    def _current_potential_range(self):
+        """The active [zmin, zmax] window, or None when range-limiting is off or
+        the bounds are not a valid (min < max) interval."""
+        if not getattr(self, "potential_range_cb", None) or not self.potential_range_cb.isChecked():
+            return None
+        lo = float(self.potential_zmin_spin.value())
+        hi = float(self.potential_zmax_spin.value())
+        if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+            return None
+        return (lo, hi)
+
+    def _on_potential_range_toggled(self, checked):
+        self._set_potential_range_enabled()
+        # A blank [0, 0] window is useless; seed it from the current view the
+        # first time the user turns range-limiting on.
+        if checked and self.potential_zmax_spin.value() <= self.potential_zmin_spin.value():
+            self._on_potential_range_from_view()
+        self._potential_fit_range = self._current_potential_range()
+        self._record_user_action(f"Potential fit range → {'on' if checked else 'off'}")
+        self._refresh_fit_consumers()
+
+    def _on_potential_range_edited(self, _value=None):
+        self._potential_fit_range = self._current_potential_range()
+        if self.potential_range_cb.isChecked():
+            self._potential_fit_cache.clear()
+            if self._potential_fit_overlay:
+                self._force_full_replot = True
+                self._request_plot_update(delay_ms=200)
+            if self._force_source_mode() == "fit":
+                self._refresh_force_if_active()
+
+    def _on_potential_range_from_view(self):
+        try:
+            lo, hi = self.ax.get_xlim()
+        except Exception:
+            return
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            return
+        if hi < lo:
+            lo, hi = hi, lo
+        self.potential_zmin_spin.blockSignals(True)
+        self.potential_zmax_spin.blockSignals(True)
+        self.potential_zmin_spin.setValue(float(lo))
+        self.potential_zmax_spin.setValue(float(hi))
+        self.potential_zmin_spin.blockSignals(False)
+        self.potential_zmax_spin.blockSignals(False)
+        self._on_potential_range_edited()
+
+    def _potential_fit_for_curve(self, spec_id, x, y):
+        """Return a cached (or freshly computed) potential fit for the displayed
+        (x, y) of one curve. The signature keys on the actual displayed samples
+        so any change to channel/axis/filter/relative-Z transparently refits."""
+        try:
+            x_arr = np.asarray(x, dtype=float)
+            y_arr = np.asarray(y, dtype=float)
+        except Exception:
+            return None
+        # Restrict to the fit window, if one is active. Keep the raw arrays for
+        # the cache signature so toggling the range off refits on the full curve.
+        fit_range = getattr(self, "_potential_fit_range", None)
+        if fit_range is not None:
+            lo, hi = fit_range
+            in_window = np.isfinite(x_arr) & (x_arr >= lo) & (x_arr <= hi)
+            xf = x_arr[in_window]
+            yf = y_arr[in_window]
+        else:
+            xf, yf = x_arr, y_arr
+        if xf.size < 5:
+            return None
+        sig = (
+            spec_id,
+            self._potential_model,
+            fit_range,
+            int(xf.size),
+            round(float(xf[0]), 9),
+            round(float(xf[-1]), 9),
+            round(float(np.nansum(yf)), 9),
+            round(float(np.nansum(np.abs(yf))), 9),
+        )
+        if sig in self._potential_fit_cache:
+            return self._potential_fit_cache[sig]
+        res = potential_fits.fit_potential(xf, yf, self._potential_model)
+        if len(self._potential_fit_cache) > 512:
+            self._potential_fit_cache.clear()
+        self._potential_fit_cache[sig] = res
+        if res is not None:
+            try:
+                self._log(f"{self._potential_model} fit {self._display_name(self._spec_by_id(spec_id) or {})}: "
+                          f"{potential_fits.params_summary(res)}")
+            except Exception:
+                pass
+        return res
+
+    def _draw_potential_fit_for_curve(self, spec_id, x, y, color, offset=0.0):
+        """Overlay the fitted potential (and optionally its force) on one curve."""
+        res = self._potential_fit_for_curve(spec_id, x, y)
+        if not res:
+            return
+        x_min, x_max = res["x_min"], res["x_max"]
+        if not (np.isfinite(x_min) and np.isfinite(x_max)) or x_max <= x_min:
+            return
+        x_dense = np.linspace(x_min, x_max, 400)
+        try:
+            y_fit = np.asarray(res["func"](x_dense), dtype=float)
+        except Exception:
+            return
+        finite = np.isfinite(y_fit)
+        if not finite.any():
+            return
+        self.ax.plot(
+            x_dense[finite], y_fit[finite] + offset,
+            linestyle=(0, (5, 2)), color=color, lw=1.3, alpha=0.95,
+        )
+
     def _on_legend_pick(self, event):
         spec_id = self._legend_map.get(event.artist)
         if not spec_id:
@@ -8694,6 +9239,14 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if hasattr(self.viewer, "reveal_spectroscopy_source"):
             show_image_act = menu.addAction("Show on image")
         copy_act = menu.addAction("Copy selected to clipboard")
+        menu.addSeparator()
+        this_id = item.data(0, QtCore.Qt.UserRole + 1)
+        is_bg = bool(self._background_spec_id) and this_id == self._background_spec_id
+        set_bg_act = menu.addAction("Background: this spectrum is the background" if is_bg
+                                    else "Set as background")
+        set_bg_act.setEnabled(not is_bg)
+        clear_bg_act = menu.addAction("Clear background")
+        clear_bg_act.setEnabled(bool(self._background_spec_id))
         source_path = spec.get("path") if isinstance(spec, dict) else None
         if source_path:
             menu.addSeparator()
@@ -8705,6 +9258,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             self._on_show_on_image(spec)
         elif chosen == copy_act:
             self._copy_selected_to_clipboard()
+        elif chosen == set_bg_act:
+            self._set_background_spec(spec)
+        elif chosen == clear_bg_act:
+            self._on_clear_background()
 
     def _on_show_on_image(self, spec=None):
         viewer = self.viewer
@@ -9204,18 +9761,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         relative_nm = self.relative_cb.isChecked() and not for_export
         waterfall = self.waterfall_cb.isChecked() and not for_export
         offset_val = self.offset_spin.value()
-        rel_zero = 0.0
-        if relative_nm:
-            mins = []
-            for item in self._selected_items() or self._checked_items():
-                spec = item.data(0, QtCore.Qt.UserRole)
-                if not spec:
-                    continue
-                axis_vals, _, unit = self._axis_for_spec(spec)
-                if axis_vals.size and unit == "nm":
-                    mins.append(np.nanmin(axis_vals))
-            if mins:
-                rel_zero = min(mins)
+        rel_zero = self._relative_zero_shift()
         plotted = 0
         root = self.spec_list.invisibleRootItem()
         for i in range(root.childCount()):
@@ -10381,8 +10927,20 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         </ul>
         <h4>Forces/Background</h4>
         <ul>
-        <li><b>Set/Clear Background:</b> Subtract background spectrum</li>
-        <li><b>Convert to Force:</b> Experimental force curve conversion</li>
+        <li><b>Set/Clear Background:</b> Subtract background spectrum (also on the
+        right-click menu of any spectrum in the list).</li>
+        <li><b>Convert to Force:</b> Sader-Jarvis / Matrix inversion to a reversible
+        "Force" channel (plotted in pN). <b>Force from</b> picks the input: <i>Raw Δf (filtered)</i>
+        inverts the displayed background-subtracted, filtered curve; <i>Fitted Δf</i>
+        inverts the smooth potential fit instead - no noise or repulsive-edge spike,
+        and only over the fit range. If the raw inversion blows up, either smooth it
+        (filters) or switch to Fitted Δf.</li>
+        <li><b>Potential fit:</b> Fit a Lennard-Jones or Morse potential to each
+        displayed curve and overlay it (dashed). Only the currently plotted/selected
+        spectra are fitted. "Limit fit range (x)" restricts the fit to samples within
+        a chosen x (Z) window - use it to exclude the far repulsive wall or a
+        CO-bending artefact; raw data is never altered. For a force curve, use
+        "Convert to force" (Sader-Jarvis / Matrix inversion of the raw data).</li>
         </ul>
         
         <h3>Actions</h3>
