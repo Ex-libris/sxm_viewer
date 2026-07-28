@@ -197,6 +197,46 @@ def _grid_local_pitch(X, Y, rows, cols):
     return dx, dy
 
 
+def _grid_local_orientation(X, Y, rows, cols, angle_deg=0.0):
+    """(row_flip, col_flip): whether a grid-indexed [row, col] metric array
+    needs flipping so an axis-aligned "local/relative" render agrees with the
+    anchor image's raster frame (thumbnail / main preview / "Reference image"
+    mode) about which end is up/right.
+
+    Deliberate, manually-synced port of
+    MatrixSpectroViewer._grid_local_orientation (spectroscopy_dialogs.py) -
+    MatrixFitWorker runs off-thread with only the raw specs, matching this
+    module's convention of parallel grid-geometry helpers (see
+    _grid_xy_coords / _grid_local_pitch above). Keep the two in sync,
+    especially the direction of the flip tests. The direction tests run on
+    the grid coordinates rotated into the anchor's scan frame (same +theta
+    convention as _map_spec_to_pixels); with angle 0 this reduces exactly to
+    north-up, so unrotated grids are unaffected."""
+    row_flip = False
+    col_flip = False
+    try:
+        theta = math.radians(float(angle_deg or 0.0))
+    except Exception:
+        theta = 0.0
+    if theta:
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        U = X * cos_t - Y * sin_t
+        V = X * sin_t + Y * cos_t
+    else:
+        U, V = X, Y
+    if rows > 1:
+        v_first = np.nanmean(V[0, :])
+        v_last = np.nanmean(V[-1, :])
+        if np.isfinite(v_first) and np.isfinite(v_last):
+            row_flip = bool(v_last > v_first)
+    if cols > 1:
+        u_first = np.nanmean(U[:, 0])
+        u_last = np.nanmean(U[:, -1])
+        if np.isfinite(u_first) and np.isfinite(u_last):
+            col_flip = bool(u_last < u_first)
+    return row_flip, col_flip
+
+
 class MatrixFitWorker(QtCore.QObject):
     progress = QtCore.pyqtSignal(int, int)
     finished = QtCore.pyqtSignal(object)
@@ -395,6 +435,12 @@ class MatrixFitWorker(QtCore.QObject):
             'x_axis': x_axis,
             'y_axis': y_axis,
             'axis_unit': axis_unit,
+            # Grid geometry needed to rebuild true per-point coordinates in
+            # the dialog for the raster-frame orientation flip (the worker
+            # has no access to the anchor image's scan angle).
+            'grid_rows': grid_rows,
+            'grid_cols': grid_cols,
+            'zero_based': zero_based_indices,
         }
         self.finished.emit(payload)
 
@@ -635,14 +681,81 @@ class MatrixFitDialog(QtWidgets.QDialog):
         x0, x1, y0, y1 = extent
         return [x0, x1, y1, y0]
 
+    def _anchor_scan_angle(self):
+        """Scan angle (degrees) of the grid's anchor image, 0.0 when there is
+        no resolvable anchor - mirrors MatrixSpectroViewer._anchor_scan_angle.
+        Used to flatten the fit maps into the anchor image's raster frame so
+        they aren't mirrored/upside-down relative to the reference image."""
+        try:
+            header, _fds = self.viewer.headers.get(str(self._fit_anchor_path), (None, None))
+            if header:
+                return float(self.viewer._header_scan_angle(header) or 0.0)
+        except Exception:
+            pass
+        return 0.0
+
+    def _local_flips(self):
+        """(row_flip, col_flip) needed so the grid-indexed [row, col] fit
+        maps render in the anchor image's raster frame - the same correction
+        MatrixSpectroViewer._draw_image_layer applies to its metric/reference
+        views. Without it, any grid whose acquisition angle flips north/south
+        or east/west shows its fit maps mirrored relative to the reference
+        image (the reported "upside down" maps). Returns (False, False) only
+        when no per-point coordinates are available at all.
+
+        Note the guard is deliberately tolerant of *partial* NaN: a single
+        missing/aborted grid cell would otherwise short-circuit the whole
+        orientation to unflipped (leaving the maps mirrored), even though
+        _grid_local_orientation itself averages via nanmean and copes with
+        gaps fine. Only a fully-empty coordinate grid disables the flip."""
+        payload = self._result_payload or {}
+        rows = payload.get('grid_rows')
+        cols = payload.get('grid_cols')
+        zero_based = payload.get('zero_based', True)
+        if not rows or not cols:
+            return (False, False)
+        X, Y = _grid_xy_coords(self.specs, rows, cols, zero_based)
+        if X is None or Y is None or not np.isfinite(X).any() or not np.isfinite(Y).any():
+            return (False, False)
+        flips = _grid_local_orientation(X, Y, rows, cols, angle_deg=self._anchor_scan_angle())
+        try:
+            # Console-only (like the sibling "N/N processed" lines) - keeps
+            # this orientation-debug breadcrumb out of the GUI Activity Log.
+            print(
+                f"[MatrixFit] orientation: angle={self._anchor_scan_angle():.2f} "
+                f"grid={rows}x{cols} nan_cells={int(np.isnan(X).sum())} "
+                f"flips(row,col)={flips}",
+                flush=True,
+            )
+        except Exception:
+            pass
+        return flips
+
+    def _orient_map(self, arr, row_flip, col_flip):
+        """Copy of arr flipped into the anchor's raster frame (see
+        _local_flips). Always returns a copy so the raw payload maps stay
+        untouched."""
+        out = np.asarray(arr, dtype=float)
+        if row_flip:
+            out = np.flipud(out)
+        if col_flip:
+            out = np.fliplr(out)
+        return np.array(out, copy=True)
+
     def _build_views(self, maps, channel_name):
         params = ['a', 'b', 'c', 'a_err', 'b_err', 'c_err', 'rmse']
         axis_unit = (self._result_payload or {}).get('axis_unit') or self.PARAM_INFO.get('b', {}).get('unit') or ''
+        row_flip, col_flip = self._local_flips()
         views = []
         for key in params:
             arr = maps.get(key)
             if arr is None:
                 continue
+            # Reorient into the anchor image's raster frame so the maps agree
+            # with the reference image / metric views (which flip the same
+            # way via _grid_local_orientation). vlims are orientation-
+            # invariant, so compute them either way.
+            arr = self._orient_map(arr, row_flip, col_flip)
             info = self.PARAM_INFO.get(key, {'label': key, 'unit': '', 'cmap': 'viridis'})
             vmin, vmax = self._compute_vlims(arr)
             unit = axis_unit if key in ('b', 'b_err') and axis_unit else info.get('unit', '')
@@ -671,7 +784,13 @@ class MatrixFitDialog(QtWidgets.QDialog):
     def _save_maps(self):
         if not self._result_payload or not self._result_payload.get('maps'):
             return
-        maps = self._result_payload['maps']
+        # Persist the maps in the same raster-frame orientation the dialog
+        # displays them (see _local_flips / _build_views), so saved arrays
+        # match the on-screen maps and the reference image rather than raw
+        # grid-index order.
+        row_flip, col_flip = self._local_flips()
+        maps = {k: self._orient_map(v, row_flip, col_flip)
+                for k, v in self._result_payload['maps'].items()}
         channel_name = self._result_payload.get('channel_name', 'channel')
         x_axis = self._result_payload.get('x_axis')
         y_axis = self._result_payload.get('y_axis')
@@ -690,7 +809,10 @@ class MatrixFitDialog(QtWidgets.QDialog):
     def _export_xyz(self):
         if not self._result_payload or not self._result_payload.get('maps'):
             return
-        maps = self._result_payload['maps']
+        # Match the displayed/saved raster-frame orientation (see _save_maps).
+        row_flip, col_flip = self._local_flips()
+        maps = {k: self._orient_map(v, row_flip, col_flip)
+                for k, v in self._result_payload['maps'].items()}
         x_axis = self._result_payload.get('x_axis')
         y_axis = self._result_payload.get('y_axis')
         if x_axis is None or y_axis is None:

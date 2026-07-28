@@ -360,6 +360,70 @@ dialog to open:
   right-click menu (`_on_thumb_context_menu`) so it's reachable from the grid
   without opening the image. Shown only when the image has ≥2 point spectra.
 
+### Coordinate frames & orientation: the one mental model (READ FIRST)
+Almost every "the points are warped / mirrored / upside-down" report in this
+app comes from confusing **three coordinate frames** for the same data. Hold
+these three straight and the dense sections that follow (position mapping,
+Grid Map Explorer, matrix fits, folder reports) all collapse into a single
+rule.
+
+**The three frames**
+1. **Absolute nm** — the microscope's real stage coordinates. Every spec
+   carries its true `(x, y)` here; a scan image carries a center +
+   `Width`/`Height` + scan `Angle`. The only frame where different scans and
+   specs are directly comparable. A *rotated* scan is a tilted rectangle in
+   this frame.
+2. **Anchor raster** — the pixel grid of one specific scan image (row 0 =
+   top as displayed, col 0 = left). **This is what the user is looking at**:
+   the thumbnail, the main preview, "Reference image" mode, and Nanonis's own
+   viewer are ALL in this frame. Absolute-nm → this frame is exactly what
+   `_map_spec_to_pixels` computes (rotate by the scan angle, then normalize).
+3. **Grid-local** — a matrix/`.3ds` grid's own `[row, col]` index space (the
+   order points were acquired/stored). Nanonis fills this in acquisition
+   order, so for a rotated grid it can be flipped/mirrored versus the raster:
+   index `[0, 0]` is **not** reliably "top-left on screen."
+
+**The one rule**: *whenever you take grid-local data (a metric array, a fit
+map, per-pixel values) and draw it, reorient it into the anchor raster frame
+first.* The user compares it against the reference image, which is
+raster-frame; skip the reorientation and it looks mirrored/upside-down even
+though every number is correct.
+
+**How reorientation works** (one idea, several ports):
+`_grid_local_orientation(X, Y, rows, cols, angle_deg)` takes the grid's true
+absolute `(x, y)`, rotates them by the anchor image's scan angle, and returns
+`(row_flip, col_flip)` — whether to `np.flipud`/`np.fliplr` the array so grid
+index order matches screen order. For an unrotated grid (`angle=0`) it's a
+no-op — which is *why rotation bugs stay invisible until a real tilted scan*
+(a `-141°` grid is a clean vertical flip; a `157°` grid is ~180° off).
+
+**Two load-bearing details that cause silent wrongness (no crash, no obvious
+misbehaviour — just plausible-looking wrong pixels):**
+- **Rotate first, normalize per-axis second.** Normalizing each axis by its
+  own span *before* rotating shears any non-square scan. Invisible on square
+  scans (which is how it shipped).
+- **Reorient every representation, or none agree.** One grid can be shown as
+  raster / absolute / local, plus virtual copies, WSxM export, and fit maps.
+  Each must apply the *same* flip or they disagree with each other and with
+  the reference image.
+
+**The recurring meta-trap** (why a real fix can look like it "didn't stick"
+across clean reloads): derived per-spec fields (`grid_row`/`grid_col`,
+`off_frame_*`, `assignment_*`) are computed once and must survive
+`hydrate_spectro_entries` re-parsing — add any new one to
+`_merge_payload_into_spec`'s preserved whitelist or it is silently wiped on
+the next dialog open. Full story under "Grid Map Explorer" below.
+
+**Every place that must obey the rule** (any one drifting = the bug class
+returns): `_map_spec_to_pixels` (canonical, `main_window.py`),
+`overlays.py::_spectros_near_thumb_pos` (the inverse, pixel→nm),
+`controller.py::_spec_within_extent` / `_spec_frame_offset_info`,
+`MatrixSpectroViewer._grid_local_orientation` + `_draw_image_layer` (metric /
+relative / virtual-copy / WSxM), `matrix_fit.py`'s `_grid_local_orientation`
++ `MatrixFitDialog._local_flips` (the fit maps — most recent addition), and
+`reporting/model.py::grid_local_orientation`. None share a common helper (by
+choice, for locality/perf), so they are kept in sync by hand.
+
 ### Spectroscopy position mapping (rotation/frame gotchas)
 This bug class ate an entire session before being nailed down, across three
 distinct-but-related failure modes. All of it flows from one function:
@@ -678,6 +742,29 @@ mapping" above).
 Both worker classes follow the same
 `QObject.moveToThread(QThread)` + `thread.started.connect(worker.run)`
 pattern rather than `QRunnable`.
+
+**Fit-map orientation** (an instance of "the one rule" — see "Coordinate
+frames & orientation" above): the 2D parameter maps are indexed by raw
+`grid_row`/`grid_col`, so, like every other grid-local render, they must be
+reoriented into the anchor image's raster frame before display or they show
+up mirrored/upside-down next to the reference image (a real `-141°` grid was
+a clean vertical flip). `MatrixFitDialog._local_flips` reuses the same
+`_grid_local_orientation` logic (ported into `matrix_fit.py`, since
+`MatrixFitWorker` runs off-thread with only the raw specs) and applies the
+flip consistently to the on-screen maps, double-click pop-outs, virtual
+copies, and the `.npz` / WSxM XYZ exports. Two gotchas that made the first
+pass look like it did nothing:
+- The flip needs the *anchor image's scan angle*, which the off-thread worker
+  can't reach — so it's computed in the dialog (`_anchor_scan_angle`) after
+  the worker returns `grid_rows`/`grid_cols`/`zero_based` in its payload.
+- The coordinate guard must tolerate **partial** NaN. `_grid_xy_coords`
+  returns a full `rows×cols` array, so a grid with even one missing/aborted
+  cell would short-circuit the whole orientation to unflipped (leaving the
+  maps inverted), even though `_grid_local_orientation` averages via
+  `nanmean` and copes with gaps fine. Only a *fully* empty coordinate grid
+  now disables the flip. This is why the bug looked "still there" on one grid
+  (partial coverage) but fine on another (complete) — the completed grid
+  flipped correctly, the partial one silently bailed.
 
 ### Folder reports (PDF)
 "Generate folder report (PDF)..." (thumbnail context menu + toolbar
