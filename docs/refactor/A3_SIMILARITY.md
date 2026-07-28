@@ -4,18 +4,18 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 ## Summary
 
-- **110** clusters
-- **247** methods involved
-- **~2627** lines in clustered methods
+- **111** clusters
+- **249** methods involved
+- **~2605** lines in clustered methods
 
 | Methods | Lines | Owner | File | Members |
 |---|---|---|---|---|
 | 2 | 111 | CanvasImageItem | `sxm_viewer/gui/canvases/canvas_items.py` | _render_now, _render_vector_figure |
 | 4 | 83 | (module) | `sxm_viewer/providers/nanonis/adapter.py` | _select_topo_axis, _select_z_axis, _select_bias_axis, _select_true_bias_axis |
-| 4 | 73 | MatrixSpectroViewer | `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py` | _build_slice_metric, _build_peak_metric, _build_integral_metric, _build_stat_metric |
-| 2 | 73 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_review_low_conf_spectros, on_review_off_frame_spectros |
+| 4 | 75 | MatrixSpectroViewer | `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py` | _build_slice_metric, _build_integral_metric, _build_peak_metric, _build_stat_metric |
 | 2 | 64 | MultiPreviewCanvas | `sxm_viewer/gui/canvases/detail_preview_canvas.py` | _draw_shortcut_hint, _draw_acquisition_overlay |
 | 7 | 63 | MultiPreviewCanvas | `sxm_viewer/gui/canvases/detail_preview_canvas.py` | set_show_shortcut_hint, set_show_profile_overlays, set_show_angle_overlays, set_show_title +3 |
+| 2 | 61 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_review_low_conf_spectros, on_review_off_frame_spectros |
 | 2 | 56 | (module) | `sxm_viewer/gui/viewer/loader.py` | _serialize_cache_value, _sanitize_metadata_value |
 | 2 | 54 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_show_spectra_toggled, on_show_preview_spectra_toggled |
 | 2 | 49 | (module) | `sxm_viewer/gui/plot_typography.py` | apply_qfont_style, apply_text_style |
@@ -26,9 +26,7 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 | 3 | 39 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_show_matrix_markers_toggled, on_show_single_markers_toggled, on_compact_markers_toggled |
 | 2 | 38 | MultiPreviewCanvas | `sxm_viewer/gui/canvases/detail_preview_canvas.py` | _normalize_profile_marker_style, _normalize_profile_line_style |
 | 2 | 37 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_show_spectro_miniatures_toggled, on_detail_grid_toggled |
-| 2 | 37 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_unit_relative_toggled, on_preview_lock_toggled |
 | 2 | 36 | (module) | `sxm_viewer/config_io.py` | load_header_cache, load_collections_index |
-| 2 | 36 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_scale_bar_toggled, on_unit_display_toggled |
 | 3 | 36 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | _remember_closed_popup_profile_dialog, _remember_closed_main_profile_dialog, _remember_closed_canvas_window |
 | 2 | 35 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | _dz_vs_previous_ch, _dz_vs_last_before_ch |
 | 2 | 34 | ProfileDialog | `sxm_viewer/gui/dialogs/profile_dialog.py` | _deregister_workspace_dialog, _register_workspace_dialog |
@@ -50,6 +48,8 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 | 2 | 25 | MultiPreviewCanvas | `sxm_viewer/gui/canvases/detail_preview_canvas.py` | _blit_profile_artists, _blit_angle_frames |
 | 2 | 25 | _CollectionQuickPickDialog | `sxm_viewer/gui/controllers/collection.py` | _prompt_new_collection, _prompt_browse_existing |
 | 3 | 25 | SXMGridViewer | `sxm_viewer/gui/main_window.py` | on_spec_coord_mode_changed, on_set_spectro_size, on_set_spectro_symbol |
+| 3 | 24 | MultiPreviewCanvas | `sxm_viewer/gui/canvases/detail_preview_canvas.py` | _connect_scale_bar_events, _connect_angle_events, _connect_profile_events |
+| 2 | 24 | PopupProfileController | `sxm_viewer/gui/controllers/profile.py` | _register_dialog, _deregister_dialog |
 
 ## Cluster detail
 
@@ -69,40 +69,40 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 - `_select_bias_axis` - line 906 (14 lines)
 - `_select_true_bias_axis` - line 922 (21 lines)
 
-### MatrixSpectroViewer - 4 similar methods (73 lines)
+### MatrixSpectroViewer - 4 similar methods (75 lines)
 
 `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py`
 
-- `_build_stat_metric` - line 5367 (16 lines)
-- `_build_integral_metric` - line 5384 (16 lines)
-- `_build_peak_metric` - line 5401 (17 lines)
-- `_build_slice_metric` - line 5419 (24 lines)
-
-### SXMGridViewer - 2 similar methods (73 lines)
-
-`sxm_viewer/gui/main_window.py`
-
-- `on_review_low_conf_spectros` - line 9460 (38 lines)
-- `on_review_off_frame_spectros` - line 9499 (35 lines)
+- `_build_stat_metric` - line 5369 (16 lines)
+- `_build_integral_metric` - line 5386 (18 lines)
+- `_build_peak_metric` - line 5405 (17 lines)
+- `_build_slice_metric` - line 5423 (24 lines)
 
 ### MultiPreviewCanvas - 2 similar methods (64 lines)
 
 `sxm_viewer/gui/canvases/detail_preview_canvas.py`
 
-- `_draw_acquisition_overlay` - line 9802 (30 lines)
-- `_draw_shortcut_hint` - line 9941 (34 lines)
+- `_draw_acquisition_overlay` - line 9584 (30 lines)
+- `_draw_shortcut_hint` - line 9723 (34 lines)
 
 ### MultiPreviewCanvas - 7 similar methods (63 lines)
 
 `sxm_viewer/gui/canvases/detail_preview_canvas.py`
 
-- `set_show_title` - line 402 (9 lines)
-- `set_show_acquisition_overlay` - line 412 (9 lines)
-- `set_show_molecules` - line 422 (9 lines)
-- `set_show_profile_overlays` - line 1146 (9 lines)
-- `set_show_angle_overlays` - line 1156 (9 lines)
-- `set_show_spectra_overlays` - line 1166 (8 lines)
-- `set_show_shortcut_hint` - line 1175 (10 lines)
+- `set_show_title` - line 403 (9 lines)
+- `set_show_acquisition_overlay` - line 413 (9 lines)
+- `set_show_molecules` - line 423 (9 lines)
+- `set_show_profile_overlays` - line 1147 (9 lines)
+- `set_show_angle_overlays` - line 1157 (9 lines)
+- `set_show_spectra_overlays` - line 1167 (8 lines)
+- `set_show_shortcut_hint` - line 1176 (10 lines)
+
+### SXMGridViewer - 2 similar methods (61 lines)
+
+`sxm_viewer/gui/main_window.py`
+
+- `on_review_low_conf_spectros` - line 8422 (32 lines)
+- `on_review_off_frame_spectros` - line 8455 (29 lines)
 
 ### (module-level) - 2 similar methods (56 lines)
 
@@ -115,8 +115,8 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/main_window.py`
 
-- `on_show_spectra_toggled` - line 11836 (32 lines)
-- `on_show_preview_spectra_toggled` - line 11893 (22 lines)
+- `on_show_spectra_toggled` - line 9738 (32 lines)
+- `on_show_preview_spectra_toggled` - line 9795 (22 lines)
 
 ### (module-level) - 2 similar methods (49 lines)
 
@@ -136,8 +136,8 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/main_window.py`
 
-- `load_folder` - line 5164 (22 lines)
-- `load_files` - line 5187 (24 lines)
+- `load_folder` - line 4656 (22 lines)
+- `load_files` - line 4679 (24 lines)
 
 ### RecentFilesController - 2 similar methods (40 lines)
 
@@ -158,30 +158,23 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/main_window.py`
 
-- `on_show_matrix_markers_toggled` - line 11983 (13 lines)
-- `on_show_single_markers_toggled` - line 11997 (13 lines)
-- `on_compact_markers_toggled` - line 12011 (13 lines)
+- `on_show_matrix_markers_toggled` - line 9885 (13 lines)
+- `on_show_single_markers_toggled` - line 9899 (13 lines)
+- `on_compact_markers_toggled` - line 9913 (13 lines)
 
 ### MultiPreviewCanvas - 2 similar methods (38 lines)
 
 `sxm_viewer/gui/canvases/detail_preview_canvas.py`
 
-- `_normalize_profile_line_style` - line 3646 (17 lines)
-- `_normalize_profile_marker_style` - line 3664 (21 lines)
+- `_normalize_profile_line_style` - line 3647 (17 lines)
+- `_normalize_profile_marker_style` - line 3665 (21 lines)
 
 ### SXMGridViewer - 2 similar methods (37 lines)
 
 `sxm_viewer/gui/main_window.py`
 
-- `on_show_spectro_miniatures_toggled` - line 11869 (23 lines)
-- `on_detail_grid_toggled` - line 12033 (14 lines)
-
-### SXMGridViewer - 2 similar methods (37 lines)
-
-`sxm_viewer/gui/main_window.py`
-
-- `on_unit_relative_toggled` - line 6475 (19 lines)
-- `on_preview_lock_toggled` - line 11565 (18 lines)
+- `on_show_spectro_miniatures_toggled` - line 9771 (23 lines)
+- `on_detail_grid_toggled` - line 9935 (14 lines)
 
 ### (module-level) - 2 similar methods (36 lines)
 
@@ -190,27 +183,20 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 - `load_header_cache` - line 88 (22 lines)
 - `load_collections_index` - line 157 (14 lines)
 
-### SXMGridViewer - 2 similar methods (36 lines)
-
-`sxm_viewer/gui/main_window.py`
-
-- `on_unit_display_toggled` - line 6456 (18 lines)
-- `on_scale_bar_toggled` - line 6561 (18 lines)
-
 ### SXMGridViewer - 3 similar methods (36 lines)
 
 `sxm_viewer/gui/main_window.py`
 
-- `_remember_closed_main_profile_dialog` - line 3279 (12 lines)
-- `_remember_closed_popup_profile_dialog` - line 3292 (12 lines)
-- `_remember_closed_canvas_window` - line 3339 (12 lines)
+- `_remember_closed_main_profile_dialog` - line 2784 (12 lines)
+- `_remember_closed_popup_profile_dialog` - line 2797 (12 lines)
+- `_remember_closed_canvas_window` - line 2844 (12 lines)
 
 ### SXMGridViewer - 2 similar methods (35 lines)
 
 `sxm_viewer/gui/main_window.py`
 
-- `_dz_vs_previous_ch` - line 7654 (17 lines)
-- `_dz_vs_last_before_ch` - line 7672 (18 lines)
+- `_dz_vs_previous_ch` - line 6945 (17 lines)
+- `_dz_vs_last_before_ch` - line 6963 (18 lines)
 
 ### ProfileDialog - 2 similar methods (34 lines)
 
@@ -231,9 +217,9 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/main_window.py`
 
-- `on_pick_spectro_single_color` - line 11391 (10 lines)
-- `on_pick_spectro_matrix_color` - line 11402 (11 lines)
-- `on_pick_spectro_stack_color` - line 11414 (11 lines)
+- `on_pick_spectro_single_color` - line 9305 (10 lines)
+- `on_pick_spectro_matrix_color` - line 9316 (11 lines)
+- `on_pick_spectro_stack_color` - line 9328 (11 lines)
 
 ### (module-level) - 2 similar methods (32 lines)
 
@@ -246,22 +232,22 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/canvases/detail_preview_canvas.py`
 
-- `_axis_coord_to_pixel` - line 11086 (15 lines)
-- `_axis_coord_to_pixel_float` - line 11102 (15 lines)
+- `_axis_coord_to_pixel` - line 10813 (15 lines)
+- `_axis_coord_to_pixel_float` - line 10829 (15 lines)
 
 ### MultiPreviewCanvas - 2 similar methods (30 lines)
 
 `sxm_viewer/gui/canvases/detail_preview_canvas.py`
 
-- `_prepare_profile_blit` - line 6799 (15 lines)
-- `_prepare_angle_blit` - line 6834 (15 lines)
+- `_prepare_profile_blit` - line 6800 (15 lines)
+- `_prepare_angle_blit` - line 6835 (15 lines)
 
 ### SXMGridViewer - 2 similar methods (29 lines)
 
 `sxm_viewer/gui/main_window.py`
 
-- `on_add_selected_thumbnails_to_collection` - line 7247 (14 lines)
-- `on_add_selected_thumbnails_to_collection_picker` - line 7262 (15 lines)
+- `on_add_selected_thumbnails_to_collection` - line 6602 (14 lines)
+- `on_add_selected_thumbnails_to_collection_picker` - line 6617 (15 lines)
 
 ### FilterController - 2 similar methods (28 lines)
 
@@ -274,6 +260,24 @@ Methods >= 80% similar after normalization, grouped within each class/module. Th
 
 `sxm_viewer/gui/main_window.py`
 
-- `_load_molecule_overlay` - line 7066 (15 lines)
-- `_load_svg_molecule_overlay` - line 7096 (13 lines)
+- `_load_molecule_overlay` - line 6424 (15 lines)
+- `_load_svg_molecule_overlay` - line 6454 (13 lines)
+
+### SXMGridViewer - 6 similar methods (28 lines)
+
+`sxm_viewer/gui/main_window.py`
+
+- `on_arrange_popouts` - line 6848 (5 lines)
+- `on_minimize_popouts` - line 6854 (5 lines)
+- `compare_menu_state` - line 6871 (6 lines)
+- `_update_matrix_summary_banner` - line 8667 (4 lines)
+- `_update_spec_selection_label` - line 9246 (4 lines)
+- `_clear_multi_spec_selection` - line 9251 (4 lines)
+
+### (module-level) - 2 similar methods (28 lines)
+
+`sxm_viewer/gui/viewer/thumbnail_ui.py`
+
+- `_refresh_spectro_thumb_selection_styles` - line 324 (14 lines)
+- `_refresh_thumb_selection_styles` - line 1379 (14 lines)
 

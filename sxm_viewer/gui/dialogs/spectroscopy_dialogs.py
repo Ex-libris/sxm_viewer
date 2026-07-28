@@ -61,6 +61,7 @@ from ..figure_layout_presets import (
     save_figure_with_dialog,
 )
 from ..mpl_compat import InsetPosition
+from ..qt_helpers import set_silent
 from . import potential_fits
 try:
     from scipy import signal as _scipy_signal
@@ -9107,12 +9108,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return
         if hi < lo:
             lo, hi = hi, lo
-        self.potential_zmin_spin.blockSignals(True)
-        self.potential_zmax_spin.blockSignals(True)
-        self.potential_zmin_spin.setValue(float(lo))
-        self.potential_zmax_spin.setValue(float(hi))
-        self.potential_zmin_spin.blockSignals(False)
-        self.potential_zmax_spin.blockSignals(False)
+        set_silent(self.potential_zmin_spin, value=float(lo))
+        set_silent(self.potential_zmax_spin, value=float(hi))
         self._on_potential_range_edited()
 
     def _potential_fit_for_curve(self, spec_id, x, y):
