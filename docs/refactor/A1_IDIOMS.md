@@ -1,0 +1,3080 @@
+# A1 - Known idiom scan
+
+Structural (AST) scan for the repeated idioms identified in the duplication assessment. Re-run after each migration batch to confirm counts actually drop, and periodically to catch regressions.
+
+## Summary
+
+| Idiom | Sites | Files |
+|---|---|---|
+| block_signals_triad | 221 | 17 |
+| try_except_pass | 1348 | 67 |
+| defensive_getattr | 1229 | 32 |
+| config_write_then_save | 88 | 9 |
+| header_field_unpack | 43 | 9 |
+
+## block_signals_triad  (221 sites)
+
+> Replace with a `set_silent(widget, **props)` helper that restores the *previous* block state. Sites marked `hardcoded-False` also carry a latent nesting bug.
+
+| File | Sites |
+|---|---|
+| sxm_viewer/gui/dialogs/spectroscopy_dialogs.py | 52 |
+| sxm_viewer/gui/canvases/canvas_window.py | 38 |
+| sxm_viewer/gui/main_window.py | 38 |
+| sxm_viewer/gui/controllers/quick_crop.py | 22 |
+| sxm_viewer/gui/controllers/histogram.py | 12 |
+| sxm_viewer/gui/controllers/image_compare.py | 12 |
+| sxm_viewer/gui/controllers/session.py | 10 |
+| sxm_viewer/gui/controllers/collection.py | 8 |
+| sxm_viewer/gui/dialogs/profile_dialog.py | 8 |
+| sxm_viewer/gui/dialogs/image_adjust.py | 4 |
+| sxm_viewer/gui/controllers/preview_popup.py | 3 |
+| sxm_viewer/gui/main_window_layout.py | 3 |
+| sxm_viewer/gui/main_window_toolbar.py | 3 |
+| sxm_viewer/gui/dialogs/periodic_noise.py | 2 |
+| sxm_viewer/gui/qt_helpers.py | 2 |
+| sxm_viewer/gui/viewer/loader.py | 2 |
+| sxm_viewer/gui/viewer/thumbnail_ui.py | 2 |
+
+**211 of 221 hardcode `blockSignals(False)` instead of restoring the previous state.**
+
+<details><summary>All sites</summary>
+
+- `sxm_viewer/gui/canvases/canvas_window.py:348` self.font_color_auto_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:348` self.font_color_auto_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:353` self.scale_bar_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:353` self.scale_bar_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:360` left_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:360` left_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:365` self.canvas_molecules_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:365` self.canvas_molecules_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:381` self.text_scale_slider (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:381` self.text_scale_slider (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:386` self.font_color_auto_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:386` self.font_color_auto_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:391` self.scale_bar_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:391` self.scale_bar_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:397` self.canvas_molecules_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:397` self.canvas_molecules_check (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:402` self.scale_bar_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:402` self.scale_bar_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:414` left_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:414` left_combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:481` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:481` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:493` combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:493` combo (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:549` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:549` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:735` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:735` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:749` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:749` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:761` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:761` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:819` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:819` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:843` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:843` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:857` widget (hardcoded-False)
+- `sxm_viewer/gui/canvases/canvas_window.py:857` widget (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:319` self.combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:319` self.combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:335` self.combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:335` self.combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:1981` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:1981` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:2213` widget (hardcoded-False)
+- `sxm_viewer/gui/controllers/collection.py:2213` widget (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:107` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:107` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:107` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:108` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:108` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:108` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:136` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:136` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:136` spin_lo (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:137` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:137` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/histogram.py:137` spin_hi (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:835` self.pick_landmarks_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:835` self.pick_landmarks_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1323` self.profile_mode_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1323` self.profile_mode_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1607` spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1607` spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1625` self.rotation_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1625` self.rotation_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1626` self.shift_x_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1626` self.shift_x_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1627` self.shift_y_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/image_compare.py:1627` self.shift_y_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/preview_popup.py:763` channel_combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/preview_popup.py:763` channel_combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/preview_popup.py:763` channel_combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:33` act (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:33` act (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:41` btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:41` btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:82` btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:82` btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:128` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:128` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:150` edit_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:150` edit_btn (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:192` width_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:192` width_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:198` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:198` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:210` aspect_combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:210` aspect_combo (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:241` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:241` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:247` width_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:247` width_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:252` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/quick_crop.py:252` height_spin (hardcoded-False)
+- `sxm_viewer/gui/controllers/session.py:838` widget (mixed)
+- `sxm_viewer/gui/controllers/session.py:838` widget (restores-prev)
+- `sxm_viewer/gui/controllers/session.py:849` widget (mixed)
+- `sxm_viewer/gui/controllers/session.py:849` widget (restores-prev)
+- `sxm_viewer/gui/controllers/session.py:860` widget (mixed)
+- `sxm_viewer/gui/controllers/session.py:860` widget (restores-prev)
+- `sxm_viewer/gui/controllers/session.py:1077` viewer.channel_dropdown (mixed)
+- `sxm_viewer/gui/controllers/session.py:1077` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/controllers/session.py:1105` viewer.channel_dropdown (mixed)
+- `sxm_viewer/gui/controllers/session.py:1105` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/dialogs/image_adjust.py:802` self.high_pct_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/image_adjust.py:802` self.high_pct_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/image_adjust.py:816` spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/image_adjust.py:816` spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/periodic_noise.py:170` self.region_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/periodic_noise.py:170` self.region_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1119` self.advanced_toggle_btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1119` self.advanced_toggle_btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2317` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2317` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2491` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2491` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2703` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2703` self.profile_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1131` self.advanced_toggle_btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1131` self.advanced_toggle_btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1639` btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1639` btn (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1852` self.unit_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1852` self.unit_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2772` self.curve_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2772` self.curve_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3950` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3950` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4220` self.image_channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4220` self.image_channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4470` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4470` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4478` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4478` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4557` self.cmap_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4557` self.cmap_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6246` self.relative_z_cb (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6246` self.relative_z_cb (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7366` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7366` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7743` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7743` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7800` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7800` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7837` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7837` self.palette_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7850` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7850` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7887` self.axis_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7887` self.axis_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7916` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7916` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8275` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8275` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8388` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8388` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8892` checkbox (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8892` checkbox (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8976` self.offset_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8976` self.offset_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10655` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10655` self.channel_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10665` self.axis_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10665` self.axis_combo (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10675` checkbox (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10675` checkbox (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10681` self.offset_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10681` self.offset_spin (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10695` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10695` self.spec_list (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:4789` self.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:4789` self.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9752` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9752` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9784` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9784` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9807` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9807` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9825` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9825` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9845` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9845` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9864` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9864` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9878` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9878` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9895` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9895` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9909` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9909` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9923` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9923` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9943` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:9943` widget (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10027` self.scale_bar_cb (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10027` self.scale_bar_cb (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10031` self.display_scale_bar_act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10031` self.display_scale_bar_act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10046` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10046` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10153` action (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10153` action (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10171` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10171` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10180` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10180` act (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10185` cb (hardcoded-False)
+- `sxm_viewer/gui/main_window.py:10185` cb (hardcoded-False)
+- `sxm_viewer/gui/main_window_layout.py:313` act (hardcoded-False)
+- `sxm_viewer/gui/main_window_layout.py:313` act (hardcoded-False)
+- `sxm_viewer/gui/main_window_layout.py:313` act (hardcoded-False)
+- `sxm_viewer/gui/main_window_toolbar.py:230` lock_act (hardcoded-False)
+- `sxm_viewer/gui/main_window_toolbar.py:230` lock_act (hardcoded-False)
+- `sxm_viewer/gui/main_window_toolbar.py:230` lock_act (hardcoded-False)
+- `sxm_viewer/gui/qt_helpers.py:62` widget (restores-prev)
+- `sxm_viewer/gui/qt_helpers.py:62` widget (restores-prev)
+- `sxm_viewer/gui/viewer/loader.py:972` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/viewer/loader.py:972` viewer.channel_dropdown (hardcoded-False)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1675` combo (hardcoded-False)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1675` combo (hardcoded-False)
+
+</details>
+
+## try_except_pass  (1348 sites)
+
+> Mostly guards hand-rolled widget pokes; many disappear for free once the other idioms are replaced by null-safe helpers. Do NOT bulk-delete - some are load-bearing (Qt teardown, optional imports).
+
+| File | Sites |
+|---|---|
+| sxm_viewer/gui/main_window.py | 313 |
+| sxm_viewer/gui/canvases/detail_preview_canvas.py | 242 |
+| sxm_viewer/gui/controllers/session.py | 108 |
+| sxm_viewer/gui/dialogs/spectroscopy_dialogs.py | 108 |
+| sxm_viewer/gui/dialogs/profile_dialog.py | 59 |
+| sxm_viewer/gui/controllers/collection.py | 58 |
+| sxm_viewer/gui/viewer/measurement.py | 47 |
+| sxm_viewer/gui/viewer/thumbnail_ui.py | 47 |
+| sxm_viewer/gui/viewer/loader.py | 38 |
+| sxm_viewer/gui/controllers/preview_popup.py | 35 |
+| sxm_viewer/gui/controllers/profile.py | 21 |
+| sxm_viewer/gui/controllers/quick_crop.py | 16 |
+| sxm_viewer/gui/viewer/preview.py | 16 |
+| sxm_viewer/gui/spectroscopy/browser.py | 13 |
+| sxm_viewer/gui/spectroscopy/popups.py | 13 |
+| sxm_viewer/gui/canvases/preview_export_figures.py | 12 |
+| sxm_viewer/gui/controllers/image_compare.py | 12 |
+| sxm_viewer/gui/controllers/spectro_compare.py | 12 |
+| sxm_viewer/gui/spectroscopy/summary_dialog.py | 12 |
+| sxm_viewer/gui/dialogs/matrix_fit.py | 10 |
+
+<details><summary>All sites</summary>
+
+- `sxm_viewer/_shared.py:79` guards 1 stmt(s)
+- `sxm_viewer/_shared.py:87` guards 1 stmt(s)
+- `sxm_viewer/app_meta.py:91` guards 1 stmt(s)
+- `sxm_viewer/cli.py:12` guards 1 stmt(s)
+- `sxm_viewer/cmap_registry.py:341` guards 1 stmt(s)
+- `sxm_viewer/config_io.py:41` guards 1 stmt(s)
+- `sxm_viewer/config_io.py:122` guards 2 stmt(s)
+- `sxm_viewer/config_io.py:175` guards 2 stmt(s)
+- `sxm_viewer/data/spectroscopy.py:322` guards 1 stmt(s)
+- `sxm_viewer/data/spectroscopy.py:335` guards 2 stmt(s)
+- `sxm_viewer/data/spectroscopy.py:349` guards 3 stmt(s)
+- `sxm_viewer/gui/activity_log.py:48` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_items.py:1060` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_items.py:1384` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_items.py:1419` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_rendering.py:494` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_rendering.py:510` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_view.py:631` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:137` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:190` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:201` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:526` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:530` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:537` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:1061` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/canvas_window.py:1140` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:138` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:444` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:461` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:472` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:478` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:486` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:491` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:495` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:509` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:667` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:719` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:724` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:766` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:773` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:818` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:823` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:828` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:833` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:992` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1034` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1040` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1140` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1240` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1414` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1526` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1530` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1581` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1593` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1671` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1686` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1695` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1697` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1830` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1836` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1851` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1855` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1859` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1863` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1881` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1883` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2066` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2132` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2139` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2210` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2574` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2636` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2642` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2651` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2670` guards 6 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2710` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2736` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2908` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2930` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2940` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2950` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2987` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3477` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3486` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3557` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3635` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3836` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3848` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3860` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4002` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4023` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4032` guards 7 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4048` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4061` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4096` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4109` guards 6 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4121` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4128` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4133` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4181` guards 7 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4209` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4228` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4231` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4281` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4393` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4456` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4474` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4493` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4511` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4538` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4587` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4595` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4786` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4793` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4800` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4806` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4812` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4817` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4826` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4832` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4839` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4907` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4913` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4918` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4923` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5010` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5019` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5025` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5032` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5046` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5142` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5154` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5193` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5228` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5235` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5243` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5360` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5366` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5403` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5410` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5460` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5518` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5526` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5712` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5761` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5776` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5782` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5868` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5875` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5935` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5942` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5953` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5977` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5995` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6001` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6057` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6069` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6101` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6116` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6122` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6156` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6180` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6191` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6200` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6206` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6367` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6376` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6384` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6402` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6407` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6435` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6442` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6453` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6716` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6750` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6780` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6795` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6805` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6840` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6871` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6970` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7024` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7029` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7043` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7053` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7110` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7158` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7191` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7202` guards 5 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7270` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7334` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7432` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7441` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7481` guards 5 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7540` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7579` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7918` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7939` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7968` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8564` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8586` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8592` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8622` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8628` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8641` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8791` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8882` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9011` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9017` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9040` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9045` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9050` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9068` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9090` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9107` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9124` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9129` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9134` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9139` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9144` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9149` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9154` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9159` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9164` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9169` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9174` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9179` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9184` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9189` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9194` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9199` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9247` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9263` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9291` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9502` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9610` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9687` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9718` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9751` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9847` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9871` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9885` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10035` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10075` guards 7 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10121` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10147` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10241` guards 9 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10248` guards 6 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10315` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10325` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10335` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10355` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10378` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10390` guards 6 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10437` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10469` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10537` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10570` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10689` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10793` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10897` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10932` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10951` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:11355` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:11450` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:11488` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:12164` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:12177` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/molecular_overlay.py:267` guards 7 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:58` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:69` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:78` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:85` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:90` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:106` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/preview_axes_sync.py:127` guards 3 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:66` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:102` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:159` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:206` guards 2 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:218` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:231` guards 10 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:246` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:268` guards 1 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:272` guards 6 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:286` guards 4 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:297` guards 8 stmt(s)
+- `sxm_viewer/gui/canvases/preview_export_figures.py:310` guards 6 stmt(s)
+- `sxm_viewer/gui/compact_histogram.py:84` guards 3 stmt(s)
+- `sxm_viewer/gui/compact_histogram.py:98` guards 1 stmt(s)
+- `sxm_viewer/gui/compact_histogram.py:131` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:375` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:381` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:387` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:421` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:430` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:440` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:750` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:757` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:826` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:833` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:865` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:902` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:966` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:973` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1001` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1010` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1015` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1229` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1233` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1243` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1251` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1265` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1320` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1327` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1333` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1339` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1521` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1526` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1530` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1534` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1684` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1693` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1783` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1789` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1793` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1797` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1801` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1805` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1809` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1819` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1823` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1827` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1894` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1935` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1940` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1975` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1980` guards 6 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1990` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:1994` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2007` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2108` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2147` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2151` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2180` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2212` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2243` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2247` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/collection.py:2252` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:123` guards 13 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:270` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:531` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:535` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:539` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:564` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:598` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/filter_controller.py:640` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:151` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:248` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:253` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:271` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:275` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:284` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:289` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:293` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/histogram.py:298` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:79` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:177` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:226` guards 12 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:515` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:724` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:796` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:814` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:824` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:846` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:1011` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:1066` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/image_compare.py:1450` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:89` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:241` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:274` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:278` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:282` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:308` guards 23 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:347` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:351` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:355` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:359` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:363` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:367` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:373` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:380` guards 7 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:439` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:444` guards 15 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:476` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:479` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:495` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:528` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:554` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:561` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:570` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:574` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:628` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:643` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:750` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:802` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:811` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:819` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:843` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:849` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:854` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:865` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/preview_popup.py:875` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:40` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:49` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:53` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:74` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:83` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:154` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:177` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:197` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:211` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:264` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:274` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:300` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:338` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:348` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:352` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:365` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:371` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:376` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:392` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:399` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/profile.py:403` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:32` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:40` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:49` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:55` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:81` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:90` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:95` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:100` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:149` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:341` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:356` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:396` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:623` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:689` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:765` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/quick_crop.py:825` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/recent_files_controller.py:108` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/report.py:177` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/report.py:280` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/report.py:312` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/report.py:356` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:33` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:42` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:59` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:101` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:113` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:172` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:179` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:188` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:223` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:243` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:249` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:275` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:322` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:411` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:424` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:428` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:434` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:438` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:454` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:509` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:531` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:547` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:583` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:605` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:619` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:686` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:699` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:708` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:713` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:718` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:723` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:728` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:733` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:740` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:747` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:763` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:771` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:802` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:837` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:848` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:859` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:870` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:878` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:883` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:895` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:967` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:973` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:977` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:983` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1001` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1005` guards 7 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1015` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1076` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1083` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1104` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1115` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1119` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1132` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1214` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1234` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1244` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1249` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1283` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1325` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1329` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1350` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1364` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1392` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1434` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1439` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1444` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1457` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1465` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1470` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1484` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1683` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1763` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1797` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1803` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1809` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1820` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1826` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1834` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1840` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1846` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1852` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1858` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1862` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:1924` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2033` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2043` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2050` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2054` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2059` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2065` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2075` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2210` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2214` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2254` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2298` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2304` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2309` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2371` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2384` guards 3 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2398` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2402` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2438` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/session.py:2443` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:76` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:90` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:153` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:167` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:327` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:337` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:342` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:347` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:359` guards 2 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:395` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:414` guards 1 stmt(s)
+- `sxm_viewer/gui/controllers/spectro_compare.py:454` guards 5 stmt(s)
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:38` guards 4 stmt(s)
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:51` guards 6 stmt(s)
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:73` guards 2 stmt(s)
+- `sxm_viewer/gui/debounce.py:127` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/filters.py:452` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/filters.py:465` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/filters.py:715` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:258` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:284` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:290` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:309` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:316` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/image_adjust.py:334` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:135` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:421` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:513` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:556` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:689` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:721` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:779` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:804` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:916` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/matrix_fit.py:929` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:174` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:187` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:511` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:891` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:959` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:987` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:997` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1065` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1147` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1177` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1251` guards 13 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1294` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1310` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1351` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1365` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1369` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1390` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1503` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1507` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1537` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1541` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1572` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1599` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1681` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1726` guards 7 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1821` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1829` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2020` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2038` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2066` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2079` guards 8 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2092` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2101` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2122` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2126` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2130` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2150` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2197` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2410` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2417` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2424` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2437` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2443` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2468` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2516` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2573` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2609` guards 8 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2662` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2668` guards 5 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2677` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2685` guards 5 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2723` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2729` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2738` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2747` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2755` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2814` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2859` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2865` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:242` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:415` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1159` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1171` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1175` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1179` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1222` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1642` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1649` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1653` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1657` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1826` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2113` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2123` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2226` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2296` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2548` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2575` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2778` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2798` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2834` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2856` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2882` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2887` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2892` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2897` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2905` guards 5 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2914` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2919` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3028` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3165` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3349` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3603` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3879` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3990` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4000` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4005` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4153` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4315` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4455` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4605` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4805` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4820` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5144` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5255` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5360` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5631` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5943` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6193` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6197` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6201` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6325` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6383` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6387` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6391` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6453` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6494` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6503` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6507` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6523` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6638` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6662` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6673` guards 5 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6682` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6763` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6784` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6803` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6826` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6883` guards 4 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6911` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6930` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7031` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7097` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7110` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7115` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7124` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7128` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7737` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7821` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8149` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8522` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8545` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8574` guards 5 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8685` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8786` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8817` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9153` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9276` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9419` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9877` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9916` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10214` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10245` guards 3 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10276` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10312` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10455` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10519` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10741` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11038` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11047` guards 8 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11087` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11112` guards 9 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11129` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11145` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11161` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11166` guards 1 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11172` guards 2 stmt(s)
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11178` guards 1 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:100` guards 4 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:112` guards 1 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:174` guards 5 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:183` guards 3 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:381` guards 2 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:413` guards 1 stmt(s)
+- `sxm_viewer/gui/drift_animation.py:680` guards 5 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:73` guards 2 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:102` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:106` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:110` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:115` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:119` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:123` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:127` guards 1 stmt(s)
+- `sxm_viewer/gui/figure_layout_presets.py:143` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:148` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:152` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:187` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:221` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:262` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window.py:285` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:443` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:526` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:532` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:538` guards 10 stmt(s)
+- `sxm_viewer/gui/main_window.py:635` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:646` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:651` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:658` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:671` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:725` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:782` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:1135` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1139` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1143` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1147` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1151` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1155` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1159` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1164` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1169` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1182` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1234` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1240` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1246` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1251` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1256` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1260` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1264` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1268` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1276` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1315` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:1348` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1359` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:1368` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1372` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1376` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1380` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1387` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1397` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1476` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1481` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1485` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1490` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:1500` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1506` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1514` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1518` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1522` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1528` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1536` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1545` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1576` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1637` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1641` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1646` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1657` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1667` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1690` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1713` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1721` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1727` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1736` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1741` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1750` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1755` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1759` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1765` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1770` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1775` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1847` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1855` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:1875` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1884` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:1985` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2086` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2111` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2216` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2221` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2403` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window.py:2417` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2421` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2427` guards 18 stmt(s)
+- `sxm_viewer/gui/main_window.py:2454` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2460` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2466` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2471` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2478` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2486` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2501` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2506` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2511` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2534` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2546` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2551` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2560` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2565` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2593` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2601` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2692` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2714` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2719` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2723` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2734` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2740` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2754` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2765` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:2923` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2968` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:2984` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3061` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3074` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3079` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3160` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3171` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3213` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3220` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:3229` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3234` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3239` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3409` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:3419` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3480` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3487` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3495` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3516` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3556` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:3568` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:3598` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3923` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3935` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:3988` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4020` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4050` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4060` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4113` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4132` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4179` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4246` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4261` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4276` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4308` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4345` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4370` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:4377` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4384` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:4391` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4412` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window.py:4426` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window.py:4440` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4448` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4458` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4468` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4479` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4487` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4563` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4669` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4673` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4698` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4764` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4771` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4775` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4779` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:4784` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4788` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:4795` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4800` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:4805` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4809` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4813` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4821` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4825` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4892` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4909` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4924` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:4939` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5135` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5150` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5156` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5176` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5180` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5250` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5319` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5326` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5330` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5360` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5366` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5420` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5430` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5435` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5469` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:5492` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5496` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:5502` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5576` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5580` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5584` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5727` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:5888` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5897` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5904` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:5909` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5921` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:5929` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6101` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6168` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:6217` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6222` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window.py:6234` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6300` guards 11 stmt(s)
+- `sxm_viewer/gui/main_window.py:6316` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6359` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:6402` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6435` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6463` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6474` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6483` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6503` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6576` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:6637` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:6684` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:6693` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6699` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:6704` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6721` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6739` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6798` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6836` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:6843` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7010` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7202` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7321` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:7328` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:7373` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7519` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7523` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7527` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7652` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7679` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:7742` guards 11 stmt(s)
+- `sxm_viewer/gui/main_window.py:7828` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:7958` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:8019` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8023` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8031` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8046` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8058` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8079` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8158` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8243` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:8306` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:8365` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8411` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8445` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8475` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8577` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8837` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8867` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:8890` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9047` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9465` guards 6 stmt(s)
+- `sxm_viewer/gui/main_window.py:9471` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9504` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9521` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9527` guards 8 stmt(s)
+- `sxm_viewer/gui/main_window.py:9529` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:9545` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9551` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9560` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9564` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9574` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:9576` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:9582` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9587` guards 4 stmt(s)
+- `sxm_viewer/gui/main_window.py:9607` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9637` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9659` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:9702` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9709` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9742` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9775` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9798` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9824` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9844` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9863` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9877` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:9938` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:9982` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10025` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:10045` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:10056` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window.py:10062` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10066` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10070` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10074` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10078` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10082` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10086` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10090` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10094` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10098` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10102` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10106` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10165` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10255` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10285` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window.py:10365` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window.py:10377` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_layout.py:13` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_layout.py:122` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:80` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:100` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:135` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:139` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:160` guards 3 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:169` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:175` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:202` guards 5 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:213` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_spectro.py:219` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_state.py:343` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_state.py:445` guards 2 stmt(s)
+- `sxm_viewer/gui/main_window_toolbar.py:87` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_toolbar.py:123` guards 1 stmt(s)
+- `sxm_viewer/gui/main_window_toolbar.py:202` guards 16 stmt(s)
+- `sxm_viewer/gui/minimap.py:234` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:40` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:55` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:60` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:65` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:70` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:81` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:86` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:91` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:96` guards 1 stmt(s)
+- `sxm_viewer/gui/plot_typography.py:140` guards 1 stmt(s)
+- `sxm_viewer/gui/ppt_bridge.py:54` guards 1 stmt(s)
+- `sxm_viewer/gui/ppt_bridge.py:220` guards 1 stmt(s)
+- `sxm_viewer/gui/ppt_bridge.py:224` guards 2 stmt(s)
+- `sxm_viewer/gui/ppt_mixin.py:48` guards 1 stmt(s)
+- `sxm_viewer/gui/profile_links.py:14` guards 1 stmt(s)
+- `sxm_viewer/gui/qt_helpers.py:83` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:40` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:191` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:203` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:407` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:419` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:423` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:429` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:970` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:976` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:995` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:1001` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:1039` guards 4 stmt(s)
+- `sxm_viewer/gui/spectroscopy/browser.py:1051` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:94` guards 5 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:207` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:211` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:562` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:614` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/controller.py:655` guards 5 stmt(s)
+- `sxm_viewer/gui/spectroscopy/loading.py:273` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overlays.py:739` guards 9 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overlays.py:763` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overlays.py:863` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overrides.py:159` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overrides.py:163` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overrides.py:169` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/overrides.py:175` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:52` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:56` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:60` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:64` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:68` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:72` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:76` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:80` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:84` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:93` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:126` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:155` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/popups.py:197` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:185` guards 10 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:237` guards 3 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:247` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:255` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:262` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:269` guards 2 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:277` guards 4 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:304` guards 6 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:419` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:431` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:436` guards 1 stmt(s)
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:458` guards 7 stmt(s)
+- `sxm_viewer/gui/system_open.py:23` guards 1 stmt(s)
+- `sxm_viewer/gui/theme.py:159` guards 1 stmt(s)
+- `sxm_viewer/gui/theme.py:717` guards 7 stmt(s)
+- `sxm_viewer/gui/theme.py:735` guards 1 stmt(s)
+- `sxm_viewer/gui/theme.py:823` guards 1 stmt(s)
+- `sxm_viewer/gui/theme.py:840` guards 5 stmt(s)
+- `sxm_viewer/gui/thumbnail_render.py:383` guards 4 stmt(s)
+- `sxm_viewer/gui/viewer/export.py:197` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:188` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:402` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:408` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:427` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:433` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:746` guards 4 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:906` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:984` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:990` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:992` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:995` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1026` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1046` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1050` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1055` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1072` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1102` guards 3 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1137` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1148` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1160` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1200` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1317` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1410` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1458` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1525` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1637` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:1688` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2276` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2318` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2416` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2428` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2476` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2525` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2546` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2592` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2598` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2615` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/loader.py:2626` guards 4 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:57` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:61` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:89` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:93` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:108` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:112` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:117` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:122` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:126` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:138` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:143` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:159` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:165` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:172` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:178` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:190` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:194` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:199` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:206` guards 3 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:213` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:218` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:230` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:256` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:275` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:281` guards 3 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:298` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:309` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:349` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:376` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:385` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:389` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:394` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:419` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:427` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:433` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:438` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:446` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:449` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:459` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:465` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:506` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:517` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:523` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:528` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:545` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:552` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/measurement.py:556` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:55` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:66` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:238` guards 5 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:389` guards 5 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:627` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:720` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:733` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:768` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:817` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:971` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:992` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:1010` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:1015` guards 3 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:1049` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:1053` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/preview.py:1059` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:63` guards 3 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:114` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:207` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:214` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:260` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:264` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:268` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:274` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:278` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:282` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:288` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:292` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:296` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:302` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:308` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:312` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:390` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:542` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:568` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:636` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:643` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:648` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:655` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:779` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:810` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:865` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:869` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:873` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:945` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:978` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:999` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1057` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1116` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1120` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1128` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1133` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1142` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1147` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1215` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1275` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1286` guards 19 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1305` guards 4 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1419` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1496` guards 13 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1534` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1632` guards 2 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1668` guards 1 stmt(s)
+- `sxm_viewer/gui/viewer/thumbnails.py:114` guards 1 stmt(s)
+- `sxm_viewer/gui/virtual_copies.py:177` guards 17 stmt(s)
+- `sxm_viewer/processing/detection.py:69` guards 1 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:804` guards 2 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:830` guards 1 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:959` guards 2 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:992` guards 1 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:1060` guards 1 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:1076` guards 1 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:1092` guards 3 stmt(s)
+- `sxm_viewer/providers/nanonis/adapter.py:1183` guards 2 stmt(s)
+- `sxm_viewer/reporting/model.py:402` guards 1 stmt(s)
+
+</details>
+
+## defensive_getattr  (1229 sites)
+
+> Symptom of ~400 attributes with no guaranteed init order. Real fix is attribute initialization guarantees; deferred to the class-split work.
+
+| File | Sites |
+|---|---|
+| sxm_viewer/gui/main_window.py | 377 |
+| sxm_viewer/gui/controllers/session.py | 129 |
+| sxm_viewer/gui/canvases/detail_preview_canvas.py | 125 |
+| sxm_viewer/gui/dialogs/spectroscopy_dialogs.py | 119 |
+| sxm_viewer/gui/viewer/thumbnail_ui.py | 70 |
+| sxm_viewer/gui/viewer/preview.py | 49 |
+| sxm_viewer/gui/controllers/quick_crop.py | 42 |
+| sxm_viewer/gui/viewer/loader.py | 38 |
+| sxm_viewer/gui/spectroscopy/browser.py | 32 |
+| sxm_viewer/gui/dialogs/profile_dialog.py | 25 |
+| sxm_viewer/gui/viewer/measurement.py | 24 |
+| sxm_viewer/gui/main_window_layout.py | 22 |
+| sxm_viewer/gui/main_window_toolbar.py | 21 |
+| sxm_viewer/gui/canvases/canvas_window.py | 16 |
+| sxm_viewer/gui/controllers/spectro_compare.py | 16 |
+| sxm_viewer/gui/controllers/thumbnail_controller.py | 16 |
+| sxm_viewer/gui/spectroscopy/overlays.py | 16 |
+| sxm_viewer/gui/spectroscopy/loading.py | 14 |
+| sxm_viewer/gui/viewer/export.py | 10 |
+| sxm_viewer/gui/canvases/svg_molecule_overlay.py | 9 |
+
+<details><summary>All sites</summary>
+
+- `sxm_viewer/gui/canvases/canvas_window.py:143` self.splitter
+- `sxm_viewer/gui/canvases/canvas_window.py:156` self._theme
+- `sxm_viewer/gui/canvases/canvas_window.py:199` self._theme
+- `sxm_viewer/gui/canvases/canvas_window.py:247` self.display_preset_combo
+- `sxm_viewer/gui/canvases/canvas_window.py:264` self._suppress_preset_sync
+- `sxm_viewer/gui/canvases/canvas_window.py:312` self.display_preset_combo
+- `sxm_viewer/gui/canvases/canvas_window.py:357` self.left_scale_bar_combo
+- `sxm_viewer/gui/canvases/canvas_window.py:411` self.left_scale_bar_combo
+- `sxm_viewer/gui/canvases/canvas_window.py:546` self.canvas_molecules_check
+- `sxm_viewer/gui/canvases/canvas_window.py:567` self.canvas_molecule_load_btn
+- `sxm_viewer/gui/canvases/canvas_window.py:732` self.toolbar_metadata_bar_check
+- `sxm_viewer/gui/canvases/canvas_window.py:746` self.toolbar_unit_badge_check
+- `sxm_viewer/gui/canvases/canvas_window.py:758` self.toolbar_show_title_check
+- `sxm_viewer/gui/canvases/canvas_window.py:816` self.colorbar_mode_combo
+- `sxm_viewer/gui/canvases/canvas_window.py:840` self.show_colorbar_check
+- `sxm_viewer/gui/canvases/canvas_window.py:854` self.colorbar_ticks_check
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:436` self._show_molecule_gizmo
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:453` self._profile_user_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:635` self._render_suspended
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:646` self._render_suspended
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:656` self._render_suspended
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:658` self._render_pending
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:673` self._compact_size_hints
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:681` self._compact_size_hints
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:701` self.views
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:709` self._fast_preview_update_once
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:746` self.profile_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:746` self.angle_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:748` self.molecules
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:748` self.svg_molecules
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:750` self.main_ax
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:846` self._theme_sig
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:848` self._font_sig
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:854` self._async_redraw_once
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:911` self._ax_view_map
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:915` self._ax_view_map
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:920` self._active_view_ax
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:921` self._hover_view_ax
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1021` self.views
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1114` self._plot_font_bold
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1115` self._plot_font_italic
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1116` self._plot_font_underline
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1237` self._shortcut_hint_artist
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1247` self._shortcut_hint_artist
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1463` self._profile_user_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1604` self._profile_user_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1672` self.views
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1687` self.views
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1688` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1696` self.views
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1713` self._suspend_zoom_restore
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1918` self._async_redraw_once
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:1936` self._show_hydrogens
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2834` self._active_molecule_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2842` self._active_molecule_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2850` self._show_molecule_gizmo
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2852` self._molecule_gizmo_until
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2880` self._molecule_gizmo_axes
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2927` self._molecule_gizmo_until
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2946` self._show_molecule_gizmo
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2948` self._molecule_gizmo_until
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2960` self._molecule_gizmo_axes
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:2961` self._molecule_gizmo_artists
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3013` self._detail_dark
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3165` self._highlight_pulse_strength
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3275` self._font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3298` self._font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3458` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3461` self._scale_bar_settings
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3688` self._profile_saved_profile_seq
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3689` self._profile_saved_profile_seq
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:3761` self._profile_user_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4047` self._colorbars
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4056` self._scale_bar_settings
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4069` self._suppress_internal_draw_requests
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4077` self._scale_bar_settings
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4085` self._colorbars
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4086` self._scale_bar_artists
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4091` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4108` self._colorbars
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4139` self._suppress_internal_draw_requests
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4147` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4148` self._plot_font_bold
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4149` self._plot_font_italic
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4150` self._plot_font_underline
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4152` self._colorbars
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4153` self._scale_bar_artists
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4154` self._angle_frames
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4191` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4491` self._popup_relative_zero_setter
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4494` self._popup_relative_zero_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4508` self._active_molecule_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:4851` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5227` self._profile_ticks
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5299` self._profile_label_mode
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:5307` self._profile_label_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6340` self._profile_label_mode
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6665` self._profile_quick_transient
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6722` self._show_hydrogens
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6947` self.profile_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:6948` self._profile_move_only
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7091` self._molecule_gizmo_axes
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7163` self.outline_mode
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7177` self._measurement_shortcuts_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7185` self._measurement_shortcuts_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7701` self._show_hydrogens
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7772` self._svg_molecule_drag
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7818` self._molecule_gizmo_drag
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7832` self._molecule_gizmo_axes
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7934` self.molecule_palette
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:7993` self._show_hydrogens
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8007` self.molecule_palette
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8025` self.molecule_palette
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8027` self._show_hydrogens
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8045` self._active_molecule_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8656` self._measurement_shortcuts_enabled
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:8737` self._show_molecule_gizmo
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9342` self._pan_active
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9343` self._dragging
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9344` self._saved_profile_drag
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9345` self._profile_marker_drag_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9346` self._angle_dragging
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9347` self._molecule_drag_idx
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9348` self._molecule_gizmo_drag
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9349` self._scale_bar_drag_start
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9350` self._fixed_crop_template_drag
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9351` self._crop_start
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9352` self._outline_start
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9590` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9616` self._show_image_size_overlay
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9666` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9698` self._detail_dark
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9699` self._detail_dark
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9700` self._detail_dark
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9727` self._view_font_scale
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9759` self._shortcut_hint_artist
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:9772` self._show_shortcut_hint
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10393` self._crop_move_throttle_ms
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10393` self._crop_last_ts
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10417` self._dragging
+- `sxm_viewer/gui/canvases/detail_preview_canvas.py:10417` self._molecule_drag_idx
+- `sxm_viewer/gui/canvases/molecular_overlay.py:432` self.z_height_scale
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:554` self.bond_color_mode
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:555` self.bond_colormap
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:556` self.bond_qualitative_cmap
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:557` self.atom_color_mode
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:558` self.flat_atom_color
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:559` self.label_font_scale
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:560` self.high_contrast_labels
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:561` self.show_bond_order
+- `sxm_viewer/gui/canvases/svg_molecule_overlay.py:562` self.show_legend
+- `sxm_viewer/gui/controllers/collection.py:1784` viewer._prepare_for_workspace_load
+- `sxm_viewer/gui/controllers/collection.py:1973` viewer.session_controller
+- `sxm_viewer/gui/controllers/collection.py:2139` viewer.spectros
+- `sxm_viewer/gui/controllers/collection.py:2144` viewer.matrix_spectros
+- `sxm_viewer/gui/controllers/collection.py:2172` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/controllers/collection.py:2174` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/controllers/collection.py:2248` viewer.spectros
+- `sxm_viewer/gui/controllers/filter_controller.py:513` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/filter_controller.py:565` viewer.last_preview
+- `sxm_viewer/gui/controllers/quick_crop.py:30` viewer.fixed_crop_quick_act
+- `sxm_viewer/gui/controllers/quick_crop.py:38` viewer.quick_crop_btn
+- `sxm_viewer/gui/controllers/quick_crop.py:47` viewer.quick_crop_edit_btn
+- `sxm_viewer/gui/controllers/quick_crop.py:53` viewer.quick_crop_detail_widget
+- `sxm_viewer/gui/controllers/quick_crop.py:59` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:59` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/quick_crop.py:77` viewer.quick_crop_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:79` viewer.quick_crop_edit_btn
+- `sxm_viewer/gui/controllers/quick_crop.py:84` viewer.quick_crop_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:88` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:101` viewer.show_crop_template_overlay
+- `sxm_viewer/gui/controllers/quick_crop.py:109` viewer.quick_crop_aspect_combo
+- `sxm_viewer/gui/controllers/quick_crop.py:111` viewer.quick_crop_aspect_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:113` viewer.quick_crop_aspect_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:125` viewer.quick_crop_real_height_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:126` viewer.quick_crop_real_width_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:136` viewer.quick_crop_hint_lbl
+- `sxm_viewer/gui/controllers/quick_crop.py:137` viewer.quick_crop_edit_btn
+- `sxm_viewer/gui/controllers/quick_crop.py:138` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:145` viewer.quick_crop_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:152` viewer.quick_crop_mode
+- `sxm_viewer/gui/controllers/quick_crop.py:183` viewer.quick_crop_real_width_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:196` viewer.quick_crop_real_height_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:204` viewer.quick_crop_aspect_combo
+- `sxm_viewer/gui/controllers/quick_crop.py:205` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:214` viewer.quick_crop_real_unit_lbl
+- `sxm_viewer/gui/controllers/quick_crop.py:217` viewer.quick_crop_real_px_info_lbl
+- `sxm_viewer/gui/controllers/quick_crop.py:231` viewer.quick_crop_real_width_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:232` viewer.quick_crop_real_height_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:260` viewer.quick_crop_real_width_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:261` viewer.quick_crop_real_height_spin
+- `sxm_viewer/gui/controllers/quick_crop.py:371` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:371` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/quick_crop.py:466` viewer.crop_history_layout
+- `sxm_viewer/gui/controllers/quick_crop.py:477` viewer.crop_history_label
+- `sxm_viewer/gui/controllers/quick_crop.py:587` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/quick_crop.py:587` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/quick_crop.py:612` viewer.quick_crop_tile_act
+- `sxm_viewer/gui/controllers/quick_crop.py:613` viewer.quick_crop_minimize_act
+- `sxm_viewer/gui/controllers/quick_crop.py:614` viewer._refresh_popup_ui
+- `sxm_viewer/gui/controllers/quick_crop.py:649` viewer._iter_workspace_windows
+- `sxm_viewer/gui/controllers/quick_crop.py:657` viewer._popup_refs
+- `sxm_viewer/gui/controllers/report.py:220` viewer.files
+- `sxm_viewer/gui/controllers/report.py:228` viewer.last_dir
+- `sxm_viewer/gui/controllers/report.py:307` viewer.spectros
+- `sxm_viewer/gui/controllers/report.py:317` viewer.headers
+- `sxm_viewer/gui/controllers/report.py:428` viewer.files
+- `sxm_viewer/gui/controllers/report.py:515` viewer.last_dir
+- `sxm_viewer/gui/controllers/report.py:519` viewer.get_favorite_cmap
+- `sxm_viewer/gui/controllers/report.py:522` viewer.spectro_color_cycle
+- `sxm_viewer/gui/controllers/session.py:40` viewer._set_session_activity
+- `sxm_viewer/gui/controllers/session.py:57` viewer._hide_session_activity
+- `sxm_viewer/gui/controllers/session.py:89` viewer._deferred_popup_serial
+- `sxm_viewer/gui/controllers/session.py:93` viewer._deferred_popup_serial
+- `sxm_viewer/gui/controllers/session.py:98` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:111` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:124` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:149` viewer._current_session_path
+- `sxm_viewer/gui/controllers/session.py:151` viewer.last_dir
+- `sxm_viewer/gui/controllers/session.py:177` viewer._record_recent_session
+- `sxm_viewer/gui/controllers/session.py:186` viewer._show_saved_path_toast
+- `sxm_viewer/gui/controllers/session.py:208` viewer.last_dir
+- `sxm_viewer/gui/controllers/session.py:221` viewer._record_recent_session
+- `sxm_viewer/gui/controllers/session.py:241` viewer._prepare_for_workspace_load
+- `sxm_viewer/gui/controllers/session.py:280` viewer._processed_views
+- `sxm_viewer/gui/controllers/session.py:300` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:335` viewer.headers
+- `sxm_viewer/gui/controllers/session.py:336` viewer._is_processed_key
+- `sxm_viewer/gui/controllers/session.py:353` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:359` viewer.current_mode
+- `sxm_viewer/gui/controllers/session.py:360` viewer.show_preview_title
+- `sxm_viewer/gui/controllers/session.py:361` viewer.show_spectra
+- `sxm_viewer/gui/controllers/session.py:362` viewer.show_preview_spectra
+- `sxm_viewer/gui/controllers/session.py:363` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/controllers/session.py:364` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/controllers/session.py:365` viewer.show_matrix_markers
+- `sxm_viewer/gui/controllers/session.py:366` viewer.show_single_markers
+- `sxm_viewer/gui/controllers/session.py:367` viewer.compact_markers
+- `sxm_viewer/gui/controllers/session.py:368` viewer.detail_dark_view
+- `sxm_viewer/gui/controllers/session.py:369` viewer.detail_grid_view
+- `sxm_viewer/gui/controllers/session.py:370` viewer.show_molecules
+- `sxm_viewer/gui/controllers/session.py:371` viewer.show_acquisition_overlay
+- `sxm_viewer/gui/controllers/session.py:372` viewer.profile_label_mode
+- `sxm_viewer/gui/controllers/session.py:373` viewer.relative_axes
+- `sxm_viewer/gui/controllers/session.py:374` viewer.display_units_relative
+- `sxm_viewer/gui/controllers/session.py:375` viewer.display_units_si
+- `sxm_viewer/gui/controllers/session.py:377` viewer.preview_locked
+- `sxm_viewer/gui/controllers/session.py:381` viewer.last_dir
+- `sxm_viewer/gui/controllers/session.py:382` viewer.spec_folder_path
+- `sxm_viewer/gui/controllers/session.py:383` viewer.files
+- `sxm_viewer/gui/controllers/session.py:386` viewer.image_adjustments
+- `sxm_viewer/gui/controllers/session.py:387` viewer.thumbnail_filters
+- `sxm_viewer/gui/controllers/session.py:388` viewer.per_file_channel_cmap
+- `sxm_viewer/gui/controllers/session.py:389` viewer.extra_view_specs
+- `sxm_viewer/gui/controllers/session.py:390` viewer.tags
+- `sxm_viewer/gui/controllers/session.py:391` viewer.molecule_overlays
+- `sxm_viewer/gui/controllers/session.py:392` viewer.svg_molecule_overlays
+- `sxm_viewer/gui/controllers/session.py:393` viewer.thumb_multi_select
+- `sxm_viewer/gui/controllers/session.py:394` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/controllers/session.py:395` viewer.last_preview
+- `sxm_viewer/gui/controllers/session.py:498` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:532` viewer.files
+- `sxm_viewer/gui/controllers/session.py:706` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:871` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:871` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:874` viewer.thumb_sort_combo
+- `sxm_viewer/gui/controllers/session.py:875` viewer.thumb_filter_combo
+- `sxm_viewer/gui/controllers/session.py:876` viewer.thumb_cmap_combo
+- `sxm_viewer/gui/controllers/session.py:877` viewer.preview_cmap_combo
+- `sxm_viewer/gui/controllers/session.py:880` viewer.thumb_cmap
+- `sxm_viewer/gui/controllers/session.py:885` viewer.preview_cmap
+- `sxm_viewer/gui/controllers/session.py:900` viewer.show_preview_title
+- `sxm_viewer/gui/controllers/session.py:901` viewer.show_spectra
+- `sxm_viewer/gui/controllers/session.py:902` viewer.show_preview_spectra
+- `sxm_viewer/gui/controllers/session.py:903` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/controllers/session.py:905` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/controllers/session.py:907` viewer.show_matrix_markers
+- `sxm_viewer/gui/controllers/session.py:908` viewer.show_single_markers
+- `sxm_viewer/gui/controllers/session.py:909` viewer.compact_markers
+- `sxm_viewer/gui/controllers/session.py:910` viewer.detail_dark_view
+- `sxm_viewer/gui/controllers/session.py:911` viewer.detail_grid_view
+- `sxm_viewer/gui/controllers/session.py:912` viewer.relative_axes
+- `sxm_viewer/gui/controllers/session.py:913` viewer.display_units_relative
+- `sxm_viewer/gui/controllers/session.py:914` viewer.display_units_si
+- `sxm_viewer/gui/controllers/session.py:915` viewer.preview_locked
+- `sxm_viewer/gui/controllers/session.py:916` viewer.show_molecules
+- `sxm_viewer/gui/controllers/session.py:917` viewer.show_acquisition_overlay
+- `sxm_viewer/gui/controllers/session.py:918` viewer.profile_label_mode
+- `sxm_viewer/gui/controllers/session.py:923` viewer.unit_display_cb
+- `sxm_viewer/gui/controllers/session.py:924` viewer.unit_relative_cb
+- `sxm_viewer/gui/controllers/session.py:925` viewer.relative_axes_cb
+- `sxm_viewer/gui/controllers/session.py:926` viewer.display_units_si_act
+- `sxm_viewer/gui/controllers/session.py:927` viewer.display_units_relative_act
+- `sxm_viewer/gui/controllers/session.py:928` viewer.relative_axes_act
+- `sxm_viewer/gui/controllers/session.py:929` viewer.show_spectra_cb
+- `sxm_viewer/gui/controllers/session.py:930` viewer.spectro_thumbnail_markers_cb
+- `sxm_viewer/gui/controllers/session.py:931` viewer.spectro_preview_markers_cb
+- `sxm_viewer/gui/controllers/session.py:932` viewer.spectro_miniatures_cb
+- `sxm_viewer/gui/controllers/session.py:933` viewer.toolbar_spectro_thumb_btn
+- `sxm_viewer/gui/controllers/session.py:934` viewer.toolbar_spectro_preview_btn
+- `sxm_viewer/gui/controllers/session.py:935` viewer.toolbar_spectro_miniatures_btn
+- `sxm_viewer/gui/controllers/session.py:936` viewer.scale_bar_cb
+- `sxm_viewer/gui/controllers/session.py:937` viewer.display_scale_bar_act
+- `sxm_viewer/gui/controllers/session.py:938` viewer.preview_lock_cb
+- `sxm_viewer/gui/controllers/session.py:939` viewer.tools_preview_lock_act
+- `sxm_viewer/gui/controllers/session.py:965` viewer.profile_label_actions
+- `sxm_viewer/gui/controllers/session.py:978` viewer.spectros
+- `sxm_viewer/gui/controllers/session.py:991` viewer._spectros_loaded
+- `sxm_viewer/gui/controllers/session.py:1006` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:1012` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:1016` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:1027` viewer.current_thumb_files
+- `sxm_viewer/gui/controllers/session.py:1028` viewer._thumb_labels
+- `sxm_viewer/gui/controllers/session.py:1053` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/controllers/session.py:1055` viewer.channel_dropdown
+- `sxm_viewer/gui/controllers/session.py:1056` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:1075` viewer.headers
+- `sxm_viewer/gui/controllers/session.py:1133` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:1133` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:1137` viewer._thumb_viewport
+- `sxm_viewer/gui/controllers/session.py:1145` viewer.thumb_size_px
+- `sxm_viewer/gui/controllers/session.py:1171` viewer.last_channel_index
+- `sxm_viewer/gui/controllers/session.py:1223` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:1290` self._session_hydration_serial
+- `sxm_viewer/gui/controllers/session.py:1295` self._session_hydration_serial
+- `sxm_viewer/gui/controllers/session.py:1365` viewer.last_preview
+- `sxm_viewer/gui/controllers/session.py:1382` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/session.py:1393` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:1420` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/session.py:1450` viewer._popup_refs
+- `sxm_viewer/gui/controllers/session.py:1476` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:1638` viewer._processed_views
+- `sxm_viewer/gui/controllers/session.py:1732` viewer._processed_views
+- `sxm_viewer/gui/controllers/session.py:2008` viewer._canvas_display_syncing
+- `sxm_viewer/gui/controllers/session.py:2029` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/session.py:2131` viewer._deferred_popup_entries
+- `sxm_viewer/gui/controllers/session.py:2249` viewer._popup_refs
+- `sxm_viewer/gui/controllers/session.py:2329` viewer._canvas_display_syncing
+- `sxm_viewer/gui/controllers/session.py:2366` viewer._popup_canvases
+- `sxm_viewer/gui/controllers/spectro_compare.py:75` viewer._multi_spectro_popups
+- `sxm_viewer/gui/controllers/spectro_compare.py:85` viewer._multi_spec_selection
+- `sxm_viewer/gui/controllers/spectro_compare.py:88` viewer.spec_selection_tray
+- `sxm_viewer/gui/controllers/spectro_compare.py:92` viewer.spec_selection_tray_label
+- `sxm_viewer/gui/controllers/spectro_compare.py:95` viewer.spec_selection_tray_compare_btn
+- `sxm_viewer/gui/controllers/spectro_compare.py:109` viewer._last_clicked_spec
+- `sxm_viewer/gui/controllers/spectro_compare.py:129` viewer._multi_single_popup_anchor
+- `sxm_viewer/gui/controllers/spectro_compare.py:163` viewer._spectro_popups
+- `sxm_viewer/gui/controllers/spectro_compare.py:221` viewer.spectros_by_image
+- `sxm_viewer/gui/controllers/spectro_compare.py:264` viewer.spectros_by_image
+- `sxm_viewer/gui/controllers/spectro_compare.py:266` viewer.spectros
+- `sxm_viewer/gui/controllers/spectro_compare.py:289` viewer.spectro_site_index
+- `sxm_viewer/gui/controllers/spectro_compare.py:293` viewer.spectros_by_image
+- `sxm_viewer/gui/controllers/spectro_compare.py:390` viewer._multi_spec_selection_keys
+- `sxm_viewer/gui/controllers/spectro_compare.py:423` viewer._multi_single_popup_anchor
+- `sxm_viewer/gui/controllers/spectro_compare.py:433` viewer._spectro_popups
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:21` viewer.per_file_channel_cmap
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:29` viewer.request_show_file_channel
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:39` viewer.last_preview
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:40` viewer.preview_canvas
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:67` viewer.thumb_widgets
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:82` viewer.current_thumb_files
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:85` viewer.thumb_grid_columns
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:86` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:114` viewer.current_thumb_files
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:118` viewer._highlighted_spec
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:127` viewer._thumb_labels
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:143` viewer.files_with_matrix
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:147` viewer.current_thumb_files
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:163` viewer.matrix_summary_label
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:166` viewer.spectros
+- `sxm_viewer/gui/controllers/thumbnail_controller.py:168` viewer.matrix_datasets
+- `sxm_viewer/gui/dialogs/matrix_fit.py:879` self.viewer
+- `sxm_viewer/gui/dialogs/matrix_fit.py:925` self.viewer
+- `sxm_viewer/gui/dialogs/profile_dialog.py:510` self._owner
+- `sxm_viewer/gui/dialogs/profile_dialog.py:934` self._plot_font_bold
+- `sxm_viewer/gui/dialogs/profile_dialog.py:935` self._plot_font_italic
+- `sxm_viewer/gui/dialogs/profile_dialog.py:936` self._plot_font_underline
+- `sxm_viewer/gui/dialogs/profile_dialog.py:942` self._owner
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1083` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1154` self.compose_drag_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1248` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1293` self._toggle_buttons
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1307` self.copy_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1307` self.add_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1307` self.delete_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1307` self.close_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1488` self._marker_reference_state
+- `sxm_viewer/gui/dialogs/profile_dialog.py:1560` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2011` self._owner
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2029` self._owner
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2050` self._owner
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2076` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2123` self._add_overlay_cb
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2136` self.compose_drag_btn
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2426` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2623` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2687` self._font_scale
+- `sxm_viewer/gui/dialogs/profile_dialog.py:2812` self._current_marker_key
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:269` viewer.preview_canvas
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:279` viewer.last_preview
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:292` viewer.per_file_channel_cmap
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:296` viewer.preview_cmap
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:296` viewer.thumb_cmap
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1244` self.trace_style_menu
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1311` self.legend_menu
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1380` self.inset_settings_menu
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1468` self.filters_menu
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1626` self.markers_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1627` self.lines_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1628` self.grid_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1629` self.dark_bg_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1630` self.legend_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1631` self.inset_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1632` self.logx_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1633` self.logy_toggle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1706` self.spec
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:1711` self.spec
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2490` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2504` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2523` self._plot_font_bold
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2524` self._plot_font_italic
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2525` self._plot_font_underline
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2531` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2590` self._axis_plot_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2591` self._axis_plot_unit
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2621` self._axis_plot_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2622` self._axis_plot_unit
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2725` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2733` viewer.spectros
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2820` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:2870` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3001` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3005` viewer.thumb_size_px
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3010` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3022` viewer.thumb_size_px
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3162` self._inset_drag_cids
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3505` self._axis_plot_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3521` self._axis_plot_unit
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:3550` self.axis_unit
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4152` self._selection_artists
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4402` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4785` self._plot_font_bold
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4786` self._plot_font_italic
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4787` self._plot_font_underline
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4793` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4818` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4819` viewer._plot_font_family
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:4918` self.relative_axes_cb
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5101` self._bundled_channel_keys
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:5485` self._current_local_frame
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6003` self._current_local_flips
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6520` self._plot_update_pending
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6522` self._movement_active
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6636` self._empty_plot_text
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6718` self._force_full_replot
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6722` self._fit_results
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6724` self._potential_fit_overlay
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6726` self._minima_meta
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6728` self._point_labels
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6730` self._delta_annotation_artists
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6738` self._plotted_spec_ids
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6745` self.axis_combo
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6955` self.fit_relative_z_cb
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6960` self.specs
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:6970` self.results_table
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7095` self._fit_trend_dialog
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7107` self._fit_trend_dialog
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7819` self._fit_trend_dialog
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:7951` self.axis_combo
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8190` self.force_source_combo
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8204` self.force_btn
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8206` self._last_force_params
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8232` self._force_toggle_guard
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8379` self._curve_data_cache
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8389` self._force_modified_items
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8405` self._force_source
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8456` self._plotted_spec_ids
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8491` self.axis_combo
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8623` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8626` viewer.thumb_size_px
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8649` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8653` viewer.thumb_size_px
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8690` self.position_inset_cb
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8716` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8746` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8831` self._plot_x_log
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8831` self._plot_y_log
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:8919` self.palette_swatches
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9066` self.potential_range_cb
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9074` self.potential_range_cb
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9126` self._potential_fit_range
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9407` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9417` self._point_labels
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9432` self._point_labels
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9487` self._filter_cfg
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9873` self._minima_artists
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:9919` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10256` self._plot_font_bold
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10257` self._plot_font_italic
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10258` self._plot_font_underline
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10264` self.viewer
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10302` self.hint_label
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10305` self._last_hint_text
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10310` self._last_canvas_cursor
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10349` self._dragging_minima
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10350` self._last_hover_update_ts
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10361` self.mouse_label
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10370` self._last_mouse_text
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10454` self._delta_annotation_artists
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10504` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10531` self.inset_settings_menu
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10785` self._filter_cfg
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:10988` self._font_scale
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11025` self._minima_meta
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11030` self._point_labels
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11071` self._color_cycle
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:11122` self._plotted_spec_ids
+- `sxm_viewer/gui/drift_animation.py:349` viewer.preview_canvas
+- `sxm_viewer/gui/drift_animation.py:350` viewer.last_preview
+- `sxm_viewer/gui/main_window.py:1235` self.recent_molecules
+- `sxm_viewer/gui/main_window.py:1241` self.recent_svg_molecules
+- `sxm_viewer/gui/main_window.py:1247` self.last_svg_molecule_dir
+- `sxm_viewer/gui/main_window.py:1252` self.svg_molecule_style_defaults
+- `sxm_viewer/gui/main_window.py:1369` self._left_sidebar_min_width
+- `sxm_viewer/gui/main_window.py:1453` self.show_spectra_cb
+- `sxm_viewer/gui/main_window.py:1456` self.spectro_thumbnail_markers_cb
+- `sxm_viewer/gui/main_window.py:1458` self.spectro_preview_markers_cb
+- `sxm_viewer/gui/main_window.py:1460` self.spectro_miniatures_cb
+- `sxm_viewer/gui/main_window.py:1462` self.grid_as_matrix_cb
+- `sxm_viewer/gui/main_window.py:1464` self.force_single_cb
+- `sxm_viewer/gui/main_window.py:1466` self.open_current_site_btn
+- `sxm_viewer/gui/main_window.py:1468` self.review_low_conf_btn
+- `sxm_viewer/gui/main_window.py:1523` self.collection_tray_window
+- `sxm_viewer/gui/main_window.py:1544` self.files
+- `sxm_viewer/gui/main_window.py:1550` self.config
+- `sxm_viewer/gui/main_window.py:1574` self.toolbar_dark_btn
+- `sxm_viewer/gui/main_window.py:1580` self.toolbar_theme_acts
+- `sxm_viewer/gui/main_window.py:1590` self._detail_theme_follows_dark_mode
+- `sxm_viewer/gui/main_window.py:1598` self.amber_full_imagery_act
+- `sxm_viewer/gui/main_window.py:1602` self.last_preview
+- `sxm_viewer/gui/main_window.py:1607` self.preserve_profiles_on_channel_change
+- `sxm_viewer/gui/main_window.py:1608` self._profile_dialog
+- `sxm_viewer/gui/main_window.py:1619` self.amber_full_imagery
+- `sxm_viewer/gui/main_window.py:1645` self.last_preview
+- `sxm_viewer/gui/main_window.py:1650` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:1689` self.ui_font_scale
+- `sxm_viewer/gui/main_window.py:1771` self.compact_histogram
+- `sxm_viewer/gui/main_window.py:1822` self.ui_font_scale
+- `sxm_viewer/gui/main_window.py:1824` self._ui_base_font_pt
+- `sxm_viewer/gui/main_window.py:1845` self.ui_font_scale_value_label
+- `sxm_viewer/gui/main_window.py:1853` self.ui_font_scale_value_label
+- `sxm_viewer/gui/main_window.py:1860` self._font_scale_apply_timer
+- `sxm_viewer/gui/main_window.py:1873` self.toolbar_canvas_btn
+- `sxm_viewer/gui/main_window.py:1882` self.shortcuts_panel
+- `sxm_viewer/gui/main_window.py:1896` self.detail_dark_act
+- `sxm_viewer/gui/main_window.py:1901` self._detail_theme_follows_dark_mode
+- `sxm_viewer/gui/main_window.py:1906` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:1906` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:1915` self.dark_mode
+- `sxm_viewer/gui/main_window.py:1918` self.preview_workspace_frame
+- `sxm_viewer/gui/main_window.py:1950` self.thumb_cmap_combo
+- `sxm_viewer/gui/main_window.py:1950` self.preview_cmap_combo
+- `sxm_viewer/gui/main_window.py:1960` self.preview_title_label
+- `sxm_viewer/gui/main_window.py:1961` self.channel_label
+- `sxm_viewer/gui/main_window.py:1962` self.thumb_cmap_label
+- `sxm_viewer/gui/main_window.py:1963` self.preview_cmap_label
+- `sxm_viewer/gui/main_window.py:1967` self.toolbar_dark_btn
+- `sxm_viewer/gui/main_window.py:1986` self.ui_theme
+- `sxm_viewer/gui/main_window.py:1991` self.toolbar_load_mol_btn
+- `sxm_viewer/gui/main_window.py:2000` self.dark_mode
+- `sxm_viewer/gui/main_window.py:2025` self.toolbar_load_mol_btn
+- `sxm_viewer/gui/main_window.py:2026` self._molecule_pixmap_size
+- `sxm_viewer/gui/main_window.py:2030` self.dark_mode
+- `sxm_viewer/gui/main_window.py:2080` self.mode_buttons
+- `sxm_viewer/gui/main_window.py:2109` self.mode_buttons
+- `sxm_viewer/gui/main_window.py:2117` self._display_defaults
+- `sxm_viewer/gui/main_window.py:2119` self.matrix_markers_act
+- `sxm_viewer/gui/main_window.py:2120` self.single_markers_act
+- `sxm_viewer/gui/main_window.py:2121` self.compact_markers_act
+- `sxm_viewer/gui/main_window.py:2122` self.detail_dark_act
+- `sxm_viewer/gui/main_window.py:2123` self.detail_grid_act
+- `sxm_viewer/gui/main_window.py:2124` self.molecules_act
+- `sxm_viewer/gui/main_window.py:2125` self.display_molecule_gizmo_act
+- `sxm_viewer/gui/main_window.py:2126` self.acquisition_overlay_act
+- `sxm_viewer/gui/main_window.py:2127` self.crop_template_act
+- `sxm_viewer/gui/main_window.py:2128` self.crop_history_act
+- `sxm_viewer/gui/main_window.py:2299` self.spectro_color_cycle
+- `sxm_viewer/gui/main_window.py:2305` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:2337` self._active_preview_canvas
+- `sxm_viewer/gui/main_window.py:2337` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:2342` self._plot_font_family
+- `sxm_viewer/gui/main_window.py:2346` self._plot_font_family
+- `sxm_viewer/gui/main_window.py:2518` self._active_preview_canvas
+- `sxm_viewer/gui/main_window.py:2525` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:2579` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:2582` self.quick_crop_mode
+- `sxm_viewer/gui/main_window.py:2648` self.dark_mode
+- `sxm_viewer/gui/main_window.py:2700` self.files
+- `sxm_viewer/gui/main_window.py:2701` self._processed_views
+- `sxm_viewer/gui/main_window.py:2702` self.last_preview
+- `sxm_viewer/gui/main_window.py:2703` self._popup_refs
+- `sxm_viewer/gui/main_window.py:2704` self._spectro_popups
+- `sxm_viewer/gui/main_window.py:2705` self._multi_spectro_popups
+- `sxm_viewer/gui/main_window.py:2706` self._deferred_popup_entries
+- `sxm_viewer/gui/main_window.py:2707` self.virtual_copy_order
+- `sxm_viewer/gui/main_window.py:2751` self._closed_window_history
+- `sxm_viewer/gui/main_window.py:2753` self._closed_window_history_limit
+- `sxm_viewer/gui/main_window.py:2932` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:2954` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:2979` self._closed_window_history
+- `sxm_viewer/gui/main_window.py:3000` self.collection_tray_window
+- `sxm_viewer/gui/main_window.py:3017` self._suspend_window_history
+- `sxm_viewer/gui/main_window.py:3034` self._autosave_timer
+- `sxm_viewer/gui/main_window.py:3089` self._workspace_loading
+- `sxm_viewer/gui/main_window.py:3175` self.session_recovery_interval_actions
+- `sxm_viewer/gui/main_window.py:3322` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:3323` self.thumb_container
+- `sxm_viewer/gui/main_window.py:3324` self.scroll
+- `sxm_viewer/gui/main_window.py:3326` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:3366` self.thumb_container
+- `sxm_viewer/gui/main_window.py:3406` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:3407` self.thumb_container
+- `sxm_viewer/gui/main_window.py:3408` self.scroll
+- `sxm_viewer/gui/main_window.py:3410` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:3412` self._last_thumb_reflow_width
+- `sxm_viewer/gui/main_window.py:3427` self.current_mode
+- `sxm_viewer/gui/main_window.py:3458` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:3535` self.main_splitter
+- `sxm_viewer/gui/main_window.py:3575` self._left_sidebar_soft_max_width
+- `sxm_viewer/gui/main_window.py:3576` self._left_sidebar_min_width
+- `sxm_viewer/gui/main_window.py:3577` self._left_sidebar_target_width
+- `sxm_viewer/gui/main_window.py:3614` self.thumb_container
+- `sxm_viewer/gui/main_window.py:3615` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:3616` self.scroll
+- `sxm_viewer/gui/main_window.py:3641` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:3642` self.thumb_widgets
+- `sxm_viewer/gui/main_window.py:3646` self.thumb_grid_columns
+- `sxm_viewer/gui/main_window.py:3651` self.thumb_widgets
+- `sxm_viewer/gui/main_window.py:3709` self.thumb_multi_select
+- `sxm_viewer/gui/main_window.py:3711` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:3717` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:3721` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:3722` self.current_spectro_thumb_files
+- `sxm_viewer/gui/main_window.py:3739` self._clipboard_copy_worker
+- `sxm_viewer/gui/main_window.py:3776` self._clipboard_copy_total
+- `sxm_viewer/gui/main_window.py:3812` self.spectro_thumb_widgets
+- `sxm_viewer/gui/main_window.py:3816` self._selection_before_drag
+- `sxm_viewer/gui/main_window.py:3817` self._spectro_selection_before_drag
+- `sxm_viewer/gui/main_window.py:3828` self.thumb_multi_select
+- `sxm_viewer/gui/main_window.py:3828` self.spectro_thumb_multi_select
+- `sxm_viewer/gui/main_window.py:3917` self._session_activity_strip
+- `sxm_viewer/gui/main_window.py:3918` self._session_activity_title
+- `sxm_viewer/gui/main_window.py:3919` self._session_activity_detail
+- `sxm_viewer/gui/main_window.py:3920` self._session_activity_progress
+- `sxm_viewer/gui/main_window.py:3985` self._session_activity_strip
+- `sxm_viewer/gui/main_window.py:3986` self._session_activity_progress
+- `sxm_viewer/gui/main_window.py:4018` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:4058` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:4079` self.toolbar_popups_menu
+- `sxm_viewer/gui/main_window.py:4084` self._deferred_popup_entries
+- `sxm_viewer/gui/main_window.py:4140` self.toolbar_popups_btn
+- `sxm_viewer/gui/main_window.py:4141` self.toolbar_popups_raise_act
+- `sxm_viewer/gui/main_window.py:4146` self._deferred_popup_entries
+- `sxm_viewer/gui/main_window.py:4194` self.channel_dropdown
+- `sxm_viewer/gui/main_window.py:4205` self.channel_dropdown
+- `sxm_viewer/gui/main_window.py:4206` self.channel_prev_btn
+- `sxm_viewer/gui/main_window.py:4207` self.channel_next_btn
+- `sxm_viewer/gui/main_window.py:4232` self.left_w
+- `sxm_viewer/gui/main_window.py:4358` self.recent_collections
+- `sxm_viewer/gui/main_window.py:4375` self._refresh_recent_collections_menu
+- `sxm_viewer/gui/main_window.py:4389` self._refresh_recent_collections_menu
+- `sxm_viewer/gui/main_window.py:4493` self.browse_molecules_menu
+- `sxm_viewer/gui/main_window.py:4503` self.show_molecules
+- `sxm_viewer/gui/main_window.py:4516` self.recent_molecules
+- `sxm_viewer/gui/main_window.py:4525` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:4536` self.recent_svg_molecules
+- `sxm_viewer/gui/main_window.py:4544` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:4549` self.molecule_palette
+- `sxm_viewer/gui/main_window.py:4666` self._app_start_ts
+- `sxm_viewer/gui/main_window.py:4695` self._app_start_ts
+- `sxm_viewer/gui/main_window.py:4715` self._app_start_ts
+- `sxm_viewer/gui/main_window.py:4857` self._plot_font_family
+- `sxm_viewer/gui/main_window.py:4877` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:4877` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:4897` self._profile_dialog
+- `sxm_viewer/gui/main_window.py:4900` self._profile_dialogs
+- `sxm_viewer/gui/main_window.py:4921` self._spectro_popups
+- `sxm_viewer/gui/main_window.py:4936` self._multi_spectro_popups
+- `sxm_viewer/gui/main_window.py:5046` self.starred
+- `sxm_viewer/gui/main_window.py:5091` self._highlighted_spec
+- `sxm_viewer/gui/main_window.py:5096` self.spectro_highlight_glow
+- `sxm_viewer/gui/main_window.py:5188` self._last_request_visible_thumbs_ts
+- `sxm_viewer/gui/main_window.py:5190` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:5192` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:5193` self.scroll
+- `sxm_viewer/gui/main_window.py:5194` self.thumb_grid_columns
+- `sxm_viewer/gui/main_window.py:5195` self._thumb_card_height
+- `sxm_viewer/gui/main_window.py:5234` self._processed_views
+- `sxm_viewer/gui/main_window.py:5242` self._virtual_counter
+- `sxm_viewer/gui/main_window.py:5265` self.per_file_channel_cmap
+- `sxm_viewer/gui/main_window.py:5277` self.display_units_relative
+- `sxm_viewer/gui/main_window.py:5289` self.per_file_channel_cmap
+- `sxm_viewer/gui/main_window.py:5290` self.thumb_cmap
+- `sxm_viewer/gui/main_window.py:5291` self.preview_cmap
+- `sxm_viewer/gui/main_window.py:5292` self.thumb_cmap_combo
+- `sxm_viewer/gui/main_window.py:5293` self.preview_cmap_combo
+- `sxm_viewer/gui/main_window.py:5334` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5334` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:5395` self.per_file_channel_clim
+- `sxm_viewer/gui/main_window.py:5444` self._thumb_labels
+- `sxm_viewer/gui/main_window.py:5451` self.thumb_cmap
+- `sxm_viewer/gui/main_window.py:5545` self._thumb_labels
+- `sxm_viewer/gui/main_window.py:5552` self._processed_views
+- `sxm_viewer/gui/main_window.py:5600` self.virtual_copy_order
+- `sxm_viewer/gui/main_window.py:5602` self._processed_views
+- `sxm_viewer/gui/main_window.py:5610` self._processed_views
+- `sxm_viewer/gui/main_window.py:5649` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:5652` self.files
+- `sxm_viewer/gui/main_window.py:5653` self.files
+- `sxm_viewer/gui/main_window.py:5658` self._processed_views
+- `sxm_viewer/gui/main_window.py:5857` self.unit_display_cb
+- `sxm_viewer/gui/main_window.py:5858` self.display_units_si_act
+- `sxm_viewer/gui/main_window.py:5868` self.unit_relative_cb
+- `sxm_viewer/gui/main_window.py:5869` self.preview_zero_cb
+- `sxm_viewer/gui/main_window.py:5870` self.display_units_relative_act
+- `sxm_viewer/gui/main_window.py:5880` self.relative_axes_cb
+- `sxm_viewer/gui/main_window.py:5881` self.relative_axes_act
+- `sxm_viewer/gui/main_window.py:5889` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5910` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5922` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5930` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5937` self.scale_bar_cb
+- `sxm_viewer/gui/main_window.py:5938` self.display_scale_bar_act
+- `sxm_viewer/gui/main_window.py:5940` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:5942` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6027` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:6048` self.frame_map_widget
+- `sxm_viewer/gui/main_window.py:6149` self._thumb_labels
+- `sxm_viewer/gui/main_window.py:6154` self.thumb_grid_columns
+- `sxm_viewer/gui/main_window.py:6155` self._thumb_card_height
+- `sxm_viewer/gui/main_window.py:6156` self.scroll
+- `sxm_viewer/gui/main_window.py:6157` self._thumb_viewport
+- `sxm_viewer/gui/main_window.py:6162` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:6169` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:6197` self._canvas_window
+- `sxm_viewer/gui/main_window.py:6223` self.thumb_multi_select
+- `sxm_viewer/gui/main_window.py:6225` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:6242` self.thumbnail_controller
+- `sxm_viewer/gui/main_window.py:6247` self.thumbnail_controller
+- `sxm_viewer/gui/main_window.py:6253` self.scroll
+- `sxm_viewer/gui/main_window.py:6265` self.thumb_widgets
+- `sxm_viewer/gui/main_window.py:6266` self.spectro_thumb_widgets
+- `sxm_viewer/gui/main_window.py:6301` self.scroll
+- `sxm_viewer/gui/main_window.py:6310` self.thumb_widgets
+- `sxm_viewer/gui/main_window.py:6312` self.spectro_thumb_widgets
+- `sxm_viewer/gui/main_window.py:6350` self._preview_render_in_progress
+- `sxm_viewer/gui/main_window.py:6360` self.last_preview
+- `sxm_viewer/gui/main_window.py:6361` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6380` self._highlighted_spec
+- `sxm_viewer/gui/main_window.py:6413` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6428` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6443` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6457` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:6527` self.extra_view_specs
+- `sxm_viewer/gui/main_window.py:6554` self.recent_collections
+- `sxm_viewer/gui/main_window.py:6577` self.collection_tray_window
+- `sxm_viewer/gui/main_window.py:6634` self.collection_tray_window
+- `sxm_viewer/gui/main_window.py:6661` self._collection_source
+- `sxm_viewer/gui/main_window.py:6697` self.toolbar_collection_btn
+- `sxm_viewer/gui/main_window.py:6719` self.toolbar_collection_add_selected_act
+- `sxm_viewer/gui/main_window.py:6737` self.toolbar_collection_add_selected_to_act
+- `sxm_viewer/gui/main_window.py:6768` self.toolbar_recent_collections_menu
+- `sxm_viewer/gui/main_window.py:6772` self.recent_collections
+- `sxm_viewer/gui/main_window.py:6790` self._collection_source
+- `sxm_viewer/gui/main_window.py:6791` self.collection_group
+- `sxm_viewer/gui/main_window.py:6792` self.collection_tray_list
+- `sxm_viewer/gui/main_window.py:6793` self.collection_tray_window
+- `sxm_viewer/gui/main_window.py:6804` self.collection_target_label
+- `sxm_viewer/gui/main_window.py:6812` self.collection_target_label
+- `sxm_viewer/gui/main_window.py:6834` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:6842` self._deferred_popup_entries
+- `sxm_viewer/gui/main_window.py:6850` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:6856` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:6867` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:6873` self.image_compare_controller
+- `sxm_viewer/gui/main_window.py:6880` self.image_compare_controller
+- `sxm_viewer/gui/main_window.py:7079` self._header_cache_pruned_this_session
+- `sxm_viewer/gui/main_window.py:7087` self._header_cache_dirty
+- `sxm_viewer/gui/main_window.py:7104` self.extra_view_specs
+- `sxm_viewer/gui/main_window.py:7262` self.display_units_relative
+- `sxm_viewer/gui/main_window.py:7267` self.display_units_si
+- `sxm_viewer/gui/main_window.py:7274` self.display_units_relative
+- `sxm_viewer/gui/main_window.py:7319` self._thumb_labels
+- `sxm_viewer/gui/main_window.py:7327` self._processed_views
+- `sxm_viewer/gui/main_window.py:7344` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:7348` self.last_preview
+- `sxm_viewer/gui/main_window.py:7448` self._last_base_array
+- `sxm_viewer/gui/main_window.py:7456` self._last_base_extent
+- `sxm_viewer/gui/main_window.py:7457` self._last_axis_unit
+- `sxm_viewer/gui/main_window.py:7458` self._last_display_extent
+- `sxm_viewer/gui/main_window.py:7459` self._last_colorbar_label
+- `sxm_viewer/gui/main_window.py:7463` self._last_base_unit
+- `sxm_viewer/gui/main_window.py:7464` self.relative_axes
+- `sxm_viewer/gui/main_window.py:7552` self._adjustment_undo_stack
+- `sxm_viewer/gui/main_window.py:7564` self._processed_views
+- `sxm_viewer/gui/main_window.py:8072` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:8188` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:8299` self.spec_folder_path
+- `sxm_viewer/gui/main_window.py:8425` self.spectros
+- `sxm_viewer/gui/main_window.py:8437` self.spectros
+- `sxm_viewer/gui/main_window.py:8443` self.spectro_search
+- `sxm_viewer/gui/main_window.py:8458` self.spectros
+- `sxm_viewer/gui/main_window.py:8467` self.spectros
+- `sxm_viewer/gui/main_window.py:8473` self.spectro_search
+- `sxm_viewer/gui/main_window.py:8537` self._spec_extent_cache
+- `sxm_viewer/gui/main_window.py:8576` self.lazy_spectros_enabled
+- `sxm_viewer/gui/main_window.py:8576` self._spectros_pending
+- `sxm_viewer/gui/main_window.py:8657` self.thumbnail_controller
+- `sxm_viewer/gui/main_window.py:8662` self.thumbnail_controller
+- `sxm_viewer/gui/main_window.py:8668` self.thumbnail_controller
+- `sxm_viewer/gui/main_window.py:8738` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:8775` self.spectros_by_image
+- `sxm_viewer/gui/main_window.py:8776` self.spectro_sites_by_image
+- `sxm_viewer/gui/main_window.py:8820` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:8828` self.spectro_highlight_glow
+- `sxm_viewer/gui/main_window.py:8842` self._highlighted_spec
+- `sxm_viewer/gui/main_window.py:8881` self.spectro_highlight_glow
+- `sxm_viewer/gui/main_window.py:9112` self._collection_source
+- `sxm_viewer/gui/main_window.py:9125` self._collection_source
+- `sxm_viewer/gui/main_window.py:9145` self.spectro_thumb_multi_select
+- `sxm_viewer/gui/main_window.py:9176` self.spectros
+- `sxm_viewer/gui/main_window.py:9214` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:9242` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:9247` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:9252` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:9276` self.spectro_compare_controller
+- `sxm_viewer/gui/main_window.py:9329` self.spectro_marker_color_stack
+- `sxm_viewer/gui/main_window.py:9411` self._multi_spectro_popups
+- `sxm_viewer/gui/main_window.py:9445` self.spectro_marker_symbol
+- `sxm_viewer/gui/main_window.py:9455` self.spectro_marker_size
+- `sxm_viewer/gui/main_window.py:9472` self.last_preview
+- `sxm_viewer/gui/main_window.py:9482` self.preview_lock_cb
+- `sxm_viewer/gui/main_window.py:9483` self.tools_preview_lock_act
+- `sxm_viewer/gui/main_window.py:9487` self.preview_detached
+- `sxm_viewer/gui/main_window.py:9491` self.preview_detach_btn
+- `sxm_viewer/gui/main_window.py:9492` self.tools_preview_detach_act
+- `sxm_viewer/gui/main_window.py:9493` self.preview_detached
+- `sxm_viewer/gui/main_window.py:9494` self.preview_locked
+- `sxm_viewer/gui/main_window.py:9514` self.preview_detached
+- `sxm_viewer/gui/main_window.py:9520` self.preview_detached
+- `sxm_viewer/gui/main_window.py:9572` self.preview_detached
+- `sxm_viewer/gui/main_window.py:9604` self.frame_real_view
+- `sxm_viewer/gui/main_window.py:9609` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:9611` self.current_thumb_files
+- `sxm_viewer/gui/main_window.py:9671` self.thumb_cmap_combo
+- `sxm_viewer/gui/main_window.py:9672` self.preview_cmap_combo
+- `sxm_viewer/gui/main_window.py:9683` self._ordered_thumbnail_selection
+- `sxm_viewer/gui/main_window.py:9686` self.selected_file_for_thumbs
+- `sxm_viewer/gui/main_window.py:9692` self.thumb_widgets
+- `sxm_viewer/gui/main_window.py:9695` self.preview_cmap_combo
+- `sxm_viewer/gui/main_window.py:9696` self.thumb_cmap_combo
+- `sxm_viewer/gui/main_window.py:9822` self.toolbar_spectro_repeat_share_act
+- `sxm_viewer/gui/main_window.py:9861` self.toolbar_spectro_grid_as_matrix_act
+- `sxm_viewer/gui/main_window.py:9875` self.toolbar_spectro_force_single_act
+- `sxm_viewer/gui/main_window.py:9930` self.dark_mode
+- `sxm_viewer/gui/main_window.py:9989` self._last_canvas_display_options
+- `sxm_viewer/gui/main_window.py:10052` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10052` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:10125` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10127` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10131` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10133` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10142` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10142` self._popup_canvases
+- `sxm_viewer/gui/main_window.py:10150` self.profile_label_actions
+- `sxm_viewer/gui/main_window.py:10163` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10169` self.crop_template_act
+- `sxm_viewer/gui/main_window.py:10178` self.crop_history_act
+- `sxm_viewer/gui/main_window.py:10183` self.crop_history_overlay_cb
+- `sxm_viewer/gui/main_window.py:10194` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:10204` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:10209` self._suppress_thumbnail_clim_sync
+- `sxm_viewer/gui/main_window.py:10213` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10213` self._suppress_compact_histogram_refresh
+- `sxm_viewer/gui/main_window.py:10219` self.preview_canvas
+- `sxm_viewer/gui/main_window.py:10231` self.compact_histogram
+- `sxm_viewer/gui/main_window.py:10251` self._compact_histogram_gesture_active
+- `sxm_viewer/gui/main_window.py:10261` self._pending_compact_histogram_final
+- `sxm_viewer/gui/main_window.py:10270` self._pending_compact_histogram_clim
+- `sxm_viewer/gui/main_window.py:10271` self._pending_compact_histogram_final
+- `sxm_viewer/gui/main_window.py:10296` self.compact_histogram
+- `sxm_viewer/gui/main_window.py:10312` self.compact_histogram
+- `sxm_viewer/gui/main_window.py:10324` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:10329` self.quick_crop_aspect_combo
+- `sxm_viewer/gui/main_window.py:10338` self.quick_crop_controller
+- `sxm_viewer/gui/main_window.py:10343` self.quick_crop_controller
+- `sxm_viewer/gui/main_window_layout.py:71` viewer.show_molecules
+- `sxm_viewer/gui/main_window_layout.py:245` viewer.display_menu
+- `sxm_viewer/gui/main_window_layout.py:310` viewer.thumb_filter_combo
+- `sxm_viewer/gui/main_window_layout.py:323` viewer.display_units_si
+- `sxm_viewer/gui/main_window_layout.py:328` viewer.display_units_relative
+- `sxm_viewer/gui/main_window_layout.py:333` viewer.relative_axes
+- `sxm_viewer/gui/main_window_layout.py:338` viewer.config
+- `sxm_viewer/gui/main_window_layout.py:354` viewer.show_molecules
+- `sxm_viewer/gui/main_window_layout.py:359` viewer.show_molecule_gizmo
+- `sxm_viewer/gui/main_window_layout.py:364` viewer.preview_canvas
+- `sxm_viewer/gui/main_window_layout.py:367` viewer.preview_canvas
+- `sxm_viewer/gui/main_window_layout.py:373` viewer.show_acquisition_overlay
+- `sxm_viewer/gui/main_window_layout.py:378` viewer.quick_crop_mode
+- `sxm_viewer/gui/main_window_layout.py:383` viewer.show_crop_template_overlay
+- `sxm_viewer/gui/main_window_layout.py:400` viewer.profile_label_mode
+- `sxm_viewer/gui/main_window_layout.py:428` viewer.tools_menu
+- `sxm_viewer/gui/main_window_layout.py:442` viewer.preview_locked
+- `sxm_viewer/gui/main_window_layout.py:467` viewer._session_recovery_interval_min
+- `sxm_viewer/gui/main_window_layout.py:517` viewer.lower_control_frame
+- `sxm_viewer/gui/main_window_layout.py:518` viewer.mode_selector_widget
+- `sxm_viewer/gui/main_window_layout.py:519` viewer.browse_molecules_btn
+- `sxm_viewer/gui/main_window_layout.py:522` viewer.dark_mode
+- `sxm_viewer/gui/main_window_spectro.py:54` viewer.relative_axes
+- `sxm_viewer/gui/main_window_spectro.py:101` viewer._spectros_loaded
+- `sxm_viewer/gui/main_window_spectro.py:112` viewer.headers
+- `sxm_viewer/gui/main_window_spectro.py:115` viewer._thumb_labels
+- `sxm_viewer/gui/main_window_spectro.py:125` viewer.thumb_widgets
+- `sxm_viewer/gui/main_window_spectro.py:173` viewer.quick_crop_controller
+- `sxm_viewer/gui/main_window_spectro.py:189` viewer.spectro_site_index
+- `sxm_viewer/gui/main_window_spectro.py:193` viewer.spectros_by_image
+- `sxm_viewer/gui/main_window_spectro.py:217` viewer.quick_crop_controller
+- `sxm_viewer/gui/main_window_toolbar.py:187` viewer.toolbar_reset_adjust_act
+- `sxm_viewer/gui/main_window_toolbar.py:217` viewer.preview_detached
+- `sxm_viewer/gui/main_window_toolbar.py:218` viewer.preview_locked
+- `sxm_viewer/gui/main_window_toolbar.py:219` viewer.tools_preview_detach_act
+- `sxm_viewer/gui/main_window_toolbar.py:220` viewer.tools_preview_lock_act
+- `sxm_viewer/gui/main_window_toolbar.py:239` viewer.toolbar_dark_btn
+- `sxm_viewer/gui/main_window_toolbar.py:266` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/main_window_toolbar.py:277` viewer.show_spectra
+- `sxm_viewer/gui/main_window_toolbar.py:282` viewer.show_preview_spectra
+- `sxm_viewer/gui/main_window_toolbar.py:282` viewer.show_spectra
+- `sxm_viewer/gui/main_window_toolbar.py:287` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/main_window_toolbar.py:293` viewer.show_matrix_markers
+- `sxm_viewer/gui/main_window_toolbar.py:297` viewer.show_single_markers
+- `sxm_viewer/gui/main_window_toolbar.py:301` viewer.compact_markers
+- `sxm_viewer/gui/main_window_toolbar.py:307` viewer.spectro_highlight_glow
+- `sxm_viewer/gui/main_window_toolbar.py:318` viewer.spectro_single_grid_as_matrix
+- `sxm_viewer/gui/main_window_toolbar.py:322` viewer.spectro_force_single_mode
+- `sxm_viewer/gui/main_window_toolbar.py:347` viewer.toolbar_report_act
+- `sxm_viewer/gui/main_window_toolbar.py:349` viewer.files
+- `sxm_viewer/gui/main_window_toolbar.py:350` viewer.preview_adjust_btn
+- `sxm_viewer/gui/main_window_toolbar.py:354` viewer.toolbar_image_btn
+- `sxm_viewer/gui/ppt_mixin.py:16` self.ppt_image_label
+- `sxm_viewer/gui/spectroscopy/browser.py:167` viewer.matrix_datasets
+- `sxm_viewer/gui/spectroscopy/browser.py:199` viewer.matrix_datasets
+- `sxm_viewer/gui/spectroscopy/browser.py:343` viewer.spectro_filter_current_image_cb
+- `sxm_viewer/gui/spectroscopy/browser.py:344` viewer.spectro_filter_z_stack_cb
+- `sxm_viewer/gui/spectroscopy/browser.py:345` viewer.spectro_filter_matrix_cb
+- `sxm_viewer/gui/spectroscopy/browser.py:346` viewer.spectro_filter_low_conf_cb
+- `sxm_viewer/gui/spectroscopy/browser.py:347` viewer.spectro_filter_off_frame_cb
+- `sxm_viewer/gui/spectroscopy/browser.py:362` viewer.last_preview
+- `sxm_viewer/gui/spectroscopy/browser.py:382` viewer.spectro_preview_img_lbl
+- `sxm_viewer/gui/spectroscopy/browser.py:385` viewer.headers
+- `sxm_viewer/gui/spectroscopy/browser.py:399` viewer.thumb_cmap
+- `sxm_viewer/gui/spectroscopy/browser.py:500` viewer.spectro_list
+- `sxm_viewer/gui/spectroscopy/browser.py:544` viewer.show_spectra
+- `sxm_viewer/gui/spectroscopy/browser.py:545` viewer.show_preview_spectra
+- `sxm_viewer/gui/spectroscopy/browser.py:546` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/spectroscopy/browser.py:547` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/spectroscopy/browser.py:559` viewer._spectros_loading
+- `sxm_viewer/gui/spectroscopy/browser.py:569` viewer._spectros_pending
+- `sxm_viewer/gui/spectroscopy/browser.py:569` viewer._spectros_loaded
+- `sxm_viewer/gui/spectroscopy/browser.py:579` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/browser.py:580` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/browser.py:582` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/browser.py:585` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/browser.py:588` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/browser.py:591` viewer.spectro_sites_by_image
+- `sxm_viewer/gui/spectroscopy/browser.py:595` viewer.matrix_datasets
+- `sxm_viewer/gui/spectroscopy/browser.py:739` viewer._spectro_browser_entries
+- `sxm_viewer/gui/spectroscopy/browser.py:764` viewer._spectro_browser_entries
+- `sxm_viewer/gui/spectroscopy/browser.py:935` viewer._spectro_browser_entries
+- `sxm_viewer/gui/spectroscopy/browser.py:959` viewer.spectro_sites_by_image
+- `sxm_viewer/gui/spectroscopy/browser.py:1041` viewer.last_preview
+- `sxm_viewer/gui/spectroscopy/browser.py:1064` viewer.spectro_list
+- `sxm_viewer/gui/spectroscopy/controller.py:188` viewer.image_meta
+- `sxm_viewer/gui/spectroscopy/controller.py:216` viewer.spectro_share_overlapping_repeats
+- `sxm_viewer/gui/spectroscopy/controller.py:754` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/controller.py:755` viewer.spectros_by_image
+- `sxm_viewer/gui/spectroscopy/controller.py:925` viewer.spectro_sites_by_image
+- `sxm_viewer/gui/spectroscopy/controller.py:928` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/controller.py:1021` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/controller.py:1107` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/controller.py:1192` viewer.spectros_by_image
+- `sxm_viewer/gui/spectroscopy/loading.py:48` viewer._spectros_loading
+- `sxm_viewer/gui/spectroscopy/loading.py:65` viewer._spectros_pending
+- `sxm_viewer/gui/spectroscopy/loading.py:67` viewer._spectros_loading
+- `sxm_viewer/gui/spectroscopy/loading.py:77` viewer._spectros_pending
+- `sxm_viewer/gui/spectroscopy/loading.py:79` viewer._spectros_loading
+- `sxm_viewer/gui/spectroscopy/loading.py:82` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/spectroscopy/loading.py:91` viewer._spectros_pending
+- `sxm_viewer/gui/spectroscopy/loading.py:93` viewer._spectros_loading
+- `sxm_viewer/gui/spectroscopy/loading.py:96` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/spectroscopy/loading.py:167` viewer._spectro_manifest_pending_save
+- `sxm_viewer/gui/spectroscopy/loading.py:219` viewer.spec_folder_path
+- `sxm_viewer/gui/spectroscopy/loading.py:220` viewer.last_dir
+- `sxm_viewer/gui/spectroscopy/loading.py:221` viewer._spectro_manifest_entries
+- `sxm_viewer/gui/spectroscopy/loading.py:257` viewer.spec_folder_path
+- `sxm_viewer/gui/spectroscopy/overlays.py:40` viewer.spectro_marker_symbol
+- `sxm_viewer/gui/spectroscopy/overlays.py:46` viewer.spectro_marker_size
+- `sxm_viewer/gui/spectroscopy/overlays.py:47` viewer.compact_markers
+- `sxm_viewer/gui/spectroscopy/overlays.py:562` viewer._temp_reveal
+- `sxm_viewer/gui/spectroscopy/overlays.py:566` viewer.spectro_marker_color_single
+- `sxm_viewer/gui/spectroscopy/overlays.py:567` viewer.spectro_marker_color_matrix
+- `sxm_viewer/gui/spectroscopy/overlays.py:568` viewer.spectro_marker_color_stack
+- `sxm_viewer/gui/spectroscopy/overlays.py:569` viewer.spectro_marker_color_cloud
+- `sxm_viewer/gui/spectroscopy/overlays.py:612` viewer.spectro_groups_by_image
+- `sxm_viewer/gui/spectroscopy/overlays.py:646` viewer.spectro_marker_color_matrix
+- `sxm_viewer/gui/spectroscopy/overlays.py:676` viewer.compact_markers
+- `sxm_viewer/gui/spectroscopy/overlays.py:681` viewer._highlight_pulse_strength
+- `sxm_viewer/gui/spectroscopy/overlays.py:776` viewer.spectro_marker_color_single
+- `sxm_viewer/gui/spectroscopy/overlays.py:777` viewer.spectro_marker_color_matrix
+- `sxm_viewer/gui/spectroscopy/overlays.py:778` viewer.spectro_marker_color_stack
+- `sxm_viewer/gui/spectroscopy/overlays.py:779` viewer.spectro_marker_color_cloud
+- `sxm_viewer/gui/spectroscopy/overrides.py:75` viewer.spectros
+- `sxm_viewer/gui/spectroscopy/overrides.py:111` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/spectroscopy/overrides.py:116` viewer.image_meta
+- `sxm_viewer/gui/spectroscopy/overrides.py:128` viewer._highlighted_spec
+- `sxm_viewer/gui/spectroscopy/overrides.py:129` viewer._last_clicked_spec
+- `sxm_viewer/gui/spectroscopy/overrides.py:132` viewer.spectro_list
+- `sxm_viewer/gui/spectroscopy/overrides.py:149` viewer._multi_spec_selection
+- `sxm_viewer/gui/spectroscopy/overrides.py:168` viewer.spectro_dock
+- `sxm_viewer/gui/spectroscopy/popups.py:91` viewer.quick_crop_controller
+- `sxm_viewer/gui/spectroscopy/popups.py:132` viewer.spectro_color_cycle
+- `sxm_viewer/gui/spectroscopy/popups.py:159` viewer._multi_spectro_popups
+- `sxm_viewer/gui/spectroscopy/popups.py:160` viewer.spectro_color_cycle
+- `sxm_viewer/gui/spectroscopy/popups.py:179` viewer.matrix_datasets
+- `sxm_viewer/gui/spectroscopy/popups.py:211` viewer.spectro_color_cycle
+- `sxm_viewer/gui/spectroscopy/popups.py:224` viewer.matrix_spectros
+- `sxm_viewer/gui/spectroscopy/popups.py:228` viewer.image_meta
+- `sxm_viewer/gui/viewer/export.py:137` viewer.extra_view_specs
+- `sxm_viewer/gui/viewer/export.py:161` viewer.last_dir
+- `sxm_viewer/gui/viewer/export.py:215` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/export.py:217` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/export.py:278` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/export.py:280` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/export.py:367` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/export.py:369` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/export.py:397` viewer._batch_export_progress
+- `sxm_viewer/gui/viewer/export.py:406` viewer._batch_export_progress
+- `sxm_viewer/gui/viewer/loader.py:796` viewer.convert_nanonis_enabled
+- `sxm_viewer/gui/viewer/loader.py:871` viewer.convert_nanonis_enabled
+- `sxm_viewer/gui/viewer/loader.py:895` viewer.last_dir
+- `sxm_viewer/gui/viewer/loader.py:896` viewer.files
+- `sxm_viewer/gui/viewer/loader.py:897` viewer.headers
+- `sxm_viewer/gui/viewer/loader.py:1002` viewer.auto_detect_tags
+- `sxm_viewer/gui/viewer/loader.py:1014` viewer.spec_folder_path
+- `sxm_viewer/gui/viewer/loader.py:1032` viewer.lazy_spectros_enabled
+- `sxm_viewer/gui/viewer/loader.py:1097` viewer.spectros
+- `sxm_viewer/gui/viewer/loader.py:1098` viewer.matrix_datasets
+- `sxm_viewer/gui/viewer/loader.py:1115` viewer.files
+- `sxm_viewer/gui/viewer/loader.py:1116` viewer.image_meta
+- `sxm_viewer/gui/viewer/loader.py:1125` viewer.matrix_datasets
+- `sxm_viewer/gui/viewer/loader.py:1199` viewer.image_time_source
+- `sxm_viewer/gui/viewer/loader.py:1493` viewer.spectros
+- `sxm_viewer/gui/viewer/loader.py:1542` viewer._spectro_cache
+- `sxm_viewer/gui/viewer/loader.py:1577` viewer.spec_folder_path
+- `sxm_viewer/gui/viewer/loader.py:1577` viewer.last_dir
+- `sxm_viewer/gui/viewer/loader.py:1583` viewer.spectro_disk_cache_enabled
+- `sxm_viewer/gui/viewer/loader.py:1626` viewer.spectro_manifest_cache_enabled
+- `sxm_viewer/gui/viewer/loader.py:1627` viewer._spectro_manifest_entries
+- `sxm_viewer/gui/viewer/loader.py:1642` viewer.spectros
+- `sxm_viewer/gui/viewer/loader.py:1698` viewer.spectro_manifest_cache_enabled
+- `sxm_viewer/gui/viewer/loader.py:1700` viewer.spec_folder_path
+- `sxm_viewer/gui/viewer/loader.py:1700` viewer.last_dir
+- `sxm_viewer/gui/viewer/loader.py:1708` viewer._spectro_manifest_entries
+- `sxm_viewer/gui/viewer/loader.py:1710` viewer.spectros
+- `sxm_viewer/gui/viewer/loader.py:1788` viewer.spectro_single_grid_as_matrix
+- `sxm_viewer/gui/viewer/loader.py:1789` viewer.spectro_force_single_mode
+- `sxm_viewer/gui/viewer/loader.py:2177` viewer.spectro_disk_cache_enabled
+- `sxm_viewer/gui/viewer/loader.py:2183` viewer.spectro_manifest_cache_enabled
+- `sxm_viewer/gui/viewer/loader.py:2184` viewer.spectro_lazy_payload_enabled
+- `sxm_viewer/gui/viewer/loader.py:2204` viewer.image_meta
+- `sxm_viewer/gui/viewer/loader.py:2210` viewer.image_meta
+- `sxm_viewer/gui/viewer/loader.py:2215` viewer.files
+- `sxm_viewer/gui/viewer/loader.py:2223` viewer.headers
+- `sxm_viewer/gui/viewer/loader.py:2230` viewer.files
+- `sxm_viewer/gui/viewer/loader.py:2467` viewer.image_meta
+- `sxm_viewer/gui/viewer/measurement.py:43` viewer._pending_profile_enable
+- `sxm_viewer/gui/viewer/measurement.py:70` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:77` viewer._pending_angle_enable
+- `sxm_viewer/gui/viewer/measurement.py:104` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:136` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:156` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:157` viewer._remember_closed_main_profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:163` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:186` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:253` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:331` viewer.dark_mode
+- `sxm_viewer/gui/viewer/measurement.py:347` viewer.preserve_profiles_on_channel_change
+- `sxm_viewer/gui/viewer/measurement.py:370` viewer.preserve_profiles_on_channel_change
+- `sxm_viewer/gui/viewer/measurement.py:382` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:423` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:425` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:444` viewer.preview_canvas
+- `sxm_viewer/gui/viewer/measurement.py:457` viewer._last_profile_payload
+- `sxm_viewer/gui/viewer/measurement.py:485` viewer.dark_mode
+- `sxm_viewer/gui/viewer/measurement.py:493` viewer.detail_dark_view
+- `sxm_viewer/gui/viewer/measurement.py:494` viewer.detail_grid_view
+- `sxm_viewer/gui/viewer/measurement.py:504` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:514` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/measurement.py:540` viewer._profile_dialog
+- `sxm_viewer/gui/viewer/preview.py:64` viewer._resolve_preview_clim
+- `sxm_viewer/gui/viewer/preview.py:279` viewer.dark_mode
+- `sxm_viewer/gui/viewer/preview.py:280` viewer.show_preview_spectra
+- `sxm_viewer/gui/viewer/preview.py:280` viewer.show_spectra
+- `sxm_viewer/gui/viewer/preview.py:302` viewer.config
+- `sxm_viewer/gui/viewer/preview.py:571` viewer._is_processed_key
+- `sxm_viewer/gui/viewer/preview.py:573` viewer._processed_views
+- `sxm_viewer/gui/viewer/preview.py:595` viewer.show_preview_spectra
+- `sxm_viewer/gui/viewer/preview.py:595` viewer.show_spectra
+- `sxm_viewer/gui/viewer/preview.py:599` viewer._highlighted_spec
+- `sxm_viewer/gui/viewer/preview.py:600` viewer.spectro_highlight_glow
+- `sxm_viewer/gui/viewer/preview.py:660` viewer.spectro_marker_size
+- `sxm_viewer/gui/viewer/preview.py:670` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:684` viewer.spectro_marker_symbol
+- `sxm_viewer/gui/viewer/preview.py:685` viewer.spectro_marker_size
+- `sxm_viewer/gui/viewer/preview.py:686` viewer.spectro_marker_color_single
+- `sxm_viewer/gui/viewer/preview.py:687` viewer.spectro_marker_color_stack
+- `sxm_viewer/gui/viewer/preview.py:688` viewer.spectro_marker_color_matrix
+- `sxm_viewer/gui/viewer/preview.py:695` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:726` viewer.last_preview
+- `sxm_viewer/gui/viewer/preview.py:767` viewer.preview_cmap
+- `sxm_viewer/gui/viewer/preview.py:772` viewer.thumb_cmap
+- `sxm_viewer/gui/viewer/preview.py:773` viewer.preview_cmap
+- `sxm_viewer/gui/viewer/preview.py:779` viewer.show_preview_spectra
+- `sxm_viewer/gui/viewer/preview.py:779` viewer.show_spectra
+- `sxm_viewer/gui/viewer/preview.py:783` viewer._highlighted_spec
+- `sxm_viewer/gui/viewer/preview.py:784` viewer.spectro_highlight_glow
+- `sxm_viewer/gui/viewer/preview.py:846` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:860` viewer.spectro_marker_size
+- `sxm_viewer/gui/viewer/preview.py:870` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:884` viewer.spectro_marker_symbol
+- `sxm_viewer/gui/viewer/preview.py:885` viewer.spectro_marker_size
+- `sxm_viewer/gui/viewer/preview.py:886` viewer.spectro_marker_color_single
+- `sxm_viewer/gui/viewer/preview.py:887` viewer.spectro_marker_color_stack
+- `sxm_viewer/gui/viewer/preview.py:888` viewer.spectro_marker_color_matrix
+- `sxm_viewer/gui/viewer/preview.py:906` viewer.extra_view_specs
+- `sxm_viewer/gui/viewer/preview.py:934` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:938` viewer.display_units_relative
+- `sxm_viewer/gui/viewer/preview.py:962` viewer._suppress_profile_restore
+- `sxm_viewer/gui/viewer/preview.py:963` viewer.preserve_profiles_on_channel_change
+- `sxm_viewer/gui/viewer/preview.py:965` viewer.current_mode
+- `sxm_viewer/gui/viewer/preview.py:980` viewer._suppress_profile_restore
+- `sxm_viewer/gui/viewer/preview.py:982` viewer._suppress_profile_restart
+- `sxm_viewer/gui/viewer/preview.py:986` viewer.current_mode
+- `sxm_viewer/gui/viewer/preview.py:988` viewer._pending_profile_enable
+- `sxm_viewer/gui/viewer/preview.py:1017` viewer.preview_perf_log_threshold_ms
+- `sxm_viewer/gui/viewer/preview.py:1054` viewer.preview_cmap_combo
+- `sxm_viewer/gui/viewer/preview.py:1167` viewer.auto_detect_tags
+- `sxm_viewer/gui/viewer/preview.py:1186` viewer._classify_topography_values
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:46` viewer.ui_theme
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:64` viewer._processed_views
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:123` viewer.thumb_size_px
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:171` viewer.spectro_thumb_channel_by_path
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:178` viewer.spectro_miniature_default_channel
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:304` viewer.image_time_index
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:325` viewer.selected_spectro_thumb_file
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:326` viewer.spectro_thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:328` viewer.spectro_thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:341` viewer.current_thumbnail_entries
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:345` viewer.current_thumb_files
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:346` viewer.current_spectro_thumb_files
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:357` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:358` viewer.spectro_thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:366` viewer.current_thumbnail_kind_by_key
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:375` viewer.current_thumbnail_kind_by_key
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:404` viewer.spectro_color_cycle
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:406` viewer._spectro_miniature_cache
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:461` viewer.spectro_color_cycle
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:565` viewer._spectros_loaded
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:574` viewer.files_with_matrix
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:575` viewer.files_with_spectra
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:579` viewer.starred
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:630` viewer.scroll
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:632` viewer._thumb_labels
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:654` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:654` viewer._spectros_loaded
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:664` viewer._thumb_viewport
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:672` viewer.thumb_cmap
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:685` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:706` viewer.spectros
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:781` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:783` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:857` viewer.spectro_thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:893` viewer._thumb_viewport
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:894` viewer.scroll
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:947` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:949` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1023` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1024` viewer.spectro_thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1030` viewer._thumb_viewport
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1036` viewer.thumb_grid_columns
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1039` viewer.current_thumbnail_entries
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1042` viewer.current_thumb_files
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1043` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1044` viewer.spectro_thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1080` viewer.show_spectro_miniatures
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1082` viewer.spectro_thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1084` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1097` viewer._thumb_viewport
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1162` viewer._processed_views
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1175` viewer._processed_views
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1185` viewer.thumb_filter_combo
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1202` viewer.starred
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1235` viewer._thumb_labels
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1241` viewer.thumb_cmap
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1283` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1380` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1381` viewer.thumb_multi_select
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1383` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1418` viewer._highlighted_spec
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1432` viewer.last_thumb_anchor
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1432` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1505` viewer._ordered_thumbnail_selection
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1558` viewer.last_spectro_thumb_anchor
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1559` viewer.selected_spectro_thumb_file
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1661` viewer._ordered_thumbnail_selection
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1663` viewer.selected_file_for_thumbs
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1666` viewer.thumb_widgets
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1672` viewer.thumb_cmap_combo
+- `sxm_viewer/gui/viewer/thumbnails.py:68` viewer.display_units_si
+- `sxm_viewer/gui/viewer/thumbnails.py:69` viewer.display_units_relative
+
+</details>
+
+## config_write_then_save  (88 sites)
+
+> Collapse into a declarative settings registry (one row per setting).
+
+| File | Sites |
+|---|---|
+| sxm_viewer/gui/main_window.py | 67 |
+| sxm_viewer/gui/controllers/recent_files_controller.py | 5 |
+| sxm_viewer/gui/viewer/thumbnail_ui.py | 5 |
+| sxm_viewer/gui/viewer/preview.py | 4 |
+| sxm_viewer/gui/controllers/filter_controller.py | 2 |
+| sxm_viewer/gui/main_window_state.py | 2 |
+| sxm_viewer/gui/controllers/quick_crop.py | 1 |
+| sxm_viewer/gui/viewer/loader.py | 1 |
+| sxm_viewer/gui/viewer/measurement.py | 1 |
+
+<details><summary>All sites</summary>
+
+- `sxm_viewer/gui/controllers/filter_controller.py:428` self.viewer.config
+- `sxm_viewer/gui/controllers/filter_controller.py:431` self.viewer.config
+- `sxm_viewer/gui/controllers/quick_crop.py:28` viewer.config
+- `sxm_viewer/gui/controllers/recent_files_controller.py:58` self.viewer.config
+- `sxm_viewer/gui/controllers/recent_files_controller.py:64` self.viewer.config
+- `sxm_viewer/gui/controllers/recent_files_controller.py:119` self.viewer.config
+- `sxm_viewer/gui/controllers/recent_files_controller.py:141` self.viewer.config
+- `sxm_viewer/gui/controllers/recent_files_controller.py:148` self.viewer.config
+- `sxm_viewer/gui/main_window.py:659` self.config
+- `sxm_viewer/gui/main_window.py:1588` self.config
+- `sxm_viewer/gui/main_window.py:1589` self.config
+- `sxm_viewer/gui/main_window.py:1626` self.config
+- `sxm_viewer/gui/main_window.py:1842` self.config
+- `sxm_viewer/gui/main_window.py:1899` self.config
+- `sxm_viewer/gui/main_window.py:1900` self.config
+- `sxm_viewer/gui/main_window.py:2561` self.config
+- `sxm_viewer/gui/main_window.py:2672` self.config
+- `sxm_viewer/gui/main_window.py:3058` self.config
+- `sxm_viewer/gui/main_window.py:3059` self.config
+- `sxm_viewer/gui/main_window.py:3139` self.config
+- `sxm_viewer/gui/main_window.py:3150` self.config
+- `sxm_viewer/gui/main_window.py:4304` self.config
+- `sxm_viewer/gui/main_window.py:4309` self.config
+- `sxm_viewer/gui/main_window.py:4310` self.config
+- `sxm_viewer/gui/main_window.py:4371` self.config
+- `sxm_viewer/gui/main_window.py:4385` self.config
+- `sxm_viewer/gui/main_window.py:4420` self.config
+- `sxm_viewer/gui/main_window.py:4434` self.config
+- `sxm_viewer/gui/main_window.py:4442` self.config
+- `sxm_viewer/gui/main_window.py:4450` self.config
+- `sxm_viewer/gui/main_window.py:4561` self.config
+- `sxm_viewer/gui/main_window.py:5000` self.config
+- `sxm_viewer/gui/main_window.py:5253` self.config
+- `sxm_viewer/gui/main_window.py:5728` self.config
+- `sxm_viewer/gui/main_window.py:5860` self.config
+- `sxm_viewer/gui/main_window.py:5872` self.config
+- `sxm_viewer/gui/main_window.py:5883` self.config
+- `sxm_viewer/gui/main_window.py:6118` self.config
+- `sxm_viewer/gui/main_window.py:6129` self.config
+- `sxm_viewer/gui/main_window.py:8217` self.config
+- `sxm_viewer/gui/main_window.py:8240` self.config
+- `sxm_viewer/gui/main_window.py:8308` self.config
+- `sxm_viewer/gui/main_window.py:9293` self.config
+- `sxm_viewer/gui/main_window.py:9300` self.config
+- `sxm_viewer/gui/main_window.py:9309` self.config
+- `sxm_viewer/gui/main_window.py:9320` self.config
+- `sxm_viewer/gui/main_window.py:9333` self.config
+- `sxm_viewer/gui/main_window.py:9356` self.config
+- `sxm_viewer/gui/main_window.py:9363` self.config
+- `sxm_viewer/gui/main_window.py:9409` self.config
+- `sxm_viewer/gui/main_window.py:9420` self.config
+- `sxm_viewer/gui/main_window.py:9429` self.config
+- `sxm_viewer/gui/main_window.py:9469` self.config
+- `sxm_viewer/gui/main_window.py:9485` self.config
+- `sxm_viewer/gui/main_window.py:9601` self.config
+- `sxm_viewer/gui/main_window.py:9715` self.config
+- `sxm_viewer/gui/main_window.py:9735` self.config
+- `sxm_viewer/gui/main_window.py:9740` self.config
+- `sxm_viewer/gui/main_window.py:9773` self.config
+- `sxm_viewer/gui/main_window.py:9797` self.config
+- `sxm_viewer/gui/main_window.py:9820` self.config
+- `sxm_viewer/gui/main_window.py:9840` self.config
+- `sxm_viewer/gui/main_window.py:9859` self.config
+- `sxm_viewer/gui/main_window.py:9873` self.config
+- `sxm_viewer/gui/main_window.py:9887` self.config
+- `sxm_viewer/gui/main_window.py:9901` self.config
+- `sxm_viewer/gui/main_window.py:9915` self.config
+- `sxm_viewer/gui/main_window.py:9937` self.config
+- `sxm_viewer/gui/main_window.py:10117` self.config
+- `sxm_viewer/gui/main_window.py:10118` self.config
+- `sxm_viewer/gui/main_window.py:10140` self.config
+- `sxm_viewer/gui/main_window.py:10162` self.config
+- `sxm_viewer/gui/main_window.py:10177` self.config
+- `sxm_viewer/gui/main_window.py:10198` self.config
+- `sxm_viewer/gui/main_window.py:10336` self.config
+- `sxm_viewer/gui/main_window_state.py:60` self.config
+- `sxm_viewer/gui/main_window_state.py:179` self.config
+- `sxm_viewer/gui/viewer/loader.py:1024` viewer.config
+- `sxm_viewer/gui/viewer/measurement.py:283` viewer.config
+- `sxm_viewer/gui/viewer/preview.py:242` viewer.config
+- `sxm_viewer/gui/viewer/preview.py:393` viewer.config
+- `sxm_viewer/gui/viewer/preview.py:1067` viewer.config
+- `sxm_viewer/gui/viewer/preview.py:1198` viewer.config
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:133` viewer.config
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1129` viewer.config
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1143` viewer.config
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1216` viewer.config
+- `sxm_viewer/gui/viewer/thumbnail_ui.py:1681` viewer.config
+
+</details>
+
+## header_field_unpack  (43 sites)
+
+> Collapse into a single header accessor returning pixel/size fields.
+
+| File | Sites |
+|---|---|
+| sxm_viewer/gui/viewer/preview.py | 14 |
+| sxm_viewer/gui/controllers/report.py | 6 |
+| sxm_viewer/gui/main_window.py | 6 |
+| sxm_viewer/gui/main_window_spectro.py | 4 |
+| sxm_viewer/gui/viewer/export.py | 4 |
+| sxm_viewer/processing/scan_timing.py | 3 |
+| sxm_viewer/gui/dialogs/spectroscopy_dialogs.py | 2 |
+| sxm_viewer/gui/spectroscopy/summary_dialog.py | 2 |
+| sxm_viewer/processing/detection.py | 2 |
+
+<details><summary>All sites</summary>
+
+- `sxm_viewer/gui/controllers/report.py:178` XScanRange
+- `sxm_viewer/gui/controllers/report.py:179` YScanRange
+- `sxm_viewer/gui/controllers/report.py:338` xPixel
+- `sxm_viewer/gui/controllers/report.py:339` yPixel
+- `sxm_viewer/gui/controllers/report.py:434` xPixel
+- `sxm_viewer/gui/controllers/report.py:435` yPixel
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:351` xPixel
+- `sxm_viewer/gui/dialogs/spectroscopy_dialogs.py:352` yPixel
+- `sxm_viewer/gui/main_window.py:5100` xPixel
+- `sxm_viewer/gui/main_window.py:5101` yPixel
+- `sxm_viewer/gui/main_window.py:5758` xPixel
+- `sxm_viewer/gui/main_window.py:5759` yPixel
+- `sxm_viewer/gui/main_window.py:7578` xPixel
+- `sxm_viewer/gui/main_window.py:7579` yPixel
+- `sxm_viewer/gui/main_window_spectro.py:19` XScanRange
+- `sxm_viewer/gui/main_window_spectro.py:20` YScanRange
+- `sxm_viewer/gui/main_window_spectro.py:62` XScanRange
+- `sxm_viewer/gui/main_window_spectro.py:63` YScanRange
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:186` xPixel
+- `sxm_viewer/gui/spectroscopy/summary_dialog.py:187` yPixel
+- `sxm_viewer/gui/viewer/export.py:259` xPixel
+- `sxm_viewer/gui/viewer/export.py:259` yPixel
+- `sxm_viewer/gui/viewer/export.py:260` XScanRange
+- `sxm_viewer/gui/viewer/export.py:261` YScanRange
+- `sxm_viewer/gui/viewer/preview.py:78` XScanRange
+- `sxm_viewer/gui/viewer/preview.py:79` YScanRange
+- `sxm_viewer/gui/viewer/preview.py:441` XScanRange
+- `sxm_viewer/gui/viewer/preview.py:442` YScanRange
+- `sxm_viewer/gui/viewer/preview.py:446` xPixel
+- `sxm_viewer/gui/viewer/preview.py:447` yPixel
+- `sxm_viewer/gui/viewer/preview.py:475` XScanRange
+- `sxm_viewer/gui/viewer/preview.py:475` YScanRange
+- `sxm_viewer/gui/viewer/preview.py:478` xPixel
+- `sxm_viewer/gui/viewer/preview.py:479` yPixel
+- `sxm_viewer/gui/viewer/preview.py:568` xPixel
+- `sxm_viewer/gui/viewer/preview.py:569` yPixel
+- `sxm_viewer/gui/viewer/preview.py:745` xPixel
+- `sxm_viewer/gui/viewer/preview.py:745` yPixel
+- `sxm_viewer/processing/detection.py:36` xPixel
+- `sxm_viewer/processing/detection.py:40` yPixel
+- `sxm_viewer/processing/scan_timing.py:49` xPixel
+- `sxm_viewer/processing/scan_timing.py:50` yPixel
+- `sxm_viewer/processing/scan_timing.py:76` XScanRange
+
+</details>
+
