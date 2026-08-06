@@ -5588,6 +5588,13 @@ QLabel:hover {{
                         self.show_file_channel(preview_key, preview_idx, use_local_cmap=True)
             except Exception:
                 pass
+            # Keep the Position inset of any open spectroscopy dialog in sync
+            # with the colormap just applied (preview combo, thumb combo, and
+            # gallery Apply all funnel through here).
+            try:
+                viewer_preview._notify_spectro_insets(self)
+            except Exception:
+                pass
         return changed
 
     def _set_virtual_copy_cmap(self, paths, cmap_name=None):

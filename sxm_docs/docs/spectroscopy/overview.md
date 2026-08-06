@@ -78,6 +78,44 @@ The **Advanced** section exposes:
 - colour swatches for the active trace
 - menus for **Traces**, **Legend**, and **Filters**
 
+### Position inset
+
+The **Position inset** is a miniature of the acquisition image with a marker on
+each spectrum's location. It is available in both the single **Spectrum** popup
+and the **All spectra on this image** comparison window, and both share the same
+option set. Enable it from the **Advanced** controls (or the **Position inset**
+toggle); then open its options either from the **Inset** button or by
+**right-clicking the inset itself**.
+
+Options (identical in both windows):
+
+- **Show other points** - show every spectrum's marker, or only the current one.
+- **Marker** symbol and **Size**, **Filled markers**, and **Marker color** (or
+  *Use trace color* so each marker matches its curve).
+- **Marker outline** - toggle the contrasting halo that keeps markers visible on
+  any colormap, and set its colour (or *Auto outline* for the adaptive
+  black/white halo).
+- **Marker labels** - annotate each marker with any of:
+    - **Initial Z** - the spectrum's starting tip height,
+    - **Time** - acquisition time,
+    - **Acquisition order** - the spectra numbered by time (`#1`, `#2`, ...),
+    - **Image Z (constant-height)** - when the inset background is a
+      constant-height scan, its absolute Z is shown in the inset title, handy
+      for comparing the tip height against each spectrum's initial Z.
+- **Inset colormap** - *Follow preview* (track the main Preview's colormap) or
+  pick an in-situ override from the featured shortlist.
+
+Interactions:
+
+- **Click a marker** to select that spectrum - in the comparison window it
+  highlights the matching row in the **File** list; in the single popup it
+  selects the matching curve - just like clicking it in the list.
+- **Drag** the inset to reposition it over the plot.
+- **Drag the corner grip** to resize it. The inset keeps the scan's true aspect
+  (square or rectangular) and the grip sits right on the image corner.
+- Changing the **preview colormap** updates any open inset automatically (unless
+  the inset uses its own colormap override).
+
 ### Trace styling
 
 The popup supports per-trace visual editing without needing the full comparison dialog:

@@ -186,6 +186,44 @@ def _register_extra_package():
     }
 
 
+# Qualitative (categorical) colormaps contributed by the optional
+# "colormaps" package, worth surfacing as discrete color cycles for
+# line/marker plots. The package groups maps only by source library
+# (cartocolors/colorbrewer/tableau/...), never by "qualitative", so this
+# is a curated shortlist — same "colormap knowledge lives here, not in
+# widgets" rationale as _FEATURED above. Names use the package's own
+# (mostly lowercase) registered spelling; qualitative_extra_cmap_names()
+# filters to what the package actually contributed, so matplotlib-builtin
+# shadows the package couldn't override (e.g. "prism") drop out.
+_QUALITATIVE_EXTRA_CANDIDATES = (
+    # cartocolors qualitative
+    "antique", "bold", "pastel", "safe", "vivid",
+    # colorbrewer qualitative (package lowercase variants; distinct from
+    # matplotlib's capitalized Set1/Dark2/... builtins)
+    "accent", "dark2", "paired", "pastel1", "pastel2",
+    "set1", "set2", "set3",
+    # tableau (all qualitative)
+    "tableau_10", "tableau_20", "tableaulight_10", "tableaumedium_10",
+    "colorblind_10", "trafficlight_9",
+    "bluered_6", "bluered_12", "greenorange_6", "greenorange_12",
+    "purplegray_6", "purplegray_12", "gray_5",
+    # ncar_ncl categorical
+    "Cat12",
+)
+
+
+def qualitative_extra_cmap_names():
+    """Registered qualitative/categorical colormaps from the optional
+    ``colormaps`` package, suitable as discrete color cycles. Empty list
+    when the package isn't installed. Filtered to names the package
+    actually contributed (``_EXTRA_NAMES``), so a matplotlib builtin that
+    shadowed a same-named package map is not mistaken for the qualitative
+    variant."""
+    ensure_registered()
+    extra = set(_EXTRA_NAMES)
+    return [n for n in _QUALITATIVE_EXTRA_CANDIDATES if n in extra]
+
+
 def ensure_registered():
     """Idempotently register the amber cmap and any optional extras."""
     global _REGISTERED
