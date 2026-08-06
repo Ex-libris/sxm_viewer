@@ -9,6 +9,7 @@ import re
 
 import numpy as np
 from matplotlib import patches
+from matplotlib import patheffects as mpatheffects
 from matplotlib.backend_bases import MouseButton
 from matplotlib import colors as mcolors
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -236,6 +237,89 @@ def _resize_inset_bbox(parent_ax, resize_start, event_x, event_y):
     return [x0, new_y0, new_w, new_h]
 
 
+def _begin_inset_resize(parent_ax, inset_ax, inset_bbox, event_x, event_y):
+    """Capture the state a scale-based inset resize needs (see
+    ``_resize_inset_bbox_scaled``).
+
+    With the inset rendered ``adjustable='box', anchor='NW'`` its display
+    ``bbox`` is the *tight* image box pinned to the allocation's top-left, so
+    the visible resize grip sits right on the image corner rather than out in
+    the (transparent) allocation margin. The drag scales that box uniformly
+    about its fixed top-left corner, which keeps the scan's true aspect
+    (square OR rectangular) locked instead of letting a free-corner drag
+    shear it. Returns a dict, or None if geometry is unavailable."""
+    try:
+        bb = inset_ax.bbox
+        axb = parent_ax.bbox
+        if bb is None or axb is None or axb.width <= 0 or axb.height <= 0:
+            return None
+        tl = (bb.x0, bb.y1)  # top-left, display coords (y increases upward)
+        d0 = math.hypot(event_x - tl[0], event_y - tl[1])
+        ib = inset_bbox or [0.04, 0.04, 0.28, 0.28]
+        return {
+            "tl": tl,
+            "d0": max(6.0, float(d0)),
+            "w0f": float(bb.width) / float(axb.width),
+            "h0f": float(bb.height) / float(axb.height),
+            "x0f": float(ib[0]),
+            "ytopf": float(ib[1]) + float(ib[3]),
+        }
+    except Exception:
+        return None
+
+
+def _inset_drag_offset(parent_ax, inset_bbox, bbox, event_x, event_y):
+    """Pixel offset between the press point and the inset allocation's
+    bottom-left corner, for a move drag. Anchoring to the *allocation* corner
+    (not the tight image ``bbox``, whose bottom now hugs the image after the
+    box/NW aspect change) keeps a rectangular, letterboxed inset from jumping
+    at drag start."""
+    try:
+        ib = inset_bbox or [0.04, 0.04, 0.28, 0.28]
+        bl = parent_ax.transAxes.transform((ib[0], ib[1]))
+        return (event_x - bl[0], event_y - bl[1])
+    except Exception:
+        return (event_x - bbox.x0, event_y - bbox.y0)
+
+
+def _resize_inset_bbox_scaled(parent_ax, resize_start, event_x, event_y):
+    """Return a new [x0, y0, w, h] inset allocation (axes-fraction) for a
+    corner drag that scales the inset uniformly about its fixed top-left.
+
+    The scale factor is the ratio of the cursor's distance from the pinned
+    top-left corner now vs. at press, so dragging the grip out along the
+    image diagonal grows it and dragging in shrinks it, always preserving the
+    image's aspect. The allocation is built to the image's own aspect (so
+    ``adjustable='box'`` leaves no letterbox and the grip stays exactly on
+    the corner), clamped by scaling the whole box rather than either axis
+    independently, so the aspect never breaks at the size limits."""
+    if not resize_start:
+        return None
+    try:
+        tl = resize_start["tl"]
+        w0f = resize_start["w0f"]
+        h0f = resize_start["h0f"]
+        x0f = resize_start["x0f"]
+        ytopf = resize_start["ytopf"]
+        if w0f <= 0 or h0f <= 0:
+            return None
+        d = math.hypot(event_x - tl[0], event_y - tl[1])
+        raw_scale = d / resize_start["d0"]
+        max_scale = min(
+            _INSET_MAX_SIZE / w0f, _INSET_MAX_SIZE / h0f,
+            (1.0 - x0f) / w0f, ytopf / h0f, 6.0,
+        )
+        min_scale = max(_INSET_MIN_SIZE / w0f, _INSET_MIN_SIZE / h0f, 0.15)
+        if max_scale < min_scale:
+            max_scale = min_scale
+        scale = min(max(raw_scale, min_scale), max_scale)
+        w = w0f * scale
+        h = h0f * scale
+        return [x0f, ytopf - h, w, h]
+    except Exception:
+        return None
+
+
 def _draw_inset_resize_handle(inset_ax):
     """Draw a small grip glyph in the inset's bottom-right corner marking
     the drag-to-resize hotspot."""
@@ -254,6 +338,543 @@ def _draw_inset_resize_handle(inset_ax):
         )
     except Exception:
         pass
+
+
+def _draw_inset_marker(iax, coords, color, size, marker_shape, filled, is_current,
+                       outline=True, outline_color=None):
+    """Draw one position marker.
+
+    ``outline`` controls the contrasting halo drawn around each marker so it
+    stays visible on ANY inset colormap (a thin ring in the trace color alone
+    vanishes against a same-toned region of the background image):
+    - ``outline`` False -> no halo (plain marker; may be hard to see);
+    - ``outline`` True, ``outline_color`` None -> the adaptive black+white
+      double halo (the robust default);
+    - ``outline`` True, ``outline_color`` set -> a single solid-color halo.
+    ``clip_on=False`` keeps edge/off-frame markers from being clipped away."""
+    lw = 2.0 if is_current else 1.3
+    if not outline:
+        effects = [mpatheffects.Normal()]
+    elif outline_color:
+        effects = [
+            mpatheffects.Stroke(linewidth=lw + 2.4, foreground=outline_color, alpha=0.95),
+            mpatheffects.Normal(),
+        ]
+    else:
+        effects = [
+            mpatheffects.Stroke(linewidth=lw + 2.6, foreground="#000000", alpha=0.5),
+            mpatheffects.Stroke(linewidth=lw + 1.3, foreground="#ffffff", alpha=0.85),
+            mpatheffects.Normal(),
+        ]
+    iax.scatter(
+        [coords[0]], [coords[1]],
+        s=size,
+        marker=marker_shape,
+        facecolors=(color if filled else "none"),
+        edgecolors=color,
+        linewidths=lw,
+        alpha=1.0 if is_current else 0.7,
+        zorder=5 if is_current else 3,
+        clip_on=False,
+        path_effects=effects,
+    )
+
+
+def _draw_inset_stack_badges(host, iax, raw_coords):
+    """Draw Z-stack count badges next to coincident markers (compare view)."""
+    for badge in spectro_overlays._stack_badges_from_coords(raw_coords):
+        try:
+            iax.text(
+                float(badge.get("col")) + 6.0,
+                float(badge.get("row")) - 6.0,
+                str(badge.get("label") or ""),
+                fontsize=6.6 * float(getattr(host, "_font_scale", 1.0)),
+                fontweight="bold",
+                color="#ffe478",
+                ha="left",
+                va="bottom",
+                bbox=dict(boxstyle="round,pad=0.18", facecolor="#281e12", edgecolor="#ffe0a0", linewidth=0.8, alpha=0.92),
+            )
+        except Exception:
+            continue
+
+
+_INSET_LABEL_FIELDS = ("z", "time", "order", "image_z")
+_INSET_LABEL_TITLES = {
+    "z": "Initial Z",
+    "time": "Time",
+    "order": "Acquisition order",
+    "image_z": "Image Z (constant-height)",
+}
+
+
+def _inset_refresh(host):
+    """Rebuild the host's position inset and repaint. Universal dispatch so
+    shared inset code never has to know which dialog it is driving: compare
+    dialogs expose ``_update_position_inset_compare``, single popups
+    ``_update_position_inset``."""
+    fn = getattr(host, "_update_position_inset_compare", None) or getattr(host, "_update_position_inset", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception:
+            pass
+    canvas = getattr(host, "canvas", None)
+    if canvas is not None:
+        try:
+            canvas.draw_idle()
+        except Exception:
+            pass
+
+
+def _inset_marker_at_event(host, event, threshold_px=13.0):
+    """If a left-click ``event`` landed on (or very near) one of the position
+    inset's markers, return that marker's spec dict, else None. Hit-testing
+    transforms each marker's stored data coords through the inset axes'
+    *current* ``transData`` so it stays correct after any drag/resize."""
+    try:
+        iax = getattr(host, "_position_inset_ax", None)
+        specs = getattr(host, "_inset_marker_specs", None)
+        if iax is None or not specs or event is None:
+            return None
+        if event.x is None or event.y is None:
+            return None
+        trans = iax.transData
+        best = None
+        best_d2 = float(threshold_px) ** 2
+        for spec, col, row in specs:
+            if spec is None:
+                continue
+            try:
+                px, py = trans.transform((float(col), float(row)))
+            except Exception:
+                continue
+            d2 = (px - event.x) ** 2 + (py - event.y) ** 2
+            if d2 <= best_d2:
+                best_d2 = d2
+                best = spec
+        return best
+    except Exception:
+        return None
+
+
+def _inset_spec_key(spec):
+    """Stable identity for a spec (path + matrix index), robust to the spec
+    dict being re-created by hydration - unlike ``id()``, which silently
+    breaks the order lookup whenever the marker's spec object differs from
+    the one in ``host.specs``."""
+    if not isinstance(spec, dict):
+        return None
+    try:
+        base = str(spec.get("path", ""))
+        idx = spec.get("matrix_index")
+        return f"{base}#m{idx}" if idx is not None else base
+    except Exception:
+        return None
+
+
+def _inset_order_map(host, markers):
+    """Map stable spec-key -> 1-based acquisition order (by timestamp). Ranks
+    across every spec the dialog knows about (``host.specs``) when available
+    so the numbering is stable regardless of which subset is currently shown;
+    falls back to the shown markers otherwise. Non-dict/None entries are
+    dropped so one bad entry can't wipe the whole map."""
+    specs = [s for s in (getattr(host, "specs", None) or []) if isinstance(s, dict)]
+    if not specs:
+        specs = [m.get("spec") for m in (markers or []) if isinstance(m.get("spec"), dict)]
+    order = {}
+    try:
+        timed = [s for s in specs if isinstance(s.get("time"), datetime)]
+        timed.sort(key=lambda s: s.get("time"))
+        untimed = [s for s in specs if not isinstance(s.get("time"), datetime)]
+        for rank, s in enumerate(timed + untimed, start=1):
+            key = _inset_spec_key(s)
+            if key is not None:
+                order[key] = rank
+    except Exception:
+        return {}
+    return order
+
+
+def _inset_marker_label_text(spec, fields, order_map):
+    """Compose the per-marker annotation for the enabled ``fields`` (a subset
+    of z/time/order). Returns '' when nothing applies to this spec."""
+    if not spec or not fields:
+        return ""
+    lines = []
+    if "order" in fields:
+        rank = order_map.get(_inset_spec_key(spec))
+        if rank is not None:
+            lines.append(f"#{rank}")
+    if "z" in fields:
+        z = spec.get("z_level_nm")
+        if z is None:
+            z = spec.get("xy_stack_z_level_nm")
+        try:
+            if z is not None:
+                lines.append(f"Z={float(z):.2f} nm")
+        except Exception:
+            pass
+    if "time" in fields:
+        t = spec.get("time")
+        if isinstance(t, datetime):
+            lines.append(t.strftime("%H:%M:%S"))
+        elif t:
+            lines.append(str(t))
+    return "\n".join(lines)
+
+
+def _inset_image_abs_z_nm(viewer, file_key):
+    """(median_nm, spread_nm) of the inset image's raw Z/topography channel,
+    or None. This is the absolute tip height for a constant-height scan (the
+    dead-flat Z plane), useful to compare against each spectrum's initial Z.
+    Reads the *unfiltered* channel deliberately - background subtraction
+    would erase the very plane we want. Guarded and cached per file_key."""
+    if not viewer or not file_key:
+        return None
+    cache = getattr(viewer, "_inset_image_z_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            viewer._inset_image_z_cache = cache
+        except Exception:
+            cache = None
+    key = str(file_key)
+    if cache is not None and key in cache:
+        return cache[key]
+    result = None
+    try:
+        header, fds = viewer.headers.get(key, (None, None))
+        if fds:
+            try:
+                from ...processing.detection import _find_topography_channel
+                idx = _find_topography_channel(fds)
+            except Exception:
+                idx = None
+            if idx is None:
+                for i, fd in enumerate(fds):
+                    unit = str(fd.get("PhysUnit") or "").strip().lower()
+                    cap = str(fd.get("Caption") or "")
+                    if unit in ("m", "nm", "pm", "a", "å", "angstrom") and re.search(r"(?i)\bz\b", cap):
+                        idx = i
+                        break
+            if idx is not None:
+                fd = fds[idx]
+                raw = viewer._get_channel_array(key, idx, header, fd)
+                unit, arr = normalize_unit_and_data(raw, fd.get("PhysUnit", ""))
+                if str(unit) == "nm":
+                    finite = np.asarray(arr, dtype=float)
+                    finite = finite[np.isfinite(finite)]
+                    if finite.size:
+                        lo, hi = np.percentile(finite, [2.0, 98.0])
+                        result = (float(np.median(finite)), float(hi - lo))
+    except Exception:
+        result = None
+    if cache is not None:
+        cache[key] = result
+    return result
+
+
+def _inset_image_is_constant_height(viewer, file_key):
+    """True when the inset's background scan is tagged constant-height. The
+    tag helper is the module-level ``thumbnail_ui.effective_tag(viewer, key)``
+    (there is no ``viewer.effective_tag`` method); imported lazily to avoid a
+    GUI import cycle."""
+    if not viewer or not file_key:
+        return False
+    try:
+        from ..viewer import thumbnail_ui as _thumb_ui
+        tag = _thumb_ui.effective_tag(viewer, str(file_key))
+        return str(tag) == "constant-height"
+    except Exception:
+        return False
+
+
+def _set_inset_marker_outline(host, enabled):
+    host._inset_marker_outline = bool(enabled)
+    _inset_refresh(host)
+
+
+def _set_inset_marker_outline_color(host, color):
+    host._inset_marker_outline_color = color
+    _inset_refresh(host)
+
+
+def _pick_inset_marker_outline_color(host):
+    initial = QtGui.QColor(getattr(host, "_inset_marker_outline_color", None) or "#000000")
+    col = QtWidgets.QColorDialog.getColor(initial, host, "Select Marker Outline Color")
+    if col.isValid():
+        _set_inset_marker_outline_color(host, col.name())
+
+
+def _toggle_inset_label_field(host, field, enabled):
+    fields = getattr(host, "_inset_label_fields", None)
+    if not isinstance(fields, set):
+        fields = set(fields or ())
+        host._inset_label_fields = fields
+    if enabled:
+        fields.add(field)
+    else:
+        fields.discard(field)
+    _inset_refresh(host)
+
+
+def build_position_inset(host, image, markers, *, draw_badges=False, image_key=None):
+    """Universal position-inset renderer shared by every inset-bearing
+    dialog (``SpectroscopyPopup``, ``SpectroscopyCompareDialog``).
+
+    Creates/refreshes ``host._position_inset_ax`` showing ``image`` with
+    ``markers`` overlaid, styled from the host's ``_inset_*`` state. The
+    behaviours that must stay identical everywhere live here so they can't
+    drift between dialogs:
+
+    - **aspect='equal', adjustable='box', anchor='NW'** so the scan keeps its
+      true shape — square OR rectangular — never stretched, and the display
+      bbox hugs the image so the resize grip sits on the image corner;
+    - a fully transparent background (frame and patch hidden) so the margin
+      around a non-box-shaped scan shows the spectra behind the inset rather
+      than an opaque box;
+    - **halo'd, unclipped markers** (see ``_draw_inset_marker``) that stay
+      visible on any colormap, with optional per-marker labels (initial Z /
+      time / acquisition order) and a constant-height image-Z caption;
+    - the resize grip and drag-handler (re)install.
+
+    A single inset Axes is reused across rebuilds (cleared, not
+    removed+recreated) to avoid churning the figure's artist list on every
+    colormap/marker change — that churn under rapid redraws is a plausible
+    source of native (Agg/Qt) faults — and it is a plain ``add_axes`` Axes
+    positioned by our ``InsetPosition`` locator rather than axes_grid1's
+    exotic host axes.
+
+    ``markers`` is a normalized list of dicts:
+    ``{coords:(x,y), color:str, is_current:bool, spec:optional}``.
+    Returns the inset Axes, or None when there's nothing to show.
+    """
+    ax = getattr(host, "ax", None)
+    prev = getattr(host, "_position_inset_ax", None)
+    if ax is None or image is None or not markers:
+        if prev is not None:
+            try:
+                prev.remove()
+            except Exception:
+                pass
+            host._position_inset_ax = None
+        host._inset_marker_specs = []
+        remover = getattr(host, "_remove_inset_drag_handlers", None)
+        if callable(remover):
+            remover()
+        return None
+    if getattr(host, "_inset_bbox", None) is None:
+        host._inset_bbox = [0.04, 0.04, 0.30, 0.30]
+    iax = prev
+    try:
+        reuse = iax is not None and iax.figure is ax.figure
+    except Exception:
+        reuse = False
+    if reuse:
+        iax.clear()
+    else:
+        if iax is not None:
+            try:
+                iax.remove()
+            except Exception:
+                pass
+        iax = ax.figure.add_axes([0.0, 0.0, 1.0, 1.0])
+    host._position_inset_ax = iax
+    iax.set_axes_locator(InsetPosition(ax, host._inset_bbox))
+    try:
+        iax.imshow(image, origin="upper")
+        # adjustable='box' + NW anchor shrinks the axes to the image's true
+        # aspect (square OR rectangular) pinned to the allocation's top-left,
+        # so the display bbox IS the image box: the resize grip drawn at the
+        # axes corner lands right on the image corner instead of floating out
+        # in the (transparent) allocation margin, and the aspect never shears.
+        iax.set_aspect("equal", adjustable="box", anchor="NW")
+    except Exception:
+        pass
+    iax.set_xticks([])
+    iax.set_yticks([])
+    # Fully transparent background: hide the frame (spines) AND the axes
+    # patch so the spectra behind show through the inset's margin; only the
+    # image itself is opaque. The theme chrome pass only recolors these, so a
+    # one-time set_visible(False) sticks. The resize grip remains as the
+    # affordance for the (now frame-less) box.
+    try:
+        iax.patch.set_visible(False)
+    except Exception:
+        pass
+    for spine in iax.spines.values():
+        try:
+            spine.set_visible(False)
+        except Exception:
+            pass
+    label_fields = set(getattr(host, "_inset_label_fields", None) or ())
+    title = "Position"
+    if "image_z" in label_fields and image_key is not None:
+        viewer = getattr(host, "viewer", None)
+        if _inset_image_is_constant_height(viewer, image_key):
+            stats = _inset_image_abs_z_nm(viewer, image_key)
+            if stats is not None:
+                title = f"Position — image Z={stats[0]:.2f} nm"
+    try:
+        iax.set_title(title, fontsize=7.5 * float(getattr(host, "_font_scale", 1.0)))
+    except Exception:
+        pass
+    marker_shape = _INSET_MPL_MARKER_BY_SYMBOL.get(getattr(host, "_inset_marker_symbol", "circle"), "o")
+    override = getattr(host, "_inset_marker_color_override", None)
+    filled = bool(getattr(host, "_inset_marker_filled", False))
+    size = float(getattr(host, "_inset_marker_size", 50.0))
+    outline = bool(getattr(host, "_inset_marker_outline", True))
+    outline_color = getattr(host, "_inset_marker_outline_color", None)
+    marker_labels = {f for f in label_fields if f in ("z", "time", "order")}
+    order_map = _inset_order_map(host, markers) if "order" in marker_labels else {}
+    font_scale = float(getattr(host, "_font_scale", 1.0))
+    raw_coords = []
+    for m in markers:
+        coords = m.get("coords")
+        if coords is None:
+            continue
+        color = override or m.get("color") or "#ff3b6a"
+        is_current = bool(m.get("is_current"))
+        spec = m.get("spec")
+        try:
+            raw_coords.append((spec, float(coords[0]), float(coords[1])))
+            _draw_inset_marker(iax, coords, color, size, marker_shape, filled,
+                               is_current, outline=outline, outline_color=outline_color)
+        except Exception:
+            continue
+        if marker_labels and spec is not None:
+            text = _inset_marker_label_text(spec, marker_labels, order_map)
+            if text:
+                try:
+                    iax.annotate(
+                        text, (float(coords[0]), float(coords[1])),
+                        textcoords="offset points", xytext=(6, 5),
+                        fontsize=6.4 * font_scale, ha="left", va="bottom",
+                        color="#ffffff", clip_on=False, zorder=6,
+                        bbox=dict(boxstyle="round,pad=0.18", facecolor="#101418",
+                                  edgecolor=color, linewidth=0.7, alpha=0.82),
+                    )
+                except Exception:
+                    pass
+    host._inset_marker_specs = raw_coords
+    _draw_inset_resize_handle(iax)
+    if draw_badges:
+        _draw_inset_stack_badges(host, iax, raw_coords)
+    installer = getattr(host, "_install_inset_drag_handlers", None)
+    if callable(installer):
+        installer()
+    return iax
+
+
+def populate_inset_settings_menu(host, menu):
+    """Build the shared Position-inset settings menu onto ``menu``.
+
+    Universal across every dialog that shows a position inset
+    (``SpectroscopyPopup``, ``SpectroscopyCompareDialog``, ...): reads and
+    writes the host's ``_inset_*`` state through the common setter methods
+    each such dialog implements, so the option set (show-other-points,
+    marker symbol/size/fill/color, inset colormap) stays identical
+    everywhere and is defined once here instead of per dialog. Fed by both
+    the dialog's toolbar 'Inset' button and its right-click context menu.
+    """
+    if menu is None:
+        return
+    menu.clear()
+    show_others_act = QtWidgets.QAction("Show other points", menu, checkable=True, checked=host._inset_show_other_points)
+    show_others_act.setToolTip("Show markers for the other spectra shown here, not just the current one")
+    show_others_act.toggled.connect(host._set_inset_show_other_points)
+    menu.addAction(show_others_act)
+    menu.addSeparator()
+    symbol_widget = QtWidgets.QWidget()
+    symbol_h = QtWidgets.QHBoxLayout(symbol_widget)
+    symbol_h.setContentsMargins(6, 2, 6, 2)
+    symbol_combo = QtWidgets.QComboBox()
+    for sym in _INSET_MARKER_SYMBOLS:
+        symbol_combo.addItem(sym.capitalize(), sym)
+    idx = symbol_combo.findData(host._inset_marker_symbol)
+    symbol_combo.setCurrentIndex(max(0, idx))
+    symbol_h.addWidget(QtWidgets.QLabel("Marker"))
+    symbol_h.addWidget(symbol_combo, 1)
+    symbol_act = QtWidgets.QWidgetAction(menu)
+    symbol_act.setDefaultWidget(symbol_widget)
+    menu.addAction(symbol_act)
+    symbol_combo.currentIndexChanged.connect(lambda i: host._set_inset_marker_symbol(symbol_combo.itemData(i)))
+    size_widget = QtWidgets.QWidget()
+    size_h = QtWidgets.QHBoxLayout(size_widget)
+    size_h.setContentsMargins(6, 2, 6, 2)
+    size_spin = QtWidgets.QSpinBox()
+    size_spin.setRange(15, 200)
+    size_spin.setValue(int(host._inset_marker_size))
+    size_h.addWidget(QtWidgets.QLabel("Size"))
+    size_h.addWidget(size_spin)
+    size_act = QtWidgets.QWidgetAction(menu)
+    size_act.setDefaultWidget(size_widget)
+    menu.addAction(size_act)
+    size_spin.valueChanged.connect(host._set_inset_marker_size)
+    filled_act = QtWidgets.QAction("Filled markers", menu, checkable=True, checked=host._inset_marker_filled)
+    filled_act.setToolTip("Fill the markers with their color instead of drawing outline-only rings")
+    filled_act.toggled.connect(host._set_inset_marker_filled)
+    menu.addAction(filled_act)
+    color_act = QtWidgets.QAction("Marker color...", menu)
+    color_act.triggered.connect(host._pick_inset_marker_color)
+    menu.addAction(color_act)
+    reset_color_act = QtWidgets.QAction("Use trace color", menu, checkable=True, checked=host._inset_marker_color_override is None)
+    reset_color_act.setToolTip("Color each marker with its own trace color instead of a fixed override")
+    reset_color_act.triggered.connect(lambda: host._set_inset_marker_color(None))
+    menu.addAction(reset_color_act)
+    menu.addSeparator()
+    outline_on = bool(getattr(host, "_inset_marker_outline", True))
+    outline_act = QtWidgets.QAction("Marker outline", menu, checkable=True, checked=outline_on)
+    outline_act.setToolTip("Draw a contrasting halo around each marker so it stays visible on any colormap")
+    outline_act.toggled.connect(functools.partial(_set_inset_marker_outline, host))
+    menu.addAction(outline_act)
+    outline_color_act = QtWidgets.QAction("Outline color...", menu)
+    outline_color_act.setEnabled(outline_on)
+    outline_color_act.triggered.connect(functools.partial(_pick_inset_marker_outline_color, host))
+    menu.addAction(outline_color_act)
+    outline_auto_act = QtWidgets.QAction("Auto outline (black/white)", menu, checkable=True,
+                                         checked=getattr(host, "_inset_marker_outline_color", None) is None)
+    outline_auto_act.setEnabled(outline_on)
+    outline_auto_act.setToolTip("Use the adaptive black+white halo instead of a fixed outline color")
+    outline_auto_act.triggered.connect(lambda: _set_inset_marker_outline_color(host, None))
+    menu.addAction(outline_auto_act)
+    menu.addSeparator()
+    labels_menu = menu.addMenu("Marker labels")
+    labels_menu.setToolTip("Annotate each marker with extra acquisition info")
+    active_fields = set(getattr(host, "_inset_label_fields", None) or ())
+    for field in _INSET_LABEL_FIELDS:
+        act = QtWidgets.QAction(_INSET_LABEL_TITLES.get(field, field), labels_menu,
+                                checkable=True, checked=field in active_fields)
+        act.toggled.connect(functools.partial(_toggle_inset_label_field, host, field))
+        labels_menu.addAction(act)
+    menu.addSeparator()
+    host._populate_inset_cmap_submenu(menu.addMenu("Inset colormap"))
+
+
+def inset_right_click_context_menu(host, event):
+    """If ``event`` is a right-click over the host's position inset, pop the
+    shared settings menu at the cursor and return True (handled). Any dialog
+    with a position inset routes its inset button-press callback through this
+    first, so right-clicking the inset exposes the same options as the
+    toolbar 'Inset' button — the discoverable, universal entry point."""
+    try:
+        if event is None or event.button != MouseButton.RIGHT:
+            return False
+        iax = getattr(host, "_position_inset_ax", None)
+        if iax is None or not getattr(host, "_show_position_inset", False):
+            return False
+        bbox = iax.bbox
+        if bbox is None or event.x is None or event.y is None:
+            return False
+        if not bbox.contains(event.x, event.y):
+            return False
+        menu = QtWidgets.QMenu(host)
+        populate_inset_settings_menu(host, menu)
+        menu.exec_(QtGui.QCursor.pos())
+        return True
+    except Exception:
+        return False
 
 
 def _preview_channel_cmap_for_file(viewer, file_key):
@@ -297,17 +918,22 @@ def _preview_channel_cmap_for_file(viewer, file_key):
     return int(channel_idx or 0), str(cmap)
 
 
-def _render_inset_background(viewer, file_key, width, height):
+def _render_inset_background(viewer, file_key, width, height, cmap_override=None):
     """Render the Position inset's background as a faithful color copy of
     whatever channel/cmap the main Preview is currently showing for this
     file (falling back sanely when the file isn't open in the Preview),
     instead of the thumbnail grid's own channel/cmap desaturated to gray.
+
+    `cmap_override` (a colormap name) forces the inset to that colormap
+    instead of following the Preview's — the in-situ inset colormap picker.
 
     Returns (rgb array in [0,1] shaped (h,w,3), crop_info dict-or-None).
     """
     if not viewer or not file_key:
         return None, None
     channel_idx, cmap = _preview_channel_cmap_for_file(viewer, file_key)
+    if cmap_override:
+        cmap = str(cmap_override)
     try:
         thumb = viewer._thumbnail_pixmap_for_file(str(file_key), channel_idx, width, height, cmap)
     except Exception:
@@ -863,6 +1489,12 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._inset_marker_symbol = "circle"
         self._inset_marker_size = 52.0
         self._inset_marker_color_override = None
+        self._inset_marker_filled = False
+        self._inset_marker_outline = True
+        self._inset_marker_outline_color = None
+        self._inset_label_fields = set()
+        self._inset_marker_specs = []
+        self._inset_cmap_override = None
         self._inset_resizing = None
         self._inset_resize_start = None
         # Resolve the real viewer so thumbnail/header lookups work even when
@@ -1378,47 +2010,44 @@ class SpectroscopyPopup(QtWidgets.QDialog):
 
     def _populate_inset_settings_menu(self, menu=None):
         menu = menu or getattr(self, "inset_settings_menu", None)
-        if menu is None:
-            return
-        menu.clear()
-        show_others_act = QtWidgets.QAction("Show other points", menu, checkable=True, checked=self._inset_show_other_points)
-        show_others_act.setToolTip("Show markers for the other traces plotted in this popup, not just the currently selected one")
-        show_others_act.toggled.connect(self._set_inset_show_other_points)
-        menu.addAction(show_others_act)
-        menu.addSeparator()
-        symbol_widget = QtWidgets.QWidget()
-        symbol_h = QtWidgets.QHBoxLayout(symbol_widget)
-        symbol_h.setContentsMargins(6, 2, 6, 2)
-        symbol_combo = QtWidgets.QComboBox()
-        for sym in _INSET_MARKER_SYMBOLS:
-            symbol_combo.addItem(sym.capitalize(), sym)
-        idx = symbol_combo.findData(self._inset_marker_symbol)
-        symbol_combo.setCurrentIndex(max(0, idx))
-        symbol_h.addWidget(QtWidgets.QLabel("Marker"))
-        symbol_h.addWidget(symbol_combo, 1)
-        symbol_act = QtWidgets.QWidgetAction(menu)
-        symbol_act.setDefaultWidget(symbol_widget)
-        menu.addAction(symbol_act)
-        symbol_combo.currentIndexChanged.connect(lambda i: self._set_inset_marker_symbol(symbol_combo.itemData(i)))
-        size_widget = QtWidgets.QWidget()
-        size_h = QtWidgets.QHBoxLayout(size_widget)
-        size_h.setContentsMargins(6, 2, 6, 2)
-        size_spin = QtWidgets.QSpinBox()
-        size_spin.setRange(15, 200)
-        size_spin.setValue(int(self._inset_marker_size))
-        size_h.addWidget(QtWidgets.QLabel("Size"))
-        size_h.addWidget(size_spin)
-        size_act = QtWidgets.QWidgetAction(menu)
-        size_act.setDefaultWidget(size_widget)
-        menu.addAction(size_act)
-        size_spin.valueChanged.connect(self._set_inset_marker_size)
-        color_act = QtWidgets.QAction("Marker color...", menu)
-        color_act.triggered.connect(self._pick_inset_marker_color)
-        menu.addAction(color_act)
-        reset_color_act = QtWidgets.QAction("Use trace color", menu, checkable=True, checked=self._inset_marker_color_override is None)
-        reset_color_act.setToolTip("Color each marker with its own trace color instead of a fixed override")
-        reset_color_act.triggered.connect(lambda: self._set_inset_marker_color(None))
-        menu.addAction(reset_color_act)
+        populate_inset_settings_menu(self, menu)
+
+    def _populate_inset_cmap_submenu(self, cmap_menu):
+        """Colormap picker for the position inset's background image:
+        'Follow preview' (track the main Preview) plus a featured
+        shortlist for in-situ override."""
+        cmap_menu.setToolTip("Colormap for the position inset's background image")
+        follow_act = QtWidgets.QAction("Follow preview", cmap_menu, checkable=True, checked=self._inset_cmap_override is None)
+        follow_act.setToolTip("Use the same colormap the main Preview shows for this image")
+        follow_act.triggered.connect(lambda: self._set_inset_cmap_override(None))
+        cmap_menu.addAction(follow_act)
+        cmap_menu.addSeparator()
+        try:
+            featured = cmap_registry.featured_cmap_names("general")
+        except Exception:
+            featured = []
+        for cname in featured:
+            act = QtWidgets.QAction(cname, cmap_menu, checkable=True, checked=(self._inset_cmap_override == cname))
+            act.triggered.connect(functools.partial(self._set_inset_cmap_override, cname))
+            cmap_menu.addAction(act)
+
+    def _set_inset_cmap_override(self, cmap_name):
+        self._inset_cmap_override = str(cmap_name) if cmap_name else None
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def refresh_inset_for_preview_cmap(self):
+        """Rebuild the position inset so it reflects the main Preview's
+        current colormap. Called by the main window when the preview
+        colormap changes while this popup is open; a no-op visually when
+        the inset uses its own override."""
+        self._update_position_inset()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_filled(self, enabled):
+        self._inset_marker_filled = bool(enabled)
+        self._update_position_inset()
+        self.canvas.draw_idle()
 
     def _set_inset_show_other_points(self, enabled):
         self._inset_show_other_points = bool(enabled)
@@ -3004,7 +3633,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return None, None
         width = int(getattr(viewer, "thumb_size_px", 160))
         height = max(48, int(round(width * 0.75)))
-        return _render_inset_background(viewer, file_key, width, height)
+        return _render_inset_background(viewer, file_key, width, height, cmap_override=self._inset_cmap_override)
 
     def _spec_thumbnail_coords(self, spec=None, file_key=None, dims=None, crop_info=None):
         viewer = getattr(self, "viewer", None)
@@ -3024,14 +3653,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         return _spec_display_coords(viewer, spec, header, file_key, width, height, crop_info=crop_info)
 
     def _update_position_inset(self):
-        if self._position_inset_ax is not None:
-            try:
-                self._position_inset_ax.remove()
-            except Exception:
-                pass
-            self._position_inset_ax = None
         if not self._show_position_inset:
-            self._remove_inset_drag_handlers()
+            build_position_inset(self, None, None)
             return
         base_entry = self._curve_entries[0] if self._curve_entries else None
         base_key = base_entry.get("image_key") if base_entry else str(self.spec.get("image_key") or "")
@@ -3043,35 +3666,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             except Exception:
                 image_dims = None
         markers = self._collect_inset_markers(base_key, image_dims=image_dims, crop_info=crop_info)
-        if image is None or not markers:
-            self._remove_inset_drag_handlers()
-            return
-        if self._inset_bbox is None:
-            self._inset_bbox = [0.04, 0.04, 0.32, 0.32]
-        self._position_inset_ax = inset_axes(self.ax, width="28%", height="28%", loc="lower left", borderpad=0.8)
-        self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
-        self._position_inset_ax.imshow(image, origin="upper")
-        self._position_inset_ax.set_xticks([])
-        self._position_inset_ax.set_yticks([])
-        self._position_inset_ax.set_title("Position", fontsize=7.5 * self._font_scale)
-        marker_shape = _INSET_MPL_MARKER_BY_SYMBOL.get(self._inset_marker_symbol, "o")
-        for color, coords, is_current in markers:
-            try:
-                self._position_inset_ax.scatter(
-                    coords[0],
-                    coords[1],
-                    s=self._inset_marker_size,
-                    marker=marker_shape,
-                    facecolors="none",
-                    edgecolors=self._inset_marker_color_override or color,
-                    linewidths=2.0 if is_current else 1.3,
-                    alpha=1.0 if is_current else 0.55,
-                    zorder=5 if is_current else 3,
-                )
-            except Exception:
-                continue
-        _draw_inset_resize_handle(self._position_inset_ax)
-        self._install_inset_drag_handlers()
+        build_position_inset(self, image, markers, draw_badges=False, image_key=base_key)
 
     def _install_inset_drag_handlers(self):
         """Install matplotlib callbacks so the inset can be dragged and,
@@ -3081,6 +3676,8 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             return
 
         def on_press(event):
+            if inset_right_click_context_menu(self, event):
+                return
             if event.button != MouseButton.LEFT:
                 return
             if self._position_inset_ax is None or not self._show_position_inset:
@@ -3088,17 +3685,21 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             bbox = self._position_inset_ax.bbox
             if bbox is None:
                 return
+            # Clicking a marker selects its curve in the curve list (parity
+            # with the comparison window's File list), before drag/resize.
+            hit_spec = _inset_marker_at_event(self, event)
+            if hit_spec is not None:
+                self._select_curve_for_spec(hit_spec)
+                return
             if _near_resize_handle(bbox, event.x, event.y):
                 self._inset_resizing = True
-                self._inset_resize_start = (
-                    event.x - bbox.x1,
-                    event.y - bbox.y0,
-                    list(self._inset_bbox or [0.04, 0.04, 0.28, 0.28]),
-                )
+                self._inset_resize_start = _begin_inset_resize(
+                    self.ax, self._position_inset_ax,
+                    self._inset_bbox or [0.04, 0.04, 0.28, 0.28], event.x, event.y)
                 return
             if bbox.contains(event.x, event.y):
                 self._inset_dragging = True
-                self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
+                self._inset_drag_offset = _inset_drag_offset(self.ax, self._inset_bbox, bbox, event.x, event.y)
 
         def on_motion(event):
             if self._position_inset_ax is None:
@@ -3106,7 +3707,7 @@ class SpectroscopyPopup(QtWidgets.QDialog):
             if event.x is None or event.y is None:
                 return
             if self._inset_resizing:
-                new_bbox = _resize_inset_bbox(self.ax, self._inset_resize_start, event.x, event.y)
+                new_bbox = _resize_inset_bbox_scaled(self.ax, self._inset_resize_start, event.x, event.y)
                 if new_bbox is None:
                     return
                 self._inset_bbox = new_bbox
@@ -3174,23 +3775,27 @@ class SpectroscopyPopup(QtWidgets.QDialog):
         self._suppress_drag_until_release = False
 
     def _collect_inset_markers(self, image_key, image_dims=None, crop_info=None):
-        """Return a list of (color, coords, is_current) tuples. `is_current`
+        """Return normalized marker dicts
+        ``{color, coords, is_current, spec, entry_index}``. ``is_current``
         marks the trace currently selected in the curve list, so callers can
         optionally hide every other marker when `_inset_show_other_points`
-        is off."""
+        is off. ``spec`` lets the shared inset renderer draw per-marker labels
+        and lets a marker click select the matching curve (parity with the
+        comparison window)."""
         markers = []
         if not self._curve_entries:
             coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
-                markers.append(("#ff3b6a", coords, True))
+                markers.append({"color": "#ff3b6a", "coords": coords, "is_current": True,
+                                "spec": getattr(self, "spec", None)})
             return markers
         for idx, entry in enumerate(self._curve_entries):
             if image_key and entry.get("image_key") and entry.get("image_key") != image_key:
                 continue
             color = entry.get("color", "#ff3b6a")
             coords = entry.get("coords")
+            spec = entry.get("spec")
             if coords is None:
-                spec = entry.get("spec")
                 if spec is None:
                     spec = self._resolve_spec_from_viewer(entry)
                     if spec:
@@ -3200,14 +3805,31 @@ class SpectroscopyPopup(QtWidgets.QDialog):
                     if coords:
                         entry["coords"] = coords
             if coords is not None:
-                markers.append((color, coords, idx == self._selected_curve_index))
+                markers.append({"color": color, "coords": coords,
+                                "is_current": idx == self._selected_curve_index,
+                                "spec": spec, "entry_index": idx})
         if not markers:
             coords = self._spec_thumbnail_coords(dims=image_dims, crop_info=crop_info)
             if coords is not None:
-                markers.append(("#ff3b6a", coords, True))
-        if not self._inset_show_other_points and any(m[2] for m in markers):
-            markers = [m for m in markers if m[2]]
+                markers.append({"color": "#ff3b6a", "coords": coords, "is_current": True,
+                                "spec": getattr(self, "spec", None)})
+        if not self._inset_show_other_points and any(m["is_current"] for m in markers):
+            markers = [m for m in markers if m["is_current"]]
         return markers
+
+    def _select_curve_for_spec(self, spec):
+        """Select the curve matching ``spec`` in the curve list (mirroring a
+        click on its row), triggered by clicking the spec's inset marker."""
+        key = _inset_spec_key(spec)
+        if key is None:
+            return
+        for idx, entry in enumerate(self._curve_entries or []):
+            if _inset_spec_key(entry.get("spec")) == key:
+                try:
+                    self.curve_list.setCurrentRow(idx)
+                except Exception:
+                    pass
+                return
 
     def _qt_pos_hits_inset(self, pos):
         if self._position_inset_ax is None or pos is None:
@@ -6405,6 +7027,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._inset_marker_symbol = "circle"
         self._inset_marker_size = 50.0
         self._inset_marker_color_override = None
+        self._inset_marker_filled = False
+        self._inset_marker_outline = True
+        self._inset_marker_outline_color = None
+        self._inset_label_fields = set()
+        self._inset_marker_specs = []
+        self._inset_cmap_override = None
         self._inset_resizing = None
         self._inset_resize_start = None
         self._minima_artists = []
@@ -7274,15 +7902,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.position_inset_cb.toggled.connect(self._on_visual_toggle)
         vis_row.addWidget(self.position_inset_cb)
 
-        self.inset_settings_btn = QtWidgets.QToolButton(self)
-        self.inset_settings_btn.setText("Inset settings")
-        self.inset_settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.inset_settings_btn.setToolTip("Show/hide other points and change the position marker's style")
-        self.inset_settings_menu = QtWidgets.QMenu(self.inset_settings_btn)
-        self.inset_settings_menu.aboutToShow.connect(self._populate_inset_settings_menu)
-        self.inset_settings_btn.setMenu(self.inset_settings_menu)
-        vis_row.addWidget(self.inset_settings_btn)
-
         self.offset_spin = QtWidgets.QDoubleSpinBox()
         self.offset_spin.setRange(-1e9, 1e9)
         self.offset_spin.setDecimals(14) # High precision for small currents
@@ -7378,6 +7997,21 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.palette_swatches.setAccessibleName("Color cycle swatches")
         self.palette_swatches.setAccessibleDescription("Shows the colors currently available in the selected color cycle")
         viz_layout.addWidget(self.palette_swatches)
+
+        inset_markers_row = QtWidgets.QHBoxLayout()
+        inset_markers_row.addWidget(QtWidgets.QLabel("Position markers:"))
+        self.inset_settings_btn = QtWidgets.QToolButton(self)
+        self.inset_settings_btn.setText("Style…")
+        self.inset_settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.inset_settings_btn.setToolTip("Change the position inset marker's type, size and color, and show/hide the other points")
+        self.inset_settings_menu = QtWidgets.QMenu(self.inset_settings_btn)
+        self.inset_settings_menu.aboutToShow.connect(self._populate_inset_settings_menu)
+        self.inset_settings_btn.setMenu(self.inset_settings_menu)
+        self.inset_settings_btn.setAccessibleName("Position marker style")
+        self.inset_settings_btn.setAccessibleDescription("Change the marker type, size and color used for spectrum positions in the inset")
+        inset_markers_row.addWidget(self.inset_settings_btn)
+        inset_markers_row.addStretch(1)
+        viz_layout.addLayout(inset_markers_row)
 
         right_layout.addWidget(viz_group)
         filters_panel = self._build_filter_panel()
@@ -8626,8 +9260,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         width = int(getattr(viewer, "thumb_size_px", 160))
         height = max(48, int(round(width * 0.75)))
         cache_key = None
+        override = self._inset_cmap_override
         try:
             channel_idx, cmap = _preview_channel_cmap_for_file(viewer, file_key)
+            if override:
+                cmap = str(override)
             cache_key = (str(file_key), width, height, str(cmap), int(channel_idx))
             cached = self._compare_inset_image_cache.get(cache_key)
             if cached is not None:
@@ -8636,7 +9273,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 return np.array(tinted_cached, copy=True), crop_info_cached
         except Exception:
             cache_key = None
-        rgb, crop_info = _render_inset_background(viewer, file_key, width, height)
+        rgb, crop_info = _render_inset_background(viewer, file_key, width, height, cmap_override=override)
         if rgb is None:
             return None, None
         if cache_key is not None:
@@ -8681,17 +9318,13 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         return markers
 
     def _update_position_inset_compare(self):
-        if self._position_inset_ax is not None:
-            try:
-                self._position_inset_ax.remove()
-            except Exception:
-                pass
-            self._position_inset_ax = None
         self._show_position_inset = bool(getattr(self, "position_inset_cb", None) and self.position_inset_cb.isChecked())
         if not self._show_position_inset:
+            build_position_inset(self, None, None)
             return
         items = self._checked_items() or self._selected_items()
         if not items:
+            build_position_inset(self, None, None)
             return
         base_spec = items[0].data(0, QtCore.Qt.UserRole)
         base_key = str(base_spec.get("image_key") or "") if base_spec else ""
@@ -8704,56 +9337,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             except Exception:
                 image_dims = None
         markers = self._collect_inset_markers_compare(base_key, image_dims=image_dims, crop_info=crop_info, current_spec_id=current_spec_id)
-        if image is None or not markers:
-            return
-        if self._inset_bbox is None:
-            self._inset_bbox = [0.04, 0.04, 0.28, 0.28]
-        self._position_inset_ax = inset_axes(self.ax, width="26%", height="26%", loc="lower left", borderpad=0.8)
-        self._position_inset_ax.set_axes_locator(InsetPosition(self.ax, self._inset_bbox))
-        self._position_inset_ax.imshow(image, origin="upper")
-        self._position_inset_ax.set_xticks([])
-        self._position_inset_ax.set_yticks([])
-        self._position_inset_ax.set_title("Position", fontsize=7.5 * getattr(self, "_font_scale", 1.0))
-        marker_shape = _INSET_MPL_MARKER_BY_SYMBOL.get(self._inset_marker_symbol, "o")
-        raw_coords = []
-        for marker in markers:
-            color = marker.get("color")
-            coords = marker.get("coords")
-            spec = marker.get("spec")
-            is_current = bool(marker.get("is_current"))
-            try:
-                raw_coords.append((spec, float(coords[0]), float(coords[1])))
-                self._position_inset_ax.scatter(
-                    coords[0],
-                    coords[1],
-                    s=self._inset_marker_size,
-                    marker=marker_shape,
-                    facecolors="none",
-                    edgecolors=self._inset_marker_color_override or color,
-                    linewidths=2.0 if is_current else 1.3,
-                    alpha=1.0 if is_current else 0.55,
-                    zorder=5 if is_current else 3,
-                )
-            except Exception:
-                continue
-        _draw_inset_resize_handle(self._position_inset_ax)
-        for badge in spectro_overlays._stack_badges_from_coords(raw_coords):
-            try:
-                self._position_inset_ax.text(
-                    float(badge.get("col")) + 6.0,
-                    float(badge.get("row")) - 6.0,
-                    str(badge.get("label") or ""),
-                    fontsize=6.6 * getattr(self, "_font_scale", 1.0),
-                    fontweight="bold",
-                    color="#ffe478",
-                    ha="left",
-                    va="bottom",
-                    bbox=dict(boxstyle="round,pad=0.18", facecolor="#281e12", edgecolor="#ffe0a0", linewidth=0.8, alpha=0.92),
-                )
-            except Exception:
-                continue
+        build_position_inset(self, image, markers, draw_badges=True, image_key=base_key)
 
     def _on_inset_press(self, event):
+        if inset_right_click_context_menu(self, event):
+            return
         if event is None or event.button != MouseButton.LEFT:
             return
         if self._position_inset_ax is None or not self._show_position_inset:
@@ -8761,17 +9349,41 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         bbox = self._position_inset_ax.bbox
         if bbox is None:
             return
+        # Clicking a marker selects that spectrum in the File list (same as
+        # clicking its row), rather than starting an inset drag. Checked
+        # before the resize/drag hit-tests so a marker click never drags.
+        hit_spec = _inset_marker_at_event(self, event)
+        if hit_spec is not None:
+            self._select_spec_in_list(hit_spec)
+            return
         if _near_resize_handle(bbox, event.x, event.y):
             self._inset_resizing = True
-            self._inset_resize_start = (
-                event.x - bbox.x1,
-                event.y - bbox.y0,
-                list(self._inset_bbox or [0.04, 0.04, 0.26, 0.26]),
-            )
+            self._inset_resize_start = _begin_inset_resize(
+                self.ax, self._position_inset_ax,
+                self._inset_bbox or [0.04, 0.04, 0.26, 0.26], event.x, event.y)
             return
         if bbox.contains(event.x, event.y):
             self._inset_dragging = True
-            self._inset_drag_offset = (event.x - bbox.x0, event.y - bbox.y0)
+            self._inset_drag_offset = _inset_drag_offset(self.ax, self._inset_bbox, bbox, event.x, event.y)
+
+    def _select_spec_in_list(self, spec):
+        """Highlight ``spec`` in the File list (single-selecting it), mirroring
+        a click on its row so the trace highlights too. Triggered by clicking
+        the spec's marker in the position inset."""
+        item = None
+        try:
+            item = self._item_map.get(self._spec_id(spec))
+        except Exception:
+            item = None
+        if item is None:
+            return
+        try:
+            self.spec_list.setCurrentItem(item)
+            self.spec_list.clearSelection()
+            item.setSelected(True)
+            self.spec_list.scrollToItem(item)
+        except Exception:
+            pass
 
     def _on_inset_motion(self, event):
         if self._position_inset_ax is None:
@@ -8779,7 +9391,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if event.x is None or event.y is None:
             return
         if self._inset_resizing:
-            new_bbox = _resize_inset_bbox(self.ax, self._inset_resize_start, event.x, event.y)
+            new_bbox = _resize_inset_bbox_scaled(self.ax, self._inset_resize_start, event.x, event.y)
             if new_bbox is None:
                 return
             self._inset_bbox = new_bbox
@@ -8992,6 +9604,11 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             parent.set_spectro_color_cycle(self._palette_name)
         self._update_color_swatches()
         if self._apply_palette_to_existing_lines():
+            # The fast path only recolors the plotted lines/legend; the
+            # position inset scatters were drawn with the old line colors,
+            # so rebuild them too (they read line.get_color()).
+            self._update_position_inset_compare()
+            self.canvas.draw_idle()
             return
         self._request_plot_update(delay_ms=25)
 
@@ -10529,47 +11146,48 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
 
     def _populate_inset_settings_menu(self, menu=None):
         menu = menu or getattr(self, "inset_settings_menu", None)
-        if menu is None:
-            return
-        menu.clear()
-        show_others_act = QtWidgets.QAction("Show other points", menu, checkable=True, checked=self._inset_show_other_points)
-        show_others_act.setToolTip("Show markers for the other checked/selected spectra, not just the primary one")
-        show_others_act.toggled.connect(self._set_inset_show_other_points)
-        menu.addAction(show_others_act)
-        menu.addSeparator()
-        symbol_widget = QtWidgets.QWidget()
-        symbol_h = QtWidgets.QHBoxLayout(symbol_widget)
-        symbol_h.setContentsMargins(6, 2, 6, 2)
-        symbol_combo = QtWidgets.QComboBox()
-        for sym in _INSET_MARKER_SYMBOLS:
-            symbol_combo.addItem(sym.capitalize(), sym)
-        idx = symbol_combo.findData(self._inset_marker_symbol)
-        symbol_combo.setCurrentIndex(max(0, idx))
-        symbol_h.addWidget(QtWidgets.QLabel("Marker"))
-        symbol_h.addWidget(symbol_combo, 1)
-        symbol_act = QtWidgets.QWidgetAction(menu)
-        symbol_act.setDefaultWidget(symbol_widget)
-        menu.addAction(symbol_act)
-        symbol_combo.currentIndexChanged.connect(lambda i: self._set_inset_marker_symbol(symbol_combo.itemData(i)))
-        size_widget = QtWidgets.QWidget()
-        size_h = QtWidgets.QHBoxLayout(size_widget)
-        size_h.setContentsMargins(6, 2, 6, 2)
-        size_spin = QtWidgets.QSpinBox()
-        size_spin.setRange(15, 200)
-        size_spin.setValue(int(self._inset_marker_size))
-        size_h.addWidget(QtWidgets.QLabel("Size"))
-        size_h.addWidget(size_spin)
-        size_act = QtWidgets.QWidgetAction(menu)
-        size_act.setDefaultWidget(size_widget)
-        menu.addAction(size_act)
-        size_spin.valueChanged.connect(self._set_inset_marker_size)
-        color_act = QtWidgets.QAction("Marker color...", menu)
-        color_act.triggered.connect(self._pick_inset_marker_color)
-        menu.addAction(color_act)
-        reset_color_act = QtWidgets.QAction("Use trace color", menu, checkable=True, checked=self._inset_marker_color_override is None)
-        reset_color_act.setToolTip("Color each marker with its own trace color instead of a fixed override")
-        reset_color_act.triggered.connect(lambda: self._set_inset_marker_color(None))
-        menu.addAction(reset_color_act)
+        populate_inset_settings_menu(self, menu)
+
+    def _populate_inset_cmap_submenu(self, cmap_menu):
+        """Colormap picker for the position inset's background image:
+        'Follow preview' (track the main Preview) plus a featured
+        shortlist for in-situ override."""
+        cmap_menu.setToolTip("Colormap for the position inset's background image")
+        follow_act = QtWidgets.QAction("Follow preview", cmap_menu, checkable=True, checked=self._inset_cmap_override is None)
+        follow_act.setToolTip("Use the same colormap the main Preview shows for this image")
+        follow_act.triggered.connect(lambda: self._set_inset_cmap_override(None))
+        cmap_menu.addAction(follow_act)
+        cmap_menu.addSeparator()
+        try:
+            featured = cmap_registry.featured_cmap_names("general")
+        except Exception:
+            featured = []
+        for cname in featured:
+            act = QtWidgets.QAction(cname, cmap_menu, checkable=True, checked=(self._inset_cmap_override == cname))
+            act.triggered.connect(functools.partial(self._set_inset_cmap_override, cname))
+            cmap_menu.addAction(act)
+
+    def _set_inset_cmap_override(self, cmap_name):
+        self._inset_cmap_override = str(cmap_name) if cmap_name else None
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def refresh_inset_for_preview_cmap(self):
+        """Rebuild the position inset so it reflects the main Preview's
+        current colormap. Called by the main window when the preview
+        colormap changes while this dialog is open; a no-op visually when
+        the inset uses its own override."""
+        try:
+            self._compare_inset_image_cache.clear()
+        except Exception:
+            pass
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
+
+    def _set_inset_marker_filled(self, enabled):
+        self._inset_marker_filled = bool(enabled)
+        self._update_position_inset_compare()
+        self.canvas.draw_idle()
 
     def _set_inset_show_other_points(self, enabled):
         self._inset_show_other_points = bool(enabled)

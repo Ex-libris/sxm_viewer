@@ -360,6 +360,54 @@ dialog to open:
   right-click menu (`_on_thumb_context_menu`) so it's reachable from the grid
   without opening the image. Shown only when the image has ≥2 point spectra.
 
+### Position inset (universal, shared by every inset-bearing dialog)
+The miniature acquisition image with per-spectrum position markers shown in
+both `SpectroscopyPopup` and `SpectroscopyCompareDialog` is rendered by ONE
+set of module-level functions in `spectroscopy_dialogs.py`, so the behaviour
+can't drift between dialogs. Add an inset feature/fix once here and both get
+it (do **not** re-implement per dialog):
+- `build_position_inset(host, image, markers, *, draw_badges, image_key)` —
+  the single renderer. Each dialog's `_update_position_inset` /
+  `_update_position_inset_compare` only gathers the `image` + a normalized
+  `markers` list (`{coords, color, is_current, spec, entry_index?}`) and
+  delegates. It renders `set_aspect("equal", adjustable="box", anchor="NW")`
+  so the display bbox hugs the image (true aspect kept, resize grip on the
+  image corner, not out in the transparent allocation margin), hides the
+  frame+patch (spectra show through the margin), draws halo'd markers, the
+  optional per-marker labels + constant-height image-Z caption, the resize
+  grip, and stores `host._inset_marker_specs = [(spec,col,row),...]` for
+  click hit-testing.
+- `populate_inset_settings_menu(host, menu)` — the shared options menu
+  (show-other-points, marker symbol/size/fill/color, outline toggle+color,
+  **Marker labels** submenu {Initial Z=`z_level_nm`, Time, Acquisition order,
+  Image Z}, inset colormap). Reached from each dialog's **Inset** button and
+  by **right-clicking the inset** (`inset_right_click_context_menu`). New
+  options wire to module-level generic setters (`_set_inset_marker_outline`,
+  `_toggle_inset_label_field`, ...) that mutate `host._inset_*` and call
+  `_inset_refresh(host)` (dispatches to whichever `_update_position_inset*`
+  the host has) — not per-dialog methods.
+- **Click-to-select**: `_inset_marker_at_event(host, event)` hit-tests the
+  stored marker coords via the inset's live `transData`; each dialog's press
+  handler calls it *before* the resize/drag hit-tests and routes to
+  `_select_spec_in_list` (compare → File list) / `_select_curve_for_spec`
+  (single → curve list). Order labels/lookup use a **stable** spec key
+  (`_inset_spec_key`, path+matrix_index) not `id(spec)`, which breaks when
+  hydration re-creates the dict.
+- **Resize**: `_begin_inset_resize` + `_resize_inset_bbox_scaled` scale the
+  inset uniformly about its fixed top-left (aspect-locked corner drag);
+  `_inset_drag_offset` anchors a move to the allocation bottom-left (not the
+  now-tight bbox) so a rectangular inset doesn't jump at drag-start.
+- **Image-Z caption** uses `thumbnail_ui.effective_tag(viewer, key)` (there is
+  NO `viewer.effective_tag` method — a `getattr` for it silently always
+  fails) and `_inset_image_abs_z_nm` (unfiltered topo median, cached on
+  `viewer._inset_image_z_cache`), only when the background scan is tagged
+  constant-height.
+- **Preview-cmap → inset sync**: `viewer_preview._notify_spectro_insets` is
+  called from `main_window._set_thumbnail_entry_cmap` (the choke point for
+  preview/thumb/gallery cmap changes) and from `on_preview_cmap_changed`'s
+  global fallthrough; it calls each open dialog's
+  `refresh_inset_for_preview_cmap`.
+
 ### Coordinate frames & orientation: the one mental model (READ FIRST)
 Almost every "the points are warped / mirrored / upside-down" report in this
 app comes from confusing **three coordinate frames** for the same data. Hold
