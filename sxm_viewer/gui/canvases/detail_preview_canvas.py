@@ -289,6 +289,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_angle_overlays = True
         self._show_shortcut_hint = False
         self._show_image_size_overlay = False
+        self._show_filter_summary = True
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
@@ -420,6 +421,16 @@ class MultiPreviewCanvas(FigureCanvas):
         self._redraw()
         self._notify_views_callback()
 
+    def set_show_filter_summary(self, show: bool):
+        """Toggle the filter-summary label in the top-left image corner."""
+        show = bool(show)
+        if show == getattr(self, "_show_filter_summary", True):
+            return
+        self.push_undo_state("filter_summary")
+        self._show_filter_summary = show
+        self._redraw()
+        self._notify_views_callback()
+
     def set_show_molecules(self, show: bool):
         """Toggle rendering of molecular overlays in views."""
         show = bool(show)
@@ -537,6 +548,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 "show_profile_overlays": False,
                 "show_angle_overlays": False,
                 "show_acquisition_overlay": False,
+                "show_filter_summary": False,
                 "show_shortcut_hint": False,
                 "scale_bar_enabled": False,
                 "frame_fill_mode": True,
@@ -549,6 +561,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 "show_profile_overlays": True,
                 "show_angle_overlays": True,
                 "show_acquisition_overlay": True,
+                "show_filter_summary": True,
                 "show_shortcut_hint": False,
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
@@ -561,6 +574,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 "show_profile_overlays": False,
                 "show_angle_overlays": False,
                 "show_acquisition_overlay": False,
+                "show_filter_summary": False,
                 "show_shortcut_hint": False,
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
@@ -573,6 +587,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_profile_overlays = bool(preset_state["show_profile_overlays"])
         self._show_angle_overlays = bool(preset_state["show_angle_overlays"])
         self._show_acquisition_overlay = bool(preset_state["show_acquisition_overlay"])
+        self._show_filter_summary = bool(preset_state["show_filter_summary"])
         self._show_shortcut_hint = bool(preset_state["show_shortcut_hint"])
         self._colorbar_orientation = str(preset_state["colorbar_orientation"])
         self.scale_bar_enabled = bool(preset_state["scale_bar_enabled"])
@@ -1475,6 +1490,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "outline_state": self._clone_undo_value(self.export_outline_state()),
             "show_title": bool(self._show_title),
             "show_acquisition_overlay": bool(self._show_acquisition_overlay),
+            "show_filter_summary": bool(getattr(self, "_show_filter_summary", True)),
             "show_molecules": bool(self.show_molecules),
             "show_profile_overlays": bool(self._show_profile_overlays),
             "show_angle_overlays": bool(self._show_angle_overlays),
@@ -1534,6 +1550,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
             self._show_title = bool(state.get("show_title", self._show_title))
             self._show_acquisition_overlay = bool(state.get("show_acquisition_overlay", self._show_acquisition_overlay))
+            self._show_filter_summary = bool(state.get("show_filter_summary", getattr(self, "_show_filter_summary", True)))
             self.show_molecules = bool(state.get("show_molecules", self.show_molecules))
             self._show_profile_overlays = bool(state.get("show_profile_overlays", self._show_profile_overlays))
             self._show_angle_overlays = bool(state.get("show_angle_overlays", self._show_angle_overlays))
@@ -8729,6 +8746,12 @@ class MultiPreviewCanvas(FigureCanvas):
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
         acq_overlay_act.setCheckable(True)
         acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
+        filter_summary_act = display_menu.addAction("Show Filter Label")
+        filter_summary_act.setCheckable(True)
+        filter_summary_act.setChecked(bool(getattr(self, "_show_filter_summary", True)))
+        filter_tip = "Show or hide the applied-filter label in the top-left corner."
+        filter_summary_act.setToolTip(filter_tip)
+        filter_summary_act.setStatusTip(filter_tip)
         hint_act = display_menu.addAction("Show Shortcut Hint")
         hint_act.setCheckable(True)
         hint_act.setChecked(bool(self._show_shortcut_hint))
@@ -9077,6 +9100,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.show_fixed_crop_history(show_crop_history_act.isChecked())
         elif chosen == acq_overlay_act:
             self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
+        elif chosen == filter_summary_act:
+            self.set_show_filter_summary(filter_summary_act.isChecked())
         elif chosen == hint_act:
             self.set_show_shortcut_hint(hint_act.isChecked())
         elif chosen == gizmo_act:
@@ -9690,7 +9715,7 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _draw_filter_summary_overlay(self, ax, view):
-        if ax is None:
+        if ax is None or not getattr(self, "_show_filter_summary", True):
             return
         summary = self._filter_summary_text(view, max_len=88)
         if not summary:

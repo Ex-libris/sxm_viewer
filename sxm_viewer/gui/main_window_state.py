@@ -210,6 +210,7 @@ def init_state(self):
     self.show_molecules = bool(self.config.get('show_molecules', True))
     self.show_molecule_gizmo = bool(self.config.get("show_molecule_gizmo", False))
     self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
+    self.show_filter_summary = bool(self.config.get("show_filter_summary", True))
     self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
     if self.profile_label_mode not in {"length", "full", "hidden"}:
         self.profile_label_mode = "length"
@@ -246,6 +247,7 @@ def init_state(self):
         'show_molecules': True,
         'show_molecule_gizmo': False,
         'show_acquisition_overlay': False,
+        'show_filter_summary': True,
         'profile_label_mode': "length",
         'show_crop_template_overlay': False,
         'show_crop_history_overlay': True,

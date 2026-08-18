@@ -369,6 +369,7 @@ class SessionController:
             "detail_grid_view": bool(getattr(viewer, "detail_grid_view", False)),
             "show_molecules": bool(getattr(viewer, "show_molecules", True)),
             "show_acquisition_overlay": bool(getattr(viewer, "show_acquisition_overlay", False)),
+            "show_filter_summary": bool(getattr(viewer, "show_filter_summary", True)),
             "profile_label_mode": str(getattr(viewer, "profile_label_mode", "length") or "length"),
             "relative_axes": bool(getattr(viewer, "relative_axes", False)),
             "display_units_relative": bool(getattr(viewer, "display_units_relative", False)),
@@ -915,6 +916,7 @@ class SessionController:
         viewer.preview_locked = bool(ui.get("preview_locked", getattr(viewer, "preview_locked", False)))
         viewer.show_molecules = bool(ui.get("show_molecules", getattr(viewer, "show_molecules", True)))
         viewer.show_acquisition_overlay = bool(ui.get("show_acquisition_overlay", getattr(viewer, "show_acquisition_overlay", False)))
+        viewer.show_filter_summary = bool(ui.get("show_filter_summary", getattr(viewer, "show_filter_summary", True)))
         profile_label_mode = str(ui.get("profile_label_mode", getattr(viewer, "profile_label_mode", "length")) or "length").strip().lower()
         if profile_label_mode not in {"length", "full", "hidden"}:
             profile_label_mode = "length"
@@ -960,6 +962,7 @@ class SessionController:
             ("molecules_act", viewer.show_molecules),
             ("preview_molecules_toggle_btn", viewer.show_molecules),
             ("acquisition_overlay_act", viewer.show_acquisition_overlay),
+            ("filter_summary_act", viewer.show_filter_summary),
         ):
             self._set_checked_silent(getattr(viewer, action_name, None), value)
         for key, action in (getattr(viewer, "profile_label_actions", {}) or {}).items():
@@ -1006,6 +1009,7 @@ class SessionController:
             options = viewer._canvas_display_state_from_canvas(getattr(viewer, "preview_canvas", None))
             options["show_molecules"] = viewer.show_molecules
             options["show_acquisition_overlay"] = viewer.show_acquisition_overlay
+            options["show_filter_summary"] = viewer.show_filter_summary
             options["scale_bar_enabled"] = bool(ui.get("scale_bar", False))
             options["relative_axes_override"] = viewer.relative_axes
             options["show_title"] = viewer.show_preview_title
@@ -1528,6 +1532,7 @@ class SessionController:
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "show_filter_summary": bool(getattr(canvas, "_show_filter_summary", True)),
             "view_font_scale": float(getattr(canvas, "_view_font_scale", 1.0) or 1.0),
             "plot_font_family": str(getattr(canvas, "_font_family", "") or ""),
             "plot_font_bold": bool(getattr(canvas, "_plot_font_bold", False)),
@@ -1777,6 +1782,7 @@ class SessionController:
                             "colorbar_orientation": str(snapshot.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical"),
                             "show_title": bool(snapshot.get("show_title", getattr(canvas, "_show_title", True))),
                             "show_acquisition_overlay": bool(snapshot.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
+                            "show_filter_summary": bool(snapshot.get("show_filter_summary", getattr(canvas, "_show_filter_summary", True))),
                             "show_shortcut_hint": bool(snapshot.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False))),
                             "show_profile_overlays": bool(snapshot.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True))),
                             "show_angle_overlays": bool(snapshot.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True))),

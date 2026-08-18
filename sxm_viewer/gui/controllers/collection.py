@@ -1469,6 +1469,7 @@ class CollectionController:
             "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical"),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "show_filter_summary": bool(getattr(canvas, "_show_filter_summary", True)),
             "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", False)),
             "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
             "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),

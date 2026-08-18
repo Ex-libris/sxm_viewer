@@ -1153,6 +1153,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
+            self.preview_canvas.set_show_filter_summary(self.show_filter_summary)
+        except Exception:
+            pass
+        try:
             self.preview_canvas.set_profile_callback(self._on_profile_updated)
         except Exception:
             pass
@@ -2124,6 +2128,7 @@ QLabel:hover {{
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
             (getattr(self, 'display_molecule_gizmo_act', None), defaults.get('show_molecule_gizmo', False)),
             (getattr(self, 'acquisition_overlay_act', None), defaults.get('show_acquisition_overlay', False)),
+            (getattr(self, 'filter_summary_act', None), defaults.get('show_filter_summary', True)),
             (getattr(self, 'crop_template_act', None), defaults.get('show_crop_template_overlay', False)),
             (getattr(self, 'crop_history_act', None), defaults.get('show_crop_history_overlay', False)),
         ]
@@ -2431,6 +2436,7 @@ QLabel:hover {{
                 canvas._colorbar_orientation = orient if orient in ("vertical", "horizontal") else "vertical"
                 canvas._show_title = bool(display.get("show_title", getattr(canvas, "_show_title", True)))
                 canvas._show_acquisition_overlay = bool(display.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False)))
+                canvas._show_filter_summary = bool(display.get("show_filter_summary", getattr(canvas, "_show_filter_summary", True)))
                 canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False)))
                 canvas._show_profile_overlays = bool(display.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True)))
                 canvas._show_angle_overlays = bool(display.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True)))
@@ -9972,6 +9978,7 @@ QLabel:hover {{
             "colorbar_orientation": str(getattr(canvas, "_colorbar_orientation", "vertical") or "vertical").strip().lower(),
             "show_title": bool(getattr(canvas, "_show_title", True)),
             "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "show_filter_summary": bool(getattr(canvas, "_show_filter_summary", True)),
             "show_shortcut_hint": bool(getattr(canvas, "_show_shortcut_hint", False)),
             "show_profile_overlays": bool(getattr(canvas, "_show_profile_overlays", True)),
             "show_angle_overlays": bool(getattr(canvas, "_show_angle_overlays", True)),
@@ -10008,6 +10015,7 @@ QLabel:hover {{
                 "colorbar_orientation": str(options.get("colorbar_orientation", "vertical") or "vertical").strip().lower(),
                 "show_title": bool(options.get("show_title", True)),
                 "show_acquisition_overlay": bool(options.get("show_acquisition_overlay", False)),
+                "show_filter_summary": bool(options.get("show_filter_summary", True)),
                 "show_shortcut_hint": bool(options.get("show_shortcut_hint", False)),
                 "show_profile_overlays": bool(options.get("show_profile_overlays", True)),
                 "show_angle_overlays": bool(options.get("show_angle_overlays", True)),
@@ -10029,6 +10037,7 @@ QLabel:hover {{
             self.show_molecules = normalized["show_molecules"]
             self.show_molecule_gizmo = normalized["show_molecule_gizmo"]
             self.show_acquisition_overlay = normalized["show_acquisition_overlay"]
+            self.show_filter_summary = normalized["show_filter_summary"]
             try:
                 if hasattr(self, "scale_bar_cb") and self.scale_bar_cb is not None:
                     self.scale_bar_cb.blockSignals(True)
@@ -10046,6 +10055,7 @@ QLabel:hover {{
                 ("preview_molecules_toggle_btn", "show_molecules"),
                 ("display_molecule_gizmo_act", "show_molecule_gizmo"),
                 ("acquisition_overlay_act", "show_acquisition_overlay"),
+                ("filter_summary_act", "show_filter_summary"),
             ):
                 act = getattr(self, widget_name, None)
                 if act is not None:
@@ -10072,6 +10082,10 @@ QLabel:hover {{
                     pass
                 try:
                     canv.set_show_acquisition_overlay(normalized["show_acquisition_overlay"])
+                except Exception:
+                    pass
+                try:
+                    canv.set_show_filter_summary(normalized["show_filter_summary"])
                 except Exception:
                     pass
                 try:
@@ -10122,6 +10136,7 @@ QLabel:hover {{
                 self.config["show_molecules"] = self.show_molecules
                 self.config["show_molecule_gizmo"] = self.show_molecule_gizmo
                 self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
+                self.config["show_filter_summary"] = self.show_filter_summary
                 self.config["show_scale_bar"] = normalized["scale_bar_enabled"]
                 save_config(self.config)
         finally:
@@ -10137,6 +10152,12 @@ QLabel:hover {{
         self.show_acquisition_overlay = bool(checked)
         options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
         options["show_acquisition_overlay"] = self.show_acquisition_overlay
+        self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
+
+    def on_show_filter_summary_toggled(self, checked: bool):
+        self.show_filter_summary = bool(checked)
+        options = self._canvas_display_state_from_canvas(getattr(self, "preview_canvas", None))
+        options["show_filter_summary"] = self.show_filter_summary
         self._apply_canvas_display_options(options, source_canvas=getattr(self, "preview_canvas", None), persist=True)
 
     def on_profile_label_mode_changed(self, mode: str):

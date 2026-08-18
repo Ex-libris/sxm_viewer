@@ -309,6 +309,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._show_title = bool(getattr(owner, "show_preview_title", True))
             canvas.show_molecules = bool(getattr(owner, "show_molecules", True))
             canvas._show_acquisition_overlay = bool(getattr(owner, "show_acquisition_overlay", False))
+            canvas._show_filter_summary = bool(getattr(owner, "show_filter_summary", True))
             canvas._profile_label_mode = str(getattr(owner, "profile_label_mode", "length") or "length")
             canvas._fit_to_canvas = False
             canvas._view_layout = str(getattr(source_canvas, "_view_layout", "grid") or "grid")
@@ -358,6 +359,10 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             pass
         try:
             canvas.set_show_acquisition_overlay(getattr(owner, "show_acquisition_overlay", False))
+        except Exception:
+            pass
+        try:
+            canvas.set_show_filter_summary(getattr(owner, "show_filter_summary", True))
         except Exception:
             pass
         try:
