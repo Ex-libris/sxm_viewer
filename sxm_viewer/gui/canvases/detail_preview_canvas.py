@@ -334,6 +334,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._scale_bar_artists = []
         self._scale_bar_cids = []
         self._scale_bar_drag_start = None
+        # Scale-bar edits are scoped to the view whose bar was edited.  The
+        # key is kept separately from the artists because redraws recreate
+        # both the axes and the AnchoredSizeBar instances.
+        self._scale_bar_edit_view_key = None
         self._profile_echo_artists = []
         self._scale_bar_settings = {
             'text_color': None,
@@ -343,6 +347,7 @@ class MultiPreviewCanvas(FigureCanvas):
             'length': None,
             'font_size_pt': 10.0,
             'font_weight': 'bold',
+            'per_view': {},
         }
         self._font_change_callback = None
         # Outline extraction state
@@ -3424,25 +3429,95 @@ class MultiPreviewCanvas(FigureCanvas):
                 label = f"{size:g} \u00b5m"
         return label
 
-    def _scale_bar_manual_length(self):
+    def _scale_bar_view_key(self, view):
+        """Return a stable, serializable identity for one displayed view."""
+        if not isinstance(view, dict):
+            return None
+        meta = view.get("meta") or {}
+        file_path = meta.get("file_path") or meta.get("path") or view.get("path") or ""
+        channel = meta.get("channel_index", view.get("channel_idx"))
         try:
-            value = float((getattr(self, '_scale_bar_settings', {}) or {}).get('length'))
+            channel = int(channel) if channel is not None else None
+        except Exception:
+            channel = None
+        # Crop sequence distinguishes derived views while keeping settings
+        # attached to the underlying image across redraws and exports.  A
+        # title is only useful when no file identity is available; rendered
+        # export titles are intentionally formatted differently.
+        identity = {
+            "file": str(file_path),
+            "channel": channel,
+            "crop_sequence": view.get("crop_sequence"),
+        }
+        if not file_path:
+            identity["title"] = view.get("title")
+        if not any(value not in (None, "") for value in identity.values()):
+            try:
+                identity["index"] = list(self.views or []).index(view)
+            except Exception:
+                identity["index"] = 0
+        try:
+            return json.dumps(identity, sort_keys=True, default=str, separators=(",", ":"))
+        except Exception:
+            return str(identity)
+
+    def _scale_bar_view_for_key(self, key):
+        if not key:
+            return None
+        for view in list(getattr(self, "views", []) or []):
+            if self._scale_bar_view_key(view) == key:
+                return view
+        return None
+
+    def _scale_bar_setting(self, name, view=None, default=None):
+        settings = getattr(self, '_scale_bar_settings', {}) or {}
+        key = self._scale_bar_view_key(view)
+        per_view = settings.get("per_view")
+        if key and isinstance(per_view, dict):
+            override = per_view.get(key)
+            if isinstance(override, dict) and name in override:
+                return override.get(name)
+        return settings.get(name, default)
+
+    def _set_scale_bar_setting(self, name, value):
+        """Store a scale-bar setting on the currently edited view only."""
+        settings = getattr(self, '_scale_bar_settings', None)
+        if not isinstance(settings, dict):
+            settings = {}
+            self._scale_bar_settings = settings
+        key = getattr(self, "_scale_bar_edit_view_key", None)
+        if key:
+            per_view = settings.setdefault("per_view", {})
+            override = per_view.setdefault(key, {})
+            if value is None:
+                override.pop(name, None)
+            else:
+                override[name] = value
+            if not override:
+                per_view.pop(key, None)
+        else:
+            # Retain a sensible fallback for canvases with no displayed view.
+            settings[name] = value
+
+    def _scale_bar_manual_length(self, view=None):
+        try:
+            value = float(self._scale_bar_setting('length', view=view))
         except (TypeError, ValueError):
             return None
         return value if math.isfinite(value) and value > 0 else None
 
-    def _scale_bar_font_size(self, font_scale=None):
+    def _scale_bar_font_size(self, font_scale=None, view=None):
         if font_scale is None:
             font_scale = getattr(self, '_view_font_scale', 1.0)
         try:
-            base = float((getattr(self, '_scale_bar_settings', {}) or {}).get('font_size_pt', 10.0))
+            base = float(self._scale_bar_setting('font_size_pt', view=view, default=10.0))
         except (TypeError, ValueError):
             base = 10.0
         return max(1.0, base) * max(0.1, float(font_scale))
 
-    def _scale_bar_font_weight(self):
+    def _scale_bar_font_weight(self, view=None):
         allowed = {'light', 'normal', 'medium', 'semibold', 'bold', 'heavy'}
-        weight = str((getattr(self, '_scale_bar_settings', {}) or {}).get('font_weight', 'bold')).lower()
+        weight = str(self._scale_bar_setting('font_weight', view=view, default='bold')).lower()
         return weight if weight in allowed else 'bold'
 
     def _calculate_best_scale_bar(self, width, unit, manual_length=None):
@@ -3501,16 +3576,16 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _add_scale_bar(self, ax, view):
         width, unit = self._scale_bar_span(ax, view)
-        size, label = self._calculate_best_scale_bar(width, unit)
+        manual_length = self._scale_bar_manual_length(view)
+        size, label = self._calculate_best_scale_bar(width, unit, manual_length=manual_length)
         label = label if label and str(label).strip() else None
         
         font_scale = getattr(self, '_view_font_scale', 1.0)
         dark = bool(self._detail_dark)
         default_color = '#f5f5f5' if dark else '#111111'
-        sb_settings = getattr(self, '_scale_bar_settings', {})
-        sb_text_col = sb_settings.get('text_color') or default_color
-        sb_bar_col = sb_settings.get('bar_color') or default_color
-        font_family = sb_settings.get('font_family', 'sans-serif')
+        sb_text_col = self._scale_bar_setting('text_color', view=view) or default_color
+        sb_bar_col = self._scale_bar_setting('bar_color', view=view) or default_color
+        font_family = self._scale_bar_setting('font_family', view=view, default='sans-serif')
         sb = AnchoredSizeBar(ax.transData, size, label, 
                              loc='lower right',  # right edge at anchor, extends leftward
                              pad=0.4, borderpad=0, sep=3, 
@@ -3530,8 +3605,8 @@ class MultiPreviewCanvas(FigureCanvas):
         text = sb.txt_label.get_children()[0]
         text.set_color(sb_text_col)
         text.set_fontfamily(font_family)
-        text.set_fontsize(self._scale_bar_font_size(font_scale))
-        text.set_fontweight(self._scale_bar_font_weight())
+        text.set_fontsize(self._scale_bar_font_size(font_scale, view=view))
+        text.set_fontweight(self._scale_bar_font_weight(view=view))
         try:
             style = self._plot_style_state()
             # Keep scale-bar size/weight independent from the general plot
@@ -3542,7 +3617,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 italic=style.get('italic'),
                 underline=style.get('underline'),
             )
-            text.set_fontweight(self._scale_bar_font_weight())
+            text.set_fontweight(self._scale_bar_font_weight(view=view))
         except Exception:
             pass
         sb.set_zorder(20)
@@ -3596,12 +3671,19 @@ class MultiPreviewCanvas(FigureCanvas):
             self._show_sb_context_menu(event)
 
     def _show_sb_context_menu(self, event):
+        if event is not None and getattr(event, "inaxes", None) in self._ax_view_map:
+            self._set_active_view_ax(event.inaxes)
+            edit_view = self._ax_view_map.get(event.inaxes)
+        else:
+            edit_view, _edit_ax = self.active_view_and_axes()
+        self._scale_bar_edit_view_key = self._scale_bar_view_key(edit_view)
+
         menu = QtWidgets.QMenu(self)
 
         scale_menu = menu.addMenu("Scale bar")
         auto_length_act = scale_menu.addAction("Automatic length")
         auto_length_act.setCheckable(True)
-        auto_length_act.setChecked(self._scale_bar_manual_length() is None)
+        auto_length_act.setChecked(self._scale_bar_manual_length(edit_view) is None)
         auto_length_act.setToolTip("Choose a rounded length based on the displayed image width")
         auto_length_act.triggered.connect(lambda _checked=False: self._set_sb_length(None))
 
@@ -3615,7 +3697,7 @@ class MultiPreviewCanvas(FigureCanvas):
         length_spin.setDecimals(6)
         length_spin.setSingleStep(1.0)
         length_spin.setKeyboardTracking(False)
-        current_length = self._scale_bar_manual_length()
+        current_length = self._scale_bar_manual_length(edit_view)
         length_spin.setValue(current_length if current_length is not None else 1.0)
         length_spin.setToolTip("Scale-bar length in the image's displayed data units")
         length_layout.addWidget(length_spin)
@@ -3631,7 +3713,7 @@ class MultiPreviewCanvas(FigureCanvas):
         for weight in ("light", "normal", "medium", "semibold", "bold", "heavy"):
             weight_act = weight_menu.addAction(weight.capitalize())
             weight_act.setCheckable(True)
-            weight_act.setChecked(weight == self._scale_bar_font_weight())
+            weight_act.setChecked(weight == self._scale_bar_font_weight(view=edit_view))
             weight_group.addAction(weight_act)
             weight_act.triggered.connect(lambda checked=False, w=weight: self._set_sb_font_weight(w))
 
@@ -3646,7 +3728,7 @@ class MultiPreviewCanvas(FigureCanvas):
         size_spin.setSingleStep(1.0)
         size_spin.setKeyboardTracking(False)
         try:
-            size_spin.setValue(float((getattr(self, '_scale_bar_settings', {}) or {}).get('font_size_pt', 10.0)))
+            size_spin.setValue(float(self._scale_bar_setting('font_size_pt', view=edit_view, default=10.0)))
         except (TypeError, ValueError):
             size_spin.setValue(10.0)
         size_spin.setToolTip("Scale-bar label font size before the view font scale is applied")
@@ -3699,9 +3781,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 return
             if not math.isfinite(value) or value <= 0:
                 return
-        self._scale_bar_settings['length'] = value
+        self._set_scale_bar_setting('length', value)
         self._redraw()
-        self._notify_views_callback()
 
     def _set_sb_font_size(self, size):
         try:
@@ -3710,31 +3791,29 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         if not math.isfinite(value) or value <= 0:
             return
-        self._scale_bar_settings['font_size_pt'] = value
+        self._set_scale_bar_setting('font_size_pt', value)
         self._redraw()
-        self._notify_views_callback()
 
     def _set_sb_font_weight(self, weight):
         if str(weight).lower() not in {'light', 'normal', 'medium', 'semibold', 'bold', 'heavy'}:
             return
-        self._scale_bar_settings['font_weight'] = str(weight).lower()
+        self._set_scale_bar_setting('font_weight', str(weight).lower())
         self._redraw()
-        self._notify_views_callback()
 
     def _set_sb_font(self, font):
-        self._scale_bar_settings['font_family'] = font
+        self._set_scale_bar_setting('font_family', font)
         self._redraw()
 
     def _pick_sb_text_color(self):
         col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Text Color")
         if col.isValid():
-            self._scale_bar_settings['text_color'] = col.name()
+            self._set_scale_bar_setting('text_color', col.name())
             self._redraw()
 
     def _pick_sb_bar_color(self):
         col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Bar Color")
         if col.isValid():
-            self._scale_bar_settings['bar_color'] = col.name()
+            self._set_scale_bar_setting('bar_color', col.name())
             self._redraw()
 
     def _on_sb_motion(self, event):
@@ -4206,12 +4285,11 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
         # Update scale bar colors
-        sb_settings = getattr(self, '_scale_bar_settings', {})
-        sb_text_col = sb_settings.get('text_color') or text_color
-        sb_bar_col = sb_settings.get('bar_color') or text_color
-        
         for sb in self._scale_bar_artists:
             try:
+                view = self._ax_view_map.get(getattr(sb, "axes", None))
+                sb_text_col = self._scale_bar_setting('text_color', view=view) or text_color
+                sb_bar_col = self._scale_bar_setting('bar_color', view=view) or text_color
                 sb.size_bar.get_children()[0].set_color(sb_bar_col)
                 sb.txt_label.get_children()[0].set_color(sb_text_col)
             except Exception:
@@ -4234,6 +4312,7 @@ class MultiPreviewCanvas(FigureCanvas):
             bool(self._detail_grid),
             sb_settings.get('text_color'),
             sb_settings.get('bar_color'),
+            repr(sb_settings.get('per_view') or {}),
             len(self.fig.axes),
             len(getattr(self, '_colorbars', None) or []),
             len(getattr(self, '_scale_bar_artists', None) or []),
@@ -4272,9 +4351,10 @@ class MultiPreviewCanvas(FigureCanvas):
         # Update scale bar font size
         for sb in self._scale_bar_artists:
             try:
+                view = self._ax_view_map.get(getattr(sb, "axes", None))
                 text = sb.txt_label.get_children()[0]
-                text.set_fontsize(self._scale_bar_font_size(scale))
-                text.set_fontweight(self._scale_bar_font_weight())
+                text.set_fontsize(self._scale_bar_font_size(scale, view=view))
+                text.set_fontweight(self._scale_bar_font_weight(view=view))
             except Exception:
                 pass
         for frame in self._angle_frames:
@@ -8791,6 +8871,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         if event is not None and getattr(event, "inaxes", None) is not None:
             self._set_active_view_ax(event.inaxes)
+        self._scale_bar_edit_view_key = self._scale_bar_view_key(view)
         menu = QtWidgets.QMenu(self)
         # theme-aware styling
         try:
@@ -9785,17 +9866,17 @@ class MultiPreviewCanvas(FigureCanvas):
                 width = abs(extent_for_scale[1] - extent_for_scale[0])
                 unit = view.get('axis_unit') or 'nm'
             
-            size, label = self._calculate_best_scale_bar(width, unit)
+            manual_length = self._scale_bar_manual_length(view)
+            size, label = self._calculate_best_scale_bar(width, unit, manual_length=manual_length)
             # Hide unit text if blank to avoid default "nm" showing up when unset
             label = label if label and label.strip() else None
             font_scale = getattr(self, '_view_font_scale', 1.0)
             
             dark = bool(self._detail_dark)
             default_color = '#f5f5f5' if dark else '#111111'
-            sb_settings = getattr(self, '_scale_bar_settings', {})
-            sb_text_col = sb_settings.get('text_color') or default_color
-            sb_bar_col = sb_settings.get('bar_color') or default_color
-            font_family = sb_settings.get('font_family', 'sans-serif')
+            sb_text_col = self._scale_bar_setting('text_color', view=view) or default_color
+            sb_bar_col = self._scale_bar_setting('bar_color', view=view) or default_color
+            font_family = self._scale_bar_setting('font_family', view=view, default='sans-serif')
 
             sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
                                  pad=0.4, borderpad=0, sep=3, frameon=False,
@@ -9806,8 +9887,8 @@ class MultiPreviewCanvas(FigureCanvas):
             text = sb.txt_label.get_children()[0]
             text.set_color(sb_text_col)
             text.set_fontfamily(font_family)
-            text.set_fontsize(self._scale_bar_font_size(font_scale))
-            text.set_fontweight(self._scale_bar_font_weight())
+            text.set_fontsize(self._scale_bar_font_size(font_scale, view=view))
+            text.set_fontweight(self._scale_bar_font_weight(view=view))
             try:
                 style = self._plot_style_state()
                 apply_text_style(
@@ -9816,7 +9897,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     italic=style.get('italic'),
                     underline=style.get('underline'),
                 )
-                text.set_fontweight(self._scale_bar_font_weight())
+                text.set_fontweight(self._scale_bar_font_weight(view=view))
             except Exception:
                 pass
             ax.add_artist(sb)

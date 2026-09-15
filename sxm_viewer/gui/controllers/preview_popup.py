@@ -400,6 +400,25 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         except Exception:
             pass
 
+    # A pop-out is an independent preview.  Copy the source view's effective
+    # scale-bar appearance, but keep it detached so later edits in either
+    # canvas remain local to that preview.
+    try:
+        if source_canvas is not None:
+            scale_settings = copy.deepcopy(getattr(source_canvas, "_scale_bar_settings", {}) or {})
+            if len(views or []) == 1 and hasattr(source_canvas, "_scale_bar_setting"):
+                source_view = views[0]
+                for setting_name in ("length", "font_size_pt", "font_weight", "font_family", "text_color", "bar_color"):
+                    scale_settings[setting_name] = source_canvas._scale_bar_setting(
+                        setting_name,
+                        view=source_view,
+                        default=scale_settings.get(setting_name),
+                    )
+                scale_settings["per_view"] = {}
+            canvas._scale_bar_settings = scale_settings
+    except Exception:
+        pass
+
     _square_resize_busy = {"active": False}
     _popup_resize_threshold_px = 2
     _last_square_target = {"w": -1, "h": -1}
