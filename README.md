@@ -2,6 +2,9 @@
 
 SXM Viewer is a Python-based desktop application for scientific SPM (Scanning Probe Microscopy) data analysis and visualization, designed for Anfatec/Omicron systems. But also Nanonis. Maybe in the future Matrix. We will see.
 
+<p align="center">
+  <img src="sxm_docs/docs/assets/screenshots/main_figure.png" alt="SXM Viewer main interface" width="900">
+</p>
 ---
 
 
@@ -31,7 +34,7 @@ SXM Viewer provides an integrated environment for:
 
 
 
-![Main interface](screenshots/main_menu.png)
+![SXM Viewer main menu](sxm_docs/docs/assets/screenshots/main-menu.png)
 
 ## Quick start
 
