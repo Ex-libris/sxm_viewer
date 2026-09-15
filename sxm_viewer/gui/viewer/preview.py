@@ -1042,6 +1042,21 @@ def _on_preview_value(viewer, value, x, y, view):
 
 # ---------- manual tagging (still available) ----------
 
+def _notify_spectro_insets(viewer):
+    """Rebuild the Position inset of any open spectroscopy dialog so its
+    background image follows the Preview's current colormap (dialogs whose
+    inset uses an in-situ override rebuild harmlessly to the same image)."""
+    dialogs = list(getattr(viewer, "_popup_refs", []) or [])
+    dialogs += list(getattr(viewer, "_multi_spectro_popups", []) or [])
+    for dlg in dialogs:
+        fn = getattr(dlg, "refresh_inset_for_preview_cmap", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+
+
 def on_preview_cmap_changed(viewer, idx):
     viewer._suppress_profile_restart = False
     cmap_name = viewer.preview_cmap_combo.currentText()
@@ -1062,10 +1077,13 @@ def on_preview_cmap_changed(viewer, idx):
                 cb(cmap_name)
         except Exception:
             pass
+        # _set_thumbnail_entry_cmap above already refreshed open spectro
+        # insets; the global fallthrough below is the only path that skips it.
         return
     viewer.preview_cmap = cmap_name
     viewer.config['preview_cmap'] = viewer.preview_cmap
     save_config(viewer.config)
+    _notify_spectro_insets(viewer)
 __all__ = [
     "_build_metadata_html",
     "show_file_channel",

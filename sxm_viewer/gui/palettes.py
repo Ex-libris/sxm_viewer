@@ -86,15 +86,86 @@ COLOR_CYCLES = OrderedDict({
 
 DEFAULT_COLOR_CYCLE = next(iter(COLOR_CYCLES))
 
+# Suffix marking cycles that come from the optional "colormaps" package's
+# qualitative maps, so they read as distinct in the picker and their
+# resolved names never collide with a builtin cycle above.
+_EXTRA_CYCLE_SUFFIX = " (extra)"
+
+# Lazily-built {display name: [hex colors]} of qualitative color cycles
+# sourced from the optional pratiman-91 "colormaps" package. Empty when the
+# package isn't installed. Built once (the registry it reads is itself
+# process-global and idempotent).
+_EXTRA_CYCLES_CACHE = None
+
+
+def _cmap_to_hex_cycle(cmap, max_colors: int = 24) -> List[str]:
+    """Distinct hex colors of a (qualitative) colormap, in order.
+
+    ListedColormaps expose their categorical colors directly; anything
+    else is sampled evenly. Consecutive/near duplicates are dropped so a
+    padded qualitative map doesn't yield a run of identical swatches."""
+    from matplotlib.colors import to_hex, ListedColormap
+
+    listed = getattr(cmap, "colors", None)
+    if isinstance(cmap, ListedColormap) and listed is not None:
+        raw = list(listed)
+    else:
+        n = min(int(getattr(cmap, "N", 10) or 10), max_colors)
+        n = max(n, 2)
+        raw = [cmap(i / (n - 1)) for i in range(n)]
+    out: List[str] = []
+    seen = set()
+    for col in raw:
+        try:
+            hex_col = to_hex(col)
+        except Exception:
+            continue
+        if hex_col in seen:
+            continue
+        seen.add(hex_col)
+        out.append(hex_col)
+        if len(out) >= max_colors:
+            break
+    return out
+
+
+def _extra_color_cycles() -> "OrderedDict[str, List[str]]":
+    global _EXTRA_CYCLES_CACHE
+    if _EXTRA_CYCLES_CACHE is not None:
+        return _EXTRA_CYCLES_CACHE
+    cycles: "OrderedDict[str, List[str]]" = OrderedDict()
+    try:
+        import matplotlib
+
+        from .. import cmap_registry
+
+        for name in cmap_registry.qualitative_extra_cmap_names():
+            try:
+                cmap = matplotlib.colormaps[name]
+            except Exception:
+                continue
+            colors = _cmap_to_hex_cycle(cmap)
+            if len(colors) >= 2:
+                cycles[f"{name}{_EXTRA_CYCLE_SUFFIX}"] = colors
+    except Exception:
+        cycles = OrderedDict()
+    _EXTRA_CYCLES_CACHE = cycles
+    return cycles
+
 
 def list_color_cycles() -> List[str]:
-    return list(COLOR_CYCLES.keys())
+    return list(COLOR_CYCLES.keys()) + list(_extra_color_cycles().keys())
 
 
 def get_color_cycle(name: str | None) -> List[str]:
     if not name:
         return COLOR_CYCLES[DEFAULT_COLOR_CYCLE][:]
-    return list(COLOR_CYCLES.get(name, COLOR_CYCLES[DEFAULT_COLOR_CYCLE]))
+    if name in COLOR_CYCLES:
+        return list(COLOR_CYCLES[name])
+    extra = _extra_color_cycles()
+    if name in extra:
+        return list(extra[name])
+    return list(COLOR_CYCLES[DEFAULT_COLOR_CYCLE])
 
 
 __all__ = ["COLOR_CYCLES", "DEFAULT_COLOR_CYCLE", "list_color_cycles", "get_color_cycle"]
