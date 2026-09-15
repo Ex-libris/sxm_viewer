@@ -122,17 +122,17 @@ def render_view_figure(canvas, view):
             width = abs(extent_for_scale[1] - extent_for_scale[0])
             unit = view.get('axis_unit') or 'nm'
         
-        size, label = canvas._calculate_best_scale_bar(width, unit)
+        manual_length = canvas._scale_bar_manual_length(view)
+        size, label = canvas._calculate_best_scale_bar(width, unit, manual_length=manual_length)
         # Hide unit text if blank to avoid default "nm" showing up when unset
         label = label if label and label.strip() else None
         font_scale = getattr(canvas, '_view_font_scale', 1.0)
         
         dark = bool(canvas._detail_dark)
         default_color = '#f5f5f5' if dark else '#111111'
-        sb_settings = getattr(canvas, '_scale_bar_settings', {})
-        sb_text_col = sb_settings.get('text_color') or default_color
-        sb_bar_col = sb_settings.get('bar_color') or default_color
-        font_family = sb_settings.get('font_family', 'sans-serif')
+        sb_text_col = canvas._scale_bar_setting('text_color', view=view) or default_color
+        sb_bar_col = canvas._scale_bar_setting('bar_color', view=view) or default_color
+        font_family = canvas._scale_bar_setting('font_family', view=view, default='sans-serif')
 
         sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
                              pad=0.4, borderpad=0, sep=3, frameon=False,
@@ -143,8 +143,19 @@ def render_view_figure(canvas, view):
         text = sb.txt_label.get_children()[0]
         text.set_color(sb_text_col)
         text.set_fontfamily(font_family)
-        text.set_fontsize(10 * font_scale)
-        text.set_fontweight('bold')
+        text.set_fontsize(canvas._scale_bar_font_size(font_scale, view=view))
+        text.set_fontweight(canvas._scale_bar_font_weight(view=view))
+        try:
+            style = canvas._plot_style_state()
+            apply_text_style(
+                text,
+                family=font_family,
+                italic=style.get('italic'),
+                underline=style.get('underline'),
+            )
+            text.set_fontweight(canvas._scale_bar_font_weight(view=view))
+        except Exception:
+            pass
         ax.add_artist(sb)
 
     canvas._draw_image_size_overlay(ax, view)

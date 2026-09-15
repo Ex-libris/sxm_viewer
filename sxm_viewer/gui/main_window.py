@@ -7623,7 +7623,8 @@ QLabel:hover {{
             title_text = f"{header_path.name} - {label}"
             render_items.append({'arr': arr_display, 'extent': extent, 'unit': unit_display, 'label': label,
                                  'cmap': cmap, 'vmin': vmin, 'vmax': vmax, 'relative_axes': bool(self.relative_axes),
-                                 'colorbar_label': colorbar_label, 'title': title_text})
+                                 'colorbar_label': colorbar_label, 'title': title_text,
+                                 'path': str(header_path), 'channel_idx': idx})
         return render_items
 
     def render_and_save_file_using_config(self, header_path, config, out_dir):
@@ -7721,10 +7722,6 @@ QLabel:hover {{
         sb_pos = getattr(self.preview_canvas, '_scale_bar_pos', (0.94, 0.06))
         
         # Scale bar settings
-        sb_settings = getattr(self.preview_canvas, '_scale_bar_settings', {})
-        sb_font = sb_settings.get('font_family', 'sans-serif')
-        sb_text_col = sb_settings.get('text_color') or text_color
-        sb_bar_col = sb_settings.get('bar_color') or text_color
         font_scale = getattr(self.preview_canvas, '_view_font_scale', 1.0)
         show_ticks = getattr(self.preview_canvas, '_show_ticks', True)
         show_cbar = getattr(self.preview_canvas, '_show_colorbar', True)
@@ -7772,7 +7769,12 @@ QLabel:hover {{
                 # Reuse logic from canvas to calculate size
                 width = abs(item['extent'][1] - item['extent'][0]) if item['extent'] else arr_plot.shape[1]
                 unit = 'nm' if item['extent'] else 'px' # simplified assumption based on prepare_render_items
-                size, label = self.preview_canvas._calculate_best_scale_bar(width, unit)
+                view = item
+                manual_length = self.preview_canvas._scale_bar_manual_length(view)
+                size, label = self.preview_canvas._calculate_best_scale_bar(width, unit, manual_length=manual_length)
+                sb_text_col = self.preview_canvas._scale_bar_setting('text_color', view=view) or text_color
+                sb_bar_col = self.preview_canvas._scale_bar_setting('bar_color', view=view) or text_color
+                sb_font = self.preview_canvas._scale_bar_setting('font_family', view=view, default='sans-serif')
                 sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
                                      pad=0.4, borderpad=0, sep=3, frameon=False,
                                      size_vertical=width*0.004*font_scale, color=sb_bar_col,
@@ -7781,8 +7783,9 @@ QLabel:hover {{
                 sb.size_bar.get_children()[0].set_linewidth(0)
                 text = sb.txt_label.get_children()[0]
                 text.set_color(sb_text_col)
-                text.set_fontsize(10 * font_scale)
-                text.set_fontweight('bold')
+                text.set_fontfamily(sb_font)
+                text.set_fontsize(self.preview_canvas._scale_bar_font_size(font_scale, view=view))
+                text.set_fontweight(self.preview_canvas._scale_bar_font_weight(view=view))
                 ax.add_artist(sb)
 
         buf = io.BytesIO()
