@@ -338,7 +338,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._scale_bar_settings = {
             'text_color': None,
             'bar_color': None,
-            'font_family': self._font_family
+            'font_family': self._font_family,
+            # None keeps the automatic scale-bar length.
+            'length': None,
+            'font_size_pt': 10.0,
+            'font_weight': 'bold',
         }
         self._font_change_callback = None
         # Outline extraction state
@@ -1482,6 +1486,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "show_ticks": bool(self._show_ticks),
             "show_colorbar": bool(self._show_colorbar),
             "scale_bar_enabled": bool(self.scale_bar_enabled),
+            "scale_bar_settings": self._clone_undo_value(self._scale_bar_settings),
             "colorbar_orientation": self._colorbar_orientation,
             "view_layout": self._view_layout,
             "frame_fill_mode": bool(self._frame_fill_mode),
@@ -1550,6 +1555,9 @@ class MultiPreviewCanvas(FigureCanvas):
             self._relative_axes_override = self._clone_undo_value(state.get("relative_axes_override", self._relative_axes_override))
 
             desired_scale_bar = bool(state.get("scale_bar_enabled", self.scale_bar_enabled))
+            scale_bar_settings = state.get("scale_bar_settings")
+            if isinstance(scale_bar_settings, dict):
+                self._scale_bar_settings = dict(scale_bar_settings)
             if desired_scale_bar != self.scale_bar_enabled:
                 self.scale_bar_enabled = desired_scale_bar
                 if desired_scale_bar:
@@ -3399,7 +3407,49 @@ class MultiPreviewCanvas(FigureCanvas):
             self.mpl_disconnect(cid)
         self._scale_bar_cids = []
 
-    def _calculate_best_scale_bar(self, width, unit):
+    def _format_scale_bar_label(self, size, unit):
+        """Format a scale-bar value, promoting common metric units."""
+        label = f"{size:g} {unit}"
+        if unit == 'nm':
+            if size < 1.0:
+                label = f"{size*1000:.0f} pm"
+            elif size >= 1000:
+                label = f"{size/1000:.2g} \u00b5m"
+            else:
+                label = f"{size:g} nm"
+        elif unit in ('\u00b5m', '\u00c2\u00b5m'):
+            if size < 1.0:
+                label = f"{size*1000:.0f} nm"
+            else:
+                label = f"{size:g} \u00b5m"
+        return label
+
+    def _scale_bar_manual_length(self):
+        try:
+            value = float((getattr(self, '_scale_bar_settings', {}) or {}).get('length'))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) and value > 0 else None
+
+    def _scale_bar_font_size(self, font_scale=None):
+        if font_scale is None:
+            font_scale = getattr(self, '_view_font_scale', 1.0)
+        try:
+            base = float((getattr(self, '_scale_bar_settings', {}) or {}).get('font_size_pt', 10.0))
+        except (TypeError, ValueError):
+            base = 10.0
+        return max(1.0, base) * max(0.1, float(font_scale))
+
+    def _scale_bar_font_weight(self):
+        allowed = {'light', 'normal', 'medium', 'semibold', 'bold', 'heavy'}
+        weight = str((getattr(self, '_scale_bar_settings', {}) or {}).get('font_weight', 'bold')).lower()
+        return weight if weight in allowed else 'bold'
+
+    def _calculate_best_scale_bar(self, width, unit, manual_length=None):
+        if manual_length is None:
+            manual_length = self._scale_bar_manual_length()
+        if manual_length is not None:
+            return manual_length, self._format_scale_bar_label(manual_length, unit)
         if width <= 0:
             return 1.0, unit
         # Target roughly 15-20% of the image width
@@ -3480,10 +3530,19 @@ class MultiPreviewCanvas(FigureCanvas):
         text = sb.txt_label.get_children()[0]
         text.set_color(sb_text_col)
         text.set_fontfamily(font_family)
-        text.set_fontsize(10 * font_scale)
-        text.set_fontweight('bold')
+        text.set_fontsize(self._scale_bar_font_size(font_scale))
+        text.set_fontweight(self._scale_bar_font_weight())
         try:
-            apply_text_style(text, family=font_family, **self._plot_style_state())
+            style = self._plot_style_state()
+            # Keep scale-bar size/weight independent from the general plot
+            # typography controls, while retaining shared family/decoration.
+            apply_text_style(
+                text,
+                family=font_family,
+                italic=style.get('italic'),
+                underline=style.get('underline'),
+            )
+            text.set_fontweight(self._scale_bar_font_weight())
         except Exception:
             pass
         sb.set_zorder(20)
@@ -3538,6 +3597,64 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _show_sb_context_menu(self, event):
         menu = QtWidgets.QMenu(self)
+
+        scale_menu = menu.addMenu("Scale bar")
+        auto_length_act = scale_menu.addAction("Automatic length")
+        auto_length_act.setCheckable(True)
+        auto_length_act.setChecked(self._scale_bar_manual_length() is None)
+        auto_length_act.setToolTip("Choose a rounded length based on the displayed image width")
+        auto_length_act.triggered.connect(lambda _checked=False: self._set_sb_length(None))
+
+        length_widget = QtWidgets.QWidget()
+        length_layout = QtWidgets.QHBoxLayout(length_widget)
+        length_layout.setContentsMargins(8, 2, 8, 2)
+        length_layout.setSpacing(6)
+        length_layout.addWidget(QtWidgets.QLabel("Manual length"))
+        length_spin = QtWidgets.QDoubleSpinBox()
+        length_spin.setRange(0.000001, 1e12)
+        length_spin.setDecimals(6)
+        length_spin.setSingleStep(1.0)
+        length_spin.setKeyboardTracking(False)
+        current_length = self._scale_bar_manual_length()
+        length_spin.setValue(current_length if current_length is not None else 1.0)
+        length_spin.setToolTip("Scale-bar length in the image's displayed data units")
+        length_layout.addWidget(length_spin)
+        length_action = QtWidgets.QWidgetAction(scale_menu)
+        length_action.setDefaultWidget(length_widget)
+        scale_menu.addAction(length_action)
+        length_spin.valueChanged.connect(self._set_sb_length)
+        length_spin.valueChanged.connect(lambda _value: auto_length_act.setChecked(False))
+
+        weight_menu = scale_menu.addMenu("Label weight")
+        weight_group = QtWidgets.QActionGroup(weight_menu)
+        weight_group.setExclusive(True)
+        for weight in ("light", "normal", "medium", "semibold", "bold", "heavy"):
+            weight_act = weight_menu.addAction(weight.capitalize())
+            weight_act.setCheckable(True)
+            weight_act.setChecked(weight == self._scale_bar_font_weight())
+            weight_group.addAction(weight_act)
+            weight_act.triggered.connect(lambda checked=False, w=weight: self._set_sb_font_weight(w))
+
+        size_widget = QtWidgets.QWidget()
+        size_layout = QtWidgets.QHBoxLayout(size_widget)
+        size_layout.setContentsMargins(8, 2, 8, 2)
+        size_layout.setSpacing(6)
+        size_layout.addWidget(QtWidgets.QLabel("Label size (pt)"))
+        size_spin = QtWidgets.QDoubleSpinBox()
+        size_spin.setRange(1.0, 96.0)
+        size_spin.setDecimals(1)
+        size_spin.setSingleStep(1.0)
+        size_spin.setKeyboardTracking(False)
+        try:
+            size_spin.setValue(float((getattr(self, '_scale_bar_settings', {}) or {}).get('font_size_pt', 10.0)))
+        except (TypeError, ValueError):
+            size_spin.setValue(10.0)
+        size_spin.setToolTip("Scale-bar label font size before the view font scale is applied")
+        size_layout.addWidget(size_spin)
+        size_action = QtWidgets.QWidgetAction(scale_menu)
+        size_action.setDefaultWidget(size_widget)
+        scale_menu.addAction(size_action)
+        size_spin.valueChanged.connect(self._set_sb_font_size)
         
         col_menu = menu.addMenu("Colors")
         txt_act = col_menu.addAction("Text Color")
@@ -3564,8 +3681,45 @@ class MultiPreviewCanvas(FigureCanvas):
         txt_act.triggered.connect(self._pick_sb_text_color)
         bar_act.triggered.connect(self._pick_sb_bar_color)
         
+        global_pos = None
         if getattr(event, 'guiEvent', None):
-            menu.exec_(event.guiEvent.globalPos())
+            try:
+                global_pos = event.guiEvent.globalPos()
+            except Exception:
+                global_pos = None
+        menu.exec_(global_pos or QtGui.QCursor.pos())
+
+    def _set_sb_length(self, length):
+        if length is None:
+            value = None
+        else:
+            try:
+                value = float(length)
+            except (TypeError, ValueError):
+                return
+            if not math.isfinite(value) or value <= 0:
+                return
+        self._scale_bar_settings['length'] = value
+        self._redraw()
+        self._notify_views_callback()
+
+    def _set_sb_font_size(self, size):
+        try:
+            value = float(size)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value) or value <= 0:
+            return
+        self._scale_bar_settings['font_size_pt'] = value
+        self._redraw()
+        self._notify_views_callback()
+
+    def _set_sb_font_weight(self, weight):
+        if str(weight).lower() not in {'light', 'normal', 'medium', 'semibold', 'bold', 'heavy'}:
+            return
+        self._scale_bar_settings['font_weight'] = str(weight).lower()
+        self._redraw()
+        self._notify_views_callback()
 
     def _set_sb_font(self, font):
         self._scale_bar_settings['font_family'] = font
@@ -4118,7 +4272,9 @@ class MultiPreviewCanvas(FigureCanvas):
         # Update scale bar font size
         for sb in self._scale_bar_artists:
             try:
-                sb.txt_label.get_children()[0].set_fontsize(10 * scale)
+                text = sb.txt_label.get_children()[0]
+                text.set_fontsize(self._scale_bar_font_size(scale))
+                text.set_fontweight(self._scale_bar_font_weight())
             except Exception:
                 pass
         for frame in self._angle_frames:
@@ -8683,6 +8839,8 @@ class MultiPreviewCanvas(FigureCanvas):
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
         show_scale_act.setChecked(bool(self.scale_bar_enabled))
+        scale_settings_act = display_menu.addAction("Scale bar settings...")
+        scale_settings_act.setToolTip("Set the scale-bar length, label size, and label weight")
         show_ticks_act = display_menu.addAction("Show Ticks")
         show_ticks_act.setCheckable(True)
         show_ticks_act.setChecked(bool(self._show_ticks))
@@ -9059,6 +9217,8 @@ class MultiPreviewCanvas(FigureCanvas):
         elif chosen == show_scale_act:
             self.enable_scale_bar(show_scale_act.isChecked())
             self._notify_views_callback()
+        elif chosen == scale_settings_act:
+            self._show_sb_context_menu(None)
         elif chosen == show_ticks_act:
             self._toggle_ticks()
         elif chosen == show_cbar_act:
@@ -9646,8 +9806,19 @@ class MultiPreviewCanvas(FigureCanvas):
             text = sb.txt_label.get_children()[0]
             text.set_color(sb_text_col)
             text.set_fontfamily(font_family)
-            text.set_fontsize(10 * font_scale)
-            text.set_fontweight('bold')
+            text.set_fontsize(self._scale_bar_font_size(font_scale))
+            text.set_fontweight(self._scale_bar_font_weight())
+            try:
+                style = self._plot_style_state()
+                apply_text_style(
+                    text,
+                    family=font_family,
+                    italic=style.get('italic'),
+                    underline=style.get('underline'),
+                )
+                text.set_fontweight(self._scale_bar_font_weight())
+            except Exception:
+                pass
             ax.add_artist(sb)
 
         self._draw_image_size_overlay(ax, view)

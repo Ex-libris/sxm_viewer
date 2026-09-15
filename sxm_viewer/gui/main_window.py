@@ -8484,8 +8484,8 @@ QLabel:hover {{
                 sb.size_bar.get_children()[0].set_linewidth(0)
                 text = sb.txt_label.get_children()[0]
                 text.set_color(sb_text_col)
-                text.set_fontsize(10 * font_scale)
-                text.set_fontweight('bold')
+                text.set_fontsize(self.preview_canvas._scale_bar_font_size(font_scale))
+                text.set_fontweight(self.preview_canvas._scale_bar_font_weight())
                 ax.add_artist(sb)
 
         buf = io.BytesIO()
