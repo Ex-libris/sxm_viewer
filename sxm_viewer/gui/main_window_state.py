@@ -214,7 +214,15 @@ def init_state(self):
     self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
     if self.profile_label_mode not in {"length", "full", "hidden"}:
         self.profile_label_mode = "length"
-    self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+    saved_canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+    # Display presets are transient figure treatments, not startup
+    # preferences. Discard stale Publication state so it cannot become the
+    # next session's default.
+    if "publication_mode" in saved_canvas_display_options:
+        self.config["canvas_display_options"] = {}
+        save_config(self.config)
+        saved_canvas_display_options = {}
+    self.canvas_display_options = saved_canvas_display_options
     molecule_style = self.config.get("molecule_default_style") if isinstance(self.config.get("molecule_default_style"), dict) else {}
     self.molecule_palette = str(
         self.config.get("molecule_palette", molecule_style.get("palette", "avogadro")) or "avogadro"

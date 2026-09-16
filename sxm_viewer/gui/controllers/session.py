@@ -1526,12 +1526,22 @@ class SessionController:
     def _capture_canvas_snapshot(self, canvas, views_dir: Path, prefix: str, include_arrays: bool):
         if canvas is None:
             return None
+        display_state = self._safe_canvas_call(canvas, "export_display_state_for_persistence") or {}
         snapshot = {
-            "view_layout": getattr(canvas, "_view_layout", "grid"),
-            "relative_axes_override": getattr(canvas, "_relative_axes_override", None),
-            "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
-            "show_title": bool(getattr(canvas, "_show_title", True)),
-            "show_acquisition_overlay": bool(getattr(canvas, "_show_acquisition_overlay", False)),
+            "view_layout": display_state.get("view_layout", getattr(canvas, "_view_layout", "grid")),
+            "relative_axes_override": display_state.get("relative_axes_override", getattr(canvas, "_relative_axes_override", None)),
+            "scale_bar_enabled": bool(display_state.get("scale_bar_enabled", getattr(canvas, "scale_bar_enabled", False))),
+            "show_ticks": bool(display_state.get("show_ticks", getattr(canvas, "_show_ticks", True))),
+            "show_colorbar": bool(display_state.get("show_colorbar", getattr(canvas, "_show_colorbar", True))),
+            "colorbar_orientation": str(display_state.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical"),
+            "show_title": bool(display_state.get("show_title", getattr(canvas, "_show_title", True))),
+            "show_acquisition_overlay": bool(display_state.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False))),
+            "show_shortcut_hint": bool(display_state.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False))),
+            "show_profile_overlays": bool(display_state.get("show_profile_overlays", getattr(canvas, "_show_profile_overlays", True))),
+            "show_angle_overlays": bool(display_state.get("show_angle_overlays", getattr(canvas, "_show_angle_overlays", True))),
+            "show_molecules": bool(display_state.get("show_molecules", getattr(canvas, "show_molecules", True))),
+            "show_molecule_gizmo": bool(display_state.get("show_molecule_gizmo", getattr(canvas, "_show_molecule_gizmo", False))),
+            "frame_fill_mode": bool(display_state.get("frame_fill_mode", getattr(canvas, "_frame_fill_mode", False))),
             "show_filter_summary": bool(getattr(canvas, "_show_filter_summary", True)),
             "view_font_scale": float(getattr(canvas, "_view_font_scale", 1.0) or 1.0),
             "plot_font_family": str(getattr(canvas, "_font_family", "") or ""),

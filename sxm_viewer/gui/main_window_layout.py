@@ -162,11 +162,14 @@ def build_measure_context_page(viewer):
     viewer.show_profile_window_btn.setToolTip("Reopen the profile dialog with current measurements")
     viewer.exit_profile_btn = _configure_compact_control(QtWidgets.QPushButton("Done"))
     viewer.exit_profile_btn.setToolTip("Exit the profile measurement mode")
+    viewer.profile_properties_hint = QtWidgets.QLabel("Right-click a profile line for properties")
+    viewer.profile_properties_hint.setStyleSheet("color: #888; font-size: 10px;")
     layout.addWidget(viewer.measure_profile_btn)
     layout.addWidget(viewer.measure_angle_btn)
     layout.addWidget(viewer.clear_profile_btn)
     layout.addWidget(viewer.show_profile_window_btn)
     layout.addWidget(viewer.exit_profile_btn)
+    layout.addWidget(viewer.profile_properties_hint)
     layout.addStretch(1)
     return page
 
@@ -392,25 +395,6 @@ def _ensure_display_menu(viewer):
     viewer.crop_history_act.setCheckable(True)
     viewer.crop_history_act.setChecked(True)
     viewer.crop_history_act.setVisible(False)
-    viewer.display_menu.addSeparator()
-    viewer.profile_label_menu = viewer.display_menu.addMenu("Profile labels")
-    viewer.profile_label_group = QtWidgets.QActionGroup(viewer.profile_label_menu)
-    viewer.profile_label_group.setExclusive(True)
-    viewer.profile_label_actions = {}
-    label_modes = [
-        ("Length only", "length"),
-        ("Full (L, dx, dy)", "full"),
-        ("Hidden", "hidden"),
-    ]
-    current_mode = str(getattr(viewer, "profile_label_mode", "length") or "length").lower()
-    for label_text, mode_key in label_modes:
-        act = viewer.profile_label_menu.addAction(label_text)
-        act.setCheckable(True)
-        act.setChecked(current_mode == mode_key)
-        act.triggered.connect(lambda checked, m=mode_key: checked and viewer.on_profile_label_mode_changed(m))
-        viewer.profile_label_group.addAction(act)
-        viewer.profile_label_actions[mode_key] = act
-    viewer.display_menu.addSeparator()
     viewer.display_menu.addSeparator()
     viewer.detail_dark_act = viewer.display_menu.addAction("Detail dark background")
     viewer.detail_dark_act.setCheckable(True)

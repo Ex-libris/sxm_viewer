@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import math
+import re
 import time
 import warnings
 from typing import List
@@ -45,6 +46,7 @@ from .preview_axes_sync import sync_axes_to_view, style_colorbar
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
+from ...reporting.channels import classify_channel
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 from ..system_open import add_source_file_menu
@@ -251,6 +253,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_update_timer.setSingleShot(True)
         self._profile_update_timer.setInterval(50)
         self._profile_update_timer.timeout.connect(self._flush_profile_updates)
+        # Use Qt's context-menu event as the reliable path for profile
+        # properties.  Matplotlib's button_press_event can be claimed by the
+        # navigation stack (or by Alt-modified window handling).
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_qt_profile_context_menu)
         self._saved_profiles = []
         self._profile_live_source_id = f"canvas-{id(self):x}"
         self._profile_saved_profile_seq = 1
@@ -274,6 +281,14 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_highlight_cb = None
         self._profile_label_scale = 1.0
         self._profile_label_mode = "length"
+        self._profile_label_placement = "midpoint"
+        self._profile_label_orientation = "automatic"
+        self._profile_label_bg_alpha = 0.28
+        self._profile_ruler_visible = False
+        self._profile_ruler_artists = []
+        profile_config = load_config()
+        self._profile_show_all_labels = bool(profile_config.get("profile_show_all_labels", False))
+        self._profile_overlay_outline = bool(profile_config.get("profile_overlay_outline", True))
         self._measurement_shortcuts_enabled = True
         self._view_font_scale = 1.0
         self._font_family = normalize_font_family(matplotlib.rcParams.get("font.family", [None])[0], "sans-serif")
@@ -288,8 +303,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_profile_overlays = True
         self._show_angle_overlays = True
         self._show_shortcut_hint = False
-        self._show_image_size_overlay = False
         self._show_filter_summary = True
+        self._publication_mode = False
+        self._display_preset_transient = False
+        self._display_preset_base_state = None
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
@@ -562,6 +579,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 "scale_bar_enabled": False,
                 "frame_fill_mode": True,
                 "colorbar_orientation": "vertical",
+                "publication_mode": False,
             },
             "analysis": {
                 "show_ticks": True,
@@ -575,10 +593,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
                 "colorbar_orientation": "vertical",
+                "publication_mode": False,
             },
             "publication": {
                 "show_ticks": False,
-                "show_colorbar": False,
+                "show_colorbar": True,
                 "show_title": False,
                 "show_profile_overlays": False,
                 "show_angle_overlays": False,
@@ -587,7 +606,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 "show_shortcut_hint": False,
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
-                "colorbar_orientation": "vertical",
+                "colorbar_orientation": "horizontal",
+                "publication_mode": True,
             },
         }[preset]
         self._show_ticks = bool(preset_state["show_ticks"])
@@ -601,6 +621,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._colorbar_orientation = str(preset_state["colorbar_orientation"])
         self.scale_bar_enabled = bool(preset_state["scale_bar_enabled"])
         self._frame_fill_mode = bool(preset_state["frame_fill_mode"])
+        self._publication_mode = bool(preset_state["publication_mode"])
+        self._display_preset_transient = True
+        try:
+            self._display_preset_base_state = self._undo_history[-1]
+        except Exception:
+            self._display_preset_base_state = None
         if self.scale_bar_enabled:
             self._connect_scale_bar_events()
         else:
@@ -616,6 +642,189 @@ class MultiPreviewCanvas(FigureCanvas):
         self._refresh_scale_bars()
         self._redraw()
         self._notify_views_callback()
+
+    def _publication_view_kind(self, view):
+        """Return the publication signal family for an image view."""
+        if not isinstance(view, dict):
+            return "other"
+        meta = view.get("meta") or {}
+        parts = [
+            view.get("channel_name"),
+            view.get("channel"),
+            meta.get("channel"),
+            meta.get("channel_name"),
+            view.get("title"),
+            view.get("colorbar_label"),
+        ]
+        raw = " ".join(str(part or "") for part in parts).strip()
+        strong_raw = " ".join(str(part or "") for part in parts[:4]).strip()
+        low = raw.lower().replace("_", " ").replace("-", " ")
+        kind = classify_channel(strong_raw) if strong_raw else "other"
+        if kind == "other":
+            kind = classify_channel(raw)
+        if kind == "other" and re.search(r"(?:\bdf\b|delta\s*f|\u0394\s*f|frequency\s*shift|freq\s*shift|nc\s*afm)", low):
+            kind = "freq"
+        return kind
+
+    def _publication_colorbar_label(self, view):
+        """Use compact scientific labels for common SPM image channels."""
+        if not isinstance(view, dict):
+            return ""
+        kind = self._publication_view_kind(view)
+        raw_label = str(view.get("colorbar_label") or "").strip()
+        unit = str(view.get("unit") or "").strip()
+        if not unit and raw_label:
+            match = re.search(r"\[([^\]]+)\]|\(([^)]+)\)\s*$", raw_label)
+            if match:
+                unit = str(match.group(1) or match.group(2) or "").strip()
+        if kind == "current":
+            return f"I ({unit or 'A'})"
+        if kind == "z":
+            return f"z ({unit})" if unit else "z"
+        if kind == "freq":
+            return f"\u0394f ({unit or 'Hz'})"
+        return raw_label or unit or str(view.get("title") or "Signal").strip()
+
+    @staticmethod
+    def _publication_value(value):
+        try:
+            value = float(value)
+        except Exception:
+            return ""
+        if not np.isfinite(value):
+            return ""
+        magnitude = abs(value)
+        if magnitude == 0:
+            return "0"
+        if magnitude < 0.01 or magnitude >= 1000:
+            return f"{value:.2e}"
+        if magnitude < 1:
+            return f"{value:.3g}"
+        return f"{value:.3g}"
+
+    def _publication_colorbar_limits(self, image, view):
+        try:
+            low, high = image.get_clim()
+            low, high = float(low), float(high)
+            if np.isfinite(low) and np.isfinite(high):
+                return low, high
+        except Exception:
+            pass
+        try:
+            finite = np.asarray(view.get("arr"), dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                return float(np.min(finite)), float(np.max(finite))
+        except Exception:
+            pass
+        return None, None
+
+    @staticmethod
+    def _publication_endpoint_colors(image, low, high):
+        """Choose black text for the brighter endpoint and white for the darker."""
+        try:
+            cmap = image.cmap
+            norm = image.norm
+            rgba = [cmap(norm(value)) for value in (low, high)]
+            luminance = [
+                0.2126 * float(color[0])
+                + 0.7152 * float(color[1])
+                + 0.0722 * float(color[2])
+                for color in rgba
+            ]
+            if luminance[0] == luminance[1]:
+                color = "#111111" if luminance[0] >= 0.5 else "#f5f5f5"
+                return [color, color]
+            if luminance[0] > luminance[1]:
+                return ["#111111", "#f5f5f5"]
+            return ["#f5f5f5", "#111111"]
+        except Exception:
+            return ["#f5f5f5", "#111111"]
+
+    def _style_publication_colorbar(self, cbar, image, view):
+        """Render a compact bottom colorbar with only its true endpoints."""
+        if cbar is None or image is None:
+            return
+        try:
+            cbar.update_normal(image)
+        except Exception:
+            pass
+        low, high = self._publication_colorbar_limits(image, view)
+        if low is None or high is None:
+            return
+        orientation = str(getattr(cbar, "orientation", "vertical") or "vertical").lower()
+        ticks = [low] if low == high else [low, high]
+        labels = [self._publication_value(value) for value in ticks]
+        endpoint_colors = self._publication_endpoint_colors(image, low, high)
+        old_endpoints = getattr(cbar, "_publication_endpoint_artists", [])
+        for artist in old_endpoints:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        try:
+            cbar.set_label("")
+            cbar.set_ticks([])
+            cbar.ax.xaxis.set_ticks([])
+            cbar.ax.yaxis.set_ticks([])
+            cbar.ax.set_facecolor("#070707")
+            cbar.outline.set_edgecolor("#555b63")
+        except Exception:
+            pass
+        try:
+            if orientation == "horizontal":
+                endpoint_specs = (
+                    [(0.5, 0.5, labels[0], "center", "center")]
+                    if len(labels) == 1 else
+                    [(0.02, 0.5, labels[0], "left", "center"),
+                     (0.98, 0.5, labels[1], "right", "center")]
+                )
+            else:
+                endpoint_specs = (
+                    [(0.5, 0.5, labels[0], "center", "center")]
+                    if len(labels) == 1 else
+                    [(0.5, 0.02, labels[0], "center", "bottom"),
+                     (0.5, 0.98, labels[1], "center", "top")]
+                )
+            endpoint_artists = []
+            for index, (x, y, text, ha, va) in enumerate(endpoint_specs):
+                artist = cbar.ax.text(
+                    x, y, text,
+                    color=endpoint_colors[min(index, len(endpoint_colors) - 1)],
+                    fontsize=max(7.0, 8.5 * getattr(self, "_view_font_scale", 1.0)),
+                    ha=ha,
+                    va=va,
+                    transform=cbar.ax.transAxes,
+                    clip_on=True,
+                    zorder=6,
+                )
+                apply_text_style(artist, family=self._font_family, **self._plot_style_state())
+                endpoint_artists.append(artist)
+            cbar._publication_endpoint_artists = endpoint_artists
+        except Exception:
+            cbar._publication_endpoint_artists = []
+        old = getattr(cbar, "_publication_label_artist", None)
+        if old is not None:
+            try:
+                old.remove()
+            except Exception:
+                pass
+        try:
+            label_artist = cbar.ax.text(
+                0.5,
+                0.5,
+                self._publication_colorbar_label(view),
+                color="#f5f5f5",
+                fontsize=max(7.0, 9.5 * getattr(self, "_view_font_scale", 1.0)),
+                ha="center",
+                va="center",
+                transform=cbar.ax.transAxes,
+                zorder=5,
+            )
+            apply_text_style(label_artist, family=self._font_family, **self._plot_style_state())
+            cbar._publication_label_artist = label_artist
+        except Exception:
+            pass
 
     def set_fit_to_canvas(self, enabled: bool):
         """If enabled, stretch view axes to fill the available canvas area."""
@@ -817,7 +1026,7 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return False
         _mark("image_data")
-        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        cbar_label = self._publication_colorbar_label(view) if self._publication_mode else (view.get('colorbar_label') or view.get('unit', ''))
         if self._colorbars and self._show_colorbar:
             try:
                 style_colorbar(
@@ -825,6 +1034,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                     show_ticks=self._show_ticks,
                 )
+                if self._publication_mode:
+                    self._style_publication_colorbar(self._colorbars[0], image, view)
             except Exception:
                 return False
         _mark("title_colorbar_ticks")
@@ -835,8 +1046,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.scale_bar_enabled:
             self._add_scale_bar(ax, view)
         _mark("scale_bar")
-        self._draw_image_size_overlay(ax, view)
-        _mark("image_size_overlay")
         self._draw_spectra(ax)
         _mark("spectra_markers")
         try:
@@ -1512,14 +1721,51 @@ class MultiPreviewCanvas(FigureCanvas):
             "colorbar_orientation": self._colorbar_orientation,
             "view_layout": self._view_layout,
             "frame_fill_mode": bool(self._frame_fill_mode),
+            "publication_mode": bool(self._publication_mode),
+            "display_preset_transient": bool(self._display_preset_transient),
             "frame_fill_prev_state": self._clone_undo_value(self._frame_fill_prev_state),
             "fit_to_canvas": bool(self._fit_to_canvas),
             "relative_axes_override": self._clone_undo_value(self._relative_axes_override),
         }
 
+    def export_display_state_for_persistence(self):
+        """Return display state with any active preset rolled back.
+
+        Presets are temporary presentation treatments. If a session or
+        collection is saved while one is active, persist the state from just
+        before the preset instead of turning that treatment into a startup
+        preference.
+        """
+        state = self.export_canvas_undo_state()
+        if self._display_preset_transient:
+            baseline = None
+            for previous in reversed(self._undo_history):
+                if isinstance(previous, dict) and str(previous.get("_label", "")).startswith("preset:"):
+                    baseline = previous
+                    break
+            if baseline is None:
+                baseline = self._display_preset_base_state
+            if isinstance(baseline, dict):
+                for key in (
+                    "show_ticks", "show_colorbar", "colorbar_orientation",
+                    "show_title", "show_acquisition_overlay",
+                    "show_shortcut_hint", "show_profile_overlays",
+                    "show_angle_overlays", "show_molecules",
+                    "show_molecule_gizmo", "scale_bar_enabled",
+                    "frame_fill_mode", "relative_axes_override", "view_layout",
+                ):
+                    if key in baseline:
+                        state[key] = self._clone_undo_value(baseline[key])
+        state.pop("publication_mode", None)
+        state.pop("display_preset_transient", None)
+        return state
+
     def push_undo_state(self, label=None):
         if self._undo_restore_in_progress or self._undo_suspend_depth > 0:
             return False
+        if label is not None and not str(label).startswith("preset:"):
+            self._display_preset_transient = False
+            self._display_preset_base_state = None
         try:
             state = self.export_canvas_undo_state()
         except Exception:
@@ -1573,6 +1819,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._colorbar_orientation = str(state.get("colorbar_orientation", self._colorbar_orientation) or "vertical")
             self._view_layout = str(state.get("view_layout", self._view_layout) or "grid")
             self._frame_fill_mode = bool(state.get("frame_fill_mode", self._frame_fill_mode))
+            self._publication_mode = bool(state.get("publication_mode", self._publication_mode))
+            self._display_preset_transient = bool(state.get("display_preset_transient", self._display_preset_transient))
+            if not self._display_preset_transient:
+                self._display_preset_base_state = None
             self._frame_fill_prev_state = self._clone_undo_value(state.get("frame_fill_prev_state"))
             self._fit_to_canvas = bool(state.get("fit_to_canvas", self._fit_to_canvas))
             self._relative_axes_override = self._clone_undo_value(state.get("relative_axes_override", self._relative_axes_override))
@@ -1788,7 +2038,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_p0 = None
         self._profile_p1 = None
         self._profile_echo_artists = []
-        n = len(self.views)
+        render_views = list(self.views or [])
+        n = len(render_views)
         if n == 0:
             self.draw(); return
         if self._view_layout == "stacked":
@@ -1797,7 +2048,7 @@ class MultiPreviewCanvas(FigureCanvas):
         else:
             cols = int(math.ceil(math.sqrt(n)))
             rows = int(math.ceil(n / cols))
-        for i, v in enumerate(self.views):
+        for i, v in enumerate(render_views):
             ax = self.fig.add_subplot(rows, cols, i+1)
             self._ax_view_map[ax] = v
             if i == 0:
@@ -1825,7 +2076,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                 show_ticks=self._show_ticks,
             )
-            cbar_label = v.get('colorbar_label') or v.get('unit', '')
+            cbar_label = self._publication_colorbar_label(v) if self._publication_mode else (v.get('colorbar_label') or v.get('unit', ''))
             if cbar_label and self._show_colorbar:
                 try:
                     divider = make_axes_locatable(ax)
@@ -1848,6 +2099,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                     show_ticks=self._show_ticks,
                 )
+                if self._publication_mode:
+                    self._style_publication_colorbar(cbar, im, v)
                 self._colorbars.append(cbar)
             self._draw_acquisition_overlay(ax, v)
             if ax is self.main_ax:
@@ -1867,7 +2120,6 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._add_scale_bar(ax, v)
                 except Exception:
                     pass
-            self._draw_image_size_overlay(ax, v)
             if ax not in self._zoom_reset_limits:
                 key = self._outline_key(v)
                 base_lim = current_base_limits.get(key)
@@ -3877,6 +4129,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if abs(scale - self._profile_label_scale) <= 1e-3:
             return
         self._profile_label_scale = scale
+        self._persist_profile_display_settings()
         self._update_profile_markers()
         for entry in self._saved_profiles:
             text = entry.get('label_artist')
@@ -3887,6 +4140,133 @@ class MultiPreviewCanvas(FigureCanvas):
                 except Exception:
                     pass
         self.draw_idle()
+
+    def set_profile_label_placement(self, placement):
+        placement = str(placement or "midpoint").lower()
+        if placement not in {"midpoint", "endpoint", "hud"}:
+            placement = "midpoint"
+        self._profile_label_placement = placement
+        self._persist_profile_display_settings()
+        self._update_profile_markers()
+        self._update_saved_profile_label_layout()
+        self.draw_idle()
+
+    def set_profile_label_orientation(self, orientation):
+        orientation = str(orientation or "automatic").lower()
+        if orientation not in {"automatic", "parallel", "horizontal"}:
+            orientation = "automatic"
+        self._profile_label_orientation = orientation
+        self._persist_profile_display_settings()
+        self._update_profile_markers()
+        self._update_saved_profile_label_layout()
+        self.draw_idle()
+
+    def set_profile_label_bg_alpha(self, alpha):
+        self._profile_label_bg_alpha = max(0.0, min(0.8, float(alpha)))
+        self._persist_profile_display_settings()
+        self._update_profile_markers()
+        self._update_saved_profile_label_layout()
+        self.draw_idle()
+
+    def set_profile_ruler_visible(self, visible):
+        self._profile_ruler_visible = bool(visible)
+        self._persist_profile_display_settings()
+        self._update_profile_ruler()
+        self.draw_idle()
+
+    def set_profile_show_all_labels(self, visible):
+        self._profile_show_all_labels = bool(visible)
+        self._persist_profile_display_settings()
+        self._apply_profile_visibility()
+        self.draw_idle()
+
+    def set_profile_overlay_outline(self, enabled):
+        self._profile_overlay_outline = bool(enabled)
+        self._persist_profile_display_settings()
+        self._refresh_profile_contrast_artists()
+        self.draw_idle()
+
+    def _profile_display_settings(self):
+        return {
+            "profile_label_mode": self._profile_label_mode,
+            "profile_label_scale": float(self._profile_label_scale),
+            "profile_label_placement": self._profile_label_placement,
+            "profile_label_orientation": self._profile_label_orientation,
+            "profile_label_bg_alpha": float(self._profile_label_bg_alpha),
+            "profile_ruler_visible": bool(self._profile_ruler_visible),
+            "profile_show_all_labels": bool(self._profile_show_all_labels),
+            "profile_overlay_outline": bool(self._profile_overlay_outline),
+        }
+
+    def _persist_profile_display_settings(self):
+        try:
+            config = load_config()
+            config.update(self._profile_display_settings())
+            save_config(config)
+        except Exception:
+            pass
+
+    def _save_profile_display_favorite(self):
+        try:
+            config = load_config()
+            config["profile_display_favorite"] = dict(self._profile_display_settings())
+            save_config(config)
+        except Exception:
+            pass
+
+    def _restore_profile_display_favorite(self):
+        try:
+            favorite = load_config().get("profile_display_favorite") or {}
+            if not isinstance(favorite, dict):
+                return
+            for key, setter in (
+                ("profile_label_mode", self.set_profile_label_mode),
+                ("profile_label_scale", self.set_profile_label_scale),
+                ("profile_label_placement", self.set_profile_label_placement),
+                ("profile_label_orientation", self.set_profile_label_orientation),
+                ("profile_label_bg_alpha", self.set_profile_label_bg_alpha),
+                ("profile_ruler_visible", self.set_profile_ruler_visible),
+                ("profile_show_all_labels", self.set_profile_show_all_labels),
+                ("profile_overlay_outline", self.set_profile_overlay_outline),
+            ):
+                if key in favorite:
+                    setter(favorite[key])
+        except Exception:
+            pass
+
+    def _refresh_profile_contrast_artists(self):
+        for line in [self._profile_line]:
+            if line is not None:
+                line.set_path_effects(self._profile_line_effects(line.get_linewidth()))
+        for entry in self._saved_profiles or []:
+            for artist in entry.get("artists", []) or []:
+                if artist is not None and hasattr(artist, "get_linestyle") and artist.get_linestyle() not in ("None", "none", ""):
+                    artist.set_path_effects(self._profile_line_effects(artist.get_linewidth()))
+        for artist in [self._profile_info_text, self._profile_label] + list(self._profile_endpoint_labels or []):
+            if artist is not None:
+                artist.set_path_effects(self._profile_text_effects())
+        for entry in self._saved_profiles or []:
+            for artist in [entry.get("label_artist"), entry.get("overlay_label_artist")] + list(entry.get("endpoint_labels") or []):
+                if artist is not None:
+                    artist.set_path_effects(self._profile_text_effects())
+
+    def _profile_line_effects(self, linewidth):
+        """Contrast casing that keeps profile lines readable over any cmap."""
+        lw = max(0.5, float(linewidth or 1.0))
+        if not self._profile_overlay_outline:
+            return [PathEffects.Normal()]
+        return [
+            PathEffects.Stroke(linewidth=lw + 4.0, foreground='white', alpha=0.9),
+            PathEffects.Stroke(linewidth=lw + 2.0, foreground='black', alpha=0.95),
+            PathEffects.Normal(),
+        ]
+
+    def _profile_text_effects(self):
+        # Keep the white glyph interior visible; a heavy stroke makes labels
+        # look like black blobs at normal zoom.
+        if not self._profile_overlay_outline:
+            return [PathEffects.Normal()]
+        return [PathEffects.withStroke(linewidth=1.4, foreground='black')]
 
     def set_profile_marker_callback(self, cb):
         self._profile_marker_callback = cb
@@ -4364,6 +4744,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
                 for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
                     apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
+                publication_label = getattr(cbar, "_publication_label_artist", None)
+                if publication_label is not None:
+                    publication_label.set_fontsize(max(7.0, 9.5 * scale))
+                for endpoint in getattr(cbar, "_publication_endpoint_artists", []) or []:
+                    endpoint.set_fontsize(max(7.0, 8.5 * scale))
             except Exception:
                 pass
         # Update scale bar font size
@@ -4415,6 +4800,7 @@ class MultiPreviewCanvas(FigureCanvas):
             return
         self.push_undo_state("profile_label_mode")
         self._profile_label_mode = mode
+        self._persist_profile_display_settings()
         self._update_profile_markers()
         for entry in self._saved_profiles:
             text = entry.get("label_artist")
@@ -4831,7 +5217,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 zorder=10,
             )
             self._profile_endpoint_labels = self._create_endpoint_labels((x0, y0, x1, y1), color)
-            self._profile_label = self._create_profile_id_label((x0, y0, x1, y1), "Active", color)
+            # The active state is communicated by the corner HUD; placing
+            # "Active" on the measurement line competes with the length value.
+            self._profile_label = None
             self._update_profile_markers()
         
         # Clear existing echo artists to prevent duplicates
@@ -5267,6 +5655,12 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         self._profile_line = self._profile_p0 = self._profile_p1 = None
         self._remove_profile_markers()
+        for artist in self._profile_ruler_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._profile_ruler_artists = []
         self._clear_profile_marker_artists()
         if self._profile_label is not None:
             try:
@@ -5337,6 +5731,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._profile_label,
             self._profile_hud_text,
         ]
+        active_artists.extend(list(self._profile_ruler_artists or []))
         active_artists.extend(list(self._profile_endpoint_labels or []))
         active_artists.extend(list(self._profile_marker_artists or []))
         for echo in self._profile_echo_artists or []:
@@ -5349,12 +5744,15 @@ class MultiPreviewCanvas(FigureCanvas):
                 art.set_visible(active_visible)
             except Exception:
                 continue
-        for entry in self._saved_profiles or []:
+        for idx, entry in enumerate(self._saved_profiles or []):
+            label_artists = {entry.get("label_artist"), entry.get("overlay_label_artist")}
+            label_artists.update(entry.get("endpoint_labels", []) or [])
+            selected = self._profile_show_all_labels or idx == self._highlighted_overlay
             for art in entry.get("artists", []) or []:
                 if art is None:
                     continue
                 try:
-                    art.set_visible(overlay_visible)
+                    art.set_visible(overlay_visible and (art not in label_artists or selected))
                 except Exception:
                     continue
 
@@ -5507,9 +5905,10 @@ class MultiPreviewCanvas(FigureCanvas):
         ym = y0 + 0.5 * (y1 - y0)
         try:
             return self.main_ax.text(
-                xm, ym, text, color=color, fontsize=8,
+                xm, ym, text, color='white', fontsize=8, fontweight='bold',
                 ha='center', va='bottom',
                 bbox={'facecolor': 'black', 'alpha': 0.25, 'edgecolor': 'none', 'pad': 1.5},
+                path_effects=self._profile_text_effects(),
                 zorder=11)
         except Exception:
             return None
@@ -5521,14 +5920,16 @@ class MultiPreviewCanvas(FigureCanvas):
         labels = []
         try:
             labels.append(self.main_ax.text(
-                x0, y0, "A", color=color, fontsize=8,
+                x0, y0, "A", color='white', fontsize=8, fontweight='bold',
                 ha='right', va='bottom',
                 bbox={'facecolor': 'black', 'alpha': 0.25, 'edgecolor': 'none', 'pad': 1.0},
+                path_effects=self._profile_text_effects(),
                 zorder=11))
             labels.append(self.main_ax.text(
-                x1, y1, "B", color=color, fontsize=8,
+                x1, y1, "B", color='white', fontsize=8, fontweight='bold',
                 ha='left', va='bottom',
                 bbox={'facecolor': 'black', 'alpha': 0.25, 'edgecolor': 'none', 'pad': 1.0},
+                path_effects=self._profile_text_effects(),
                 zorder=11))
         except Exception:
             return []
@@ -5556,29 +5957,100 @@ class MultiPreviewCanvas(FigureCanvas):
             return f"L={length:.3g} {unit} | dx={dx:.3g} {unit} | dy={dy:.3g} {unit}"
         return f"L={length:.3g} {unit}"
 
+    def _profile_label_position_and_angle(self, pts):
+        """Return a readable, line-associated position and display angle."""
+        x0, y0, x1, y1 = (float(value) for value in pts)
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        if self._profile_label_placement == "endpoint":
+            xm, ym = x0 + 0.65 * dx, y0 + 0.65 * dy
+        else:
+            xm, ym = x0 + 0.5 * dx, y0 + 0.5 * dy
+
+        if length <= 0:
+            return (xm, ym), 0.0
+
+        # Offset in data coordinates, normal to the profile.  This keeps the
+        # label clear of the line while preserving its association with it.
+        offset = 0.035 * length
+        xm -= (dy / length) * offset
+        ym += (dx / length) * offset
+
+        # Text rotation is in display coordinates; using transformed points
+        # keeps the label parallel to the line even when the axes are scaled.
+        try:
+            p0, p1 = self.main_ax.transData.transform([(x0, y0), (x1, y1)])
+            angle = math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+        except Exception:
+            angle = math.degrees(math.atan2(dy, dx))
+
+        # Never render the annotation upside down.
+        if self._profile_label_orientation == "horizontal":
+            angle = 0.0
+        elif self._profile_label_orientation == "automatic" and length < 15:
+            angle = 0.0
+        elif angle > 90 or angle < -90:
+            angle += 180
+        return (xm, ym), angle
+
+    def _update_profile_ruler(self):
+        for artist in self._profile_ruler_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._profile_ruler_artists = []
+        if not self._profile_ruler_visible or self.profile_pts is None or self.main_ax is None:
+            return
+        x0, y0, x1, y1 = (float(v) for v in self.profile_pts)
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        if length <= 0:
+            return
+        exponent = math.floor(math.log10(length / 5.0))
+        base = length / (5.0 * (10.0 ** exponent))
+        factor = 1.0 if base <= 1.0 else 2.0 if base <= 2.0 else 5.0
+        step = factor * (10.0 ** exponent)
+        nx, ny = -dy / length, dx / length
+        tick_len = 0.035 * length
+        color = self._active_profile_color or '#fbc02d'
+        major = max(1, int(math.ceil(length / step)))
+        for i in range(major + 1):
+            distance = min(length, i * step)
+            fx = distance / length
+            bx, by = x0 + fx * dx, y0 + fx * dy
+            tx = [bx - nx * tick_len, bx + nx * tick_len]
+            ty = [by - ny * tick_len, by + ny * tick_len]
+            tick, = self.main_ax.plot(tx, ty, color=color, lw=1.0, alpha=0.8, zorder=9)
+            tick.set_path_effects(self._profile_line_effects(1.0))
+            self._profile_ruler_artists.append(tick)
+            if i == 0 or i == major or i % 2 == 0:
+                label = self.main_ax.text(bx + nx * tick_len * 1.4, by + ny * tick_len * 1.4,
+                                          f"{distance:.3g} {self._profile_axis_unit()}", color='white', fontsize=8,
+                                          fontweight='bold',
+                                          ha='center', va='center', rotation=0,
+                                          bbox={'facecolor': 'black', 'alpha': self._profile_label_bg_alpha,
+                                                'edgecolor': 'none', 'pad': 1.0}, zorder=10)
+                label.set_color('white')
+                label.set_path_effects(self._profile_text_effects())
+                self._profile_ruler_artists.append(label)
+
     def _create_ticks_and_label(self, pts, color, alpha=0.85, base_size=9):
         size = base_size * getattr(self, '_profile_label_scale', 1.0)
         try:
-            fractions = (0.25, 0.5, 0.75)
-            tx, ty = [], []
-            for frac in fractions:
-                x = pts[0] + (pts[2] - pts[0]) * frac
-                y = pts[1] + (pts[3] - pts[1]) * frac
-                tx.append(x)
-                ty.append(y)
-            ticks, = self.main_ax.plot(
-                tx, ty, marker='s', linestyle='None', color=color,
-                ms=max(3.0, 4.0 * self._profile_label_scale),
-                alpha=alpha, zorder=9)
+            # Quarter-point markers carried no measurement meaning and made
+            # the profile look like it had extra control points.
+            ticks = None
             label_text = self._format_profile_label(pts)
-            xm = pts[0] + (pts[2] - pts[0]) * 0.5
-            ym = pts[1] + (pts[3] - pts[1]) * 0.5
+            (xm, ym), angle = self._profile_label_position_and_angle(pts)
             text = None
-            if label_text:
+            if label_text and self._profile_label_placement != "hud":
                 text = self.main_ax.text(
-                    xm, ym, label_text, color=color, fontsize=size,
+                    xm, ym, label_text, color='white', fontsize=size,
                     ha='center', va='center',
-                    bbox={'facecolor': 'black', 'alpha': 0.28, 'edgecolor': 'none', 'pad': 1.5},
+                    rotation=angle, rotation_mode='anchor',
+                    bbox={'facecolor': 'black', 'alpha': self._profile_label_bg_alpha, 'edgecolor': 'none', 'pad': 1.5},
+                    path_effects=self._profile_text_effects(),
                     zorder=11)
         except Exception:
             return None, None
@@ -5593,16 +6065,17 @@ class MultiPreviewCanvas(FigureCanvas):
         # Reuse existing artists if possible
         if self._profile_ticks is not None and self._profile_info_text is not None:
             self._remove_profile_markers() # Fallback to recreate if complex update needed, or optimize further
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=12)
         else:
             self._remove_profile_markers()
-            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=9)
+            ticks, text = self._create_ticks_and_label(self.profile_pts, color=color, alpha=0.9, base_size=12)
             
         self._profile_ticks = ticks
         self._profile_info_text = text
         self._update_profile_marker_artists()
         self._update_profile_labels()
         self._update_profile_hud()
+        self._update_profile_ruler()
         self._apply_profile_visibility()
 
     def _update_profile_labels(self):
@@ -5617,9 +6090,33 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         if self._profile_label is not None:
             try:
-                xm = x0 + 0.5 * (x1 - x0)
-                ym = y0 + 0.5 * (y1 - y0)
+                (xm, ym), angle = self._profile_label_position_and_angle(self.profile_pts)
                 self._profile_label.set_position((xm, ym))
+                self._profile_label.set_rotation(angle)
+            except Exception:
+                pass
+
+        if self._profile_info_text is not None:
+            try:
+                (xm, ym), angle = self._profile_label_position_and_angle(self.profile_pts)
+                self._profile_info_text.set_position((xm, ym))
+                self._profile_info_text.set_rotation(angle)
+            except Exception:
+                pass
+
+    def _update_saved_profile_label_layout(self):
+        for entry in self._saved_profiles or []:
+            text = entry.get('label_artist')
+            pts = entry.get('pts')
+            if text is None or pts is None:
+                continue
+            try:
+                (xm, ym), angle = self._profile_label_position_and_angle(pts)
+                text.set_position((xm, ym))
+                text.set_rotation(angle)
+                text.set_bbox(dict(facecolor='black', alpha=self._profile_label_bg_alpha,
+                                   edgecolor='none', pad=1.5))
+                text.set_visible(self._profile_label_placement != 'hud')
             except Exception:
                 pass
 
@@ -5992,6 +6489,7 @@ class MultiPreviewCanvas(FigureCanvas):
             zorder=6,
             linestyle=line_style,
         )
+        line.set_path_effects(self._profile_line_effects(lw))
         # Combine endpoints into one artist
         endpoints, = self.main_ax.plot(
             [pts[0], pts[2]], [pts[1], pts[3]],
@@ -6218,6 +6716,7 @@ class MultiPreviewCanvas(FigureCanvas):
             [pts[0], pts[2]], [pts[1], pts[3]],
             color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style
         )
+        line.set_path_effects(self._profile_line_effects(lw))
         endpoints, = self.main_ax.plot(
             [pts[0], pts[2]], [pts[1], pts[3]],
             marker=marker_style, linestyle='None', color=color,
@@ -6342,6 +6841,7 @@ class MultiPreviewCanvas(FigureCanvas):
         marker_size = float(marker_size or 5.0)
         line, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]],
                                   color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style)
+        line.set_path_effects(self._profile_line_effects(lw))
         endpoints, = self.main_ax.plot([pts[0], pts[2]], [pts[1], pts[3]], marker=marker_style, linestyle='None', color=color,
                                        ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7)
         
@@ -6354,6 +6854,7 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 l, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]],
                              color=color, lw=lw, alpha=0.7, zorder=6, linestyle=line_style)
+                l.set_path_effects(self._profile_line_effects(lw))
                 ep, = ax.plot([pts[0], pts[2]], [pts[1], pts[3]], 
                               marker=marker_style, linestyle='None', color=color,
                               ms=marker_size, mec='black', mew=0.7, alpha=0.9, zorder=7)
@@ -6451,41 +6952,63 @@ class MultiPreviewCanvas(FigureCanvas):
 
             for label in entry.get('endpoint_labels', []) or []:
                 try:
-                    label.set_visible(idx == self._highlighted_overlay)
+                    label.set_visible(self._profile_show_all_labels or idx == self._highlighted_overlay)
                 except Exception:
                     pass
             label_artist = entry.get('overlay_label_artist')
             if label_artist is not None:
                 try:
-                    label_artist.set_visible(idx == self._highlighted_overlay)
+                    label_artist.set_visible(self._profile_show_all_labels or idx == self._highlighted_overlay)
+                except Exception:
+                    pass
+            inline_label = entry.get('label_artist')
+            if inline_label is not None:
+                try:
+                    inline_label.set_visible(self._profile_show_all_labels or idx == self._highlighted_overlay)
                 except Exception:
                     pass
         self.draw_idle()
 
+    def _on_qt_profile_context_menu(self, pos):
+        """Open the canvas context menu from a normal Qt right-click."""
+        try:
+            canvas_x = float(pos.x())
+            canvas_y = float(self.height() - pos.y())
+            if not self.main_ax.contains_point((canvas_x, canvas_y)):
+                return
+            view = self._ax_view_map.get(self.main_ax)
+            self._show_context_menu(None, view, global_pos=self.mapToGlobal(pos))
+        except Exception:
+            return
+
+    def _show_profile_context_menu_at(self, x, y, overlay_idx=None, active=False, global_pos=None):
+        """Resolve a profile under data coordinates and show its properties."""
+        if overlay_idx is None:
+            overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
+        if overlay_idx is not None:
+            self._show_profile_context_menu(None, overlay_idx=overlay_idx, global_pos=global_pos)
+        elif active and self.profile_pts is not None:
+            self._show_profile_context_menu(None, active=True, global_pos=global_pos)
+
     def _on_press(self, event):
-        if (not self.profile_enabled and not self._profile_move_only) or event.inaxes is None or event.inaxes is not self.main_ax:
+        if event.inaxes is None or event.inaxes is not self.main_ax:
             return
         x, y = event.xdata, event.ydata
         if x is None or y is None:
             return
+
+        # Profile properties belong to the profile object.  They must remain
+        # available after the measurement tool is switched off, so process
+        # right-clicks before the profile-tool guard below.
+        if event.button == 3:
+            # Handled by _on_qt_profile_context_menu to avoid duplicate menus.
+            return
+
+        if not self.profile_enabled and not self._profile_move_only:
+            return
         shift_pressed = self._shift_pressed(event)
         mods_qt = self._event_qt_modifiers(event)
         ctrl_pressed = bool(mods_qt & QtCore.Qt.ControlModifier)
-        
-        # Right click context menu for profiles
-        if event.button == 3:
-            # Check overlay first (increased threshold for easier hitting)
-            overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
-            if overlay_idx is not None:
-                self._show_profile_context_menu(event, overlay_idx=overlay_idx)
-                return
-            # Check active profile
-            if self.profile_pts is not None:
-                dist_line = self._distance_to_segment_pixels(x, y, self.profile_pts)
-                if dist_line <= 15.0:
-                    self._show_profile_context_menu(event, active=True)
-                    return
-            return
         if event.button != 1:
             return
         marker_idx = self._profile_marker_hit(x, y)
@@ -6577,8 +7100,11 @@ class MultiPreviewCanvas(FigureCanvas):
             self._blit_profile_artists()
         self._update_profile_artists()
 
-    def _show_profile_context_menu(self, event, overlay_idx=None, active=False):
+    def _show_profile_context_menu(self, event, overlay_idx=None, active=False, global_pos=None):
         menu = QtWidgets.QMenu(self)
+        profile_title = menu.addAction("Profile properties")
+        profile_title.setEnabled(False)
+        menu.addSeparator()
         color_act = menu.addAction("Change Color")
         thicker_act = menu.addAction("Thicker")
         thinner_act = menu.addAction("Thinner")
@@ -6596,12 +7122,45 @@ class MultiPreviewCanvas(FigureCanvas):
             act.setCheckable(True)
             act.setChecked(current_mode == mode_key)
             label_actions[act] = mode_key
+
+        size_menu = menu.addMenu("Label size")
+        size_actions = {}
+        for px in (8, 10, 12, 14, 16, 20, 24):
+            act = size_menu.addAction(f"{px} px")
+            act.setCheckable(True)
+            act.setChecked(abs(12.0 * self._profile_label_scale - px) < 0.5)
+            size_actions[act] = px
+
+        placement_menu = menu.addMenu("Label placement")
+        placement_actions = {}
+        for label_txt, key in (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")):
+            act = placement_menu.addAction(label_txt)
+            act.setCheckable(True)
+            act.setChecked(self._profile_label_placement == key)
+            placement_actions[act] = key
+        orientation_menu = menu.addMenu("Label orientation")
+        orientation_actions = {}
+        for label_txt, key in (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")):
+            act = orientation_menu.addAction(label_txt)
+            act.setCheckable(True)
+            act.setChecked(self._profile_label_orientation == key)
+            orientation_actions[act] = key
+        opacity_menu = menu.addMenu("Label background")
+        opacity_actions = {}
+        for label_txt, alpha in (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)):
+            act = opacity_menu.addAction(label_txt)
+            act.setCheckable(True)
+            act.setChecked(abs(self._profile_label_bg_alpha - alpha) < 0.02)
+            opacity_actions[act] = alpha
         
         if overlay_idx is not None:
             menu.addSeparator()
             delete_act = menu.addAction("Delete Profile")
         
-        action = menu.exec_(event.guiEvent.globalPos())
+        if global_pos is None:
+            gui_event = getattr(event, "guiEvent", None) if event is not None else None
+            global_pos = gui_event.globalPos() if gui_event is not None else QtGui.QCursor.pos()
+        action = menu.exec_(global_pos)
         
         if action == color_act:
             self._change_profile_color(overlay_idx, active)
@@ -6611,6 +7170,14 @@ class MultiPreviewCanvas(FigureCanvas):
             self._change_profile_width(overlay_idx, active, -0.5)
         elif action in label_actions:
             self.set_profile_label_mode(label_actions[action])
+        elif action in size_actions:
+            self.set_profile_label_scale(size_actions[action] / 12.0)
+        elif action in placement_actions:
+            self.set_profile_label_placement(placement_actions[action])
+        elif action in orientation_actions:
+            self.set_profile_label_orientation(orientation_actions[action])
+        elif action in opacity_actions:
+            self.set_profile_label_bg_alpha(opacity_actions[action])
         elif overlay_idx is not None and action == delete_act:
             self._remove_saved_profile(overlay_idx)
 
@@ -6621,6 +7188,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._profile_line.set_color(color)
                 self._profile_line.set_linewidth(self._active_profile_lw)
                 self._profile_line.set_linestyle(self._active_profile_line_style)
+                self._profile_line.set_path_effects(self._profile_line_effects(self._active_profile_lw))
             except Exception:
                 pass
         for point in (self._profile_p0, self._profile_p1):
@@ -6639,6 +7207,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     entry['line'].set_color(color)
                     entry['line'].set_linewidth(self._active_profile_lw)
                     entry['line'].set_linestyle(self._active_profile_line_style)
+                    entry['line'].set_path_effects(self._profile_line_effects(self._active_profile_lw))
                 for key in ('p0', 'p1'):
                     artist = entry.get(key)
                     if artist is None:
@@ -6653,7 +7222,8 @@ class MultiPreviewCanvas(FigureCanvas):
             if artist is None:
                 continue
             try:
-                artist.set_color(color)
+                artist.set_color('white')
+                artist.set_path_effects(self._profile_text_effects())
             except Exception:
                 pass
         if self._profile_ticks is not None:
@@ -6689,6 +7259,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 art.set_color(color)
                 art.set_linewidth(lw)
                 art.set_linestyle(line_style)
+                art.set_path_effects(self._profile_line_effects(lw))
             except Exception:
                 pass
         for art in endpoint_artists:
@@ -6704,7 +7275,9 @@ class MultiPreviewCanvas(FigureCanvas):
             if artist is None:
                 continue
             try:
-                artist.set_color(color)
+                artist.set_color('white')
+                if hasattr(artist, 'set_path_effects'):
+                    artist.set_path_effects(self._profile_text_effects())
             except Exception:
                 pass
         entry['data'] = None
@@ -8884,7 +9457,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         return result
 
-    def _show_context_menu(self, event, view):
+    def _show_context_menu(self, event, view, global_pos=None):
         if view is None:
             return
         if event is not None and getattr(event, "inaxes", None) is not None:
@@ -8934,6 +9507,10 @@ class MultiPreviewCanvas(FigureCanvas):
         preset_focus_act = presets_menu.addAction("Focus")
         preset_analysis_act = presets_menu.addAction("Analysis")
         preset_publication_act = presets_menu.addAction("Publication")
+        presets_menu.addSeparator()
+        undo_preset_act = presets_menu.addAction("Restore previous display")
+        undo_preset_act.setEnabled(bool(self._undo_history))
+        undo_preset_act.setToolTip("Undo the last display preset or display change")
         display_menu.addSeparator()
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
@@ -8974,6 +9551,53 @@ class MultiPreviewCanvas(FigureCanvas):
         show_profiles_act = display_menu.addAction("Show Profiles")
         show_profiles_act.setCheckable(True)
         show_profiles_act.setChecked(bool(self._show_profile_overlays))
+        profile_properties_menu = display_menu.addMenu("Profile properties")
+        profile_label_mode_actions = {}
+        for label, mode in (("Length only", "length"), ("Full (L, dx, dy)", "full"), ("Hidden", "hidden")):
+            act = profile_properties_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self._profile_label_mode == mode)
+            profile_label_mode_actions[act] = mode
+        profile_size_menu = profile_properties_menu.addMenu("Label size")
+        profile_size_actions = {}
+        for px in (8, 10, 12, 14, 16, 20, 24):
+            act = profile_size_menu.addAction(f"{px} px")
+            act.setCheckable(True)
+            act.setChecked(abs(12.0 * self._profile_label_scale - px) < 0.5)
+            profile_size_actions[act] = px
+        profile_placement_menu = profile_properties_menu.addMenu("Label placement")
+        profile_placement_actions = {}
+        for label, key in (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")):
+            act = profile_placement_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self._profile_label_placement == key)
+            profile_placement_actions[act] = key
+        profile_orientation_menu = profile_properties_menu.addMenu("Label orientation")
+        profile_orientation_actions = {}
+        for label, key in (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")):
+            act = profile_orientation_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self._profile_label_orientation == key)
+            profile_orientation_actions[act] = key
+        profile_bg_menu = profile_properties_menu.addMenu("Label background")
+        profile_bg_actions = {}
+        for label, alpha in (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)):
+            act = profile_bg_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(abs(self._profile_label_bg_alpha - alpha) < 0.02)
+            profile_bg_actions[act] = alpha
+        profile_ruler_act = profile_properties_menu.addAction("Show measurement ruler")
+        profile_ruler_act.setCheckable(True)
+        profile_ruler_act.setChecked(bool(self._profile_ruler_visible))
+        profile_all_labels_act = profile_properties_menu.addAction("Show all profile labels")
+        profile_all_labels_act.setCheckable(True)
+        profile_all_labels_act.setChecked(bool(self._profile_show_all_labels))
+        profile_outline_act = profile_properties_menu.addAction("High-contrast outline")
+        profile_outline_act.setCheckable(True)
+        profile_outline_act.setChecked(bool(self._profile_overlay_outline))
+        profile_properties_menu.addSeparator()
+        save_profile_default_act = profile_properties_menu.addAction("Save current settings as default")
+        restore_profile_default_act = profile_properties_menu.addAction("Restore default settings")
         show_crop_history_act = None
         if callable(self._apply_popup_style_callback) and (self._fixed_crop_quick_mode or self._fixed_crop_history):
             show_crop_history_act = display_menu.addAction("Show Crop Overlays")
@@ -9238,7 +9862,8 @@ class MultiPreviewCanvas(FigureCanvas):
             apply_style_callback=self.set_plot_typography,
         )
 
-        global_pos = None
+        if global_pos is None:
+            global_pos = None
         if event is not None:
             gui_event = getattr(event, "guiEvent", None)
             if gui_event is not None:
@@ -9319,6 +9944,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.apply_display_preset("analysis")
         elif chosen == preset_publication_act:
             self.apply_display_preset("publication")
+        elif chosen == undo_preset_act:
+            self.undo_last_action()
         elif chosen == show_scale_act:
             self.enable_scale_bar(show_scale_act.isChecked())
             self._notify_views_callback()
@@ -9337,6 +9964,26 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_title(show_title_act.isChecked())
         elif chosen == show_profiles_act:
             self.set_show_profile_overlays(show_profiles_act.isChecked())
+        elif chosen in profile_label_mode_actions:
+            self.set_profile_label_mode(profile_label_mode_actions[chosen])
+        elif chosen in profile_size_actions:
+            self.set_profile_label_scale(profile_size_actions[chosen] / 12.0)
+        elif chosen in profile_placement_actions:
+            self.set_profile_label_placement(profile_placement_actions[chosen])
+        elif chosen in profile_orientation_actions:
+            self.set_profile_label_orientation(profile_orientation_actions[chosen])
+        elif chosen in profile_bg_actions:
+            self.set_profile_label_bg_alpha(profile_bg_actions[chosen])
+        elif chosen == profile_ruler_act:
+            self.set_profile_ruler_visible(profile_ruler_act.isChecked())
+        elif chosen == profile_all_labels_act:
+            self.set_profile_show_all_labels(profile_all_labels_act.isChecked())
+        elif chosen == profile_outline_act:
+            self.set_profile_overlay_outline(profile_outline_act.isChecked())
+        elif chosen == save_profile_default_act:
+            self._save_profile_display_favorite()
+        elif chosen == restore_profile_default_act:
+            self._restore_profile_display_favorite()
         elif show_crop_history_act and chosen == show_crop_history_act:
             self.show_fixed_crop_history(show_crop_history_act.isChecked())
         elif chosen == acq_overlay_act:
@@ -9871,83 +10518,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 "boxstyle": "round,pad=0.22",
             },
             zorder=26,
-        )
-        try:
-            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
-        except Exception:
-            pass
-
-    def _image_size_overlay_text(self, view):
-        if not getattr(self, "_show_image_size_overlay", False) or not view:
-            return ""
-        extent = view.get("extent_raw")
-        if extent is None:
-            extent = view.get("extent")
-        width = None
-        height = None
-        unit = str(view.get("axis_unit") or "").strip()
-        if extent is not None:
-            try:
-                x0, x1, y1, y0 = extent
-                width = abs(float(x1) - float(x0))
-                height = abs(float(y0) - float(y1))
-            except Exception:
-                width = None
-                height = None
-        if width is None or height is None:
-            try:
-                arr = np.asarray(view.get("arr"))
-                if arr.ndim >= 2:
-                    height = float(arr.shape[0])
-                    width = float(arr.shape[1])
-                    unit = "px"
-            except Exception:
-                return ""
-        if width is None or height is None:
-            return ""
-        if not unit:
-            unit = "px" if view.get("extent") is None and view.get("extent_raw") is None else "nm"
-
-        def _fmt(value):
-            value = float(value)
-            if unit == "px":
-                return str(int(round(value)))
-            if abs(value - round(value)) < 1e-6:
-                return str(int(round(value)))
-            if abs(value) >= 100:
-                return f"{value:.0f}"
-            if abs(value) >= 10:
-                return f"{value:.1f}".rstrip("0").rstrip(".")
-            return f"{value:.3g}"
-
-        return f"{_fmt(width)} x {_fmt(height)} {unit}".strip()
-
-    def _draw_image_size_overlay(self, ax, view):
-        if ax is None:
-            return
-        text = self._image_size_overlay_text(view)
-        if not text:
-            return
-        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
-        fontsize = max(7.0, 8.2 * scale)
-        y_pos = 0.16 if self.scale_bar_enabled else 0.02
-        text_artist = ax.text(
-            0.985,
-            y_pos,
-            text,
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=fontsize,
-            fontweight="semibold",
-            color="#f5f7fb",
-            bbox={
-                "facecolor": "black",
-                "alpha": 0.35,
-                "edgecolor": "none",
-                "boxstyle": "round,pad=0.2",
-            },
-            zorder=21,
         )
         try:
             apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
