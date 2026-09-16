@@ -299,6 +299,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_ticks = True
         self._show_colorbar = True
         self._show_title = True
+        # Filter summaries are included in the view title (outside the image)
+        # by default.  Keep the in-image version opt-in so it cannot obscure
+        # image data or appear in exports unexpectedly.
+        self._show_filter_summary_overlay = False
         self._show_acquisition_overlay = False
         self._show_profile_overlays = True
         self._show_angle_overlays = True
@@ -640,6 +644,16 @@ class MultiPreviewCanvas(FigureCanvas):
         self._apply_profile_visibility()
         self._apply_angle_visibility()
         self._refresh_scale_bars()
+        self._redraw()
+        self._notify_views_callback()
+
+    def set_show_filter_summary_overlay(self, show: bool):
+        """Toggle the optional filter summary drawn over the image."""
+        show = bool(show)
+        if show == self._show_filter_summary_overlay:
+            return
+        self.push_undo_state("filter_summary_overlay")
+        self._show_filter_summary_overlay = show
         self._redraw()
         self._notify_views_callback()
 
@@ -1707,6 +1721,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "svg_molecule_state": self._clone_undo_value(self.export_svg_molecule_state()),
             "outline_state": self._clone_undo_value(self.export_outline_state()),
             "show_title": bool(self._show_title),
+            "show_filter_summary_overlay": bool(self._show_filter_summary_overlay),
             "show_acquisition_overlay": bool(self._show_acquisition_overlay),
             "show_filter_summary": bool(getattr(self, "_show_filter_summary", True)),
             "show_molecules": bool(self.show_molecules),
@@ -1805,6 +1820,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
 
             self._show_title = bool(state.get("show_title", self._show_title))
+            self._show_filter_summary_overlay = bool(state.get("show_filter_summary_overlay", self._show_filter_summary_overlay))
             self._show_acquisition_overlay = bool(state.get("show_acquisition_overlay", self._show_acquisition_overlay))
             self._show_filter_summary = bool(state.get("show_filter_summary", getattr(self, "_show_filter_summary", True)))
             self.show_molecules = bool(state.get("show_molecules", self.show_molecules))
@@ -9548,6 +9564,10 @@ class MultiPreviewCanvas(FigureCanvas):
         show_title_act = display_menu.addAction("Show Title")
         show_title_act.setCheckable(True)
         show_title_act.setChecked(bool(self._show_title))
+        show_filter_summary_act = display_menu.addAction("Show Filter Label on Image")
+        show_filter_summary_act.setCheckable(True)
+        show_filter_summary_act.setChecked(bool(self._show_filter_summary_overlay))
+        show_filter_summary_act.setToolTip("Show the applied filter over the image; it is shown in the title area by default")
         show_profiles_act = display_menu.addAction("Show Profiles")
         show_profiles_act.setCheckable(True)
         show_profiles_act.setChecked(bool(self._show_profile_overlays))
@@ -9962,6 +9982,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         elif chosen == show_title_act:
             self.set_show_title(show_title_act.isChecked())
+        elif chosen == show_filter_summary_act:
+            self.set_show_filter_summary_overlay(show_filter_summary_act.isChecked())
         elif chosen == show_profiles_act:
             self.set_show_profile_overlays(show_profiles_act.isChecked())
         elif chosen in profile_label_mode_actions:
@@ -10525,7 +10547,7 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _draw_filter_summary_overlay(self, ax, view):
-        if ax is None or not getattr(self, "_show_filter_summary", True):
+        if ax is None or not self._show_filter_summary_overlay:
             return
         summary = self._filter_summary_text(view, max_len=88)
         if not summary:

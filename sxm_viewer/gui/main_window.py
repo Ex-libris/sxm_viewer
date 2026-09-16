@@ -2435,6 +2435,7 @@ QLabel:hover {{
                 orient = str(display.get("colorbar_orientation", getattr(canvas, "_colorbar_orientation", "vertical")) or "vertical").strip().lower()
                 canvas._colorbar_orientation = orient if orient in ("vertical", "horizontal") else "vertical"
                 canvas._show_title = bool(display.get("show_title", getattr(canvas, "_show_title", True)))
+                canvas._show_filter_summary_overlay = bool(display.get("show_filter_summary_overlay", getattr(canvas, "_show_filter_summary_overlay", False)))
                 canvas._show_acquisition_overlay = bool(display.get("show_acquisition_overlay", getattr(canvas, "_show_acquisition_overlay", False)))
                 canvas._show_filter_summary = bool(display.get("show_filter_summary", getattr(canvas, "_show_filter_summary", True)))
                 canvas._show_shortcut_hint = bool(display.get("show_shortcut_hint", getattr(canvas, "_show_shortcut_hint", False)))
