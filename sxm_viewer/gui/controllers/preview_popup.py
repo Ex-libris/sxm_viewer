@@ -283,11 +283,19 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas.set_compact_size_hints(True)
         canvas.setMinimumSize(0, 0)
         canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        canvas._show_image_size_overlay = False
     except Exception:
         pass
 
     source_canvas = source_canvas or getattr(owner, "preview_canvas", None)
+    try:
+        canvas._show_ticks = bool(getattr(source_canvas, "_show_ticks", True))
+        canvas._show_colorbar = bool(getattr(source_canvas, "_show_colorbar", True))
+        canvas._colorbar_orientation = str(getattr(source_canvas, "_colorbar_orientation", "vertical") or "vertical")
+        canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
+        canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
+        canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+    except Exception:
+        pass
     rel_override = getattr(source_canvas, "_relative_axes_override", None)
     if rel_override is None:
         rel_override = any(bool(v.get("relative_axes")) for v in views if isinstance(v, dict))
@@ -316,6 +324,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._show_spectra_overlays = bool(getattr(source_canvas, "_show_spectra_overlays", True))
             canvas._show_angle_overlays = bool(getattr(source_canvas, "_show_angle_overlays", True))
             canvas._show_shortcut_hint = bool(getattr(source_canvas, "_show_shortcut_hint", False))
+            canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
+            canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
+            canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+            canvas._show_ticks = bool(getattr(source_canvas, "_show_ticks", True))
+            canvas._show_colorbar = bool(getattr(source_canvas, "_show_colorbar", True))
+            canvas._colorbar_orientation = str(getattr(source_canvas, "_colorbar_orientation", "vertical") or "vertical")
             canvas._show_molecule_gizmo = bool(getattr(source_canvas, "_show_molecule_gizmo", getattr(owner, "show_molecule_gizmo", False)))
             canvas._detail_dark = bool(getattr(owner, "detail_dark_view", False))
             canvas._detail_grid = bool(getattr(owner, "detail_grid_view", False))
@@ -371,6 +385,12 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             pass
         canvas.set_view_layout(getattr(source_canvas, "_view_layout", "grid"))
         try:
+            canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
+            canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
+            canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+            canvas._show_ticks = bool(getattr(source_canvas, "_show_ticks", True))
+            canvas._show_colorbar = bool(getattr(source_canvas, "_show_colorbar", True))
+            canvas._colorbar_orientation = str(getattr(source_canvas, "_colorbar_orientation", "vertical") or "vertical")
             canvas.set_show_profile_overlays(getattr(source_canvas, "_show_profile_overlays", True))
             canvas.set_show_angle_overlays(getattr(source_canvas, "_show_angle_overlays", True))
             canvas.set_show_shortcut_hint(getattr(source_canvas, "_show_shortcut_hint", False))

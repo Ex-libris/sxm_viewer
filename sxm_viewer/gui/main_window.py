@@ -539,7 +539,16 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.profile_label_orientation = str(self.config.get("profile_label_orientation", "automatic") or "automatic")
         self.profile_ruler_visible = bool(self.config.get("profile_ruler_visible", False))
         self.profile_label_bg_alpha = max(0.0, min(0.8, float(self.config.get("profile_label_bg_alpha", 0.28) or 0.0)))
-        self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+        saved_canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+        # Display presets are transient figure treatments, not startup
+        # preferences. Remove the marker written by older builds and discard
+        # that stale preset state so a previous Publication selection cannot
+        # become the next session's default.
+        if "publication_mode" in saved_canvas_display_options:
+            self.config["canvas_display_options"] = {}
+            save_config(self.config)
+            saved_canvas_display_options = {}
+        self.canvas_display_options = saved_canvas_display_options
         molecule_style = self.config.get("molecule_default_style") if isinstance(self.config.get("molecule_default_style"), dict) else {}
         self.molecule_palette = str(
             self.config.get("molecule_palette", molecule_style.get("palette", "avogadro")) or "avogadro"
@@ -12109,6 +12118,7 @@ QLabel:hover {{
             "show_molecule_gizmo": bool(getattr(canvas, "_show_molecule_gizmo", False)),
             "scale_bar_enabled": bool(getattr(canvas, "scale_bar_enabled", False)),
             "frame_fill_mode": bool(getattr(canvas, "_frame_fill_mode", False)),
+            "publication_mode": bool(getattr(canvas, "_publication_mode", False)),
             "relative_axes_override": relative_axes,
             "view_layout": layout,
         }
@@ -12125,11 +12135,19 @@ QLabel:hover {{
             return
         if options == getattr(self, "_last_canvas_display_options", {}):
             return
-        self._apply_canvas_display_options(options, source_canvas=canvas, persist=True)
+        transient_preset = bool(getattr(canvas, "_display_preset_transient", False))
+        self._apply_canvas_display_options(
+            options,
+            source_canvas=canvas,
+            persist=not transient_preset,
+        )
 
     def _apply_canvas_display_options(self, options, source_canvas=None, persist=True):
         if not isinstance(options, dict) or not options:
             return
+        transient_preset = bool(getattr(source_canvas, "_display_preset_transient", False))
+        if transient_preset:
+            persist = False
         self._canvas_display_syncing = True
         try:
             normalized = {
@@ -12145,6 +12163,7 @@ QLabel:hover {{
                 "show_molecule_gizmo": bool(options.get("show_molecule_gizmo", False)),
                 "scale_bar_enabled": bool(options.get("scale_bar_enabled", False)),
                 "frame_fill_mode": bool(options.get("frame_fill_mode", False)),
+                "publication_mode": bool(options.get("publication_mode", False)),
                 "relative_axes_override": options.get("relative_axes_override", None),
                 "view_layout": str(options.get("view_layout", "grid") or "grid").strip().lower(),
             }
@@ -12190,10 +12209,27 @@ QLabel:hover {{
             for canv in canvases:
                 if canv is None:
                     continue
+                # Leave frame-fill first: disabling it restores the previous
+                # decoration state, so publication values must be applied
+                # afterwards rather than being overwritten by that restore.
+                try:
+                    was_transient = bool(getattr(canv, "_display_preset_transient", False))
+                    if transient_preset and not was_transient:
+                        try:
+                            canv._display_preset_base_state = canv.export_canvas_undo_state()
+                        except Exception:
+                            canv._display_preset_base_state = None
+                    canv._display_preset_transient = transient_preset
+                    if not transient_preset:
+                        canv._display_preset_base_state = None
+                    canv.set_frame_fill_mode(normalized["frame_fill_mode"])
+                except Exception:
+                    pass
                 try:
                     canv._show_ticks = normalized["show_ticks"]
                     canv._show_colorbar = normalized["show_colorbar"]
                     canv._colorbar_orientation = normalized["colorbar_orientation"]
+                    canv._publication_mode = normalized["publication_mode"]
                 except Exception:
                     pass
                 try:
@@ -12229,10 +12265,6 @@ QLabel:hover {{
                 except Exception:
                     pass
                 try:
-                    canv.set_frame_fill_mode(normalized["frame_fill_mode"])
-                except Exception:
-                    pass
-                try:
                     canv.set_relative_axes_override(normalized["relative_axes_override"])
                 except Exception:
                     pass
@@ -12246,9 +12278,12 @@ QLabel:hover {{
                     pass
 
             self._last_canvas_display_options = dict(normalized)
-            self.canvas_display_options = dict(normalized)
+            self.canvas_display_options = {
+                key: value for key, value in normalized.items()
+                if key != "publication_mode"
+            }
             if persist:
-                self.config["canvas_display_options"] = dict(normalized)
+                self.config["canvas_display_options"] = dict(self.canvas_display_options)
                 self.config["show_molecules"] = self.show_molecules
                 self.config["show_molecule_gizmo"] = self.show_molecule_gizmo
                 self.config["show_acquisition_overlay"] = self.show_acquisition_overlay

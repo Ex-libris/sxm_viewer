@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import math
+import re
 import time
 import warnings
 from typing import List
@@ -44,6 +45,7 @@ from .preview_axes_sync import sync_axes_to_view, style_colorbar
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
+from ...reporting.channels import classify_channel
 from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 from ..system_open import add_source_file_menu
@@ -300,7 +302,9 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_profile_overlays = True
         self._show_angle_overlays = True
         self._show_shortcut_hint = False
-        self._show_image_size_overlay = False
+        self._publication_mode = False
+        self._display_preset_transient = False
+        self._display_preset_base_state = None
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
@@ -562,6 +566,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 "scale_bar_enabled": False,
                 "frame_fill_mode": True,
                 "colorbar_orientation": "vertical",
+                "publication_mode": False,
             },
             "analysis": {
                 "show_ticks": True,
@@ -574,10 +579,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
                 "colorbar_orientation": "vertical",
+                "publication_mode": False,
             },
             "publication": {
                 "show_ticks": False,
-                "show_colorbar": False,
+                "show_colorbar": True,
                 "show_title": False,
                 "show_profile_overlays": False,
                 "show_angle_overlays": False,
@@ -585,7 +591,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 "show_shortcut_hint": False,
                 "scale_bar_enabled": True,
                 "frame_fill_mode": False,
-                "colorbar_orientation": "vertical",
+                "colorbar_orientation": "horizontal",
+                "publication_mode": True,
             },
         }[preset]
         self._show_ticks = bool(preset_state["show_ticks"])
@@ -598,6 +605,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._colorbar_orientation = str(preset_state["colorbar_orientation"])
         self.scale_bar_enabled = bool(preset_state["scale_bar_enabled"])
         self._frame_fill_mode = bool(preset_state["frame_fill_mode"])
+        self._publication_mode = bool(preset_state["publication_mode"])
+        self._display_preset_transient = True
+        try:
+            self._display_preset_base_state = self._undo_history[-1]
+        except Exception:
+            self._display_preset_base_state = None
         if self.scale_bar_enabled:
             self._connect_scale_bar_events()
         else:
@@ -613,6 +626,189 @@ class MultiPreviewCanvas(FigureCanvas):
         self._refresh_scale_bars()
         self._redraw()
         self._notify_views_callback()
+
+    def _publication_view_kind(self, view):
+        """Return the publication signal family for an image view."""
+        if not isinstance(view, dict):
+            return "other"
+        meta = view.get("meta") or {}
+        parts = [
+            view.get("channel_name"),
+            view.get("channel"),
+            meta.get("channel"),
+            meta.get("channel_name"),
+            view.get("title"),
+            view.get("colorbar_label"),
+        ]
+        raw = " ".join(str(part or "") for part in parts).strip()
+        strong_raw = " ".join(str(part or "") for part in parts[:4]).strip()
+        low = raw.lower().replace("_", " ").replace("-", " ")
+        kind = classify_channel(strong_raw) if strong_raw else "other"
+        if kind == "other":
+            kind = classify_channel(raw)
+        if kind == "other" and re.search(r"(?:\bdf\b|delta\s*f|\u0394\s*f|frequency\s*shift|freq\s*shift|nc\s*afm)", low):
+            kind = "freq"
+        return kind
+
+    def _publication_colorbar_label(self, view):
+        """Use compact scientific labels for common SPM image channels."""
+        if not isinstance(view, dict):
+            return ""
+        kind = self._publication_view_kind(view)
+        raw_label = str(view.get("colorbar_label") or "").strip()
+        unit = str(view.get("unit") or "").strip()
+        if not unit and raw_label:
+            match = re.search(r"\[([^\]]+)\]|\(([^)]+)\)\s*$", raw_label)
+            if match:
+                unit = str(match.group(1) or match.group(2) or "").strip()
+        if kind == "current":
+            return f"I ({unit or 'A'})"
+        if kind == "z":
+            return f"z ({unit})" if unit else "z"
+        if kind == "freq":
+            return f"\u0394f ({unit or 'Hz'})"
+        return raw_label or unit or str(view.get("title") or "Signal").strip()
+
+    @staticmethod
+    def _publication_value(value):
+        try:
+            value = float(value)
+        except Exception:
+            return ""
+        if not np.isfinite(value):
+            return ""
+        magnitude = abs(value)
+        if magnitude == 0:
+            return "0"
+        if magnitude < 0.01 or magnitude >= 1000:
+            return f"{value:.2e}"
+        if magnitude < 1:
+            return f"{value:.3g}"
+        return f"{value:.3g}"
+
+    def _publication_colorbar_limits(self, image, view):
+        try:
+            low, high = image.get_clim()
+            low, high = float(low), float(high)
+            if np.isfinite(low) and np.isfinite(high):
+                return low, high
+        except Exception:
+            pass
+        try:
+            finite = np.asarray(view.get("arr"), dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                return float(np.min(finite)), float(np.max(finite))
+        except Exception:
+            pass
+        return None, None
+
+    @staticmethod
+    def _publication_endpoint_colors(image, low, high):
+        """Choose black text for the brighter endpoint and white for the darker."""
+        try:
+            cmap = image.cmap
+            norm = image.norm
+            rgba = [cmap(norm(value)) for value in (low, high)]
+            luminance = [
+                0.2126 * float(color[0])
+                + 0.7152 * float(color[1])
+                + 0.0722 * float(color[2])
+                for color in rgba
+            ]
+            if luminance[0] == luminance[1]:
+                color = "#111111" if luminance[0] >= 0.5 else "#f5f5f5"
+                return [color, color]
+            if luminance[0] > luminance[1]:
+                return ["#111111", "#f5f5f5"]
+            return ["#f5f5f5", "#111111"]
+        except Exception:
+            return ["#f5f5f5", "#111111"]
+
+    def _style_publication_colorbar(self, cbar, image, view):
+        """Render a compact bottom colorbar with only its true endpoints."""
+        if cbar is None or image is None:
+            return
+        try:
+            cbar.update_normal(image)
+        except Exception:
+            pass
+        low, high = self._publication_colorbar_limits(image, view)
+        if low is None or high is None:
+            return
+        orientation = str(getattr(cbar, "orientation", "vertical") or "vertical").lower()
+        ticks = [low] if low == high else [low, high]
+        labels = [self._publication_value(value) for value in ticks]
+        endpoint_colors = self._publication_endpoint_colors(image, low, high)
+        old_endpoints = getattr(cbar, "_publication_endpoint_artists", [])
+        for artist in old_endpoints:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        try:
+            cbar.set_label("")
+            cbar.set_ticks([])
+            cbar.ax.xaxis.set_ticks([])
+            cbar.ax.yaxis.set_ticks([])
+            cbar.ax.set_facecolor("#070707")
+            cbar.outline.set_edgecolor("#555b63")
+        except Exception:
+            pass
+        try:
+            if orientation == "horizontal":
+                endpoint_specs = (
+                    [(0.5, 0.5, labels[0], "center", "center")]
+                    if len(labels) == 1 else
+                    [(0.02, 0.5, labels[0], "left", "center"),
+                     (0.98, 0.5, labels[1], "right", "center")]
+                )
+            else:
+                endpoint_specs = (
+                    [(0.5, 0.5, labels[0], "center", "center")]
+                    if len(labels) == 1 else
+                    [(0.5, 0.02, labels[0], "center", "bottom"),
+                     (0.5, 0.98, labels[1], "center", "top")]
+                )
+            endpoint_artists = []
+            for index, (x, y, text, ha, va) in enumerate(endpoint_specs):
+                artist = cbar.ax.text(
+                    x, y, text,
+                    color=endpoint_colors[min(index, len(endpoint_colors) - 1)],
+                    fontsize=max(7.0, 8.5 * getattr(self, "_view_font_scale", 1.0)),
+                    ha=ha,
+                    va=va,
+                    transform=cbar.ax.transAxes,
+                    clip_on=True,
+                    zorder=6,
+                )
+                apply_text_style(artist, family=self._font_family, **self._plot_style_state())
+                endpoint_artists.append(artist)
+            cbar._publication_endpoint_artists = endpoint_artists
+        except Exception:
+            cbar._publication_endpoint_artists = []
+        old = getattr(cbar, "_publication_label_artist", None)
+        if old is not None:
+            try:
+                old.remove()
+            except Exception:
+                pass
+        try:
+            label_artist = cbar.ax.text(
+                0.5,
+                0.5,
+                self._publication_colorbar_label(view),
+                color="#f5f5f5",
+                fontsize=max(7.0, 9.5 * getattr(self, "_view_font_scale", 1.0)),
+                ha="center",
+                va="center",
+                transform=cbar.ax.transAxes,
+                zorder=5,
+            )
+            apply_text_style(label_artist, family=self._font_family, **self._plot_style_state())
+            cbar._publication_label_artist = label_artist
+        except Exception:
+            pass
 
     def set_fit_to_canvas(self, enabled: bool):
         """If enabled, stretch view axes to fill the available canvas area."""
@@ -814,7 +1010,7 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return False
         _mark("image_data")
-        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        cbar_label = self._publication_colorbar_label(view) if self._publication_mode else (view.get('colorbar_label') or view.get('unit', ''))
         if self._colorbars and self._show_colorbar:
             try:
                 style_colorbar(
@@ -822,6 +1018,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                     show_ticks=self._show_ticks,
                 )
+                if self._publication_mode:
+                    self._style_publication_colorbar(self._colorbars[0], image, view)
             except Exception:
                 return False
         _mark("title_colorbar_ticks")
@@ -832,8 +1030,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if self.scale_bar_enabled:
             self._add_scale_bar(ax, view)
         _mark("scale_bar")
-        self._draw_image_size_overlay(ax, view)
-        _mark("image_size_overlay")
         self._draw_spectra(ax)
         _mark("spectra_markers")
         try:
@@ -1508,14 +1704,51 @@ class MultiPreviewCanvas(FigureCanvas):
             "colorbar_orientation": self._colorbar_orientation,
             "view_layout": self._view_layout,
             "frame_fill_mode": bool(self._frame_fill_mode),
+            "publication_mode": bool(self._publication_mode),
+            "display_preset_transient": bool(self._display_preset_transient),
             "frame_fill_prev_state": self._clone_undo_value(self._frame_fill_prev_state),
             "fit_to_canvas": bool(self._fit_to_canvas),
             "relative_axes_override": self._clone_undo_value(self._relative_axes_override),
         }
 
+    def export_display_state_for_persistence(self):
+        """Return display state with any active preset rolled back.
+
+        Presets are temporary presentation treatments. If a session or
+        collection is saved while one is active, persist the state from just
+        before the preset instead of turning that treatment into a startup
+        preference.
+        """
+        state = self.export_canvas_undo_state()
+        if self._display_preset_transient:
+            baseline = None
+            for previous in reversed(self._undo_history):
+                if isinstance(previous, dict) and str(previous.get("_label", "")).startswith("preset:"):
+                    baseline = previous
+                    break
+            if baseline is None:
+                baseline = self._display_preset_base_state
+            if isinstance(baseline, dict):
+                for key in (
+                    "show_ticks", "show_colorbar", "colorbar_orientation",
+                    "show_title", "show_acquisition_overlay",
+                    "show_shortcut_hint", "show_profile_overlays",
+                    "show_angle_overlays", "show_molecules",
+                    "show_molecule_gizmo", "scale_bar_enabled",
+                    "frame_fill_mode", "relative_axes_override", "view_layout",
+                ):
+                    if key in baseline:
+                        state[key] = self._clone_undo_value(baseline[key])
+        state.pop("publication_mode", None)
+        state.pop("display_preset_transient", None)
+        return state
+
     def push_undo_state(self, label=None):
         if self._undo_restore_in_progress or self._undo_suspend_depth > 0:
             return False
+        if label is not None and not str(label).startswith("preset:"):
+            self._display_preset_transient = False
+            self._display_preset_base_state = None
         try:
             state = self.export_canvas_undo_state()
         except Exception:
@@ -1568,6 +1801,10 @@ class MultiPreviewCanvas(FigureCanvas):
             self._colorbar_orientation = str(state.get("colorbar_orientation", self._colorbar_orientation) or "vertical")
             self._view_layout = str(state.get("view_layout", self._view_layout) or "grid")
             self._frame_fill_mode = bool(state.get("frame_fill_mode", self._frame_fill_mode))
+            self._publication_mode = bool(state.get("publication_mode", self._publication_mode))
+            self._display_preset_transient = bool(state.get("display_preset_transient", self._display_preset_transient))
+            if not self._display_preset_transient:
+                self._display_preset_base_state = None
             self._frame_fill_prev_state = self._clone_undo_value(state.get("frame_fill_prev_state"))
             self._fit_to_canvas = bool(state.get("fit_to_canvas", self._fit_to_canvas))
             self._relative_axes_override = self._clone_undo_value(state.get("relative_axes_override", self._relative_axes_override))
@@ -1783,7 +2020,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_p0 = None
         self._profile_p1 = None
         self._profile_echo_artists = []
-        n = len(self.views)
+        render_views = list(self.views or [])
+        n = len(render_views)
         if n == 0:
             self.draw(); return
         if self._view_layout == "stacked":
@@ -1792,7 +2030,7 @@ class MultiPreviewCanvas(FigureCanvas):
         else:
             cols = int(math.ceil(math.sqrt(n)))
             rows = int(math.ceil(n / cols))
-        for i, v in enumerate(self.views):
+        for i, v in enumerate(render_views):
             ax = self.fig.add_subplot(rows, cols, i+1)
             self._ax_view_map[ax] = v
             if i == 0:
@@ -1820,7 +2058,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                 show_ticks=self._show_ticks,
             )
-            cbar_label = v.get('colorbar_label') or v.get('unit', '')
+            cbar_label = self._publication_colorbar_label(v) if self._publication_mode else (v.get('colorbar_label') or v.get('unit', ''))
             if cbar_label and self._show_colorbar:
                 try:
                     divider = make_axes_locatable(ax)
@@ -1843,6 +2081,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                     show_ticks=self._show_ticks,
                 )
+                if self._publication_mode:
+                    self._style_publication_colorbar(cbar, im, v)
                 self._colorbars.append(cbar)
             self._draw_acquisition_overlay(ax, v)
             if ax is self.main_ax:
@@ -1862,7 +2102,6 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._add_scale_bar(ax, v)
                 except Exception:
                     pass
-            self._draw_image_size_overlay(ax, v)
             if ax not in self._zoom_reset_limits:
                 key = self._outline_key(v)
                 base_lim = current_base_limits.get(key)
@@ -4487,6 +4726,11 @@ class MultiPreviewCanvas(FigureCanvas):
                 apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
                 for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
                     apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
+                publication_label = getattr(cbar, "_publication_label_artist", None)
+                if publication_label is not None:
+                    publication_label.set_fontsize(max(7.0, 9.5 * scale))
+                for endpoint in getattr(cbar, "_publication_endpoint_artists", []) or []:
+                    endpoint.set_fontsize(max(7.0, 8.5 * scale))
             except Exception:
                 pass
         # Update scale bar font size
@@ -9245,6 +9489,10 @@ class MultiPreviewCanvas(FigureCanvas):
         preset_focus_act = presets_menu.addAction("Focus")
         preset_analysis_act = presets_menu.addAction("Analysis")
         preset_publication_act = presets_menu.addAction("Publication")
+        presets_menu.addSeparator()
+        undo_preset_act = presets_menu.addAction("Restore previous display")
+        undo_preset_act.setEnabled(bool(self._undo_history))
+        undo_preset_act.setToolTip("Undo the last display preset or display change")
         display_menu.addSeparator()
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
@@ -9672,6 +9920,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self.apply_display_preset("analysis")
         elif chosen == preset_publication_act:
             self.apply_display_preset("publication")
+        elif chosen == undo_preset_act:
+            self.undo_last_action()
         elif chosen == show_scale_act:
             self.enable_scale_bar(show_scale_act.isChecked())
             self._notify_views_callback()
@@ -10216,7 +10466,12 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             pass
         ax.set_autoscale_on(False)
-        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        if view.get("clim"):
+            try:
+                im.set_clim(*view.get("clim"))
+            except Exception:
+                pass
+        cbar_label = self._publication_colorbar_label(view) if self._publication_mode else (view.get('colorbar_label') or view.get('unit', ''))
         cbar = None
         if cbar_label and self._show_colorbar:
             try:
@@ -10240,6 +10495,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.set_label(cbar_label)
             if not self._show_ticks:
                 cbar.set_ticks([])
+            if self._publication_mode:
+                self._style_publication_colorbar(cbar, im, view)
         try:
             self._draw_outlines(ax, view)
         except Exception:
@@ -10299,8 +10556,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             ax.add_artist(sb)
 
-        self._draw_image_size_overlay(ax, view)
-
         if not self._show_ticks:
             ax.set_xticks([])
             ax.set_yticks([])
@@ -10344,6 +10599,7 @@ class MultiPreviewCanvas(FigureCanvas):
         fig.set_facecolor(fig_face)
         text_color = '#f5f5f5' if dark else '#111111'
         font_scale = getattr(self, '_view_font_scale', 1.0)
+        views = list(views)
         for i, view in enumerate(views, 1):
             ax = fig.add_subplot(rows, cols, i)
             arr = np.asarray(view.get('arr'))
@@ -10383,25 +10639,38 @@ class MultiPreviewCanvas(FigureCanvas):
             except Exception:
                 pass
             ax.set_autoscale_on(False)
+            if view.get("clim"):
+                try:
+                    im.set_clim(*view.get("clim"))
+                except Exception:
+                    pass
             if not self._show_ticks:
                 ax.set_xticks([])
                 ax.set_yticks([])
             ax.tick_params(labelsize=8 * font_scale, colors=text_color, labelcolor=text_color)
             for spine in ax.spines.values():
                 spine.set_color(text_color)
-            cbar_label = view.get('colorbar_label') or view.get('unit', '')
+            cbar_label = self._publication_colorbar_label(view) if self._publication_mode else (view.get('colorbar_label') or view.get('unit', ''))
             if cbar_label and self._show_colorbar:
                 try:
                     divider = make_axes_locatable(ax)
-                    cax = divider.append_axes("right", size="5%", pad=0.05)
-                    cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                    if self._publication_mode:
+                        cax = divider.append_axes("bottom", size="9%", pad=0.08)
+                        cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
+                    else:
+                        cax = divider.append_axes("right", size="5%", pad=0.05)
+                        cbar = fig.colorbar(im, cax=cax, orientation='vertical')
                     cbar.set_label(cbar_label, size=10 * font_scale)
                     cbar.ax.yaxis.label.set_color(text_color)
+                    cbar.ax.xaxis.label.set_color(text_color)
                     cbar.ax.tick_params(colors=text_color, labelcolor=text_color, labelsize=8 * font_scale)
                     if not self._show_ticks:
                         cbar.set_ticks([])
                     cbar.outline.set_edgecolor(text_color)
                     apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
+                    apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
+                    if self._publication_mode:
+                        self._style_publication_colorbar(cbar, im, view)
                     for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
                         apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
                 except Exception:
@@ -10416,7 +10685,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 apply_text_style(ax.title, family=self._font_family, **self._plot_style_state())
             self._draw_acquisition_overlay(ax, view)
             self._draw_filter_summary_overlay(ax, view)
-            self._draw_image_size_overlay(ax, view)
             for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
                 apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
         fig.tight_layout()
@@ -10476,83 +10744,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 "boxstyle": "round,pad=0.22",
             },
             zorder=26,
-        )
-        try:
-            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
-        except Exception:
-            pass
-
-    def _image_size_overlay_text(self, view):
-        if not getattr(self, "_show_image_size_overlay", False) or not view:
-            return ""
-        extent = view.get("extent_raw")
-        if extent is None:
-            extent = view.get("extent")
-        width = None
-        height = None
-        unit = str(view.get("axis_unit") or "").strip()
-        if extent is not None:
-            try:
-                x0, x1, y1, y0 = extent
-                width = abs(float(x1) - float(x0))
-                height = abs(float(y0) - float(y1))
-            except Exception:
-                width = None
-                height = None
-        if width is None or height is None:
-            try:
-                arr = np.asarray(view.get("arr"))
-                if arr.ndim >= 2:
-                    height = float(arr.shape[0])
-                    width = float(arr.shape[1])
-                    unit = "px"
-            except Exception:
-                return ""
-        if width is None or height is None:
-            return ""
-        if not unit:
-            unit = "px" if view.get("extent") is None and view.get("extent_raw") is None else "nm"
-
-        def _fmt(value):
-            value = float(value)
-            if unit == "px":
-                return str(int(round(value)))
-            if abs(value - round(value)) < 1e-6:
-                return str(int(round(value)))
-            if abs(value) >= 100:
-                return f"{value:.0f}"
-            if abs(value) >= 10:
-                return f"{value:.1f}".rstrip("0").rstrip(".")
-            return f"{value:.3g}"
-
-        return f"{_fmt(width)} x {_fmt(height)} {unit}".strip()
-
-    def _draw_image_size_overlay(self, ax, view):
-        if ax is None:
-            return
-        text = self._image_size_overlay_text(view)
-        if not text:
-            return
-        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
-        fontsize = max(7.0, 8.2 * scale)
-        y_pos = 0.16 if self.scale_bar_enabled else 0.02
-        text_artist = ax.text(
-            0.985,
-            y_pos,
-            text,
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=fontsize,
-            fontweight="semibold",
-            color="#f5f7fb",
-            bbox={
-                "facecolor": "black",
-                "alpha": 0.35,
-                "edgecolor": "none",
-                "boxstyle": "round,pad=0.2",
-            },
-            zorder=21,
         )
         try:
             apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())

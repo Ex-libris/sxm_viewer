@@ -21,6 +21,29 @@ Manual changes return the canvas to **Custom** state.
 
 See [Publication Canvas](canvas.md).
 
+## Preview and popup publication mode
+
+The right-click **Display → Preset → Publication** action is separate from the
+publication-canvas presets above. On the preview and popups it applies a
+compact figure-style treatment independently to each image panel:
+
+- a horizontal colorbar is shown for every panel;
+- only the displayed lower and upper color limits are labelled inside the bar;
+- common SPM channels receive compact labels: `I` for current, `z` for
+  topography, and `Δf` for frequency-shift/nc-AFM channels;
+- scale bars are shown, while titles, axes, image dimensions, and
+  profile/angle/acquisition overlays are hidden;
+- the existing panel order, grid arrangement, and number of channels are
+  preserved.
+
+The preset changes presentation only. It does not change the data, colormap,
+contrast limits, or filtering.
+
+Preview and popup presets are temporary: they are not saved as application
+defaults, session state, or collection state. Use **Restore previous display**
+in the Preset menu, or `Ctrl+Z`, to return to the exact display state from
+before the preset was applied.
+
 ---
 
 ## Figure layout presets (profile and spectroscopy plots)
