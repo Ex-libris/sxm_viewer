@@ -534,6 +534,11 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
         if self.profile_label_mode not in {"length", "full", "hidden"}:
             self.profile_label_mode = "length"
+        self.profile_label_scale = float(self.config.get("profile_label_scale", 1.0) or 1.0)
+        self.profile_label_placement = str(self.config.get("profile_label_placement", "midpoint") or "midpoint")
+        self.profile_label_orientation = str(self.config.get("profile_label_orientation", "automatic") or "automatic")
+        self.profile_ruler_visible = bool(self.config.get("profile_ruler_visible", False))
+        self.profile_label_bg_alpha = max(0.0, min(0.8, float(self.config.get("profile_label_bg_alpha", 0.28) or 0.0)))
         self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
         molecule_style = self.config.get("molecule_default_style") if isinstance(self.config.get("molecule_default_style"), dict) else {}
         self.molecule_palette = str(
@@ -1602,6 +1607,14 @@ class SXMGridViewer(QtWidgets.QWidget):
             pass
         try:
             self.preview_canvas.set_profile_label_mode(self.profile_label_mode)
+        except Exception:
+            pass
+        try:
+            self.preview_canvas.set_profile_label_scale(self.profile_label_scale)
+            self.preview_canvas.set_profile_label_placement(self.profile_label_placement)
+            self.preview_canvas.set_profile_label_orientation(self.profile_label_orientation)
+            self.preview_canvas.set_profile_ruler_visible(self.profile_ruler_visible)
+            self.preview_canvas.set_profile_label_bg_alpha(self.profile_label_bg_alpha)
         except Exception:
             pass
         self.preview_canvas.set_copy_feedback_handler(self._on_view_copied)
@@ -12276,6 +12289,73 @@ QLabel:hover {{
                 continue
             action.blockSignals(True)
             action.setChecked(key == mode)
+            action.blockSignals(False)
+
+    def on_profile_label_size_changed(self, pixels: int):
+        """Set the on-image profile label size and persist it."""
+        pixels = max(8, min(24, int(pixels)))
+        self.profile_label_scale = pixels / 12.0
+        self.config["profile_label_scale"] = self.profile_label_scale
+        save_config(self.config)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is not None and hasattr(canv, "set_profile_label_scale"):
+                canv.set_profile_label_scale(self.profile_label_scale)
+        for px, action in (getattr(self, "profile_label_size_actions", {}) or {}).items():
+            action.blockSignals(True)
+            action.setChecked(px == pixels)
+            action.blockSignals(False)
+
+    def on_profile_display_setting_changed(self, key, value):
+        """Apply a Profile object's visible appearance properties."""
+        handlers = {
+            "profile_label_mode": self.on_profile_label_mode_changed,
+            "profile_label_size": self.on_profile_label_size_changed,
+            "profile_label_placement": self.on_profile_label_placement_changed,
+            "profile_label_orientation": self.on_profile_label_orientation_changed,
+            "profile_ruler_visible": self.on_profile_ruler_toggled,
+            "profile_label_bg_alpha": self.on_profile_label_bg_changed,
+        }
+        handler = handlers.get(str(key))
+        if handler is not None:
+            handler(value)
+
+    def _apply_profile_display_setting(self, name, value, setter):
+        setattr(self, name, value)
+        self.config[name] = value
+        save_config(self.config)
+        canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+        for canv in canvases:
+            if canv is not None and hasattr(canv, setter):
+                getattr(canv, setter)(value)
+
+    def on_profile_label_placement_changed(self, placement):
+        if placement not in {"midpoint", "endpoint", "hud"}:
+            placement = "midpoint"
+        self._apply_profile_display_setting("profile_label_placement", placement, "set_profile_label_placement")
+        for key, action in (getattr(self, "profile_label_placement_actions", {}) or {}).items():
+            action.blockSignals(True)
+            action.setChecked(key == placement)
+            action.blockSignals(False)
+
+    def on_profile_label_orientation_changed(self, orientation):
+        if orientation not in {"automatic", "parallel", "horizontal"}:
+            orientation = "automatic"
+        self._apply_profile_display_setting("profile_label_orientation", orientation, "set_profile_label_orientation")
+        for key, action in (getattr(self, "profile_label_orientation_actions", {}) or {}).items():
+            action.blockSignals(True)
+            action.setChecked(key == orientation)
+            action.blockSignals(False)
+
+    def on_profile_ruler_toggled(self, checked):
+        self._apply_profile_display_setting("profile_ruler_visible", bool(checked), "set_profile_ruler_visible")
+
+    def on_profile_label_bg_changed(self, alpha):
+        alpha = max(0.0, min(0.8, float(alpha)))
+        self._apply_profile_display_setting("profile_label_bg_alpha", alpha, "set_profile_label_bg_alpha")
+        for value, action in (getattr(self, "profile_label_bg_actions", {}) or {}).items():
+            action.blockSignals(True)
+            action.setChecked(abs(value - alpha) < 0.02)
             action.blockSignals(False)
 
     def on_fixed_crop_quick_toggled(self, checked: bool):

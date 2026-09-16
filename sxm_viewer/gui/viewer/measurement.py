@@ -303,6 +303,14 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
         label_scale_cb = None
         if canvas is not None and hasattr(canvas, 'set_profile_label_scale'):
             label_scale_cb = canvas.set_profile_label_scale
+        profile_display_cb = None
+        if hasattr(viewer, "on_profile_display_setting_changed"):
+            def _profile_display_update(key, value):
+                try:
+                    viewer.on_profile_display_setting_changed(key, value)
+                except Exception:
+                    pass
+            profile_display_cb = _profile_display_update
         marker_update_cb = None
         if canvas is not None and hasattr(canvas, 'set_profile_marker_positions'):
             def _marker_update(positions, domain):
@@ -339,6 +347,7 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                                                   add_overlay_callback=add_overlay_cb,
                                                   style_update_callback=style_update_cb,
                                                   palette_callback=palette_cb,
+                                                  profile_display_callback=profile_display_cb,
                                                   dark_mode=dark_pref)
             if hasattr(viewer._profile_dialog, "detach_as_workspace_window"):
                 viewer._profile_dialog.detach_as_workspace_window()
@@ -355,6 +364,8 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
         else:
             if hasattr(viewer._profile_dialog, 'set_label_scale_callback'):
                 viewer._profile_dialog.set_label_scale_callback(label_scale_cb)
+            if hasattr(viewer._profile_dialog, 'set_profile_display_callback'):
+                viewer._profile_dialog.set_profile_display_callback(profile_display_cb)
             if hasattr(viewer._profile_dialog, 'set_marker_update_callback'):
                 viewer._profile_dialog.set_marker_update_callback(marker_update_cb)
             if hasattr(viewer._profile_dialog, 'set_marker_select_callback'):
