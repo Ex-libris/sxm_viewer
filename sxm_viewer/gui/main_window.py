@@ -12221,8 +12221,6 @@ QLabel:hover {{
                         except Exception:
                             canv._display_preset_base_state = None
                     canv._display_preset_transient = transient_preset
-                    if not transient_preset:
-                        canv._display_preset_base_state = None
                     canv.set_frame_fill_mode(normalized["frame_fill_mode"])
                 except Exception:
                     pass

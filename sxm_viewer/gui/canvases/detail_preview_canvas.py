@@ -1763,7 +1763,9 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         if label is not None and not str(label).startswith("preset:"):
             self._display_preset_transient = False
-            self._display_preset_base_state = None
+            # Keep the pre-preset snapshot available for the explicit
+            # "Restore previous display" action even if another display
+            # change is made while the preset is active.
         try:
             state = self.export_canvas_undo_state()
         except Exception:
@@ -1783,6 +1785,37 @@ class MultiPreviewCanvas(FigureCanvas):
         if self._undo_last_outline():
             return True
         return bool(self.undo_last_molecule_change())
+
+    def restore_previous_display(self):
+        """Restore the complete display state captured before a preset.
+
+        A regular undo is not sufficient here: display changes made after
+        entering a preset can put newer snapshots on top of the preset entry.
+        Remove only that preset-era portion of the history, then let the
+        normal restore path apply the saved pre-preset state and notify the
+        owning window.
+        """
+        baseline = self._display_preset_base_state
+        if isinstance(baseline, dict):
+            history = list(self._undo_history or [])
+            marker_index = next(
+                (idx for idx, state in enumerate(history) if state is baseline),
+                None,
+            )
+            if marker_index is None:
+                marker_index = next(
+                    (
+                        idx
+                        for idx in range(len(history) - 1, -1, -1)
+                        if isinstance(history[idx], dict)
+                        and str(history[idx].get("_label", "")).startswith("preset:")
+                    ),
+                    None,
+                )
+            if marker_index is not None:
+                self._undo_history = history[:marker_index] + [self._clone_undo_value(baseline)]
+                return self.undo_last_action()
+        return self.undo_last_action()
 
     def undo_last_action(self):
         if not self._undo_history:
@@ -9508,7 +9541,7 @@ class MultiPreviewCanvas(FigureCanvas):
         presets_menu.addSeparator()
         undo_preset_act = presets_menu.addAction("Restore previous display")
         undo_preset_act.setEnabled(bool(self._undo_history))
-        undo_preset_act.setToolTip("Undo the last display preset or display change")
+        undo_preset_act.setToolTip("Restore the complete display state from before the active preset")
         display_menu.addSeparator()
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
@@ -9941,7 +9974,7 @@ class MultiPreviewCanvas(FigureCanvas):
         elif chosen == preset_publication_act:
             self.apply_display_preset("publication")
         elif chosen == undo_preset_act:
-            self.undo_last_action()
+            self.restore_previous_display()
         elif chosen == show_scale_act:
             self.enable_scale_bar(show_scale_act.isChecked())
             self._notify_views_callback()
