@@ -1562,7 +1562,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         has_images = False
         try:
             has_images = any(
-                child.is_file() and child.suffix.lower() in {".txt", ".sxm"}
+                child.is_file() and child.suffix.lower() in {".txt", ".sxm", ".wsxm"}
                 for child in folder.iterdir()
             )
         except Exception:

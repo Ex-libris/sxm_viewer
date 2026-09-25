@@ -86,7 +86,14 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
+from ...providers import (
+    convert_nanonis,
+    convert_nanonis_files,
+    parse_nanonis_spectroscopy,
+    parse_nanonis_3ds,
+    convert_wsxm,
+    convert_wsxm_files,
+)
 from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
@@ -806,6 +813,19 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
             )
     else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if getattr(viewer, "convert_wsxm_enabled", True):
+        t_conv0 = time.perf_counter()
+        converted = convert_wsxm(folder)
+        conv_ms = (time.perf_counter() - t_conv0) * 1000.0
+        if converted:
+            txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} WSxM scan(s)")
+            log_status(
+                f"[Perf] WSxM conversion: {conv_ms:.0f} ms total, "
+                f"{conv_ms / max(1, len(converted)):.1f} ms/file avg"
+            )
+    else:
+        log_status("Skipping WSxM .wsxm conversion (disabled in config)")
     return txts
 
 
@@ -829,7 +849,7 @@ def classify_dropped_paths(viewer, paths):
         if suffix in {".dat", ".3ds"}:
             spectro_paths.append(path)
             continue
-        if suffix == ".sxm":
+        if suffix in {".sxm", ".wsxm"}:
             image_paths.append(path)
             continue
         if suffix == ".txt":
@@ -851,6 +871,7 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
     """Return header files for an explicit file drop without scanning the folder."""
     collected: list[Path] = []
     sxm_paths = []
+    wsxm_paths = []
     seen = set()
     for raw in paths or []:
         path = Path(raw)
@@ -863,10 +884,13 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
         if key in seen:
             continue
         seen.add(key)
-        if path.suffix.lower() == ".txt":
+        suffix = path.suffix.lower()
+        if suffix == ".txt":
             collected.append(path)
-        elif path.suffix.lower() == ".sxm":
+        elif suffix == ".sxm":
             sxm_paths.append(path)
+        elif suffix == ".wsxm":
+            wsxm_paths.append(path)
     if sxm_paths:
         if getattr(viewer, "convert_nanonis_enabled", True):
             converted = convert_nanonis_files(sxm_paths)
@@ -874,6 +898,13 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
                 collected.extend(converted)
         else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if wsxm_paths:
+        if getattr(viewer, "convert_wsxm_enabled", True):
+            converted = convert_wsxm_files(wsxm_paths)
+            if converted:
+                collected.extend(converted)
+        else:
+            log_status("Skipping WSxM .wsxm conversion (disabled in config)")
     return sorted(collected, key=lambda p: str(p).lower())
 
 

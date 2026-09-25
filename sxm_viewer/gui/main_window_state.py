@@ -154,6 +154,8 @@ def init_state(self):
     self.auto_detect_tags = bool(self.config.get("auto_detect_tags", False))
     # Allow skipping Nanonis scan conversion if cache already exists
     self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
+    # Allow skipping WSxM session conversion if cache already exists
+    self.convert_wsxm_enabled = bool(self.config.get("convert_wsxm_enabled", True))
     # Enable persistent spectroscopy disk cache (per-folder) by default
     self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
     self.spectro_manifest_cache_enabled = bool(self.config.get("spectro_manifest_cache_enabled", True))
