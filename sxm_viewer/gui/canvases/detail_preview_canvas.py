@@ -5078,6 +5078,16 @@ class MultiPreviewCanvas(FigureCanvas):
             self._connect_profile_events()
             if self.profile_pts is not None:
                 self._ensure_profile_artists()
+            # Notify whenever there's anything to show, not just an active
+            # in-progress line - previously, entering Measure mode on a file
+            # that already had saved profiles (session-restored, or none
+            # were ever drawn this session) left the Profile dialog empty
+            # until some other interaction happened to call _emit_profile()
+            # again (e.g. drawing a new line). Saved profiles were already
+            # fully draggable via profile_enabled-gated hit-testing in
+            # _on_press regardless - this only fixes their visibility/
+            # selectability in the dialog's list.
+            if self.profile_pts is not None or self._saved_profiles:
                 try:
                     self._emit_profile()
                 except Exception:

@@ -908,6 +908,38 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
     return sorted(collected, key=lambda p: str(p).lower())
 
 
+def _auto_popup_wsxm_series(viewer, keys):
+    """Open each WSxM-session image in its own popup, mirroring how WSxM
+    itself presents a session as separate windows rather than a single
+    shared preview pane. Reuses the exact same show-then-copy-into-popup
+    dance as a manual thumbnail double-click (`handle_thumbnail_double_
+    clicked` in thumbnail_controller.py) so these popups behave identically
+    to ones the user opens by hand - undo/redo, drag, close, etc. all work
+    the same way. Runs after thumbnails exist (called from the deferred
+    `_finish_load_ui`), since `show_file_channel` needs the channel dropdown
+    and thumbnail state already populated.
+    """
+    for key in keys:
+        try:
+            header, fds = viewer.headers.get(key, (None, None))
+            if not header or not fds:
+                continue
+            viewer.show_file_channel(key, 0)
+            views = getattr(viewer.preview_canvas, "views", None)
+            if not views:
+                continue
+            copied = [viewer._copy_view_for_popup(v) for v in views]
+            title = viewer._friendly_view_title(views[0], default=Path(key).name)
+            dlg = viewer._spawn_preview_popup(copied, title=title)
+            if dlg is not None:
+                try:
+                    dlg.move(viewer._next_popup_pos())
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+
 def load_files(
     viewer,
     files,
@@ -981,6 +1013,13 @@ def load_files(
     if cache_miss:
         viewer._save_header_cache()
     log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
+    wsxm_popup_keys = []
+    if getattr(viewer, "wsxm_auto_popup_enabled", True):
+        for t in txts:
+            key = str(t)
+            header, fds = viewer.headers.get(key, (None, None))
+            if header and fds and header.get("WsxmSessionFile"):
+                wsxm_popup_keys.append(key)
     if not viewer.headers:
         viewer.meta_box.setPlainText("No valid .txt headers found")
         viewer.clear_thumbs(); return
@@ -1096,7 +1135,11 @@ def load_files(
         log_status("Skipping spectroscopy reload for explicit file drop")
         t_specs = time.perf_counter()
 
-    QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
+    def _finish_load_ui():
+        viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+        if wsxm_popup_keys:
+            _auto_popup_wsxm_series(viewer, wsxm_popup_keys)
+    QtCore.QTimer.singleShot(0, _finish_load_ui)
     # Refresh toolbar action state now that files are loaded: no image is
     # previewed yet (that path passes True), but the folder report only needs
     # a loaded folder, so this enables it without requiring a thumbnail click.

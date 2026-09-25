@@ -156,6 +156,10 @@ def init_state(self):
     self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
     # Allow skipping WSxM session conversion if cache already exists
     self.convert_wsxm_enabled = bool(self.config.get("convert_wsxm_enabled", True))
+    # Mirror WSxM's own multi-window session UX: every image belonging to a
+    # loaded WSxM session pops its own preview window by default, matching
+    # how WSxM itself opens a session as separate MDI windows.
+    self.wsxm_auto_popup_enabled = bool(self.config.get("wsxm_auto_popup_enabled", True))
     # Enable persistent spectroscopy disk cache (per-folder) by default
     self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
     self.spectro_manifest_cache_enabled = bool(self.config.get("spectro_manifest_cache_enabled", True))

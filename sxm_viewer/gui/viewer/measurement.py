@@ -50,6 +50,15 @@ def _on_start_profile(viewer, force_enable=False):
     if not active:
         # enter profile mode
         viewer._disable_angle_mode()
+        # Clear any stale reference to a dialog from a previous file/session
+        # *before* enabling profile mode - enable_profile(True) now emits
+        # immediately (and synchronously creates a fresh dialog via
+        # _on_profile_updated) whenever the canvas already has saved
+        # profiles waiting (e.g. a WSxM-recovered one, or a session-
+        # restored one), not just when there's an in-progress active line.
+        # Resetting _profile_dialog to None *after* that call - as this used
+        # to do - would immediately orphan that freshly-created dialog.
+        viewer._profile_dialog = None
         viewer.preview_canvas.set_profile_callback(viewer._on_profile_updated)
         if hasattr(viewer.preview_canvas, 'set_profile_highlight_callback'):
             viewer.preview_canvas.set_profile_highlight_callback(viewer._on_canvas_overlay_highlight)
@@ -61,7 +70,6 @@ def _on_start_profile(viewer, force_enable=False):
         try: viewer.measure_profile_btn.setText('Exit profile')
         except Exception: pass
         viewer.meta_box.setPlainText("Profile mode: drag the yellow endpoints on the main image. Close to exit.")
-        viewer._profile_dialog = None
     elif not force_enable:
         viewer._disable_profile_mode()
 
