@@ -154,6 +154,12 @@ def init_state(self):
     self.auto_detect_tags = bool(self.config.get("auto_detect_tags", False))
     # Allow skipping Nanonis scan conversion if cache already exists
     self.convert_nanonis_enabled = bool(self.config.get("convert_nanonis_enabled", True))
+    # Allow skipping WSxM session conversion if cache already exists
+    self.convert_wsxm_enabled = bool(self.config.get("convert_wsxm_enabled", True))
+    # Mirror WSxM's own multi-window session UX: every image belonging to a
+    # loaded WSxM session pops its own preview window by default, matching
+    # how WSxM itself opens a session as separate MDI windows.
+    self.wsxm_auto_popup_enabled = bool(self.config.get("wsxm_auto_popup_enabled", True))
     # Enable persistent spectroscopy disk cache (per-folder) by default
     self.spectro_disk_cache_enabled = bool(self.config.get("spectro_disk_cache_enabled", True))
     self.spectro_manifest_cache_enabled = bool(self.config.get("spectro_manifest_cache_enabled", True))
@@ -214,7 +220,15 @@ def init_state(self):
     self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
     if self.profile_label_mode not in {"length", "full", "hidden"}:
         self.profile_label_mode = "length"
-    self.canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+    saved_canvas_display_options = dict(self.config.get("canvas_display_options", {}))
+    # Display presets are transient figure treatments, not startup
+    # preferences. Discard stale Publication state so it cannot become the
+    # next session's default.
+    if "publication_mode" in saved_canvas_display_options:
+        self.config["canvas_display_options"] = {}
+        save_config(self.config)
+        saved_canvas_display_options = {}
+    self.canvas_display_options = saved_canvas_display_options
     molecule_style = self.config.get("molecule_default_style") if isinstance(self.config.get("molecule_default_style"), dict) else {}
     self.molecule_palette = str(
         self.config.get("molecule_palette", molecule_style.get("palette", "avogadro")) or "avogadro"

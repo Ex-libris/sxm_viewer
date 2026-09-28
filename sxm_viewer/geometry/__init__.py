@@ -18,6 +18,7 @@ from .spec_mapping import (  # noqa: F401
     map_spec_by_grid,
     map_spec_by_cloud_bounds,
     map_spec_to_pixels,
+    pixel_to_nm,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "map_spec_by_grid",
     "map_spec_by_cloud_bounds",
     "map_spec_to_pixels",
+    "pixel_to_nm",
 ]

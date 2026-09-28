@@ -712,6 +712,67 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     }
 
 
+def _restore_wsxm_profile(viewer, header, channel_idx):
+    """Re-apply a profile line recovered from an imported WSxM session.
+
+    Saved profiles are ephemeral per-canvas state (``clear_saved_profiles``
+    runs on every plain preview switch - see ``gui/controllers/session.py``
+    for the only place that actually persists them, via a session
+    snapshot). A WSxM-recovered profile isn't part of a session, so the only
+    way for it to "just be there" every time this file is opened - matching
+    the WSxM session it came from - is to re-add it here, every time,
+    exactly like a manually-drawn profile would need re-drawing without a
+    session. ``providers/wsxm`` already converted the recorded pixel
+    coordinates into this image's own nm frame (``WsxmProfilePoints``), so
+    this is a thin relay into the existing saved-profile mechanism.
+    """
+    try:
+        target_idx = header.get("WsxmProfileChannel")
+        pts_txt = header.get("WsxmProfilePoints")
+        if target_idx is None or not pts_txt:
+            return
+        if int(target_idx) != int(channel_idx):
+            return
+        p0_txt, p1_txt = str(pts_txt).split(";")
+        x0, y0 = (float(v) for v in p0_txt.split(","))
+        x1, y1 = (float(v) for v in p1_txt.split(","))
+        canvas = getattr(viewer, "preview_canvas", None)
+        if canvas is None or not hasattr(canvas, "_add_saved_profile_from_pts"):
+            return
+        canvas._add_saved_profile_from_pts((x0, y0, x1, y1), color=None)
+        # A native profile is always fully live: Ctrl-drag on the image
+        # calls `set_profile_tool_enabled(True)` directly - completely
+        # independent of the Browse/Measure/Spectro mode tab - which both
+        # turns on the profile_enabled-gated drag hit-testing in `_on_press`
+        # AND pops the Profile dialog via `_emit_profile()`, in one gesture,
+        # regardless of which mode tab happens to be selected. Gating this
+        # on the mode tab (an earlier attempt) left the WSxM profile a
+        # static, non-interactive line whenever the user hadn't separately
+        # clicked "Measure" - matching neither "always comes with a popup"
+        # nor "draggable like the native ones". Mirror that exact call so a
+        # recovered profile is indistinguishable from one just Ctrl-dragged.
+        try:
+            canvas.set_profile_callback(viewer._on_profile_updated)
+            if hasattr(canvas, "set_profile_highlight_callback"):
+                canvas.set_profile_highlight_callback(viewer._on_canvas_overlay_highlight)
+        except Exception:
+            pass
+        if hasattr(canvas, "set_profile_tool_enabled"):
+            if not getattr(canvas, "profile_enabled", False):
+                canvas.set_profile_tool_enabled(True)
+            else:
+                # Already enabled (e.g. from a previous WSxM image, or the
+                # user is in Measure mode) - set_profile_tool_enabled() would
+                # no-op since the enabled state isn't changing, so emit
+                # directly to make sure *this* image's profile reaches the
+                # dialog too.
+                canvas._emit_profile()
+        else:
+            canvas._emit_profile()
+    except Exception:
+        pass
+
+
 def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=False):
     perf_start = time.perf_counter()
     perf_marks = []
@@ -995,6 +1056,8 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                 viewer.preview_canvas.clear_saved_profiles()
         except Exception:
             pass
+    if not preserve:
+        _restore_wsxm_profile(viewer, header, channel_idx)
 
     # Styled HTML metadata (preserve scroll position while browsing)
     try:

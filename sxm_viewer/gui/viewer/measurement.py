@@ -50,6 +50,15 @@ def _on_start_profile(viewer, force_enable=False):
     if not active:
         # enter profile mode
         viewer._disable_angle_mode()
+        # Clear any stale reference to a dialog from a previous file/session
+        # *before* enabling profile mode - enable_profile(True) now emits
+        # immediately (and synchronously creates a fresh dialog via
+        # _on_profile_updated) whenever the canvas already has saved
+        # profiles waiting (e.g. a WSxM-recovered one, or a session-
+        # restored one), not just when there's an in-progress active line.
+        # Resetting _profile_dialog to None *after* that call - as this used
+        # to do - would immediately orphan that freshly-created dialog.
+        viewer._profile_dialog = None
         viewer.preview_canvas.set_profile_callback(viewer._on_profile_updated)
         if hasattr(viewer.preview_canvas, 'set_profile_highlight_callback'):
             viewer.preview_canvas.set_profile_highlight_callback(viewer._on_canvas_overlay_highlight)
@@ -61,7 +70,6 @@ def _on_start_profile(viewer, force_enable=False):
         try: viewer.measure_profile_btn.setText('Exit profile')
         except Exception: pass
         viewer.meta_box.setPlainText("Profile mode: drag the yellow endpoints on the main image. Close to exit.")
-        viewer._profile_dialog = None
     elif not force_enable:
         viewer._disable_profile_mode()
 
@@ -303,6 +311,14 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
         label_scale_cb = None
         if canvas is not None and hasattr(canvas, 'set_profile_label_scale'):
             label_scale_cb = canvas.set_profile_label_scale
+        profile_display_cb = None
+        if hasattr(viewer, "on_profile_display_setting_changed"):
+            def _profile_display_update(key, value):
+                try:
+                    viewer.on_profile_display_setting_changed(key, value)
+                except Exception:
+                    pass
+            profile_display_cb = _profile_display_update
         marker_update_cb = None
         if canvas is not None and hasattr(canvas, 'set_profile_marker_positions'):
             def _marker_update(positions, domain):
@@ -339,6 +355,7 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
                                                   add_overlay_callback=add_overlay_cb,
                                                   style_update_callback=style_update_cb,
                                                   palette_callback=palette_cb,
+                                                  profile_display_callback=profile_display_cb,
                                                   dark_mode=dark_pref)
             if hasattr(viewer._profile_dialog, "detach_as_workspace_window"):
                 viewer._profile_dialog.detach_as_workspace_window()
@@ -355,6 +372,8 @@ def _on_profile_updated(viewer, active_profile, saved_profiles):
         else:
             if hasattr(viewer._profile_dialog, 'set_label_scale_callback'):
                 viewer._profile_dialog.set_label_scale_callback(label_scale_cb)
+            if hasattr(viewer._profile_dialog, 'set_profile_display_callback'):
+                viewer._profile_dialog.set_profile_display_callback(profile_display_cb)
             if hasattr(viewer._profile_dialog, 'set_marker_update_callback'):
                 viewer._profile_dialog.set_marker_update_callback(marker_update_cb)
             if hasattr(viewer._profile_dialog, 'set_marker_select_callback'):

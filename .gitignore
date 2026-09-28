@@ -41,6 +41,12 @@ sxm_viewer/data/**/*$py.class
 # Nanonis cache artifacts
 .sxmviewer_nanonis/
 
+# WSxM cache artifacts and sample session data
+.sxmviewer_wsxm/
+*.wsxm
+*.stp
+an_wsxm_folder/
+
 # Local context notes (keep untracked)
 CONTEXT.md
 

@@ -273,6 +273,44 @@ def map_spec_to_pixels(spec, extent, angle_deg, xpix, ypix,
     return apply_thumb_crop(col, row, thumb_crop)
 
 
+def pixel_to_nm(col, row, extent, angle_deg, xpix, ypix):
+    """Inverse of ``map_spec_to_pixels``: raster (col, row) -> absolute (x, y) nm.
+
+    Same rotate/normalize convention as the forward transform, applied in
+    reverse - un-normalize per axis first, then un-rotate by the negative
+    angle - so it must stay in lock-step with ``map_spec_to_pixels`` (see
+    the module docstring for why the order matters). Used by
+    ``providers/wsxm`` to translate a WSxM-recorded profile's pixel
+    coordinates into the same nm frame the preview canvas already plots in.
+    """
+    try:
+        x0, x1, y1, y0 = (float(v) for v in extent)
+    except (TypeError, ValueError):
+        x0, x1, y1, y0 = UNIT_EXTENT
+    xspan = x1 - x0
+    yspan = y1 - y0
+    x_denom = max(1, int(xpix) - 1)
+    y_denom = max(1, int(ypix) - 1)
+    frac_x = float(col) / x_denom
+    frac_y = float(row) / y_denom
+    u_nm = (frac_x - 0.5) * xspan
+    v_nm = (0.5 - frac_y) * yspan
+    try:
+        angle_deg = float(angle_deg or 0.0)
+    except (TypeError, ValueError):
+        angle_deg = 0.0
+    if angle_deg:
+        theta = math.radians(angle_deg)
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        dx = u_nm * cos_t + v_nm * sin_t
+        dy = -u_nm * sin_t + v_nm * cos_t
+    else:
+        dx, dy = u_nm, v_nm
+    cx = 0.5 * (x0 + x1)
+    cy = 0.5 * (y0 + y1)
+    return dx + cx, dy + cy
+
+
 # NOTE: `_matrix_bbox_pixels` deliberately stays on the GUI side. It
 # returns a QRectF and applies Qt-specific presentation rules (a minimum
 # badge size for degenerate boxes, clamping to the drawn pixmap), so it is

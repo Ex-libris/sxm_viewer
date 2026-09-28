@@ -86,7 +86,14 @@ from ...processing.detection import (
     _find_topography_channel,
     filedesc_indicates_current_or_topo,
 )
-from ...providers import convert_nanonis, convert_nanonis_files, parse_nanonis_spectroscopy, parse_nanonis_3ds
+from ...providers import (
+    convert_nanonis,
+    convert_nanonis_files,
+    parse_nanonis_spectroscopy,
+    parse_nanonis_3ds,
+    convert_wsxm,
+    convert_wsxm_files,
+)
 from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
@@ -806,6 +813,19 @@ def collect_folder_image_paths(viewer, folder: Path) -> list[Path]:
             )
     else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if getattr(viewer, "convert_wsxm_enabled", True):
+        t_conv0 = time.perf_counter()
+        converted = convert_wsxm(folder)
+        conv_ms = (time.perf_counter() - t_conv0) * 1000.0
+        if converted:
+            txts = sorted(list(txts) + list(converted), key=lambda p: str(p).lower())
+            log_status(f"Converted {len(converted)} WSxM scan(s)")
+            log_status(
+                f"[Perf] WSxM conversion: {conv_ms:.0f} ms total, "
+                f"{conv_ms / max(1, len(converted)):.1f} ms/file avg"
+            )
+    else:
+        log_status("Skipping WSxM .wsxm conversion (disabled in config)")
     return txts
 
 
@@ -829,7 +849,7 @@ def classify_dropped_paths(viewer, paths):
         if suffix in {".dat", ".3ds"}:
             spectro_paths.append(path)
             continue
-        if suffix == ".sxm":
+        if suffix in {".sxm", ".wsxm"}:
             image_paths.append(path)
             continue
         if suffix == ".txt":
@@ -851,6 +871,7 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
     """Return header files for an explicit file drop without scanning the folder."""
     collected: list[Path] = []
     sxm_paths = []
+    wsxm_paths = []
     seen = set()
     for raw in paths or []:
         path = Path(raw)
@@ -863,10 +884,13 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
         if key in seen:
             continue
         seen.add(key)
-        if path.suffix.lower() == ".txt":
+        suffix = path.suffix.lower()
+        if suffix == ".txt":
             collected.append(path)
-        elif path.suffix.lower() == ".sxm":
+        elif suffix == ".sxm":
             sxm_paths.append(path)
+        elif suffix == ".wsxm":
+            wsxm_paths.append(path)
     if sxm_paths:
         if getattr(viewer, "convert_nanonis_enabled", True):
             converted = convert_nanonis_files(sxm_paths)
@@ -874,7 +898,46 @@ def _collect_explicit_image_paths(viewer, paths) -> list[Path]:
                 collected.extend(converted)
         else:
             log_status("Skipping Nanonis .sxm conversion (disabled in config)")
+    if wsxm_paths:
+        if getattr(viewer, "convert_wsxm_enabled", True):
+            converted = convert_wsxm_files(wsxm_paths)
+            if converted:
+                collected.extend(converted)
+        else:
+            log_status("Skipping WSxM .wsxm conversion (disabled in config)")
     return sorted(collected, key=lambda p: str(p).lower())
+
+
+def _auto_popup_wsxm_series(viewer, keys):
+    """Open each WSxM-session image in its own popup, mirroring how WSxM
+    itself presents a session as separate windows rather than a single
+    shared preview pane. Reuses the exact same show-then-copy-into-popup
+    dance as a manual thumbnail double-click (`handle_thumbnail_double_
+    clicked` in thumbnail_controller.py) so these popups behave identically
+    to ones the user opens by hand - undo/redo, drag, close, etc. all work
+    the same way. Runs after thumbnails exist (called from the deferred
+    `_finish_load_ui`), since `show_file_channel` needs the channel dropdown
+    and thumbnail state already populated.
+    """
+    for key in keys:
+        try:
+            header, fds = viewer.headers.get(key, (None, None))
+            if not header or not fds:
+                continue
+            viewer.show_file_channel(key, 0)
+            views = getattr(viewer.preview_canvas, "views", None)
+            if not views:
+                continue
+            copied = [viewer._copy_view_for_popup(v) for v in views]
+            title = viewer._friendly_view_title(views[0], default=Path(key).name)
+            dlg = viewer._spawn_preview_popup(copied, title=title)
+            if dlg is not None:
+                try:
+                    dlg.move(viewer._next_popup_pos())
+                except Exception:
+                    pass
+        except Exception:
+            continue
 
 
 def load_files(
@@ -950,6 +1013,13 @@ def load_files(
     if cache_miss:
         viewer._save_header_cache()
     log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
+    wsxm_popup_keys = []
+    if getattr(viewer, "wsxm_auto_popup_enabled", True):
+        for t in txts:
+            key = str(t)
+            header, fds = viewer.headers.get(key, (None, None))
+            if header and fds and header.get("WsxmSessionFile"):
+                wsxm_popup_keys.append(key)
     if not viewer.headers:
         viewer.meta_box.setPlainText("No valid .txt headers found")
         viewer.clear_thumbs(); return
@@ -1065,7 +1135,11 @@ def load_files(
         log_status("Skipping spectroscopy reload for explicit file drop")
         t_specs = time.perf_counter()
 
-    QtCore.QTimer.singleShot(0, lambda: viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex()))
+    def _finish_load_ui():
+        viewer.populate_thumbnails_for_channel(viewer.channel_dropdown.currentIndex())
+        if wsxm_popup_keys:
+            _auto_popup_wsxm_series(viewer, wsxm_popup_keys)
+    QtCore.QTimer.singleShot(0, _finish_load_ui)
     # Refresh toolbar action state now that files are loaded: no image is
     # previewed yet (that path passes True), but the folder report only needs
     # a loaded folder, so this enables it without requiring a thumbnail click.

@@ -18,10 +18,19 @@ import re
 
 import numpy as np
 
-# Order matters below: first match wins.
+# Order matters below: first match wins. The frequency-shift aliases cover
+# spellings emitted by different SPM controllers, including dF forward /
+# backward channels (DFFwd, DFBwd, dF Fwd, dF Bwd, and similar forms).
 _CLASS_PATTERNS = (
     ("bias", (r"bias",)),
-    ("freq", (r"freq", r"shift", r"\bdf\b", r"omega", r"resonan")),
+    ("freq", (
+        r"freq", r"shift", r"omega", r"resonan", r"nc_afm",
+        r"(?:^|_)\d*df(?:_|$)",
+        r"(?:^|_)df(?:fwd|bwd|forward|backward|wd|bk)(?:_|$)",
+        r"(?:^|_)dffwd(?:_|$)", r"(?:^|_)dfbwd(?:_|$)",
+        r"(?:^|_)dfforward(?:_|$)", r"(?:^|_)dfbackward(?:_|$)",
+        r"(?:^|_)delta_?f(?:_|$)", r"(?:^|_)d_?f(?:_|$)",
+    )),
     ("lockin", (r"\bli[_\s]?\d*\s*demod", r"\bli\d*[xy]\b", r"\blia", r"lock[\s_-]?in",
                 r"demod", r"l\d+l?[xy]\b", r"didv", r"di_dv")),
     ("current", (r"current", r"\bit\b", r"^i[_\s(]", r"^i$")),
@@ -40,6 +49,8 @@ def classify_channel(name):
     """Coarse class for a channel name: bias/freq/lockin/current/z/time/
     amplitude/phase/excitation/other."""
     low = str(name or "").strip().lower().replace("-", "_")
+    low = low.replace("δ", "delta").replace("Δ", "delta")
+    low = re.sub(r"\s+", "_", low)
     if not low:
         return "other"
     for cls, patterns in _CLASS_PATTERNS:

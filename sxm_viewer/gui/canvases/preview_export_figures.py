@@ -62,6 +62,11 @@ def render_view_figure(canvas, view):
             aspect='equal',
             cmap=cmap,
         )
+    if view.get("clim"):
+        try:
+            im.set_clim(*view.get("clim"))
+        except Exception:
+            pass
     # Ensure axes limits reflect the current extent (important when toggling relative axes)
     try:
         ext = display_extent if display_extent is not None else im.get_extent()
@@ -75,13 +80,14 @@ def render_view_figure(canvas, view):
     except Exception:
         pass
     ax.set_autoscale_on(False)
-    cbar_label = view.get('colorbar_label') or view.get('unit', '')
+    publication = bool(getattr(canvas, "_publication_mode", False))
+    cbar_label = canvas._publication_colorbar_label(view) if publication else (view.get('colorbar_label') or view.get('unit', ''))
     cbar = None
     if cbar_label and canvas._show_colorbar:
         try:
             divider = make_axes_locatable(ax)
             if canvas._colorbar_orientation == 'horizontal':
-                cax = divider.append_axes("bottom", size="5%", pad=0.08)
+                cax = divider.append_axes("bottom", size="9%" if publication else "5%", pad=0.08)
                 cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
                 cbar.set_label(cbar_label)
                 cbar.ax.xaxis.set_label_coords(0.5, 0.5)
@@ -99,6 +105,8 @@ def render_view_figure(canvas, view):
             cbar.set_label(cbar_label)
         if not canvas._show_ticks:
             cbar.set_ticks([])
+        if publication:
+            canvas._style_publication_colorbar(cbar, im, view)
     try:
         canvas._draw_outlines(ax, view)
     except Exception:
@@ -158,8 +166,6 @@ def render_view_figure(canvas, view):
             pass
         ax.add_artist(sb)
 
-    canvas._draw_image_size_overlay(ax, view)
-
     if not canvas._show_ticks:
         ax.set_xticks([])
         ax.set_yticks([])
@@ -214,6 +220,11 @@ def render_views_grid(canvas, views):
                 aspect='equal',
                 cmap=cmap,
             )
+        if view.get("clim"):
+            try:
+                im.set_clim(*view.get("clim"))
+            except Exception:
+                pass
         try:
             ext = display_extent if display_extent is not None else im.get_extent()
             if ext is not None:
@@ -237,21 +248,27 @@ def render_views_grid(canvas, views):
         ax.tick_params(labelsize=8 * font_scale, colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
             spine.set_color(text_color)
-        cbar_label = view.get('colorbar_label') or view.get('unit', '')
+        publication = bool(getattr(canvas, "_publication_mode", False))
+        cbar_label = canvas._publication_colorbar_label(view) if publication else (view.get('colorbar_label') or view.get('unit', ''))
         if cbar_label and canvas._show_colorbar:
             try:
                 divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="5%", pad=0.05)
-                cbar = fig.colorbar(im, cax=cax, orientation='vertical')
+                orientation = 'horizontal' if publication else 'vertical'
+                side = "bottom" if publication else "right"
+                cax = divider.append_axes(side, size="9%" if publication else "5%", pad=0.08 if publication else 0.05)
+                cbar = fig.colorbar(im, cax=cax, orientation=orientation)
                 cbar.set_label(cbar_label, size=10 * font_scale)
-                cbar.ax.yaxis.label.set_color(text_color)
-                cbar.ax.tick_params(colors=text_color, labelcolor=text_color, labelsize=8 * font_scale)
-                if not canvas._show_ticks:
-                    cbar.set_ticks([])
-                cbar.outline.set_edgecolor(text_color)
-                apply_text_style(cbar.ax.yaxis.label, family=canvas._font_family, **canvas._plot_style_state())
-                for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
-                    apply_text_style(lbl, family=canvas._font_family, **canvas._plot_style_state())
+                if publication:
+                    canvas._style_publication_colorbar(cbar, im, view)
+                else:
+                    cbar.ax.yaxis.label.set_color(text_color)
+                    cbar.ax.tick_params(colors=text_color, labelcolor=text_color, labelsize=8 * font_scale)
+                    if not canvas._show_ticks:
+                        cbar.set_ticks([])
+                    cbar.outline.set_edgecolor(text_color)
+                    apply_text_style(cbar.ax.yaxis.label, family=canvas._font_family, **canvas._plot_style_state())
+                    for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
+                        apply_text_style(lbl, family=canvas._font_family, **canvas._plot_style_state())
             except Exception:
                 pass
         try:
@@ -264,7 +281,6 @@ def render_views_grid(canvas, views):
             apply_text_style(ax.title, family=canvas._font_family, **canvas._plot_style_state())
         canvas._draw_acquisition_overlay(ax, view)
         canvas._draw_filter_summary_overlay(ax, view)
-        canvas._draw_image_size_overlay(ax, view)
         for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
             apply_text_style(lbl, family=canvas._font_family, **canvas._plot_style_state())
     fig.tight_layout()
