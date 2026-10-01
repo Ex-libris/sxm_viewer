@@ -181,6 +181,140 @@ def get_atom_color(element, palette='cpk'):
 def get_cpk_color(element):
     return get_atom_color(element, 'cpk')
 
+
+def element_key(element):
+    """Canonical element symbol ('C', 'Cl', ...) used as the per-element color key."""
+    return str(element or "").strip().title()
+
+
+def element_color_override(color_map, element):
+    """Per-element color override from ``color_map`` (keys tolerated in any case)."""
+    if not color_map:
+        return None
+    key = element_key(element)
+    return color_map.get(key) or color_map.get(key.upper()) or color_map.get(key.lower())
+
+
+def resolve_atom_color(mol, element, palette='cpk'):
+    """Effective color of one atom: per-element override > legacy whole-molecule
+    override (``atom_color_override``, no longer set by the UI) > palette."""
+    override = element_color_override(getattr(mol, "atom_color_map", None), element)
+    if override:
+        return override
+    legacy = getattr(mol, "atom_color_override", None)
+    if legacy:
+        return legacy
+    return get_atom_color(element_key(element) or "C", palette)
+
+
+def effective_bond_color_mode(mol, fallback='default'):
+    """Bond color mode (default | single | by_atoms). Older sessions stored a
+    ``bond_color_override`` while leaving the mode at 'default', so the picked
+    color was silently never used; treat that combination as 'single'."""
+    mode = str(getattr(mol, "bond_color_mode", None) or fallback or "default").lower()
+    if mode == "default" and getattr(mol, "bond_color_override", None):
+        return "single"
+    return mode
+
+
+def molecule_elements(elements):
+    """Distinct element symbols in Hill order (C, H, then alphabetical)."""
+    present = {element_key(el) for el in (elements or []) if element_key(el)}
+    head = [el for el in ("C", "H") if el in present]
+    return head + sorted(present - set(head))
+
+
+class ElementColorEditor(QtWidgets.QWidget):
+    """One color swatch per element present in a structure.
+
+    Edits ``color_map`` (element symbol -> hex) in place, so a color applies
+    to every atom of that element only - never to the whole structure.
+    Unset elements show (and follow) ``base_color(element)`` - the active
+    palette/scheme color.
+    """
+
+    changed = QtCore.pyqtSignal()
+
+    def __init__(self, elements, color_map, base_color, parent=None, columns=3):
+        super().__init__(parent)
+        self._color_map = color_map
+        self._base_color = base_color
+        self._buttons = {}
+        grid = QtWidgets.QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        elems = molecule_elements(elements)
+        if not elems:
+            grid.addWidget(QtWidgets.QLabel("(no atoms)"), 0, 0)
+        for n, el in enumerate(elems):
+            btn = QtWidgets.QToolButton()
+            btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            btn.setMinimumWidth(64)
+            btn.clicked.connect(lambda _checked=False, e=el: self._pick(e))
+            btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(lambda _pos, e=el: self._reset(e))
+            grid.addWidget(btn, n // columns, n % columns)
+            self._buttons[el] = btn
+        self.refresh()
+
+    def set_color_map(self, color_map):
+        """Rebind to a replaced map object (e.g. after loading a preset)."""
+        self._color_map = color_map
+        self.refresh()
+
+    def color_for(self, element):
+        override = element_color_override(self._color_map, element)
+        if override:
+            return override
+        try:
+            return self._base_color(element)
+        except Exception:
+            return get_atom_color(element, "cpk")
+
+    def refresh(self):
+        for el, btn in self._buttons.items():
+            color = QtGui.QColor(self.color_for(el))
+            pix = QtGui.QPixmap(14, 14)
+            pix.fill(color)
+            painter = QtGui.QPainter(pix)
+            painter.setPen(QtGui.QColor("#202020"))
+            painter.drawRect(0, 0, 13, 13)
+            painter.end()
+            btn.setIcon(QtGui.QIcon(pix))
+            custom = bool(element_color_override(self._color_map, el))
+            btn.setText(f"{el} *" if custom else el)
+            btn.setToolTip(
+                f"{el}: {color.name()} ({'custom' if custom else 'palette'})\n"
+                "Click to choose a color for every " + el + " atom."
+                + ("\nRight-click to revert to the palette color." if custom else "")
+            )
+
+    def _drop_key(self, element):
+        key = element_key(element)
+        for k in (key, key.upper(), key.lower()):
+            self._color_map.pop(k, None)
+
+    def _pick(self, element):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self.color_for(element)), self, f"Color for {element} atoms"
+        )
+        if color.isValid():
+            self._drop_key(element)
+            self._color_map[element_key(element)] = color.name()
+            self.refresh()
+            self.changed.emit()
+
+    def _reset(self, element):
+        if element_color_override(self._color_map, element):
+            self._drop_key(element)
+            self.refresh()
+            self.changed.emit()
+
+    def reset_all(self):
+        self._color_map.clear()
+        self.refresh()
+
 def get_atom_radius(element, mode='covalent'):
     """Return an element radius (Å) for the requested mode with sensible fallback."""
     el = (element or '').title()
@@ -622,15 +756,47 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
                 row_vis.addWidget(self.chk_show_hydrogens)
             row_vis.addStretch(1)
             form_disp.addRow("Canvas:", row_vis)
-        # Color overrides
-        self.btn_atom_color = QtWidgets.QPushButton("Atom color...")
-        self.btn_atom_color.clicked.connect(self._pick_atom_color)
-        self.btn_bond_color = QtWidgets.QPushButton("Bond color...")
+        # Per-element atom colors. A legacy whole-molecule override
+        # (atom_color_override, from before per-element colors existed) is
+        # migrated on touch into an equivalent per-element map so it stays
+        # visible and editable here, element by element.
+        if not isinstance(molecule.atom_color_map, dict):
+            molecule.atom_color_map = dict(molecule.atom_color_map or {})
+        if molecule.atom_color_override:
+            for el in molecule_elements(molecule.elements):
+                if not element_color_override(molecule.atom_color_map, el):
+                    molecule.atom_color_map[el] = molecule.atom_color_override
+            molecule.atom_color_override = None
+        self.element_colors = ElementColorEditor(
+            molecule.elements, molecule.atom_color_map,
+            lambda el: get_atom_color(el, self._current_palette()), parent=grp_disp
+        )
+        self.element_colors.setToolTip(
+            "Color per element: click an element to recolor all its atoms;\n"
+            "right-click to revert it to the palette color."
+        )
+        self.element_colors.changed.connect(self._on_change)
+        form_disp.addRow("Element colors:", self.element_colors)
+        # Bond color
+        bond_row = QtWidgets.QHBoxLayout()
+        self.combo_bond_color = QtWidgets.QComboBox()
+        self.combo_bond_color.addItem("Automatic (style default)", "default")
+        self.combo_bond_color.addItem("Match atom colors", "by_atoms")
+        self.combo_bond_color.addItem("Custom color", "single")
+        bond_idx = self.combo_bond_color.findData(effective_bond_color_mode(molecule))
+        self.combo_bond_color.setCurrentIndex(max(0, bond_idx))
+        self.combo_bond_color.currentIndexChanged.connect(self._on_bond_color_mode_changed)
+        self.btn_bond_color = QtWidgets.QToolButton()
+        self.btn_bond_color.setText("Pick...")
         self.btn_bond_color.clicked.connect(self._pick_bond_color)
+        bond_row.addWidget(self.combo_bond_color, 1)
+        bond_row.addWidget(self.btn_bond_color)
+        form_disp.addRow("Bond color:", bond_row)
         self.btn_reset_colors = QtWidgets.QPushButton("Reset colors")
+        self.btn_reset_colors.setToolTip("Revert all element colors to the palette and bonds to the style default.")
         self.btn_reset_colors.clicked.connect(self._reset_colors)
-        form_disp.addRow(self.btn_atom_color, self.btn_bond_color)
         form_disp.addRow(self.btn_reset_colors)
+        self._update_bond_color_button()
         if callable(self._save_default_callback):
             self.btn_save_default = QtWidgets.QPushButton("Save as default for new molecules")
             self.btn_save_default.clicked.connect(self._save_as_default)
@@ -747,6 +913,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.molecule.bond_opacity = self.slider_bond_opacity.value() / 100.0
         self.molecule.depth_cue = bool(self.chk_depth_cue.isChecked())
         self._sync_atom_controls_enabled()
+        self.element_colors.refresh()  # unset elements follow the palette
         if self.overlay_settings is not None:
             if self.combo_palette is not None:
                 self.overlay_settings["palette"] = str(self.combo_palette.currentData() or "avogadro").lower()
@@ -796,15 +963,29 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else:
             QtWidgets.QMessageBox.warning(self, "Molecule defaults", "Unable to save the default molecule style.")
 
-    def _pick_atom_color(self):
-        color = QtWidgets.QColorDialog.getColor(
-            QtGui.QColor(self.molecule.atom_color_override or "#cccccc"),
-            self,
-            "Select atom color"
-        )
-        if color.isValid():
-            self.molecule.atom_color_override = color.name()
-            self._on_change()
+    def _current_palette(self):
+        if self.combo_palette is not None:
+            return str(self.combo_palette.currentData() or "avogadro").lower()
+        return str((self.overlay_settings or {}).get("palette", "avogadro") or "avogadro").lower()
+
+    def _update_bond_color_button(self):
+        custom = self.combo_bond_color.currentData() == "single"
+        color = self.molecule.bond_color_override or "#e0e0e0"
+        pix = QtGui.QPixmap(14, 14)
+        pix.fill(QtGui.QColor(color))
+        self.btn_bond_color.setIcon(QtGui.QIcon(pix))
+        self.btn_bond_color.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.btn_bond_color.setToolTip(f"Custom bond color ({color})" if custom else "Pick a custom bond color")
+
+    def _on_bond_color_mode_changed(self, _idx=None):
+        mode = str(self.combo_bond_color.currentData() or "default")
+        if mode == "single" and not self.molecule.bond_color_override:
+            # Choosing "Custom" without a color yet: ask for one right away.
+            self._pick_bond_color()
+            return
+        self.molecule.bond_color_mode = mode
+        self._update_bond_color_button()
+        self._on_change()
 
     def _pick_bond_color(self):
         color = QtWidgets.QColorDialog.getColor(
@@ -814,9 +995,24 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         )
         if color.isValid():
             self.molecule.bond_color_override = color.name()
-            self._on_change()
+            self.molecule.bond_color_mode = "single"
+        elif not self.molecule.bond_color_override:
+            self.molecule.bond_color_mode = "default"
+        blocker = QtCore.QSignalBlocker(self.combo_bond_color)
+        self.combo_bond_color.setCurrentIndex(
+            max(0, self.combo_bond_color.findData(effective_bond_color_mode(self.molecule)))
+        )
+        del blocker
+        self._update_bond_color_button()
+        self._on_change()
 
     def _reset_colors(self):
         self.molecule.atom_color_override = None
+        self.element_colors.reset_all()
         self.molecule.bond_color_override = None
+        self.molecule.bond_color_mode = "default"
+        blocker = QtCore.QSignalBlocker(self.combo_bond_color)
+        self.combo_bond_color.setCurrentIndex(0)
+        del blocker
+        self._update_bond_color_button()
         self._on_change()

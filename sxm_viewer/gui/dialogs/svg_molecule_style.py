@@ -10,7 +10,9 @@ import json
 
 from ..._shared import QtCore, QtGui, QtWidgets, Path
 from ..canvases.molecular_overlay import (
+    ElementColorEditor,
     available_atom_palettes,
+    get_atom_color,
     QUANTITATIVE_COLORMAPS,
     QUALITATIVE_COLORMAPS,
 )
@@ -67,6 +69,17 @@ class SvgMoleculeStyleDialog(QtWidgets.QDialog):
         self.flat_color_btn.setToolTip("Pick a single flat color for all atoms")
         self._update_flat_color_btn()
         form.addRow("Flat color:", self.flat_color_btn)
+
+        if not isinstance(getattr(overlay, "atom_color_map", None), dict):
+            overlay.atom_color_map = {}
+        self.element_colors = ElementColorEditor(
+            [atom.element for atom in overlay.atoms], overlay.atom_color_map, self._scheme_color, parent=self,
+        )
+        self.element_colors.setToolTip(
+            "Color per element, on top of the scheme above: click an element to\n"
+            "recolor all its atoms; right-click to revert it to the scheme color."
+        )
+        form.addRow("Element colors:", self.element_colors)
 
         form.addRow(QtWidgets.QLabel("<b>Bonds</b>"))
         self.bond_order_check = QtWidgets.QCheckBox("Show bond order (double/triple bonds)")
@@ -154,6 +167,7 @@ class SvgMoleculeStyleDialog(QtWidgets.QDialog):
 
         self.palette_combo.currentIndexChanged.connect(self._apply)
         self.flat_color_btn.clicked.connect(self._pick_flat_color)
+        self.element_colors.changed.connect(self._apply)
         self.bond_order_check.toggled.connect(self._apply)
         self.bond_length_check.toggled.connect(self._apply)
         self.bond_color_mode_combo.currentIndexChanged.connect(self._apply)
@@ -178,6 +192,12 @@ class SvgMoleculeStyleDialog(QtWidgets.QDialog):
         self.qual_cmap_combo.setEnabled(bond_mode in ("length_binned", "bond_order"))
         self.legend_check.setEnabled(bond_mode != "uniform")
 
+    def _scheme_color(self, element):
+        mode = str(self.palette_combo.currentData() or "cpk")
+        if mode == "flat":
+            return self._flat_color
+        return get_atom_color(element, mode)
+
     def _pick_flat_color(self):
         color = QtWidgets.QColorDialog.getColor(QtGui.QColor(self._flat_color), self, "Choose atom color")
         if color.isValid():
@@ -187,6 +207,7 @@ class SvgMoleculeStyleDialog(QtWidgets.QDialog):
 
     def _apply(self, *_args):
         self._update_enabled_state()
+        self.element_colors.refresh()  # unset elements follow the scheme
         overlay = self.overlay
         overlay.atom_color_mode = str(self.palette_combo.currentData() or "cpk")
         overlay.flat_atom_color = self._flat_color
@@ -278,6 +299,9 @@ class SvgMoleculeStyleDialog(QtWidgets.QDialog):
             self.legend_check.setChecked(bool(getattr(overlay, "show_legend", False)))
             self.font_scale_spin.setValue(float(getattr(overlay, "label_font_scale", 1.0) or 1.0))
             self.high_contrast_check.setChecked(bool(getattr(overlay, "high_contrast_labels", False)))
+            if not isinstance(getattr(overlay, "atom_color_map", None), dict):
+                overlay.atom_color_map = {}
+            self.element_colors.set_color_map(overlay.atom_color_map)
         finally:
             del blockers
         self._update_enabled_state()

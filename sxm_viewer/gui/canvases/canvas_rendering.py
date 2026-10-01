@@ -217,7 +217,7 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
         return
     try:
         from matplotlib.patches import Circle
-        from .molecular_overlay import Molecule, get_atom_color, get_atom_radius
+        from .molecular_overlay import Molecule, get_atom_radius, resolve_atom_color, effective_bond_color_mode
     except Exception:
         return
 
@@ -249,7 +249,9 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
             elements = list(getattr(mol, "elements", []))
         order = np.argsort(zs)
         display_mode = str(getattr(mol, "display_mode", "Atoms + Bonds") or "Atoms + Bonds").lower()
-        bond_color = getattr(mol, "bond_color_override", None) or "#e8edf4"
+        bond_mode = effective_bond_color_mode(mol)
+        bond_color = getattr(mol, "bond_color_override", None) if bond_mode == "single" else None
+        bond_color = bond_color or "#e8edf4"
         bond_style = str(getattr(mol, "bond_style", "default") or "default").lower()
         line_width = 0.8 if bond_style == "thin" else 2.0 if bond_style == "thick" else 1.2
         try:
@@ -268,7 +270,16 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
                         ej = (mol.elements[j] if j < len(mol.elements) else "") or ""
                         if str(ei).strip().upper() == "H" or str(ej).strip().upper() == "H":
                             continue
-                    ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5)
+                    if bond_mode == "by_atoms":
+                        # Split bond: each half takes its own atom's element color.
+                        ei = mol.elements[i] if i < len(mol.elements) else "C"
+                        ej = mol.elements[j] if j < len(mol.elements) else "C"
+                        mx = 0.5 * (xs_full[i] + xs_full[j])
+                        my = 0.5 * (ys_full[i] + ys_full[j])
+                        ax.plot([xs_full[i], mx], [ys_full[i], my], color=resolve_atom_color(mol, ei, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="butt")
+                        ax.plot([mx, xs_full[j]], [my, ys_full[j]], color=resolve_atom_color(mol, ej, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="butt")
+                    else:
+                        ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5)
                 except Exception:
                     continue
 
@@ -278,7 +289,7 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
         for idx in order:
             try:
                 element = (elements[idx] if idx < len(elements) else "C") or "C"
-                color = getattr(mol, "atom_color_override", None) or get_atom_color(element, palette)
+                color = resolve_atom_color(mol, element, palette)
                 radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
                 radius *= abs(float(getattr(mol, "scale", 0.1))) * float(getattr(mol, "radius_scale", 1.0))
                 # Space-filling: true radius; otherwise a reduced ball size.

@@ -35,6 +35,9 @@ from .molecular_overlay import (
     MoleculePropertiesDialog,
     get_atom_color,
     get_atom_radius,
+    resolve_atom_color,
+    effective_bond_color_mode,
+    element_color_override,
     atom_marker_area_factor,
     available_atom_palettes,
     normalize_molecule_render_style,
@@ -2382,13 +2385,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
             def _atom_base_rgba(idx):
                 elem = mol.elements[idx] if idx < len(mol.elements) else ""
-                cmap = getattr(mol, "atom_color_map", {}) or {}
-                override = cmap.get(str(elem).upper()) or cmap.get(str(elem).title())
-                if override:
-                    return matplotlib.colors.to_rgba(override)
-                if mol.atom_color_override:
-                    return matplotlib.colors.to_rgba(mol.atom_color_override)
-                return matplotlib.colors.to_rgba(get_atom_color(elem, self.molecule_palette))
+                return matplotlib.colors.to_rgba(resolve_atom_color(mol, elem, self.molecule_palette))
 
             # Draw Bonds
             if 'Bonds' in mol.display_mode and len(mol.bonds) > 0:
@@ -2423,7 +2420,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     depth = z_norm if depth_cue else 1.0
                     alpha = (profile["bond_alpha_min"] + profile["bond_alpha_span"] * depth) * bond_opacity
                     lw = (1.0 + 2.0 * z_norm) * lw_scale
-                    bond_mode = getattr(mol, "bond_color_mode", None) or self._bond_color_mode
+                    bond_mode = effective_bond_color_mode(mol, self._bond_color_mode)
                     if force_atom_bond_colors and bond_mode == "default":
                         bond_mode = "by_atoms"
                     rgba1 = _atom_base_rgba(i)
@@ -2781,12 +2778,20 @@ class MultiPreviewCanvas(FigureCanvas):
         # palette (reusing the same palettes the 3D molecule overlay already
         # offers - cpk/pymol/jmol/avogadro/ase) or a single flat color for
         # users who prefer a simpler/high-contrast/colorblind-friendly look.
+        # Per-element overrides (atom_color_map) win over either scheme.
         color_mode = str(getattr(overlay, "atom_color_mode", "cpk") or "cpk").lower()
-        if color_mode == "flat":
-            flat_color = str(getattr(overlay, "flat_atom_color", "#f7fafc") or "#f7fafc")
-            scatter_facecolors = [flat_color for _ in overlay.atoms]
-        else:
-            scatter_facecolors = [get_atom_color(str(atom.element or "C"), color_mode) for atom in overlay.atoms]
+        element_map = getattr(overlay, "atom_color_map", None) or {}
+        flat_color = str(getattr(overlay, "flat_atom_color", "#f7fafc") or "#f7fafc")
+        scatter_facecolors = []
+        for atom in overlay.atoms:
+            element = str(atom.element or "C")
+            override = element_color_override(element_map, element)
+            if override:
+                scatter_facecolors.append(override)
+            elif color_mode == "flat":
+                scatter_facecolors.append(flat_color)
+            else:
+                scatter_facecolors.append(get_atom_color(element, color_mode))
         return {
             "bond_segments": bond_segments,
             "bond_colors": bond_colors,
@@ -9590,6 +9595,7 @@ class MultiPreviewCanvas(FigureCanvas):
             clone = SvgMoleculeOverlay.from_dict(overlay.to_dict())
             clone.atom_color_mode = "flat"
             clone.flat_atom_color = "#f2f4f8"
+            clone.atom_color_map = {}
             clone.show_bond_length_labels = True
             clone.show_bond_order = overlay.show_bond_order
             clone.label_font_scale = max(1.3, float(getattr(overlay, "label_font_scale", 1.0) or 1.0))
