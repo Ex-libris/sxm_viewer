@@ -294,6 +294,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
         canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
         canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+        canvas._active_display_preset = getattr(source_canvas, "_active_display_preset", None)
     except Exception:
         pass
     rel_override = getattr(source_canvas, "_relative_axes_override", None)
@@ -328,6 +329,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
             canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
             canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+            canvas._active_display_preset = getattr(source_canvas, "_active_display_preset", None)
             canvas._show_ticks = bool(getattr(source_canvas, "_show_ticks", True))
             canvas._show_colorbar = bool(getattr(source_canvas, "_show_colorbar", True))
             canvas._colorbar_orientation = str(getattr(source_canvas, "_colorbar_orientation", "vertical") or "vertical")
@@ -393,6 +395,7 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
             canvas._publication_mode = bool(getattr(source_canvas, "_publication_mode", False))
             canvas._display_preset_transient = bool(getattr(source_canvas, "_display_preset_transient", False))
             canvas._display_preset_base_state = getattr(source_canvas, "_display_preset_base_state", None)
+            canvas._active_display_preset = getattr(source_canvas, "_active_display_preset", None)
             canvas._show_ticks = bool(getattr(source_canvas, "_show_ticks", True))
             canvas._show_colorbar = bool(getattr(source_canvas, "_show_colorbar", True))
             canvas._colorbar_orientation = str(getattr(source_canvas, "_colorbar_orientation", "vertical") or "vertical")
@@ -635,6 +638,9 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.set_filter_menu_callback(lambda menu, view, c=canvas: owner._populate_canvas_filter_menu(menu, c, view))
     canvas.set_histogram_dialog_callback(lambda c: owner._open_histogram_dialog(c))
     canvas.set_histogram_auto_callback(lambda c: owner._auto_contrast(c))
+    canvas.set_default_display_preset_callbacks(
+        owner.get_default_display_preset, owner.set_default_display_preset
+    )
     canvas.set_histogram_reset_callback(lambda c: owner._reset_contrast(c))
     canvas.set_compare_menu_callback(
         lambda action, view, c=canvas: owner.on_compare_menu_action(action, view, c),

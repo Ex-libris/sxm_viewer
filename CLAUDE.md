@@ -167,6 +167,14 @@ re-grep the method name to confirm before relying on an exact line.
   `SXMGridViewer.__init__`.
 - Menu population helpers in `main_window.py`: `_populate_browse_molecules_menu`,
   `_refresh_recent_dirs_menu`, `_refresh_recent_session_dirs_menu`.
+- Display presets (Focus/Analysis/Publication) are transient treatments on
+  `MultiPreviewCanvas` (`apply_display_preset`, `_active_display_preset`,
+  "Back to ..." = `restore_previous_display`). One menu builder,
+  `populate_display_preset_menu`, feeds both the image right-click menu
+  (top-level "Display preset: X") and toolbar Display > Display preset. The
+  user's default lives in config `default_display_preset` (absent = built-in
+  Analysis) via `SXMGridViewer.get/set_default_display_preset`; an explicit
+  default is applied transiently at startup.
 - Right-click/context menus (not the toolbar) are separate methods:
   `_on_thumb_context_menu`, `_on_spectro_thumb_context_menu`,
   `_populate_marker_style_menu` in `main_window.py`.

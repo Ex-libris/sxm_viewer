@@ -1213,6 +1213,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         self.preview_canvas.set_histogram_dialog_callback(lambda c: self._open_histogram_dialog(c))
         self.preview_canvas.set_histogram_auto_callback(lambda c: self._auto_contrast(c))
+        self.preview_canvas.set_default_display_preset_callbacks(
+            self.get_default_display_preset, self.set_default_display_preset
+        )
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_display_relative_zero_menu_callback(
             self.on_unit_relative_toggled,
@@ -1290,6 +1293,12 @@ class SXMGridViewer(QtWidgets.QWidget):
                 source_canvas=self.preview_canvas,
                 persist=False,
             )
+        # An explicitly chosen default preset is applied on top of the last
+        # saved display, transiently - so "Back to custom display" still
+        # returns to the user's own tweaks. Deferred until the window is
+        # fully constructed (the preset notifies the main window).
+        if self.get_default_display_preset():
+            QtCore.QTimer.singleShot(0, self._apply_startup_display_preset)
         self.quick_crop_toggle_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
         self.quick_crop_toggle_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
@@ -9993,6 +10002,29 @@ QLabel:hover {{
             "view_layout": layout,
         }
 
+    def get_default_display_preset(self):
+        """User-chosen default display preset, or None (built-in: Analysis)."""
+        name = str(self.config.get("default_display_preset") or "").strip().lower()
+        return name if name in ("focus", "analysis", "publication") else None
+
+    def set_default_display_preset(self, name):
+        name = str(name or "").strip().lower()
+        if name in ("focus", "analysis", "publication"):
+            self.config["default_display_preset"] = name
+        else:
+            self.config.pop("default_display_preset", None)
+        save_config(self.config)
+
+    def _apply_startup_display_preset(self):
+        canvas = getattr(self, "preview_canvas", None)
+        name = self.get_default_display_preset()
+        if canvas is None or not name:
+            return
+        try:
+            canvas.apply_display_preset(name, announce=False)
+        except Exception:
+            pass
+
     def _on_canvas_display_options_changed(self, canvas):
         if self._canvas_display_syncing:
             return
@@ -10090,6 +10122,10 @@ QLabel:hover {{
                         except Exception:
                             canv._display_preset_base_state = None
                     canv._display_preset_transient = transient_preset
+                    canv._active_display_preset = (
+                        getattr(source_canvas, "_active_display_preset", None)
+                        if transient_preset else None
+                    )
                     canv.set_frame_fill_mode(normalized["frame_fill_mode"])
                 except Exception:
                     pass
