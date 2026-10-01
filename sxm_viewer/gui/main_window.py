@@ -949,21 +949,32 @@ class SXMGridViewer(QtWidgets.QWidget):
             "Save the current preview colormap as your default (used at startup and in reports). "
             "Clear via Display → Reset colormap defaults.",
             lambda: self.set_favorite_cmap('preview', self.preview_cmap_combo.currentText()))
-        self.preview_cmap_gallery_btn = QtWidgets.QToolButton()
-        self.preview_cmap_gallery_btn.setText("🎨")
-        self.preview_cmap_gallery_btn.setAutoRaise(True)
-        self.preview_cmap_gallery_btn.setFixedWidth(22)
-        self.preview_cmap_gallery_btn.setToolTip(
+        def _cmap_gallery_button(tooltip, on_click):
+            btn = QtWidgets.QToolButton()
+            btn.setText("🎨")
+            btn.setAutoRaise(True)
+            btn.setFixedWidth(22)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(on_click)
+            return btn
+
+        self.thumb_cmap_gallery_btn = _cmap_gallery_button(
+            "Browse thumbnail colormaps in a gallery. "
+            "Click 🔄 on any card to reverse it; sort by function, color, or usage. "
+            "Apply sets the selected thumbnails (or all thumbnails if none are selected).",
+            self.on_open_thumb_colormap_gallery)
+        self.preview_cmap_gallery_btn = _cmap_gallery_button(
             "Browse colormaps in a gallery with live preview. "
             "Click 🔄 on any card to reverse it; sort by function, color, or usage. "
-            "Apply commits, Cancel restores.")
-        self.preview_cmap_gallery_btn.clicked.connect(self.on_open_colormap_gallery)
+            "Apply commits, Cancel restores.",
+            self.on_open_colormap_gallery)
         preview_state_row = QtWidgets.QHBoxLayout()
         preview_state_row.setContentsMargins(0, 0, 0, 0)
         preview_state_row.setSpacing(8)
         preview_state_row.addWidget(self.thumb_cmap_label)
         preview_state_row.addWidget(self.thumb_cmap_combo)
         preview_state_row.addWidget(self.thumb_cmap_star_btn)
+        preview_state_row.addWidget(self.thumb_cmap_gallery_btn)
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
@@ -9607,6 +9618,43 @@ QLabel:hover {{
         strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
         dlg = ColormapGalleryDialog(
             manager, sorter=sorter, strategy=strategy, parent=self)
+        dlg.strategy_changed.connect(self._on_gallery_strategy_changed)
+        dlg.exec_()
+        manager.deleteLater()
+
+    def on_open_thumb_colormap_gallery(self):
+        """Colormap gallery for the Thumb combo.
+
+        No live preview (re-rendering every thumbnail per card click is too
+        costly); Apply routes through on_thumb_cmap_changed, so targeting
+        matches a manual Thumb combo change.
+        """
+        current = self.thumb_cmap_combo.currentText() or self.thumb_cmap
+        manager = ColormapManager(current, parent=self)
+
+        def _on_applied(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            cmap_name = cmap_registry.join_cmap_name(name, is_reversed)
+            combo = self.thumb_cmap_combo
+            if combo.findText(cmap_name) < 0:
+                try:
+                    icon = _colormap_icon(cmap_name, width=96, height=14)
+                except Exception:
+                    icon = QIcon()
+                combo.addItem(icon, cmap_name)
+            self._set_combo_text_silent(combo, cmap_name)
+            self.on_thumb_cmap_changed(combo.currentIndex())
+            try:
+                self._record_cmap_usage(name)
+            except Exception:
+                pass
+
+        manager.applied_changed.connect(_on_applied)
+        sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
+        strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
+        dlg = ColormapGalleryDialog(
+            manager, sorter=sorter, strategy=strategy, parent=self)
+        dlg.setWindowTitle("Colormap Gallery — Thumbnails")
         dlg.strategy_changed.connect(self._on_gallery_strategy_changed)
         dlg.exec_()
         manager.deleteLater()
