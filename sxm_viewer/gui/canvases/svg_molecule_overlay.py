@@ -479,7 +479,7 @@ class SvgMoleculeOverlay:
     # molecules mechanism and the save/load style preset feature, so the two
     # can't silently drift apart from the Style dialog's actual fields.
     STYLE_FIELDS = (
-        "atom_color_mode", "flat_atom_color",
+        "atom_color_mode", "flat_atom_color", "atom_color_map",
         "label_font_scale", "high_contrast_labels",
         "show_bond_order", "show_bond_length_labels",
         "bond_color_mode", "bond_colormap", "bond_qualitative_cmap",
@@ -487,12 +487,17 @@ class SvgMoleculeOverlay:
     )
 
     def get_style_dict(self) -> dict:
-        return {name: getattr(self, name) for name in self.STYLE_FIELDS}
+        style = {name: getattr(self, name, None) for name in self.STYLE_FIELDS}
+        style["atom_color_map"] = dict(style.get("atom_color_map") or {})
+        return style
 
     def apply_style_dict(self, style: dict) -> None:
         for name in self.STYLE_FIELDS:
             if name in (style or {}):
-                setattr(self, name, style[name])
+                value = style[name]
+                if name == "atom_color_map":
+                    value = dict(value or {})
+                setattr(self, name, value)
 
     def __init__(self, filepath=None):
         self.filepath = str(filepath) if filepath else None
@@ -522,6 +527,10 @@ class SvgMoleculeOverlay:
         # larger text for readability).
         self.atom_color_mode = "cpk"  # one of available_atom_palettes(), or "flat"
         self.flat_atom_color = "#f7fafc"
+        # Per-element color overrides (element symbol -> hex), applied on
+        # top of either scheme above - recolors one element, not the whole
+        # structure.
+        self.atom_color_map = {}
         self.label_font_scale = 1.0
         self.high_contrast_labels = False
         # Off by default: bond order (double/triple bonds) reflects the
@@ -556,6 +565,7 @@ class SvgMoleculeOverlay:
             "bond_qualitative_cmap": str(getattr(self, "bond_qualitative_cmap", "Set2") or "Set2"),
             "atom_color_mode": str(getattr(self, "atom_color_mode", "cpk") or "cpk"),
             "flat_atom_color": str(getattr(self, "flat_atom_color", "#f7fafc") or "#f7fafc"),
+            "atom_color_map": dict(getattr(self, "atom_color_map", None) or {}),
             "label_font_scale": float(getattr(self, "label_font_scale", 1.0) or 1.0),
             "high_contrast_labels": bool(getattr(self, "high_contrast_labels", False)),
             "show_bond_order": bool(getattr(self, "show_bond_order", False)),
@@ -584,6 +594,7 @@ class SvgMoleculeOverlay:
         obj.bond_qualitative_cmap = str((data or {}).get("bond_qualitative_cmap") or "Set2")
         obj.atom_color_mode = str((data or {}).get("atom_color_mode") or "cpk")
         obj.flat_atom_color = str((data or {}).get("flat_atom_color") or "#f7fafc")
+        obj.atom_color_map = dict((data or {}).get("atom_color_map") or {})
         obj.label_font_scale = float((data or {}).get("label_font_scale", 1.0) or 1.0)
         obj.high_contrast_labels = bool((data or {}).get("high_contrast_labels", False))
         obj.show_bond_order = bool((data or {}).get("show_bond_order", False))

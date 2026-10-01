@@ -23,7 +23,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.transforms import Affine2D
 import matplotlib
-from matplotlib.collections import LineCollection
+from matplotlib.collections import EllipseCollection, LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status
@@ -35,6 +35,10 @@ from .molecular_overlay import (
     MoleculePropertiesDialog,
     get_atom_color,
     get_atom_radius,
+    resolve_atom_color,
+    effective_bond_color_mode,
+    element_color_override,
+    atom_marker_area_factor,
     available_atom_palettes,
     normalize_molecule_render_style,
 )
@@ -110,6 +114,10 @@ _DEFAULT_MOLECULE_STYLE = {
     "bond_style": "thin",
     "radius_mode": "vdw",
     "radius_scale": 1.0,
+    "space_filling": False,
+    "atom_opacity": 1.0,
+    "bond_opacity": 1.0,
+    "depth_cue": True,
     "palette": "avogadro",
     "show_shadows": False,
     "show_hydrogens": False,
@@ -2271,14 +2279,24 @@ class MultiPreviewCanvas(FigureCanvas):
             z_vals = coords[:, 2]
             z_min = z_vals.min()
             z_range = z_vals.max() - z_vals.min()
-            if z_range < 1e-6:
+            is_flat = z_range < 1e-6
+            if is_flat:
                 z_range = 1.0
+            # Depth cue: far atoms/bonds fade and shrink. A planar molecule
+            # has no depth to cue, so it gets the near (full) opacity rather
+            # than every atom being treated as "farthest" - that made flat
+            # overlays look washed out with no way to make them opaque.
+            depth_cue = bool(getattr(mol, "depth_cue", True)) and not is_flat
+            atom_opacity = float(np.clip(float(getattr(mol, "atom_opacity", 1.0) or 0.0), 0.0, 1.0))
+            bond_opacity = float(np.clip(float(getattr(mol, "bond_opacity", 1.0) or 0.0), 0.0, 1.0))
+            space_filling = bool(getattr(mol, "space_filling", False))
 
             lc = None
             lc_underlay = None
             sc = None
             shadow_sc = None
             atom_underlay_sc = None
+            atom_order = None
             atom_style = normalize_molecule_render_style(mol.render_style)
             bond_style = (mol.bond_style or "default").lower()
             style_profiles = {
@@ -2367,13 +2385,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
             def _atom_base_rgba(idx):
                 elem = mol.elements[idx] if idx < len(mol.elements) else ""
-                cmap = getattr(mol, "atom_color_map", {}) or {}
-                override = cmap.get(str(elem).upper()) or cmap.get(str(elem).title())
-                if override:
-                    return matplotlib.colors.to_rgba(override)
-                if mol.atom_color_override:
-                    return matplotlib.colors.to_rgba(mol.atom_color_override)
-                return matplotlib.colors.to_rgba(get_atom_color(elem, self.molecule_palette))
+                return matplotlib.colors.to_rgba(resolve_atom_color(mol, elem, self.molecule_palette))
 
             # Draw Bonds
             if 'Bonds' in mol.display_mode and len(mol.bonds) > 0:
@@ -2390,6 +2402,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     lw_scale *= 0.7
                 display_mode_lower = (mol.display_mode or "").lower()
                 force_atom_bond_colors = profile["force_bond_by_atoms"] or ("bonds only" in display_mode_lower)
+                bond_outline_rgba = (0.0, 0.0, 0.0, 0.95 * bond_opacity)
                 for (i, j) in mol.bonds:
                     if i >= len(coords) or j >= len(coords): continue
                     ei = (mol.elements[i] or "").strip().upper() if i < len(mol.elements) else ""
@@ -2403,10 +2416,11 @@ class MultiPreviewCanvas(FigureCanvas):
                     p1 = coords[i]
                     p2 = coords[j]
                     z_mid = (p1[2] + p2[2]) * 0.5
-                    z_norm = (z_mid - z_min) / z_range
-                    alpha = profile["bond_alpha_min"] + profile["bond_alpha_span"] * z_norm
+                    z_norm = (z_mid - z_min) / z_range if depth_cue else 0.0
+                    depth = z_norm if depth_cue else 1.0
+                    alpha = (profile["bond_alpha_min"] + profile["bond_alpha_span"] * depth) * bond_opacity
                     lw = (1.0 + 2.0 * z_norm) * lw_scale
-                    bond_mode = getattr(mol, "bond_color_mode", None) or self._bond_color_mode
+                    bond_mode = effective_bond_color_mode(mol, self._bond_color_mode)
                     if force_atom_bond_colors and bond_mode == "default":
                         bond_mode = "by_atoms"
                     rgba1 = _atom_base_rgba(i)
@@ -2419,7 +2433,7 @@ class MultiPreviewCanvas(FigureCanvas):
                         linewidths.append(lw)
                         if profile["outline"]:
                             underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                            underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                            underlay_colors.append(bond_outline_rgba)
                             underlay_widths.append(lw + 2.4)
                     elif bond_mode == "by_atoms":
                         r1, g1, b1, _ = rgba1
@@ -2437,7 +2451,7 @@ class MultiPreviewCanvas(FigureCanvas):
                                     [(p1[0], p1[1]), (mid[0], mid[1])],
                                     [(mid[0], mid[1]), (p2[0], p2[1])],
                                 ])
-                                underlay_colors.extend([(0.0, 0.0, 0.0, 0.95)] * 2)
+                                underlay_colors.extend([bond_outline_rgba] * 2)
                                 underlay_widths.extend([lw + 2.4, lw + 2.4])
                         else:
                             br, bg, bb = (0.5 * (r1 + r2), 0.5 * (g1 + g2), 0.5 * (b1 + b2))
@@ -2446,7 +2460,7 @@ class MultiPreviewCanvas(FigureCanvas):
                             linewidths.append(lw)
                             if profile["outline"]:
                                 underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                                underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                                underlay_colors.append(bond_outline_rgba)
                                 underlay_widths.append(lw + 2.4)
                     else:
                         br, bg, bb = self._default_bond_color
@@ -2455,7 +2469,7 @@ class MultiPreviewCanvas(FigureCanvas):
                         linewidths.append(lw)
                         if profile["outline"]:
                             underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                            underlay_colors.append((0.0, 0.0, 0.0, 0.95))
+                            underlay_colors.append(bond_outline_rgba)
                             underlay_widths.append(lw + 2.4)
 
                 if underlay_lines:
@@ -2482,6 +2496,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     order = [idx for idx in order if str(mol.elements[idx]).strip().upper() != 'H']
                 if len(order) == 0:
                     continue
+                atom_order = list(order)
                 coords_sorted = coords[order]
                 elements_sorted = [mol.elements[i] for i in order]
                 
@@ -2489,55 +2504,77 @@ class MultiPreviewCanvas(FigureCanvas):
                 y = coords_sorted[:, 1]
                 z = coords_sorted[:, 2]
                 
-                z_norm = (z - z_min) / z_range
+                z_norm = (z - z_min) / z_range if depth_cue else np.zeros(len(z))
+                depth = z_norm if depth_cue else np.ones(len(z))
+                # The radius model is honoured as chosen for every
+                # representation (CPK used to silently swap covalent->vdW).
                 rad_mode = getattr(mol, "radius_mode", "covalent")
-                if atom_style == "cpk" and str(rad_mode or "").lower() == "covalent":
-                    rad_mode = "vdw"
-                rad_scale = getattr(mol, "radius_scale", 1.0)
-                rad_ref = max(get_atom_radius('C', 'covalent'), 1e-3)
-                radius_factors = []
-                for e in elements_sorted:
-                    r_el = get_atom_radius(e, rad_mode)
-                    radius_factors.append(max(r_el / rad_ref, 0.05) * rad_scale)
-                sizes = (size_base + size_scale * z_norm) * np.array(radius_factors)
-                
+                rad_scale = float(getattr(mol, "radius_scale", 1.0) or 1.0)
+                if space_filling:
+                    # True size in data units: Å radius x molecule scale
+                    # (Å -> axis unit) x radius scale.
+                    mol_scale = abs(float(getattr(mol, "scale", 0.1) or 0.1))
+                    radii_data = np.array(
+                        [get_atom_radius(e, rad_mode) for e in elements_sorted], dtype=float
+                    ) * mol_scale * rad_scale
+                    sizes = None
+                else:
+                    # Scatter `s` is an area, so scale by r**2 to keep the
+                    # on-screen radius proportional to the radius model.
+                    radii_data = None
+                    area_factors = np.array(
+                        [atom_marker_area_factor(e, rad_mode, rad_scale) for e in elements_sorted], dtype=float
+                    )
+                    sizes = (size_base + size_scale * z_norm) * area_factors
+
                 rgba_colors = [_atom_base_rgba(i) for i in order]
                 final_colors = []
                 for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = profile["atom_alpha"] * (0.45 + 0.55 * z_norm[i])
+                    depth_alpha = profile["atom_alpha"] * (0.45 + 0.55 * depth[i]) * atom_opacity
                     highlight = profile["highlight"]
                     r_h = min(1.0, r + (1 - r) * highlight)
                     g_h = min(1.0, g + (1 - g) * highlight)
                     b_h = min(1.0, b + (1 - b) * highlight)
                     final_colors.append((r_h, g_h, b_h, depth_alpha))
-                
+                edge = profile["edgecolor"]
+                if str(edge).lower() != "none":
+                    edge = matplotlib.colors.to_rgba(edge, atom_opacity)
+
+                def _atom_layer(dx, dy, grow, facecolors, edgecolors, linewidths, zorder):
+                    if space_filling:
+                        diam = 2.0 * radii_data * grow
+                        coll = EllipseCollection(
+                            diam, diam, np.zeros_like(diam),
+                            units="xy",
+                            offsets=np.c_[x + dx, y + dy],
+                            offset_transform=ax.transData,
+                            facecolors=facecolors,
+                            edgecolors=edgecolors,
+                            linewidths=linewidths,
+                            zorder=zorder,
+                        )
+                        ax.add_collection(coll, autolim=False)
+                        return coll
+                    return ax.scatter(
+                        x + dx, y + dy,
+                        s=sizes * grow * grow,
+                        c=facecolors,
+                        edgecolors=edgecolors,
+                        linewidths=linewidths,
+                        zorder=zorder,
+                    )
+
                 if profile["outline"]:
-                    atom_underlay_sc = ax.scatter(
-                        x, y,
-                        s=sizes * 1.55,
-                        c=[(0.0, 0.0, 0.0, 0.92)] * len(x),
-                        edgecolors='none',
-                        linewidths=0,
-                        zorder=28.85,
+                    atom_underlay_sc = _atom_layer(
+                        0.0, 0.0, math.sqrt(1.55),
+                        [(0.0, 0.0, 0.0, 0.92 * atom_opacity)] * len(x), 'none', 0, 28.85,
                     )
                 if self._show_molecule_shadow and profile["show_shadow"]:
-                    shadow_sc = ax.scatter(
-                        x + 0.05, y - 0.05,
-                        s=sizes * 1.25,
-                        c=[(0, 0, 0, shadow_alpha)] * len(x),
-                        edgecolors='none',
-                        linewidths=0,
-                        zorder=28,
+                    shadow_sc = _atom_layer(
+                        0.05, -0.05, math.sqrt(1.25),
+                        [(0, 0, 0, shadow_alpha * atom_opacity)] * len(x), 'none', 0, 28,
                     )
-                sc = ax.scatter(
-                    x,
-                    y,
-                    s=sizes,
-                    c=final_colors,
-                    edgecolors=profile["edgecolor"],
-                    linewidths=profile["edgewidth"],
-                    zorder=30,
-                )
+                sc = _atom_layer(0.0, 0.0, 1.0, final_colors, edge, profile["edgewidth"], 30)
                 if atom_style == "outline":
                     try:
                         sc.set_path_effects([PathEffects.Stroke(linewidth=2.2, foreground='black'), PathEffects.Normal()])
@@ -2549,6 +2586,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 'ax': ax,
                 'scatter': sc,
                 'atom_underlay': atom_underlay_sc,
+                'atom_order': atom_order,
                 'shadow': shadow_sc,
                 'line_underlay': lc_underlay,
                 'lines': lc
@@ -2740,12 +2778,20 @@ class MultiPreviewCanvas(FigureCanvas):
         # palette (reusing the same palettes the 3D molecule overlay already
         # offers - cpk/pymol/jmol/avogadro/ase) or a single flat color for
         # users who prefer a simpler/high-contrast/colorblind-friendly look.
+        # Per-element overrides (atom_color_map) win over either scheme.
         color_mode = str(getattr(overlay, "atom_color_mode", "cpk") or "cpk").lower()
-        if color_mode == "flat":
-            flat_color = str(getattr(overlay, "flat_atom_color", "#f7fafc") or "#f7fafc")
-            scatter_facecolors = [flat_color for _ in overlay.atoms]
-        else:
-            scatter_facecolors = [get_atom_color(str(atom.element or "C"), color_mode) for atom in overlay.atoms]
+        element_map = getattr(overlay, "atom_color_map", None) or {}
+        flat_color = str(getattr(overlay, "flat_atom_color", "#f7fafc") or "#f7fafc")
+        scatter_facecolors = []
+        for atom in overlay.atoms:
+            element = str(atom.element or "C")
+            override = element_color_override(element_map, element)
+            if override:
+                scatter_facecolors.append(override)
+            elif color_mode == "flat":
+                scatter_facecolors.append(flat_color)
+            else:
+                scatter_facecolors.append(get_atom_color(element, color_mode))
         return {
             "bond_segments": bond_segments,
             "bond_colors": bond_colors,
@@ -3698,9 +3744,16 @@ class MultiPreviewCanvas(FigureCanvas):
                 lc.set_segments(lines)
 
             if sc:
-                order = np.argsort(coords[:, 2])
-                coords_sorted = coords[order]
+                # Reuse the draw-time atom order (z-sorted, hydrogens
+                # possibly filtered) so offsets line up with sizes/colors.
+                order = entry.get('atom_order')
+                if order is None or len(order) != len(sc.get_offsets()):
+                    order = np.argsort(coords[:, 2])
+                coords_sorted = coords[np.asarray(order, dtype=int)]
                 sc.set_offsets(np.c_[coords_sorted[:, 0], coords_sorted[:, 1]])
+                underlay_sc = entry.get('atom_underlay')
+                if underlay_sc:
+                    underlay_sc.set_offsets(np.c_[coords_sorted[:, 0], coords_sorted[:, 1]])
                 if shadow_sc:
                     shadow_sc.set_offsets(np.c_[coords_sorted[:, 0] + 0.05, coords_sorted[:, 1] - 0.05])
 
@@ -8435,6 +8488,13 @@ class MultiPreviewCanvas(FigureCanvas):
             mol.radius_scale = float(style.get("radius_scale", 1.0))
         except Exception:
             mol.radius_scale = 1.0
+        mol.space_filling = bool(style.get("space_filling", False))
+        mol.depth_cue = bool(style.get("depth_cue", True))
+        for key in ("atom_opacity", "bond_opacity"):
+            try:
+                setattr(mol, key, float(np.clip(float(style.get(key, 1.0)), 0.0, 1.0)))
+            except Exception:
+                setattr(mol, key, 1.0)
         mol.atom_color_override = style.get("atom_color_override")
         mol.bond_color_override = style.get("bond_color_override")
         mol.bond_color_mode = style.get("bond_color_mode", "default")
@@ -8732,17 +8792,28 @@ class MultiPreviewCanvas(FigureCanvas):
         for idx, mol in reversed(list(enumerate(self.molecules))):
             coords = mol.get_transformed_coordinates()
             if len(coords) == 0: continue
+            elements = list(mol.elements)
             if not getattr(self, "_show_hydrogens", True):
                 mask = [str(el).strip().upper() != 'H' for el in mol.elements]
                 if not any(mask):
                     continue
                 coords = coords[np.array(mask)]
+                elements = [el for el, keep in zip(elements, mask) if keep]
 
             try:
                 atom_px = event.inaxes.transData.transform(coords[:, :2])
                 event_px = np.array([float(event.x), float(event.y)], dtype=float)
                 dist_px = np.hypot(atom_px[:, 0] - event_px[0], atom_px[:, 1] - event_px[1])
-                hit = bool(dist_px.size and float(np.nanmin(dist_px)) <= 14.0)
+                thresh_px = 14.0
+                if getattr(mol, "space_filling", False) and 'Atoms' in str(mol.display_mode) and len(elements) == len(dist_px):
+                    # Big to-scale atoms: anywhere inside an atom counts.
+                    p0, p1 = event.inaxes.transData.transform([(0.0, 0.0), (1.0, 0.0)])
+                    px_per_unit = abs(float(p1[0] - p0[0]))
+                    radii_px = np.array(
+                        [get_atom_radius(e, mol.radius_mode) for e in elements], dtype=float
+                    ) * abs(float(mol.scale)) * float(mol.radius_scale) * px_per_unit
+                    thresh_px = np.maximum(thresh_px, radii_px)
+                hit = bool(dist_px.size and np.any(dist_px <= thresh_px))
             except Exception:
                 dx = coords[:, 0] - event.xdata
                 dy = coords[:, 1] - event.ydata
@@ -9524,6 +9595,7 @@ class MultiPreviewCanvas(FigureCanvas):
             clone = SvgMoleculeOverlay.from_dict(overlay.to_dict())
             clone.atom_color_mode = "flat"
             clone.flat_atom_color = "#f2f4f8"
+            clone.atom_color_map = {}
             clone.show_bond_length_labels = True
             clone.show_bond_order = overlay.show_bond_order
             clone.label_font_scale = max(1.3, float(getattr(overlay, "label_font_scale", 1.0) or 1.0))
