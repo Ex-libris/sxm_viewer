@@ -47,7 +47,8 @@ from ..plot_typography import add_font_menu_action, normalize_font_family, apply
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
 from ...reporting.channels import classify_channel
-from ..ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt
+from ..ppt_bridge import powerpoint_support_status, send_rendered_to_ppt
+from .. import vector_export
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 from ..system_open import add_source_file_menu
 
@@ -4953,6 +4954,111 @@ class MultiPreviewCanvas(FigureCanvas):
                 continue
         return changed
 
+    def _molecule_export_artists(self):
+        """``[(name, {role: [artists]}), ...]`` for every drawn molecule
+        overlay (3D and 2D), in draw order; roles are vector_export's
+        bonds/atoms/labels."""
+        entries = []
+        multi_axes = len({id(e.get("ax")) for e in (self._molecule_artists or []) + (self._svg_molecule_artists or [])}) > 1
+
+        def _artists(entry, *keys):
+            found = []
+            for key in keys:
+                value = entry.get(key)
+                for artist in (value if isinstance(value, (list, tuple)) else [value]):
+                    if artist is not None and hasattr(artist, "set_gid"):
+                        found.append(artist)
+            return found
+
+        def _suffix(entry):
+            if not multi_axes:
+                return ""
+            view = self._ax_view_map.get(entry.get("ax")) or {}
+            title = str(view.get("title") or "").strip()
+            return f" ({title})" if title else ""
+
+        for entry in self._molecule_artists or []:
+            mol = entry.get("mol")
+            try:
+                mol_number = self.molecules.index(mol) + 1
+            except Exception:
+                mol_number = len(entries) + 1
+            filepath = getattr(mol, "filepath", None)
+            name = Path(str(filepath)).stem if filepath else f"Molecule {mol_number}"
+            entries.append((name + _suffix(entry), {
+                "bonds": _artists(entry, "line_underlay", "lines"),
+                "atoms": _artists(entry, "shadow", "atom_underlay", "scatter"),
+            }))
+        for entry in self._svg_molecule_artists or []:
+            overlay = entry.get("overlay")
+            name = str(getattr(overlay, "name", "") or "").strip() or "2D Structure"
+            entries.append((name + _suffix(entry), {
+                "bonds": _artists(entry, "lines"),
+                "atoms": _artists(entry, "scatter"),
+                "labels": _artists(entry, "labels", "atom_labels"),
+            }))
+        return [(name, roles) for name, roles in entries if any(roles.values())]
+
+    def _render_displayed_svg(self, *, show_titles=True, tag_molecules=False):
+        """SVG bytes of the figure as displayed (overlays, scale bars, text
+        stay vector; the scan itself is an embedded raster at 300 dpi).
+
+        With ``tag_molecules`` returns ``(svg_bytes, {mol_idx: name})`` and
+        molecule artists carry vector_export gids, so the SVG can be split
+        into per-molecule groups/layers."""
+        buf = io.BytesIO()
+        title_state = []
+        molecule_names = {}
+
+        def _save():
+            nonlocal title_state
+            if not show_titles:
+                title_state = self._set_axes_titles_visible(False)
+            tagged = []
+            try:
+                if tag_molecules:
+                    for mol_idx, (name, roles) in enumerate(self._molecule_export_artists()):
+                        molecule_names[mol_idx] = name
+                        for role, artists in roles.items():
+                            for part_idx, artist in enumerate(artists):
+                                tagged.append((artist, artist.get_gid()))
+                                artist.set_gid(vector_export.molecule_gid(mol_idx, role, part_idx))
+                with matplotlib.rc_context({'svg.fonttype': 'none'}):
+                    self.fig.savefig(buf, format="svg", dpi=300, bbox_inches="tight")
+            finally:
+                for artist, old_gid in tagged:
+                    try:
+                        artist.set_gid(old_gid)
+                    except Exception:
+                        pass
+                if title_state:
+                    for title_artist, was_visible in title_state:
+                        try:
+                            title_artist.set_visible(bool(was_visible))
+                        except Exception:
+                            pass
+
+        try:
+            self._save_current_figure_without_shortcut_hint(_save)
+        except Exception:
+            return (None, {}) if tag_molecules else None
+        if title_state:
+            self.draw_idle()
+        svg_bytes = buf.getvalue() or None
+        return (svg_bytes, molecule_names) if tag_molecules else svg_bytes
+
+    def _render_powerpoint_payload(self, *, show_titles=True):
+        """What gets sent to PowerPoint: a layered SVG payload by default
+        (converted to native shapes on insert, one nested group per
+        molecule), else a PNG pixmap if SVG rendering fails."""
+        svg_bytes, molecule_names = self._render_displayed_svg(show_titles=show_titles, tag_molecules=True)
+        if svg_bytes:
+            return {"svg": svg_bytes, "molecule_names": molecule_names}
+        pixmap = self._render_displayed_pixmap(show_titles=show_titles)
+        if pixmap is None or pixmap.isNull():
+            pixmap = self.get_overview_pixmap()
+        return pixmap
+
     def _render_displayed_pixmap(self, *, show_titles=True):
         buf = io.BytesIO()
         title_state = []
@@ -5023,13 +5129,11 @@ class MultiPreviewCanvas(FigureCanvas):
     def _send_displayed_to_powerpoint(self, view=None, *, new_slide=True):
         label_text = self._resolve_powerpoint_label(view)
         hide_titles = bool(label_text) and len(self.views or []) == 1
-        pixmap = self._render_displayed_pixmap(show_titles=not hide_titles)
-        if pixmap is None or pixmap.isNull():
-            pixmap = self.get_overview_pixmap()
+        payload = self._render_powerpoint_payload(show_titles=not hide_titles)
 
         try:
-            slide_number, shape_name = send_pixmap_to_ppt(
-                pixmap,
+            slide_number, shape_name = send_rendered_to_ppt(
+                payload,
                 label=label_text,
                 new_slide=bool(new_slide),
             )
@@ -5051,6 +5155,51 @@ class MultiPreviewCanvas(FigureCanvas):
             return
 
         self._show_powerpoint_success(slide_number, shape_name)
+
+    def _send_displayed_to_inkscape(self, view=None):
+        """Write the displayed figure as an Inkscape-layered SVG and open it.
+
+        Inkscape keeps SVG groups, so unlike PowerPoint no conversion pass is
+        needed: vector_export restructures the tagged SVG into an ``Image``
+        layer plus one layer per molecule (Bonds/Atoms/Labels sub-layers).
+        The file goes to a temp folder; use Save As in Inkscape to keep it.
+        """
+        import subprocess
+        import tempfile
+
+        svg_bytes, molecule_names = self._render_displayed_svg(show_titles=True, tag_molecules=True)
+        if not svg_bytes:
+            QtWidgets.QMessageBox.warning(self, "Inkscape", "Unable to render the figure as SVG.")
+            return
+        layered = vector_export.to_inkscape_layers(svg_bytes, molecule_names)
+        stem = re.sub(r'[<>:"/\\|?*\s]+', "_", self._resolve_powerpoint_label(view) or "figure").strip("_") or "figure"
+        inkscape = vector_export.find_inkscape()
+        if inkscape is None:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Inkscape",
+                "Inkscape was not found on this computer.\n\n"
+                "Save the layered SVG to a file instead?",
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save layered SVG", f"{stem}.svg", "SVG Files (*.svg)")
+            if not path:
+                return
+            if not path.lower().endswith(".svg"):
+                path = f"{path}.svg"
+            Path(path).write_bytes(layered)
+            return
+        out_dir = Path(tempfile.gettempdir()) / "sxm_viewer_inkscape"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{stem}_{time.strftime('%Y%m%d-%H%M%S')}.svg"
+        path.write_bytes(layered)
+        try:
+            subprocess.Popen([inkscape, str(path)], close_fds=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Inkscape", f"Unable to start Inkscape:\n{exc}")
+            return
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Opening in Inkscape...", self, self.rect(), 2500)
 
     def set_value_callback(self, cb):
         self._value_callback = cb
@@ -9763,6 +9912,11 @@ class MultiPreviewCanvas(FigureCanvas):
             send_ppt_current_act.setEnabled(False)
             send_ppt_act.setToolTip(ppt_reason or "")
             send_ppt_current_act.setToolTip(ppt_reason or "")
+        send_inkscape_act = menu.addAction("Open in Inkscape (layered SVG)")
+        send_inkscape_act.setToolTip(
+            "Open the displayed figure in Inkscape with the image and each "
+            "molecule (bonds/atoms/labels) on separate layers."
+        )
 
         export_menu = menu.addMenu("Save / Export")
         save_act = export_menu.addAction("Save data image as PNG...")
@@ -9950,6 +10104,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._send_displayed_to_powerpoint(view, new_slide=True)
         elif chosen == send_ppt_current_act:
             self._send_displayed_to_powerpoint(view, new_slide=False)
+        elif chosen == send_inkscape_act:
+            self._send_displayed_to_inkscape(view)
         elif chosen == save_act:
             self._save_view_to_file(view)
         elif chosen == save_svg_act:

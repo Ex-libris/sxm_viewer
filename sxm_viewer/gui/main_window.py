@@ -102,7 +102,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
-from .ppt_bridge import powerpoint_support_status, send_pixmap_to_ppt, _bridge as _ppt_bridge
+from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import details as spectro_details
 from .spectroscopy import loading as spectro_loading
@@ -7377,12 +7377,10 @@ QLabel:hover {{
                 view = views[0]
                 label_text = canvas._resolve_powerpoint_label(view)
                 hide_titles = bool(label_text) and len(views) == 1
-                pixmap = canvas._render_displayed_pixmap(show_titles=not hide_titles)
-                if pixmap is None or pixmap.isNull():
-                    pixmap = canvas.get_overview_pixmap()
-                if pixmap is None or pixmap.isNull():
+                payload = canvas._render_powerpoint_payload(show_titles=not hide_titles)
+                if not payload or (hasattr(payload, "isNull") and payload.isNull()):
                     continue
-                items.append((pixmap, label_text))
+                items.append((payload, label_text))
         finally:
             try:
                 if original_last:
@@ -7398,9 +7396,9 @@ QLabel:hover {{
             if new_slide or len(items) == 1:
                 slide_number = None
                 shape_name = ""
-                for pixmap, label_text in items:
-                    slide_number, shape_name = send_pixmap_to_ppt(
-                        pixmap,
+                for payload, label_text in items:
+                    slide_number, shape_name = send_rendered_to_ppt(
+                        payload,
                         label=label_text,
                         new_slide=True,
                     )
@@ -7422,13 +7420,13 @@ QLabel:hover {{
             cell_h = max(110.0, (slide_h - 2 * outer_margin - max(0, rows - 1) * gutter) / max(rows, 1))
             image_h = max(80.0, cell_h - caption_h)
             shape_name = ""
-            for idx, (pixmap, label_text) in enumerate(items):
+            for idx, (payload, label_text) in enumerate(items):
                 row = idx // max(cols, 1)
                 col = idx % max(cols, 1)
                 left = outer_margin + col * (cell_w + gutter)
                 top = outer_margin + row * (cell_h + gutter)
-                _slide_number, shape_name = send_pixmap_to_ppt(
-                    pixmap,
+                _slide_number, shape_name = send_rendered_to_ppt(
+                    payload,
                     label=label_text,
                     new_slide=False,
                     slide_index=slide_index,

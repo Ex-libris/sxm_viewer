@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import tempfile
 
@@ -10,6 +11,7 @@ import tempfile
 LOGGER = logging.getLogger(__name__)
 PPT_LAYOUT_BLANK = 12
 MSO_TEXT_ORIENTATION_HORIZONTAL = 1
+MSO_GRAPHIC = 28  # MsoShapeType.msoGraphic (inserted SVG)
 
 pythoncom = None
 win32com = None
@@ -172,8 +174,15 @@ class PowerPointBridge:
         label: str | None = None,
         image_size: tuple[int, int] | None = None,
         preserve_aspect: bool = True,
+        convert_to_shapes: bool = False,
+        fallback_path_factory=None,
     ) -> tuple[int, str]:
-        """Insert an image file into the active PowerPoint presentation."""
+        """Insert an image file into the active PowerPoint presentation.
+
+        With ``convert_to_shapes`` (SVG input), the inserted graphic is run
+        through PowerPoint's own "Convert to Shape" so it lands as one native,
+        ungroupable group of editable shapes instead of an opaque SVG icon.
+        """
         if not image_path:
             raise ValueError("Image path is required.")
 
@@ -196,15 +205,32 @@ class PowerPointBridge:
             preserve_aspect=bool(preserve_aspect),
         )
 
-        shape = slide.Shapes.AddPicture(
-            FileName=image_path,
-            LinkToFile=False,
-            SaveWithDocument=True,
-            Left=shape_left,
-            Top=shape_top,
-            Width=shape_width,
-            Height=shape_height,
-        )
+        def _add_picture(path):
+            return slide.Shapes.AddPicture(
+                FileName=path,
+                LinkToFile=False,
+                SaveWithDocument=True,
+                Left=shape_left,
+                Top=shape_top,
+                Width=shape_width,
+                Height=shape_height,
+            )
+
+        try:
+            shape = _add_picture(image_path)
+        except Exception as exc:
+            # Office builds without SVG support reject the file; retry with a
+            # raster rendering on the same slide (no stray empty slide).
+            if fallback_path_factory is None:
+                raise
+            LOGGER.info("PowerPoint rejected %s, falling back to raster: %s", image_path, exc)
+            fallback_path = fallback_path_factory()
+            if not fallback_path:
+                raise
+            shape = _add_picture(fallback_path)
+            convert_to_shapes = False
+        if convert_to_shapes:
+            shape = self._convert_graphic_to_shapes(slide, shape)
 
         label_text = str(label).strip() if label is not None else ""
         if label_text:
@@ -229,8 +255,227 @@ class PowerPointBridge:
 
         return int(slide.SlideIndex), str(shape.Name)
 
+    def _convert_graphic_to_shapes(self, slide, shape):
+        """Run "Convert to Shape" on an inserted SVG graphic; best effort.
+
+        ``Shape.Ungroup`` refuses SVG graphics over COM ("only accessed for a
+        group"), so the ribbon command is used instead, which needs the shape
+        selected in a visible slide view. Any failure leaves the (still
+        vector) SVG graphic in place.
+        """
+        try:
+            if int(shape.Type) != MSO_GRAPHIC:
+                return shape
+            window = self._app.ActiveWindow
+            if int(window.View.Slide.SlideIndex) != int(slide.SlideIndex):
+                window.View.GotoSlide(int(slide.SlideIndex))
+            shape.Select()
+            command_bars = self._app.CommandBars
+            if not command_bars.GetEnabledMso("SVGEdit"):
+                return shape
+            command_bars.ExecuteMso("SVGEdit")
+            selection = window.Selection.ShapeRange
+            if int(selection.Count) >= 1:
+                return selection.Item(1)
+        except Exception as exc:  # pragma: no cover - depends on Office build
+            LOGGER.info("PowerPoint 'Convert to Shape' unavailable: %s", exc)
+        return shape
+
 
 _bridge = PowerPointBridge()
+
+_SVG_LENGTH_UNITS_TO_PT = {"pt": 1.0, "px": 0.75, "in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "": 1.0}
+
+
+def _svg_size_pt(svg_bytes: bytes) -> tuple[float, float] | None:
+    """Read the root ``width``/``height`` of an SVG document, in points."""
+    head = svg_bytes[:4096].decode("utf-8", errors="ignore")
+    match = re.search(r"<svg\b[^>]*>", head, flags=re.S)
+    if not match:
+        return None
+    size = []
+    for attr in ("width", "height"):
+        found = re.search(rf'\b{attr}="([0-9.]+)\s*([a-z]*)"', match.group(0))
+        if not found:
+            return None
+        scale = _SVG_LENGTH_UNITS_TO_PT.get(found.group(2))
+        if scale is None:
+            return None
+        size.append(float(found.group(1)) * scale)
+    return size[0], size[1]
+
+
+def send_svg_to_ppt(
+    svg_bytes: bytes,
+    label: str | None = None,
+    *,
+    convert_to_shapes: bool = True,
+    **kwargs,
+) -> tuple[int, str]:
+    """Send SVG bytes to a live PowerPoint presentation as vector content."""
+    if not svg_bytes:
+        raise ValueError("No image to send.")
+    tmp_paths = []
+
+    def _write_temp(data: bytes, suffix: str) -> str:
+        with tempfile.NamedTemporaryFile(
+            prefix="sxm_viewer_ppt_",
+            suffix=suffix,
+            delete=False,
+        ) as handle:
+            handle.write(data)
+            tmp_paths.append(handle.name)
+            return handle.name
+
+    def _raster_fallback() -> str | None:
+        png_bytes = _rasterize_svg(svg_bytes, kwargs.get("image_size"))
+        return _write_temp(png_bytes, ".png") if png_bytes else None
+
+    try:
+        if "image_size" not in kwargs:
+            kwargs["image_size"] = _svg_size_pt(svg_bytes)
+        return _bridge.send_image(
+            _write_temp(svg_bytes, ".svg"),
+            label=label,
+            convert_to_shapes=convert_to_shapes,
+            fallback_path_factory=_raster_fallback,
+            **kwargs,
+        )
+    finally:
+        for tmp_path in tmp_paths:
+            if not os.path.exists(tmp_path):
+                continue
+            try:
+                os.unlink(tmp_path)
+            except OSError as exc:
+                LOGGER.warning(
+                    "Failed to delete temporary PowerPoint image '%s': %s",
+                    tmp_path,
+                    exc,
+                )
+
+
+def send_layered_svg_to_ppt(
+    svg_bytes: bytes,
+    molecule_names: dict | None = None,
+    label: str | None = None,
+    **kwargs,
+) -> tuple[int, str]:
+    """Send a molecule-tagged figure SVG so each molecule lands as its own
+    nested group (Bonds/Atoms/Labels inside), all within one figure group.
+
+    PowerPoint's "Convert to Shape" flattens SVG ``<g>`` structure, so the
+    base figure and every molecule role are converted from separate SVGs
+    (same canvas, same box, so they overlay exactly) and regrouped here.
+    """
+    from . import vector_export
+
+    base_svg, molecules = vector_export.split_for_powerpoint(svg_bytes, molecule_names)
+    if not molecules:
+        return send_svg_to_ppt(svg_bytes, label=label, **kwargs)
+
+    if "image_size" not in kwargs:
+        kwargs["image_size"] = _svg_size_pt(svg_bytes)
+    slide_number, base_name = send_svg_to_ppt(base_svg, label=label, **kwargs)
+    part_kwargs = dict(kwargs, new_slide=False, slide_index=slide_number)
+    slide = _bridge._presentation().Slides.Item(int(slide_number))
+    # Shapes are tracked by Id and grouped by index: display names repeat
+    # ("Bonds"/"Atoms" per molecule), so Shapes.Range(names) is ambiguous.
+    # A group's name survives being nested, so each is named as it's built
+    # (ParentGroup only ever reports the outermost group, so names can't be
+    # fixed up afterwards).
+
+    def _named(shape, display_name: str) -> int:
+        try:
+            shape.Name = display_name
+        except Exception:
+            pass
+        return int(shape.Id)
+
+    def _group(shape_ids, display_name: str) -> int:
+        if len(shape_ids) == 1:
+            return _named(_shape_by_id(slide, shape_ids[0]), display_name)
+        indices = _shape_indices(slide, shape_ids)
+        return _named(slide.Shapes.Range(indices).Group(), display_name)
+
+    try:
+        members = [_named(slide.Shapes(base_name), "Image")]
+        for mol_name, parts in molecules:
+            role_ids = []
+            for role_title, role_svg in parts:
+                before = {int(shape.Id) for shape in slide.Shapes}
+                send_svg_to_ppt(role_svg, label=None, **part_kwargs)
+                added = [int(shape.Id) for shape in slide.Shapes if int(shape.Id) not in before]
+                if added:
+                    role_ids.append(_group(added, role_title))
+            if role_ids:
+                members.append(_group(role_ids, mol_name))
+        figure = _shape_by_id(slide, _group(members, "SXM figure"))
+        return slide_number, str(figure.Name)
+    except Exception as exc:  # pragma: no cover - depends on Office build
+        LOGGER.warning("PowerPoint molecule regrouping failed: %s", exc)
+        return slide_number, base_name
+
+
+def _shape_by_id(slide, shape_id: int):
+    for shape in slide.Shapes:
+        if int(shape.Id) == int(shape_id):
+            return shape
+    raise KeyError(f"Shape id {shape_id} not found on slide.")
+
+
+def _shape_indices(slide, shape_ids) -> list[int]:
+    wanted = {int(shape_id) for shape_id in shape_ids}
+    return [
+        idx
+        for idx in range(1, int(slide.Shapes.Count) + 1)
+        if int(slide.Shapes.Item(idx).Id) in wanted
+    ]
+
+
+def send_rendered_to_ppt(payload, label: str | None = None, **kwargs) -> tuple[int, str]:
+    """Send a vector payload (the default), SVG bytes, or a QPixmap (raster)."""
+    if isinstance(payload, dict):
+        return send_layered_svg_to_ppt(
+            payload.get("svg") or b"",
+            payload.get("molecule_names"),
+            label=label,
+            **kwargs,
+        )
+    if isinstance(payload, (bytes, bytearray)):
+        return send_svg_to_ppt(bytes(payload), label=label, **kwargs)
+    return send_pixmap_to_ppt(payload, label=label, **kwargs)
+
+
+def _rasterize_svg(svg_bytes: bytes, size_pt, dpi: float = 300.0) -> bytes | None:
+    """Render SVG bytes to PNG (for Office builds that cannot insert SVG)."""
+    from PyQt5 import QtCore, QtGui
+    from PyQt5.QtSvg import QSvgRenderer
+
+    renderer = QSvgRenderer(QtCore.QByteArray(svg_bytes))
+    if not renderer.isValid():
+        return None
+    if size_pt:
+        width_px = max(1, int(round(float(size_pt[0]) * dpi / 72.0)))
+        height_px = max(1, int(round(float(size_pt[1]) * dpi / 72.0)))
+    else:
+        default = renderer.defaultSize()
+        width_px, height_px = max(1, default.width()), max(1, default.height())
+    image = QtGui.QImage(width_px, height_px, QtGui.QImage.Format_ARGB32)
+    image.fill(QtCore.Qt.white)
+    painter = QtGui.QPainter(image)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    buffer = QtCore.QBuffer()
+    buffer.open(QtCore.QIODevice.WriteOnly)
+    try:
+        if not image.save(buffer, "PNG"):
+            return None
+        return bytes(buffer.data())
+    finally:
+        buffer.close()
 
 
 def send_pixmap_to_ppt(
