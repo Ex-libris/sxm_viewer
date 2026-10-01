@@ -8488,18 +8488,24 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 if self.angle_enabled:
                     self.set_angle_tool_enabled(False)
-                was_enabled = bool(self.profile_enabled)
+                # If _on_press is already connected (tool on, or move-only
+                # after an earlier Ctrl-draw), matplotlib delivers this same
+                # press to it after we return. Calling it here as well ran it
+                # twice: the first call started the line at the click, the
+                # second grabbed that fresh zero-length line's A endpoint, so
+                # every profile after the first was dragged out B -> A.
+                press_handler_connected = bool(self._cids)
                 if self._profile_move_only:
                     self._profile_move_only = False
                     self._profile_user_enabled = True
                     self._profile_quick_transient = True
-                    was_enabled = False
                 if not self.profile_enabled:
                     self.set_profile_tool_enabled(True)
                     self._profile_quick_transient = True
-                if not was_enabled:
+                if not press_handler_connected:
                     # Start the first profile drag immediately when the tool
-                    # is activated via Ctrl+Click.
+                    # is activated via Ctrl+Click (handlers connected during
+                    # this dispatch don't receive the current event).
                     self._on_press(event)
             except Exception:
                 pass
