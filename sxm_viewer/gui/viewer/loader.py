@@ -1010,8 +1010,8 @@ def load_files(
             except Exception:
                 continue
         viewer.headers[key] = (hdr, fds)
-    if cache_miss:
-        viewer._save_header_cache()
+    # No-op unless dirty (misses, or daily LRU 'used' refreshes on hits).
+    viewer._save_header_cache()
     log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
     wsxm_popup_keys = []
     if getattr(viewer, "wsxm_auto_popup_enabled", True):

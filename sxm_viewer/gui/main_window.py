@@ -42,6 +42,7 @@ from ..config import (
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
+    HEADER_CACHE_MAX_ENTRIES,
     load_config,
     save_config,
     flush_pending_config_save,
@@ -7068,6 +7069,12 @@ QLabel:hover {{
         fds = entry.get('fds')
         if header is None or fds is None:
             return None
+        # Record last use for LRU eviction. Refreshed at most once a day so a
+        # fully-cached folder load doesn't force a full cache rewrite each time.
+        now = time.time()
+        if now - entry.get('used', 0.0) > 86400.0:
+            entry['used'] = now
+            self._header_cache_dirty = True
         return header, fds
 
     def _store_header_cache(self, path, header, fds):
@@ -7080,6 +7087,7 @@ QLabel:hover {{
             'mtime': mtime,
             'header': header,
             'fds': fds,
+            'used': time.time(),
         }
         self._header_cache_dirty = True
 
@@ -7099,11 +7107,28 @@ QLabel:hover {{
         single one of those saves, adding a real ~300-400ms each time a
         session opens several new folders in a row.
         """
-        if getattr(self, "_header_cache_pruned_this_session", False):
+        if not getattr(self, "_header_cache_pruned_this_session", False):
+            self._header_cache_pruned_this_session = True
+            stale_keys = [key for key in list(self.header_cache.keys()) if not os.path.exists(key)]
+            for key in stale_keys:
+                self.header_cache.pop(key, None)
+        self._evict_lru_header_cache_entries()
+
+    def _evict_lru_header_cache_entries(self):
+        """Cap the header cache at HEADER_CACHE_MAX_ENTRIES, dropping the
+        least-recently-used entries. Pruning deleted files alone isn't enough:
+        every folder ever opened stays cached while its files exist, so the
+        JSON (parsed at every startup) otherwise grows without bound. Entries
+        written before the 'used' stamp existed fall back to the source
+        file's mtime, so recent data outranks old archives."""
+        excess = len(self.header_cache) - HEADER_CACHE_MAX_ENTRIES
+        if excess <= 0:
             return
-        self._header_cache_pruned_this_session = True
-        stale_keys = [key for key in list(self.header_cache.keys()) if not os.path.exists(key)]
-        for key in stale_keys:
+        def _last_used(item):
+            entry = item[1] if isinstance(item[1], dict) else {}
+            return entry.get('used', entry.get('mtime', 0.0))
+        oldest = sorted(self.header_cache.items(), key=_last_used)[:excess]
+        for key, _entry in oldest:
             self.header_cache.pop(key, None)
 
     def _save_header_cache(self):
