@@ -252,6 +252,12 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
         bond_color = getattr(mol, "bond_color_override", None) or "#e8edf4"
         bond_style = str(getattr(mol, "bond_style", "default") or "default").lower()
         line_width = 0.8 if bond_style == "thin" else 2.0 if bond_style == "thick" else 1.2
+        try:
+            atom_opacity = min(1.0, max(0.0, float(getattr(mol, "atom_opacity", 1.0))))
+            bond_opacity = min(1.0, max(0.0, float(getattr(mol, "bond_opacity", 1.0))))
+        except Exception:
+            atom_opacity = bond_opacity = 1.0
+        space_filling = bool(getattr(mol, "space_filling", False))
 
         if display_mode != "atoms only":
             for bond in getattr(mol, "bonds", []) or []:
@@ -262,7 +268,7 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
                         ej = (mol.elements[j] if j < len(mol.elements) else "") or ""
                         if str(ei).strip().upper() == "H" or str(ej).strip().upper() == "H":
                             continue
-                    ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85, zorder=5)
+                    ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5)
                 except Exception:
                     continue
 
@@ -274,9 +280,10 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
                 element = (elements[idx] if idx < len(elements) else "C") or "C"
                 color = getattr(mol, "atom_color_override", None) or get_atom_color(element, palette)
                 radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
-                radius *= float(getattr(mol, "scale", 0.1)) * float(getattr(mol, "radius_scale", 1.0))
-                radius = max(0.03, float(radius) * 0.33)
-                patch = Circle((xs[idx], ys[idx]), radius=radius, facecolor=color, edgecolor="#101316", linewidth=0.5, alpha=0.92, zorder=6 + (idx / max(1, len(order))))
+                radius *= abs(float(getattr(mol, "scale", 0.1))) * float(getattr(mol, "radius_scale", 1.0))
+                # Space-filling: true radius; otherwise a reduced ball size.
+                radius = float(radius) if space_filling else max(0.03, float(radius) * 0.33)
+                patch = Circle((xs[idx], ys[idx]), radius=radius, facecolor=color, edgecolor="#101316", linewidth=0.5, alpha=0.92 * atom_opacity, zorder=6 + (idx / max(1, len(order))))
                 ax.add_patch(patch)
             except Exception:
                 continue

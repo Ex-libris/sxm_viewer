@@ -90,6 +90,7 @@ _MOLECULE_RENDER_STYLE_ALIASES = {
     "ballandstick": "ballstick",
     "cpk": "cpk",
     "spacefill": "cpk",
+    "cpkspacefill": "cpk",  # the dialog label "CPK / Spacefill"
     "licorice": "licorice",
     "wire": "wire",
     "wireframe": "wire",
@@ -196,6 +197,26 @@ def get_atom_radius(element, mode='covalent'):
         val = COVALENT_RADII.get(el) or VDW_RADII.get(el) or ATOMIC_RADII.get(el) or 1.5
     return float(val)
 
+
+def _clamp_opacity(value, default=1.0):
+    try:
+        return float(min(1.0, max(0.0, float(value))))
+    except Exception:
+        return float(default)
+
+
+# Screen-size (non-space-filling) atoms: scatter marker *area* is scaled by
+# (r / r_ref)**2 so on-screen *radius* stays proportional to the chosen radius
+# model. The reference keeps a van der Waals carbon at the size it always had
+# (old linear-area factor 1.70/0.76), so default-looking molecules don't jump.
+SCREEN_RADIUS_AREA_REF = 0.76 * 1.70
+
+
+def atom_marker_area_factor(element, mode='covalent', radius_scale=1.0):
+    """Scatter-area multiplier for an atom drawn at fixed screen size."""
+    r = get_atom_radius(element, mode) * float(radius_scale or 1.0)
+    return max((r * r) / SCREEN_RADIUS_AREA_REF, 0.01)
+
 class Molecule:
     def __init__(self, filepath=None):
         self.filepath = filepath
@@ -218,7 +239,14 @@ class Molecule:
         self.bond_color_mode = 'default' # default | single | by_atoms
         self.radius_mode = 'vdw'    # covalent | vdw | atomic | constant
         self.radius_scale = 1.0
-        
+        # True: atoms drawn at their real radius in data units (they touch/
+        # overlap like a space-filling model and scale with zoom). False:
+        # fixed on-screen marker size, proportional to the radius model.
+        self.space_filling = False
+        self.atom_opacity = 1.0   # 0..1 multiplier on the representation's atom alpha
+        self.bond_opacity = 1.0   # 0..1 multiplier on the representation's bond alpha
+        self.depth_cue = True     # fade/shrink atoms and bonds further from the viewer
+
         # Avoid truth-testing numpy arrays or other iterables; only treat valid paths.
         if isinstance(filepath, (str, Path)) and str(filepath).strip():
             self.load(filepath)
@@ -391,6 +419,10 @@ class Molecule:
         new_mol.bond_color_mode = self.bond_color_mode
         new_mol.radius_mode = self.radius_mode
         new_mol.radius_scale = self.radius_scale
+        new_mol.space_filling = self.space_filling
+        new_mol.atom_opacity = self.atom_opacity
+        new_mol.bond_opacity = self.bond_opacity
+        new_mol.depth_cue = self.depth_cue
         new_mol.z_height_scale = self.z_height_scale
         return new_mol
 
@@ -440,6 +472,10 @@ class Molecule:
             "bond_color_mode": self.bond_color_mode,
             "radius_mode": self.radius_mode,
             "radius_scale": float(self.radius_scale),
+            "space_filling": bool(self.space_filling),
+            "atom_opacity": float(self.atom_opacity),
+            "bond_opacity": float(self.bond_opacity),
+            "depth_cue": bool(self.depth_cue),
         }
 
     @classmethod
@@ -467,6 +503,10 @@ class Molecule:
         mol.bond_color_mode = data.get("bond_color_mode", "default")
         mol.radius_mode = data.get("radius_mode", "covalent")
         mol.radius_scale = float(data.get("radius_scale", 1.0))
+        mol.space_filling = bool(data.get("space_filling", False))
+        mol.atom_opacity = _clamp_opacity(data.get("atom_opacity", 1.0))
+        mol.bond_opacity = _clamp_opacity(data.get("bond_opacity", 1.0))
+        mol.depth_cue = bool(data.get("depth_cue", True))
         if not mol.bonds:
             mol.recalculate_bonds()
         return mol
@@ -527,6 +567,34 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         self.spin_radius_scale.setValue(molecule.radius_scale)
         self.spin_radius_scale.valueChanged.connect(self._on_change)
         form_disp.addRow("Radius scale:", self.spin_radius_scale)
+        self.chk_space_filling = QtWidgets.QCheckBox("Space-filling (true atomic size)")
+        self.chk_space_filling.setChecked(bool(getattr(molecule, "space_filling", False)))
+        self.chk_space_filling.setToolTip(
+            "Draw each atom at its real radius (from the radius model x radius scale)\n"
+            "in image units, so atoms touch/overlap like a space-filling model and\n"
+            "grow/shrink with zoom. Off: atoms keep a fixed on-screen size."
+        )
+        self.chk_space_filling.toggled.connect(self._on_change)
+        form_disp.addRow("Atom size:", self.chk_space_filling)
+        self.slider_atom_opacity, row_atom_op = self._make_opacity_row(getattr(molecule, "atom_opacity", 1.0))
+        form_disp.addRow("Atom opacity:", row_atom_op)
+        self.slider_bond_opacity, row_bond_op = self._make_opacity_row(getattr(molecule, "bond_opacity", 1.0))
+        form_disp.addRow("Bond opacity:", row_bond_op)
+        self.chk_depth_cue = QtWidgets.QCheckBox("Depth cue (fade/shrink far atoms)")
+        self.chk_depth_cue.setChecked(bool(getattr(molecule, "depth_cue", True)))
+        self.chk_depth_cue.setToolTip(
+            "Atoms and bonds further from the viewer (lower Z after rotation) are drawn\n"
+            "more transparent and smaller. Turn off for uniform opacity/size."
+        )
+        self.chk_depth_cue.toggled.connect(self._on_change)
+        form_disp.addRow("", self.chk_depth_cue)
+        self.lbl_atoms_hidden = QtWidgets.QLabel(
+            "Atoms are hidden in the 'Bonds Only' style - radius, atom size and\n"
+            "atom opacity only take effect with 'Atoms + Bonds' or 'Atoms Only'."
+        )
+        self.lbl_atoms_hidden.setStyleSheet("color: #c98a1b;")
+        form_disp.addRow(self.lbl_atoms_hidden)
+        self.combo_atom_style.currentTextChanged.connect(self._on_representation_changed)
         self.combo_palette = None
         if self._show_palette_option:
             self.combo_palette = QtWidgets.QComboBox()
@@ -604,7 +672,46 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         bbox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         bbox.rejected.connect(self.accept)
         layout.addWidget(bbox)
-        
+        self._sync_atom_controls_enabled()
+
+    def _make_opacity_row(self, value):
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(int(round(_clamp_opacity(value) * 100)))
+        label = QtWidgets.QLabel(f"{slider.value()}%")
+        label.setMinimumWidth(36)
+        slider.valueChanged.connect(lambda v, lbl=label: lbl.setText(f"{v}%"))
+        slider.valueChanged.connect(self._on_change)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(slider, 1)
+        row.addWidget(label)
+        return slider, row
+
+    def _sync_atom_controls_enabled(self):
+        atoms_shown = "atoms" in self.combo_mode.currentText().lower()
+        for widget in (self.combo_radius_mode, self.spin_radius_scale,
+                       self.chk_space_filling, self.slider_atom_opacity):
+            widget.setEnabled(atoms_shown)
+        self.lbl_atoms_hidden.setVisible(not atoms_shown)
+
+    def _on_representation_changed(self, text):
+        # A space-filling representation is only meaningful with atoms drawn
+        # at their true size; switch the related controls along with it
+        # (the user can still override them afterwards).
+        if normalize_molecule_render_style(text) != "cpk":
+            return
+        widgets = (self.combo_mode, self.chk_space_filling)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            if "atoms" not in self.combo_mode.currentText().lower():
+                self.combo_mode.setCurrentText("Atoms + Bonds")
+            self.chk_space_filling.setChecked(True)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        self._on_change()
+
     def _make_spin(self, val, min_val, max_val, step=1.0):
         sb = QtWidgets.QDoubleSpinBox()
         sb.setRange(min_val, max_val)
@@ -635,6 +742,11 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         else:
             self.molecule.radius_mode = "covalent"
         self.molecule.radius_scale = self.spin_radius_scale.value()
+        self.molecule.space_filling = bool(self.chk_space_filling.isChecked())
+        self.molecule.atom_opacity = self.slider_atom_opacity.value() / 100.0
+        self.molecule.bond_opacity = self.slider_bond_opacity.value() / 100.0
+        self.molecule.depth_cue = bool(self.chk_depth_cue.isChecked())
+        self._sync_atom_controls_enabled()
         if self.overlay_settings is not None:
             if self.combo_palette is not None:
                 self.overlay_settings["palette"] = str(self.combo_palette.currentData() or "avogadro").lower()
@@ -652,6 +764,10 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
             "bond_style": str(self.molecule.bond_style or "default").lower(),
             "radius_mode": str(self.molecule.radius_mode or "covalent").lower(),
             "radius_scale": float(self.molecule.radius_scale),
+            "space_filling": bool(self.molecule.space_filling),
+            "atom_opacity": float(self.molecule.atom_opacity),
+            "bond_opacity": float(self.molecule.bond_opacity),
+            "depth_cue": bool(self.molecule.depth_cue),
             "atom_color_override": self.molecule.atom_color_override,
             "bond_color_override": self.molecule.bond_color_override,
             "bond_color_mode": self.molecule.bond_color_mode,
