@@ -13,6 +13,7 @@ from .config_defaults import (
     COLLECTIONS_INDEX_PATH,
     COLLECTIONS_INDEX_VERSION,
 )
+from .header_cache import HeaderCacheStore, db_path_for
 
 # save_config is called from 90+ GUI call sites (essentially every UI toggle:
 # thumb sort/filter, tags, starring, ...), each historically doing a
@@ -85,73 +86,12 @@ def save_config(cfg):
     _save_timer.start(400)
 
 
-def load_header_cache():
-    """Load cached headers parsed in previous sessions - or the latest
-    not-yet-flushed value if save_header_cache() ran more recently than the
-    debounced write has landed (see save_header_cache's docstring)."""
-    if _pending_header_cache is not None:
-        return copy.deepcopy(_pending_header_cache)
-    try:
-        # Explicit encoding matters here beyond correctness: without it,
-        # read_text()/write_text() fall back to the locale-default encoding
-        # (cp1252 on typical Windows setups), whose generic codec is slower
-        # to decode than UTF-8's optimized ASCII/UTF-8 fast path in CPython —
-        # relevant given this file accumulates every folder ever opened and
-        # can reach tens of MB.
-        s = HEADER_CACHE_PATH.read_text(encoding="utf-8")
-        data = json.loads(s)
-        if not isinstance(data, dict):
-            return {}
-        if data.get("_version") != HEADER_CACHE_VERSION:
-            return {}
-        return data.get("entries", {})
-    except Exception:
-        return {}
-
-
-_pending_header_cache = None
-_header_cache_save_timer = None
-
-
-def _flush_pending_header_cache_write():
-    global _pending_header_cache
-    if _pending_header_cache is None:
-        return
-    cache = _pending_header_cache
-    _pending_header_cache = None
-    try:
-        payload = {"_version": HEADER_CACHE_VERSION, "entries": cache}
-        HEADER_CACHE_PATH.write_text(json.dumps(payload), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def flush_pending_header_cache_save():
-    """Force any debounced save_header_cache() write to happen immediately -
-    call before the app exits, same reasoning as flush_pending_config_save()."""
-    global _header_cache_save_timer
-    if _header_cache_save_timer is not None:
-        _header_cache_save_timer.stop()
-    _flush_pending_header_cache_write()
-
-
-def save_header_cache(cache):
-    """Persist header cache (used to speed up future loads), debounced
-    ~400ms - this file accumulates every folder ever opened and can reach
-    tens of MB, so a synchronous rewrite (confirmed 630ms on a real 34MB/
-    2971-entry cache) is worth keeping off the immediate call path,
-    especially if the user opens several folders in quick succession. Same
-    read-through design as save_config/load_config (see save_config's
-    docstring) even though load_header_cache currently has only one,
-    startup-time caller - keeps both header-cache functions safe against a
-    future mid-session caller being added without anyone re-auditing this."""
-    global _pending_header_cache, _header_cache_save_timer
-    _pending_header_cache = cache
-    if _header_cache_save_timer is None:
-        _header_cache_save_timer = QtCore.QTimer()
-        _header_cache_save_timer.setSingleShot(True)
-        _header_cache_save_timer.timeout.connect(_flush_pending_header_cache_write)
-    _header_cache_save_timer.start(400)
+def open_header_cache():
+    """Open the persistent header cache (SQLite, see header_cache.py).
+    Reads HEADER_CACHE_PATH at call time so tests redirecting it stay
+    isolated; the legacy JSON at that path is imported once if present."""
+    return HeaderCacheStore(db_path_for(HEADER_CACHE_PATH), HEADER_CACHE_VERSION,
+                            legacy_json_path=HEADER_CACHE_PATH)
 
 
 def load_collections_index():
@@ -183,9 +123,7 @@ __all__ = [
     "load_config",
     "save_config",
     "flush_pending_config_save",
-    "load_header_cache",
-    "save_header_cache",
-    "flush_pending_header_cache_save",
+    "open_header_cache",
     "load_collections_index",
     "save_collections_index",
 ]

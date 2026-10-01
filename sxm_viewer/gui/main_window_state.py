@@ -30,7 +30,6 @@ from pathlib import Path
 from .._shared import QtCore, QtGui, QtWidgets, log_status, np
 from .. import cmap_registry
 from ..config import load_config, save_config
-from ..config_io import load_header_cache
 from . import theme as ui_theme
 from .constants import UI_FONT_FAMILY, UI_FONT_SIZE
 from .controllers.collection import CollectionController
@@ -440,9 +439,12 @@ def init_state(self):
     # already run concurrently with widget construction above, so this
     # join is typically near-instant rather than paying the full cost.
     self._header_cache_thread.join()
-    self.header_cache = self._header_cache_bg_result.get("cache", {})
-    log_status(f"[Perf] Header cache loaded: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms (background-overlapped) | {len(self.header_cache)} entries")
-    self._header_cache_dirty = False
+    # SQLite store (sxm_viewer/header_cache.py): opening is cheap, rows are
+    # read per folder at load time. None only if the background open crashed.
+    self.header_cache_store = self._header_cache_bg_result.get("store")
+    _hc_store = self.header_cache_store
+    _hc_note = f" | migrated {_hc_store.migrated_entries} legacy JSON entries" if _hc_store is not None and _hc_store.migrated_entries else ""
+    log_status(f"[Perf] Header cache opened: {(time.perf_counter() - _hc_t0) * 1000:.0f} ms wait{_hc_note}")
     # New: store extra view specifications to rebuild per selected file
     # Each spec: { 'caption': str, 'index': int, 'cmap': str }
     self.extra_view_specs = []

@@ -42,13 +42,10 @@ from ..config import (
     CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    HEADER_CACHE_MAX_ENTRIES,
     load_config,
     save_config,
     flush_pending_config_save,
-    load_header_cache,
-    save_header_cache,
-    flush_pending_header_cache_save,
+    open_header_cache,
     load_collections_index,
 )
 from ..data.matrix import MatrixDataset, parse_matrix_filename
@@ -375,7 +372,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         # finished; now the two run concurrently.
         self._header_cache_bg_result = {}
         def _load_header_cache_bg():
-            self._header_cache_bg_result["cache"] = load_header_cache()
+            self._header_cache_bg_result["store"] = open_header_cache()
         self._header_cache_thread = threading.Thread(target=_load_header_cache_bg, daemon=True)
         self._header_cache_thread.start()
         self.setWindowTitle(APP_NAME)
@@ -1548,7 +1545,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         except Exception:
             pass
         try:
-            flush_pending_header_cache_save()
+            store = getattr(self, "header_cache_store", None)
+            if store is not None:
+                store.close()
         except Exception:
             pass
         super().closeEvent(event)
@@ -7053,89 +7052,6 @@ QLabel:hover {{
         self._set_extra_spec_override(spec, key, cmap)
         if self.last_preview:
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
-
-    def _get_cached_header(self, path):
-        """Return cached (header, fds) tuple if file is unchanged."""
-        entry = self.header_cache.get(str(path))
-        if not entry:
-            return None
-        try:
-            mtime = Path(path).stat().st_mtime
-        except Exception:
-            return None
-        if abs(entry.get('mtime', 0.0) - mtime) > 1e-6:
-            return None
-        header = entry.get('header')
-        fds = entry.get('fds')
-        if header is None or fds is None:
-            return None
-        # Record last use for LRU eviction. Refreshed at most once a day so a
-        # fully-cached folder load doesn't force a full cache rewrite each time.
-        now = time.time()
-        if now - entry.get('used', 0.0) > 86400.0:
-            entry['used'] = now
-            self._header_cache_dirty = True
-        return header, fds
-
-    def _store_header_cache(self, path, header, fds):
-        """Store parsed header info for future sessions."""
-        try:
-            mtime = Path(path).stat().st_mtime
-        except Exception:
-            return
-        self.header_cache[str(path)] = {
-            'mtime': mtime,
-            'header': header,
-            'fds': fds,
-            'used': time.time(),
-        }
-        self._header_cache_dirty = True
-
-    def _prune_stale_header_cache_entries(self):
-        """Drop header-cache entries whose source file no longer exists.
-
-        Nothing else ever removes entries from this cache, so left alone it
-        grows across every folder ever opened for as long as the app is
-        used, making the JSON parse at startup slower and slower over time.
-        Only called from _save_header_cache (i.e. when the cache is already
-        being written back to disk), not on every load, so this doesn't add
-        a stat() call per cached entry to the common all-cached-hits path.
-
-        Guarded to run at most once per session: a folder full of files
-        never seen before (many cache misses -> many saves in a row) would
-        otherwise re-scan the entire multi-thousand-entry cache on every
-        single one of those saves, adding a real ~300-400ms each time a
-        session opens several new folders in a row.
-        """
-        if not getattr(self, "_header_cache_pruned_this_session", False):
-            self._header_cache_pruned_this_session = True
-            stale_keys = [key for key in list(self.header_cache.keys()) if not os.path.exists(key)]
-            for key in stale_keys:
-                self.header_cache.pop(key, None)
-        self._evict_lru_header_cache_entries()
-
-    def _evict_lru_header_cache_entries(self):
-        """Cap the header cache at HEADER_CACHE_MAX_ENTRIES, dropping the
-        least-recently-used entries. Pruning deleted files alone isn't enough:
-        every folder ever opened stays cached while its files exist, so the
-        JSON (parsed at every startup) otherwise grows without bound. Entries
-        written before the 'used' stamp existed fall back to the source
-        file's mtime, so recent data outranks old archives."""
-        excess = len(self.header_cache) - HEADER_CACHE_MAX_ENTRIES
-        if excess <= 0:
-            return
-        def _last_used(item):
-            entry = item[1] if isinstance(item[1], dict) else {}
-            return entry.get('used', entry.get('mtime', 0.0))
-        oldest = sorted(self.header_cache.items(), key=_last_used)[:excess]
-        for key, _entry in oldest:
-            self.header_cache.pop(key, None)
-
-    def _save_header_cache(self):
-        if getattr(self, '_header_cache_dirty', False):
-            self._prune_stale_header_cache_entries()
-            save_header_cache(self.header_cache)
-            self._header_cache_dirty = False
 
     def on_clear_views(self):
         self.extra_view_specs = []
