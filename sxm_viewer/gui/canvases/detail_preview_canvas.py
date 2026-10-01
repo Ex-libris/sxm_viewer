@@ -129,6 +129,11 @@ _DEFAULT_MOLECULE_STYLE = {
     "atom_color_map": {},
 }
 
+# Starting multiplier for all preview text (ticks 8pt, title 9pt, labels
+# 10pt at 1.0); Ctrl+wheel adjusts it per canvas within 0.6-2.5. 1.65 is
+# the size the user picked interactively as comfortable.
+DEFAULT_VIEW_FONT_SCALE = 1.65
+
 DISPLAY_PRESETS = ("focus", "analysis", "publication")
 BUILTIN_DEFAULT_DISPLAY_PRESET = "analysis"
 DISPLAY_PRESET_DESCRIPTIONS = {
@@ -311,7 +316,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._profile_show_all_labels = bool(profile_config.get("profile_show_all_labels", False))
         self._profile_overlay_outline = bool(profile_config.get("profile_overlay_outline", True))
         self._measurement_shortcuts_enabled = True
-        self._view_font_scale = 1.0
+        self._view_font_scale = DEFAULT_VIEW_FONT_SCALE
         self._font_family = normalize_font_family(matplotlib.rcParams.get("font.family", [None])[0], "sans-serif")
         self._plot_font_bold = bool(getattr(parent, "_plot_font_bold", False))
         self._plot_font_italic = bool(getattr(parent, "_plot_font_italic", False))
@@ -1193,6 +1198,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 title=title, show_title=self._show_title,
                 font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                 show_ticks=self._show_ticks,
+                font_scale=max(0.6, min(2.5, self._view_font_scale)),
             )
         except Exception:
             return False
@@ -2299,6 +2305,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 title=title, show_title=self._show_title,
                 font_family=self._font_family, plot_style_kwargs=self._plot_style_state(),
                 show_ticks=self._show_ticks,
+                font_scale=max(0.6, min(2.5, self._view_font_scale)),
             )
             cbar_label = self._publication_colorbar_label(v) if self._publication_mode else (v.get('colorbar_label') or v.get('unit', ''))
             if cbar_label and self._show_colorbar:

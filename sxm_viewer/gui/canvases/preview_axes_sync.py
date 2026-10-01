@@ -35,8 +35,13 @@ from ..plot_typography import apply_text_style
 
 
 def sync_axes_to_view(ax, image, view, *, flip, origin, display_extent, title, show_title,
-                       font_family, plot_style_kwargs, show_ticks):
+                       font_family, plot_style_kwargs, show_ticks, font_scale=1.0):
     """Configure `image`/`ax` in place to display `view`.
+
+    `font_scale` is the canvas' `_view_font_scale`; the base sizes here must
+    match `MultiPreviewCanvas._apply_view_font_scale` (title 9pt, ticks 8pt),
+    which is skipped when the scale is unchanged - so unscaled sizes here
+    would silently shrink every image after the first.
 
     `display_extent` must already be resolved by the caller (e.g. via
     `MultiPreviewCanvas._display_extent_for_view`), since that resolution
@@ -93,12 +98,12 @@ def sync_axes_to_view(ax, image, view, *, flip, origin, display_extent, title, s
             pass
 
     if title and show_title:
-        ax.set_title(title, fontsize=9)
+        ax.set_title(title, fontsize=9 * font_scale)
         apply_text_style(ax.title, family=font_family, **plot_style_kwargs)
     else:
         ax.set_title("")
 
-    ax.tick_params(labelsize=8)
+    ax.tick_params(labelsize=8 * font_scale)
     if not show_ticks:
         ax.set_xticks([])
         ax.set_yticks([])
