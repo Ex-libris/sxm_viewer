@@ -9258,6 +9258,75 @@ class MultiPreviewCanvas(FigureCanvas):
             self._notify_views_callback()
         return True
 
+    def open_view_colormap_gallery(self, view):
+        """Pick a colormap for ``view`` from the full Colormap Gallery.
+
+        Card clicks recolor the view live (no undo entry, no owner
+        notification); Apply commits once through ``apply_view_colormap``
+        so undo + per-file persistence behave like a menu pick, and
+        Cancel/close restores the original cmap. Self-contained (no main
+        window hook) so it works the same in pop-out previews.
+        """
+        if view is None:
+            return
+        from ..colormap_gallery import ColormapGalleryDialog
+        from ..colormap_manager import ColormapManager
+        from ...cmap_sorting import ColormapSorter, DEFAULT_STRATEGY
+
+        original = str(view.get("cmap") or "viridis")
+        try:
+            config = load_config() or {}
+        except Exception:
+            config = {}
+
+        def _usage_stats():
+            stats = {}
+            for base, rec in (config.get("colormap_usage") or {}).items():
+                try:
+                    count, last = rec
+                    stats[str(base)] = (int(count), float(last))
+                except Exception:
+                    continue
+            return stats
+
+        def _show(cmap_name):
+            if str(view.get("cmap") or "") == cmap_name:
+                return
+            if len(self.views or []) == 1 and self.views[0] is view:
+                self.set_cmap_for_current_views(cmap_name)
+            else:
+                view["cmap"] = cmap_name
+                self._redraw()
+
+        def _on_pending(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            _show(cmap_registry.join_cmap_name(name, is_reversed))
+
+        applied = []
+
+        def _on_applied(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            applied.append(cmap_registry.join_cmap_name(name, is_reversed))
+
+        manager = ColormapManager(original, parent=self)
+        manager.pending_changed.connect(_on_pending)
+        manager.applied_changed.connect(_on_applied)
+        dlg = ColormapGalleryDialog(
+            manager,
+            sorter=ColormapSorter(usage_provider=_usage_stats),
+            strategy=config.get("colormap_sort_strategy") or DEFAULT_STRATEGY,
+            parent=self)
+        dlg.exec_()
+        manager.deleteLater()
+        if applied:
+            # Roll the live preview back silently, then commit once so the
+            # undo stack records original -> chosen.
+            view["cmap"] = original
+            if not self.apply_view_colormap(applied[-1], target_view=view, notify=True):
+                self._redraw()
+        else:
+            _show(original)
+
     def _show_molecule_menu(self, event, mol):
         style = QtWidgets.QApplication.style()
         icon = lambda std: style.standardIcon(std) if style else QtGui.QIcon()
@@ -10213,20 +10282,19 @@ class MultiPreviewCanvas(FigureCanvas):
         cmap_actions = {}
         cmap_group = QtWidgets.QActionGroup(self)
         cmap_group.setExclusive(True)
-        common_cmaps = cmap_registry.featured_cmap_names("general")
-        available_cmaps = cmap_registry.all_cmap_names()
-        seen_cmaps = []
-        for cmap_name in common_cmaps + available_cmaps:
-            if cmap_name not in seen_cmaps:
-                seen_cmaps.append(cmap_name)
+        # Only a short featured list goes inline; the full catalogue (which
+        # can be ~1000 maps with the extras package) is browsed in the
+        # gallery instead of a screen-filling "More..." submenu.
         current_cmap = str((view or {}).get("cmap") or "viridis")
-        more_cmaps_menu = None
-        for idx, cmap_name in enumerate(seen_cmaps):
-            parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
-            if parent_menu is None:
-                more_cmaps_menu = cmap_menu.addMenu("More...")
-                parent_menu = more_cmaps_menu
-            act = parent_menu.addAction(cmap_name)
+        shown_cmaps = []
+        for cmap_name in cmap_registry.featured_cmap_names("general"):
+            if cmap_name not in shown_cmaps:
+                shown_cmaps.append(cmap_name)
+        shown_cmaps = shown_cmaps[:12]
+        if current_cmap not in shown_cmaps:
+            shown_cmaps.append(current_cmap)
+        for cmap_name in shown_cmaps:
+            act = cmap_menu.addAction(cmap_name)
             act.setCheckable(True)
             act.setChecked(cmap_name == current_cmap)
             try:
@@ -10235,6 +10303,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             cmap_group.addAction(act)
             cmap_actions[act] = cmap_name
+        cmap_menu.addSeparator()
+        cmap_gallery_act = cmap_menu.addAction("\U0001F3A8 Colormap gallery...")
+        cmap_gallery_act.setEnabled(view is not None)
         if callable(self._apply_popup_style_callback):
             cmap_menu.addSeparator()
             popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
@@ -10498,6 +10569,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self.apply_view_colormap(cmap_actions[chosen], target_view=view, notify=True)
             except Exception:
                 pass
+        elif chosen == cmap_gallery_act:
+            self.open_view_colormap_gallery(view)
         elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
             try:
                 self._apply_popup_style_callback()
