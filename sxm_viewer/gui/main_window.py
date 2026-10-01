@@ -535,6 +535,22 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Metadata font size control (user preference persisted to config)
         try:
             meta_font_h = QtWidgets.QHBoxLayout()
+            # Copy as a clean two-column table; the rich-text panel itself
+            # pastes as a jumble of nested tables.
+            self.meta_copy_btn = QtWidgets.QToolButton()
+            self.meta_copy_btn.setText("Copy metadata")
+            self.meta_copy_btn.setToolTip(
+                "Copy this image's metadata as a table (Word/Excel/PowerPoint) "
+                "or aligned text columns (plain-text editors). "
+                "The arrow also offers every raw header field."
+            )
+            self.meta_copy_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+            self.meta_copy_btn.clicked.connect(lambda: self.on_copy_metadata(False))
+            meta_copy_menu = QtWidgets.QMenu(self.meta_copy_btn)
+            meta_copy_menu.addAction("Copy summary (as shown)", lambda: self.on_copy_metadata(False))
+            meta_copy_menu.addAction("Copy full header (all fields)", lambda: self.on_copy_metadata(True))
+            self.meta_copy_btn.setMenu(meta_copy_menu)
+            meta_font_h.addWidget(self.meta_copy_btn)
             meta_font_h.addStretch(1)
             meta_font_h.addWidget(QtWidgets.QLabel("Font:"))
             self.meta_font_spin = QtWidgets.QSpinBox()
@@ -9448,6 +9464,12 @@ QLabel:hover {{
             act.triggered.connect(lambda checked, v=val: self.on_set_spectro_size(v))
             size_grp.addAction(act)
         return menu
+
+    def on_copy_metadata(self, full_header=False):
+        if viewer_preview.copy_metadata(self, full_header=full_header):
+            self._show_toast("Full header copied" if full_header else "Metadata copied", duration_ms=1400)
+        else:
+            self._show_toast("Select an image first", duration_ms=1400)
 
     def on_meta_font_changed(self, val:int):
         try:
