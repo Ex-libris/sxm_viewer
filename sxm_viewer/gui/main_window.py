@@ -7732,8 +7732,14 @@ QLabel:hover {{
                 view = item
                 manual_length = self.preview_canvas._scale_bar_manual_length(view)
                 size, label = self.preview_canvas._calculate_best_scale_bar(width, unit, manual_length=manual_length)
-                sb_text_col = self.preview_canvas._scale_bar_setting('text_color', view=view) or text_color
-                sb_bar_col = self.preview_canvas._scale_bar_setting('bar_color', view=view) or text_color
+                try:
+                    auto_col = self.preview_canvas._scale_bar_auto_color(
+                        ax, view, size, font_scale=font_scale, anchor=sb_pos, loc='center'
+                    )
+                except Exception:
+                    auto_col = text_color
+                sb_text_col = self.preview_canvas._scale_bar_setting('text_color', view=view) or auto_col
+                sb_bar_col = self.preview_canvas._scale_bar_setting('bar_color', view=view) or auto_col
                 sb_font = self.preview_canvas._scale_bar_setting('font_family', view=view, default='sans-serif')
                 sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
                                      pad=0.4, borderpad=0, sep=3, frameon=False,
