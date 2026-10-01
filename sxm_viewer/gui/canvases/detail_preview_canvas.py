@@ -47,6 +47,7 @@ from .canvas_rendering import iso_export_filename
 from ..dialogs.svg_molecule_style import SvgMoleculeStyleDialog
 from . import preview_export_figures
 from .preview_axes_sync import sync_axes_to_view, style_colorbar
+from . import colorbar_fit
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
@@ -814,13 +815,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 artist = cbar.ax.text(
                     x, y, text,
                     color=endpoint_colors[min(index, len(endpoint_colors) - 1)],
-                    fontsize=max(7.0, 8.5 * getattr(self, "_view_font_scale", 1.0)),
                     ha=ha,
                     va=va,
+                    rotation=90 if orientation == "vertical" else 0,
                     transform=cbar.ax.transAxes,
                     clip_on=True,
                     zorder=6,
                 )
+                colorbar_fit.request_font_size(artist, max(7.0, 8.5 * getattr(self, "_view_font_scale", 1.0)))
                 apply_text_style(artist, family=self._font_family, **self._plot_style_state())
                 endpoint_artists.append(artist)
             cbar._publication_endpoint_artists = endpoint_artists
@@ -838,12 +840,13 @@ class MultiPreviewCanvas(FigureCanvas):
                 0.5,
                 self._publication_colorbar_label(view),
                 color="#f5f5f5",
-                fontsize=max(7.0, 9.5 * getattr(self, "_view_font_scale", 1.0)),
                 ha="center",
                 va="center",
+                rotation=90 if orientation == "vertical" else 0,
                 transform=cbar.ax.transAxes,
                 zorder=5,
             )
+            colorbar_fit.request_font_size(label_artist, max(7.0, 9.5 * getattr(self, "_view_font_scale", 1.0)))
             apply_text_style(label_artist, family=self._font_family, **self._plot_style_state())
             cbar._publication_label_artist = label_artist
         except Exception:
@@ -1103,6 +1106,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._apply_view_theme()
             if self._compute_font_sig() != getattr(self, "_font_sig", None):
                 self._apply_view_font_scale()
+            else:
+                self._fit_colorbar_texts()
             self._update_highlight_artists()
         finally:
             self._suppress_internal_draw_requests = False
@@ -2025,6 +2030,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if getattr(self, "views", None):
                 scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
                 self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+                self._fit_colorbar_texts()
                 self.draw_idle()
         except Exception:
             pass
@@ -2138,14 +2144,16 @@ class MultiPreviewCanvas(FigureCanvas):
             if cbar_label and self._show_colorbar:
                 try:
                     divider = make_axes_locatable(ax)
+                    cax = colorbar_fit.append_colorbar_axes(
+                        divider, ax, self._colorbar_orientation,
+                        self._colorbar_text_pt(), 0.08 if self._colorbar_orientation == 'horizontal' else 0.02,
+                    )
                     if self._colorbar_orientation == 'horizontal':
-                        cax = divider.append_axes("bottom", size="5%", pad=0.08)
                         cbar = self.fig.colorbar(im, cax=cax, orientation='horizontal')
                         cbar.ax.xaxis.set_label_coords(0.5, 0.5)
                         cbar.ax.xaxis.label.set_horizontalalignment('center')
                         cbar.ax.xaxis.label.set_verticalalignment('center')
                     else:
-                        cax = divider.append_axes("right", size="4%", pad=0.02)
                         cbar = self.fig.colorbar(im, cax=cax, orientation='vertical')
                         cbar.ax.yaxis.set_label_coords(0.5, 0.5)
                         cbar.ax.yaxis.label.set_horizontalalignment('center')
@@ -4841,17 +4849,18 @@ class MultiPreviewCanvas(FigureCanvas):
         for cbar in getattr(self, '_colorbars', []):
             try:
                 cbar.ax.tick_params(labelsize=tick_size)
-                cbar.ax.yaxis.label.set_fontsize(label_size)
-                cbar.ax.xaxis.label.set_fontsize(label_size)
+                colorbar_fit.request_font_size(cbar.ax.yaxis.label, label_size)
+                colorbar_fit.request_font_size(cbar.ax.xaxis.label, label_size)
+                colorbar_fit.set_colorbar_thickness(cbar, self._colorbar_text_pt(scale))
                 apply_text_style(cbar.ax.yaxis.label, family=self._font_family, **self._plot_style_state())
                 apply_text_style(cbar.ax.xaxis.label, family=self._font_family, **self._plot_style_state())
                 for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
                     apply_text_style(lbl, family=self._font_family, **self._plot_style_state())
                 publication_label = getattr(cbar, "_publication_label_artist", None)
                 if publication_label is not None:
-                    publication_label.set_fontsize(max(7.0, 9.5 * scale))
+                    colorbar_fit.request_font_size(publication_label, max(7.0, 9.5 * scale))
                 for endpoint in getattr(cbar, "_publication_endpoint_artists", []) or []:
-                    endpoint.set_fontsize(max(7.0, 8.5 * scale))
+                    colorbar_fit.request_font_size(endpoint, max(7.0, 8.5 * scale))
             except Exception:
                 pass
         # Update scale bar font size
@@ -4875,10 +4884,29 @@ class MultiPreviewCanvas(FigureCanvas):
                     lbl.set_fontsize(8 * scale)
                 except Exception:
                     pass
+        # Fit before layout too, so an overflowing in-bar label doesn't
+        # inflate tight_layout's margins; then refit against the final boxes.
+        self._fit_colorbar_texts()
         self._apply_tight_layout_safe(pad=max(0.25, 0.35 * scale))
+        self._fit_colorbar_texts()
         self._font_sig = self._compute_font_sig()
         if not getattr(self, "_suppress_internal_draw_requests", False):
             self.draw_idle()
+
+    def _colorbar_text_pt(self, scale=None):
+        """Point size of the largest text drawn inside a colorbar - drives
+        the bar's thickness (see colorbar_fit)."""
+        if scale is None:
+            scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        if self._publication_mode:
+            return max(7.0, 9.5 * scale)
+        return 10 * scale
+
+    def _fit_colorbar_texts(self):
+        try:
+            colorbar_fit.fit_all_colorbar_texts(getattr(self, "_colorbars", None), self.fig)
+        except Exception:
+            pass
 
     def _compute_font_sig(self):
         """Cheap fingerprint of everything _apply_view_font_scale reads - see
