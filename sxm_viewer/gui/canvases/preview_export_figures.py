@@ -27,6 +27,7 @@ from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from ... import cmap_registry
 from ..plot_typography import apply_text_style
+from . import colorbar_fit
 
 
 def render_view_figure(canvas, view):
@@ -86,15 +87,17 @@ def render_view_figure(canvas, view):
     if cbar_label and canvas._show_colorbar:
         try:
             divider = make_axes_locatable(ax)
+            cax = colorbar_fit.append_colorbar_axes(
+                divider, ax, canvas._colorbar_orientation, canvas._colorbar_text_pt(),
+                0.08 if canvas._colorbar_orientation == 'horizontal' else 0.02,
+            )
             if canvas._colorbar_orientation == 'horizontal':
-                cax = divider.append_axes("bottom", size="9%" if publication else "5%", pad=0.08)
                 cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
                 cbar.set_label(cbar_label)
                 cbar.ax.xaxis.set_label_coords(0.5, 0.5)
                 cbar.ax.xaxis.label.set_horizontalalignment('center')
                 cbar.ax.xaxis.label.set_verticalalignment('center')
             else:
-                cax = divider.append_axes("right", size="4%", pad=0.02)
                 cbar = fig.colorbar(im, cax=cax, orientation='vertical')
                 cbar.set_label(cbar_label)
                 cbar.ax.yaxis.set_label_coords(0.5, 0.5)
@@ -177,6 +180,7 @@ def render_view_figure(canvas, view):
         fig.tight_layout()
     except Exception:
         pass
+    colorbar_fit.fit_all_colorbar_texts([cbar], fig)
     return fig
 
 def render_views_grid(canvas, views):
@@ -198,6 +202,7 @@ def render_views_grid(canvas, views):
     fig.set_facecolor(fig_face)
     text_color = '#f5f5f5' if dark else '#111111'
     font_scale = getattr(canvas, '_view_font_scale', 1.0)
+    grid_cbars = []
     for i, view in enumerate(views, 1):
         ax = fig.add_subplot(rows, cols, i)
         arr = np.asarray(view.get('arr'))
@@ -255,9 +260,15 @@ def render_views_grid(canvas, views):
                 divider = make_axes_locatable(ax)
                 orientation = 'horizontal' if publication else 'vertical'
                 side = "bottom" if publication else "right"
-                cax = divider.append_axes(side, size="9%" if publication else "5%", pad=0.08 if publication else 0.05)
+                cax = colorbar_fit.append_colorbar_axes(
+                    divider, ax, orientation, canvas._colorbar_text_pt(font_scale),
+                    0.08 if publication else 0.05,
+                )
                 cbar = fig.colorbar(im, cax=cax, orientation=orientation)
-                cbar.set_label(cbar_label, size=10 * font_scale)
+                cbar.set_label(cbar_label)
+                colorbar_fit.request_font_size(cbar.ax.yaxis.label, 10 * font_scale)
+                colorbar_fit.request_font_size(cbar.ax.xaxis.label, 10 * font_scale)
+                grid_cbars.append(cbar)
                 if publication:
                     canvas._style_publication_colorbar(cbar, im, view)
                 else:
@@ -284,6 +295,7 @@ def render_views_grid(canvas, views):
         for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
             apply_text_style(lbl, family=canvas._font_family, **canvas._plot_style_state())
     fig.tight_layout()
+    colorbar_fit.fit_all_colorbar_texts(grid_cbars, fig)
     return fig
 
 def style_export_figure(canvas, fig, ax, cbar):
@@ -336,8 +348,8 @@ def style_export_figure(canvas, fig, ax, cbar):
     if cbar is not None:    
         try:
             cbar.ax.tick_params(labelsize=tick_size)
-            cbar.ax.yaxis.label.set_fontsize(label_size)
-            cbar.ax.xaxis.label.set_fontsize(label_size)
+            colorbar_fit.request_font_size(cbar.ax.yaxis.label, label_size)
+            colorbar_fit.request_font_size(cbar.ax.xaxis.label, label_size)
             apply_text_style(cbar.ax.yaxis.label, family=canvas._font_family, **canvas._plot_style_state())
             apply_text_style(cbar.ax.xaxis.label, family=canvas._font_family, **canvas._plot_style_state())
             for lbl in list(cbar.ax.get_xticklabels()) + list(cbar.ax.get_yticklabels()):
