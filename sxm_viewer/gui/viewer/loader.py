@@ -994,11 +994,15 @@ def load_files(
         viewer.thumb_multi_select = set()
     cache_hits = 0
     cache_miss = 0
-    for t in txts:
+    # One batched lookup for the folder instead of reading every header ever
+    # cached; new/changed headers are written back in one transaction.
+    store = getattr(viewer, "header_cache_store", None)
+    pending = [t for t in txts if not (append and str(t) in (existing_headers or {}))]
+    cached_headers = store.lookup_many(pending) if store is not None else {}
+    to_store = []
+    for t in pending:
         key = str(t)
-        if append and key in (existing_headers or {}):
-            continue
-        cached = viewer._get_cached_header(t)
+        cached = cached_headers.get(key)
         if cached:
             hdr, fds = cached
             cache_hits += 1
@@ -1006,12 +1010,16 @@ def load_files(
             try:
                 hdr, fds = parse_header(t)
                 cache_miss += 1
-                viewer._store_header_cache(t, hdr, fds)
             except Exception:
                 continue
+            try:
+                to_store.append((t, Path(t).stat().st_mtime, hdr, fds))
+            except Exception:
+                pass
         viewer.headers[key] = (hdr, fds)
-    if cache_miss:
-        viewer._save_header_cache()
+    if store is not None:
+        store.store_many(to_store)
+        store.prune_folders({Path(t).parent for t in txts}, keep_paths=txts)
     log_status(f"Headers loaded (hits={cache_hits}, miss={cache_miss})")
     wsxm_popup_keys = []
     if getattr(viewer, "wsxm_auto_popup_enabled", True):

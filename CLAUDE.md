@@ -45,9 +45,19 @@ python -m sxm_viewer
 ### Package layout (`sxm_viewer/`)
 
 - `config.py`, `config_defaults.py`, `config_io.py` — user config file
-  (`~/.sxm_viewer_config.json`), header cache (`~/.sxm_viewer_header_cache.json`,
-  bump `HEADER_CACHE_VERSION` on breaking format changes), and in-memory
-  cache size limits (`CHANNEL_DATA_CACHE_LIMIT`, `FILTERED_CACHE_LIMIT`).
+  (`~/.sxm_viewer_config.json`), header cache, and in-memory cache size
+  limits (`CHANNEL_DATA_CACHE_LIMIT`, `FILTERED_CACHE_LIMIT`).
+- `header_cache.py` — Qt-free SQLite store of parsed `(header, fds)` per
+  header file (`~/.sxm_viewer_header_cache.sqlite3`, opened via
+  `config_io.open_header_cache`). Folder loads do one batched
+  `lookup_many` and write only misses (`store_many`), so cost scales with
+  the folder, not with every folder ever opened — it replaced a single JSON
+  file that was parsed in full at startup and grew to 50 MB. Rows are
+  validated by file mtime; `PRAGMA user_version` holds
+  `HEADER_CACHE_VERSION` (bump it on breaking format changes - rows are
+  wiped). The legacy `.json` is imported once on first open and otherwise
+  ignored. Stale rows are pruned per loaded folder only, so unplugged
+  drives keep their entries.
 - `_shared.py` — common Qt/matplotlib/numpy imports re-exported for the GUI
   layer, plus a process-wide patch of `FigureCanvasQTAgg.resizeEvent` to guard
   against non-finite/zero resize events. `matplotlib.use("Agg")` is set here.

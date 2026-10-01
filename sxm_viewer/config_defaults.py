@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".sxm_viewer_config.json"
+# Legacy JSON location; the live cache is the .sqlite3 sibling (header_cache.py).
 HEADER_CACHE_PATH = Path.home() / ".sxm_viewer_header_cache.json"
 HEADER_CACHE_VERSION = 2
 COLLECTIONS_INDEX_PATH = Path.home() / ".sxm_viewer_collections_index.json"

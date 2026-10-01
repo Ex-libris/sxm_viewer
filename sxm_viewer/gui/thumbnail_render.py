@@ -45,8 +45,6 @@ from ..config import (
     FILTERED_CACHE_LIMIT,
     load_config,
     save_config,
-    load_header_cache,
-    save_header_cache,
 )
 from ..data.io import (
     parse_header,
