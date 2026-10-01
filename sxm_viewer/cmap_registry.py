@@ -72,14 +72,13 @@ _FORCED_CMAP = None
 # ``_r`` suffix baked into the name (legacy joined strings come out of
 # featured_cmap_names, which composes them on the fly).
 _FEATURED = {
-    # Mirrors the historical `common_cmaps` shortlist from the preview
-    # canvas context menu (reversed Blues is the app's default
-    # thumbnail/preview cmap — keep it featured).
+    # User-chosen shortlist, in this order (reversed Blues is the app's
+    # default thumbnail/preview cmap — keep it featured). "arctic" comes
+    # from the optional `colormaps` package and drops out without it.
     "general": [
-        ("viridis", False), ("plasma", False), ("inferno", False),
-        ("magma", False), ("cividis", False), ("turbo", False),
-        ("gray", False), ("afmhot", False), ("Blues", True),
-        ("RdBu", True), ("coolwarm", False),
+        ("afmhot", False), ("Greys", True), ("gray", False),
+        ("inferno", False), ("coolwarm", False), ("Blues", True),
+        ("arctic", False), ("magma", False),
     ],
     # Historical gui/controllers/image_compare.py TOPO_CMAPS.
     "topo": [

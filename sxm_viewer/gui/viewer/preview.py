@@ -355,6 +355,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
                    f"{chip_text}</span> <span style='color:{label_color}'>({esc(tag_label)})</span>"
     # abs z + dzs
     ch_lines = ''
+    ch_rows = []  # plain (label, value) twins of ch_lines, for copying
     abs_nm = None
     if effective_tag == 'constant-height':
         abs_pm = taginfo.get('abs_z_pm', None)
@@ -384,6 +385,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
             abs_nm = abs_pm / 1000.0
             suffix = " (inferred)" if inferred else ""
             ch_lines += f"<div>Piezo Z (abs){suffix}: <b>{abs_nm:.3f} nm</b></div>"
+            ch_rows.append((f"Piezo Z (abs){suffix}", f"{abs_nm:.3f} nm"))
             # persist when we already tagged as CH
             if tag_label == 'constant-height' and taginfo.get('abs_z_pm') != abs_pm:
                 try:
@@ -397,9 +399,11 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         dz_prev_nonch, prevname = viewer._dz_vs_last_before_ch(header_path)
         if dz_prev_nonch is not None:
             ch_lines += f"<div>dz vs prev non-CH (<i>{esc(prevname)}</i>): <b>{dz_prev_nonch:+.0f} pm</b> ({dz_prev_nonch/1000.0:+.3f} nm)</div>"
+            ch_rows.append((f"dz vs prev non-CH ({prevname})", f"{dz_prev_nonch:+.0f} pm ({dz_prev_nonch/1000.0:+.3f} nm)"))
         dz_prev_ch, prevch_name = viewer._dz_vs_previous_ch(header_path)
         if dz_prev_ch is not None:
             ch_lines += f"<div>dz vs prev CH (<i>{esc(prevch_name)}</i>): <b>{dz_prev_ch:+.0f} pm</b> ({dz_prev_ch/1000.0:+.3f} nm)</div>"
+            ch_rows.append((f"dz vs prev CH ({prevch_name})", f"{dz_prev_ch:+.0f} pm ({dz_prev_ch/1000.0:+.3f} nm)"))
 
     # control params
     params = {}
@@ -452,15 +456,14 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
         ('overscan[%]', 'Overscan (%)', header.get('overscan[%]'), '%'),
     ]
     scan_rows = []
+    scan_copy_rows = []
     for key, label, val, extra_unit in scan_entries:
         if val is None or val == '':
             continue
-        if isinstance(val, float):
-            val_txt = f"{val:.3f}"
-        else:
-            val_txt = esc(val)
+        raw_txt = f"{val:.3f}" if isinstance(val, float) else str(val)
         unit_txt = extra_unit or ''
-        scan_rows.append(f"<tr><td>{esc(label)}</td><td style='text-align:right'>{val_txt} {esc(unit_txt)}</td></tr>")
+        scan_rows.append(f"<tr><td>{esc(label)}</td><td style='text-align:right'>{esc(raw_txt)} {esc(unit_txt)}</td></tr>")
+        scan_copy_rows.append((label, f"{raw_txt} {unit_txt}".strip()))
     scan_section = ""
     if scan_rows:
         scan_section = f"""
@@ -515,6 +518,71 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     if zero_offset is not None:
         relative_row = f"<tr><td style='color:{label_color}'>Relative zero</td><td style='text-align:right'>{zero_offset:.6g} {esc(unit_display)}</td></tr>"
 
+    # Plain-data twin of the HTML below, for "Copy metadata" (the rendered
+    # rich text pastes as a jumble of nested tables). Keep in step with it.
+    def _plain(v):
+        return "" if v is None else str(v).strip()
+
+    def _num(v, precision=3):
+        try:
+            return f"{float(v):.{precision}f}".rstrip('0').rstrip('.')
+        except Exception:
+            return _plain(v)
+
+    # Nanonis scans are shown via a converted cache .txt; name the real
+    # source file the user knows instead.
+    source_path = str(header.get('ConvertedSource') or header_path)
+    general = [
+        ("File", Path(source_path).name),
+        ("Path", source_path),
+        ("Tag", tag_label or (f"{hinted_label} (from header)" if hinted_label else "")),
+        ("Date", date),
+        ("Time", time),
+        ("Bias", _fmt_overlay_number(bias, bias_unit) if bias is not None else ""),
+        ("Setpoint", _fmt_overlay_number(setp, setp_unit) if setp is not None else ""),
+        ("User", user),
+        ("Image size", f"{_num(x_range)} x {_num(y_range)} {_plain(x_unit)}"
+            if x_range is not None and y_range is not None else ""),
+        ("Pixels", f"{_num(xpix, 0)} x {_num(ypix, 0)}"
+            if xpix is not None and ypix is not None else ""),
+        ("X/Y center", f"{_num(x_center)} / {_num(y_center)} {_plain(x_unit)}"
+            if x_center is not None and y_center is not None else ""),
+    ]
+    channel = [
+        ("Index", channel_idx),
+        ("Caption", cap),
+        ("Unit (orig)", phys_orig),
+        ("Normalized (SI)", unit_normalized),
+        ("Shown unit", unit_display),
+        ("Relative zero", f"{zero_offset:.6g} {unit_display}" if zero_offset is not None else ""),
+        ("Scale", scale),
+        ("Offset", offset),
+        ("Stats", stats),
+    ]
+    sections = [
+        ("General", [(k, _plain(v)) for k, v in general if _plain(v)]),
+        ("Channel", [(k, _plain(v)) for k, v in channel if _plain(v)]),
+        ("Constant height", ch_rows),
+        ("Control params", [(str(k), _plain(v)) for k, v in params.items()]),
+        ("Scan metadata", scan_copy_rows),
+    ]
+    if show_preview_specs and spec_entries:
+        spec_rows = []
+        for idx, spec in enumerate(spec_entries, 1):
+            name = Path(spec['path']).name
+            if spec.get('matrix_index') is not None:
+                name = f"{name} [{spec.get('matrix_index')}]"
+            xs, ys = spec.get('x'), spec.get('y')
+            pos = f"{xs:.1f} / {ys:.1f} nm" if xs is not None and ys is not None else "n/a"
+            spec_rows.append((f"S{idx}  {name}", pos))
+        sections.append((f"Spectroscopies ({len(spec_entries)})", spec_rows))
+    viewer._last_metadata_copy = {
+        "title": Path(source_path).name,
+        "sections": [(t, rows) for t, rows in sections if rows],
+        "header": dict(header or {}),
+        "channel": dict(fd or {}),
+    }
+
     html = f"""
     <div style='font-family:{font_family}; font-size:{font_size}px; color:{text_color}; background: transparent;'>
       <div style='font-weight:600; font-size:1.15em; margin-bottom:4px'>{esc(filename)} {tag_chip}</div>
@@ -549,6 +617,60 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
     </div>
     """
     return html
+
+
+def _metadata_clipboard_text(title, sections):
+    """(plain, html) clipboard forms of metadata ``sections``
+    (``[(section, [(label, value), ...]), ...]``).
+
+    Plain text is two aligned columns under section headings (reads well
+    in any editor or e-mail); the HTML is a real table that Word, Excel,
+    PowerPoint and OneNote paste as rows and cells."""
+    def esc(s):
+        return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    labels = [lbl for _t, rows in sections for lbl, _v in rows]
+    width = min(max((len(lbl) for lbl in labels), default=0), 40) + 2
+    lines = [title, "=" * len(title)]
+    for sec_title, rows in sections:
+        lines += ["", sec_title, "-" * len(sec_title)]
+        # Labels longer than the column still keep a two-space gap.
+        lines += [f"{lbl:<{width}}{val}" if len(lbl) < width - 1 else f"{lbl}  {val}"
+                  for lbl, val in rows]
+    plain = "\n".join(lines) + "\n"
+    cell = "border:1px solid #bbb; padding:2px 8px; font-family:Calibri, Arial, sans-serif; font-size:10pt;"
+    parts = [
+        "<table style='border-collapse:collapse'>",
+        f"<tr><th colspan='2' style='{cell} text-align:left; background:#dfe8f6'>{esc(title)}</th></tr>",
+    ]
+    for sec_title, rows in sections:
+        parts.append(f"<tr><th colspan='2' style='{cell} text-align:left; background:#f0f0f0'>{esc(sec_title)}</th></tr>")
+        parts += [f"<tr><td style='{cell}'>{esc(lbl)}</td><td style='{cell}'>{esc(val)}</td></tr>"
+                  for lbl, val in rows]
+    parts.append("</table>")
+    return plain, "".join(parts)
+
+
+def copy_metadata(viewer, full_header=False):
+    """Copy the shown image's metadata to the clipboard as a table.
+
+    ``full_header`` copies every raw header/channel field instead of the
+    curated panel summary. Returns False when nothing is shown yet."""
+    info = getattr(viewer, "_last_metadata_copy", None)
+    if not info:
+        return False
+    sections = info["sections"]
+    if full_header:
+        sections = [
+            ("File header", [(str(k), str(v)) for k, v in info["header"].items()]),
+            ("Channel fields", [(str(k), str(v)) for k, v in info["channel"].items()]),
+        ]
+        sections = [(t, rows) for t, rows in sections if rows]
+    plain, html = _metadata_clipboard_text(info["title"], sections)
+    mime = QtCore.QMimeData()
+    mime.setText(plain)
+    mime.setHtml(html)
+    QtWidgets.QApplication.clipboard().setMimeData(mime)
+    return True
 
 
 def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap_override=None, use_local_cmap=False):

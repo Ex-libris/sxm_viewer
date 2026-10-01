@@ -535,6 +535,22 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Metadata font size control (user preference persisted to config)
         try:
             meta_font_h = QtWidgets.QHBoxLayout()
+            # Copy as a clean two-column table; the rich-text panel itself
+            # pastes as a jumble of nested tables.
+            self.meta_copy_btn = QtWidgets.QToolButton()
+            self.meta_copy_btn.setText("Copy metadata")
+            self.meta_copy_btn.setToolTip(
+                "Copy this image's metadata as a table (Word/Excel/PowerPoint) "
+                "or aligned text columns (plain-text editors). "
+                "The arrow also offers every raw header field."
+            )
+            self.meta_copy_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+            self.meta_copy_btn.clicked.connect(lambda: self.on_copy_metadata(False))
+            meta_copy_menu = QtWidgets.QMenu(self.meta_copy_btn)
+            meta_copy_menu.addAction("Copy summary (as shown)", lambda: self.on_copy_metadata(False))
+            meta_copy_menu.addAction("Copy full header (all fields)", lambda: self.on_copy_metadata(True))
+            self.meta_copy_btn.setMenu(meta_copy_menu)
+            meta_font_h.addWidget(self.meta_copy_btn)
             meta_font_h.addStretch(1)
             meta_font_h.addWidget(QtWidgets.QLabel("Font:"))
             self.meta_font_spin = QtWidgets.QSpinBox()
@@ -762,9 +778,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.unit_relative_cb = QtWidgets.QCheckBox("Zero")
         self.unit_relative_cb.setChecked(self.display_units_relative)
         self.unit_relative_cb.setToolTip("Display values relative to the current zero/reference")
-        self.relative_axes_cb = QtWidgets.QCheckBox("Axes")
+        self.relative_axes_cb = QtWidgets.QCheckBox("Relative axes")
         self.relative_axes_cb.setChecked(self.relative_axes)
-        self.relative_axes_cb.setToolTip("Use relative axes in the preview")
+        self.relative_axes_cb.setToolTip("Show preview axes relative to the image origin instead of absolute positions")
         # Keep the thumbnails header simple so the preview workspace owns the channel workflow.
         header_h = QtWidgets.QHBoxLayout()
         header_h.setContentsMargins(0,0,0,0)
@@ -980,8 +996,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addWidget(self.preview_cmap_combo)
         preview_state_row.addWidget(self.preview_cmap_star_btn)
         preview_state_row.addWidget(self.preview_cmap_gallery_btn)
-        preview_state_row.addSpacing(8)
+        preview_state_sep = QtWidgets.QFrame()
+        preview_state_sep.setFrameShape(QtWidgets.QFrame.VLine)
+        preview_state_sep.setFrameShadow(QtWidgets.QFrame.Sunken)
+        preview_state_row.addSpacing(4)
+        preview_state_row.addWidget(preview_state_sep)
+        preview_state_row.addSpacing(4)
         preview_state_row.addWidget(self.preview_zero_cb)
+        preview_state_row.addWidget(self.relative_axes_cb)
         preview_state_row.addStretch(1)
         preview_workspace_layout.addLayout(preview_state_row)
         preview_panel_layout.addWidget(self.preview_workspace_frame)
@@ -1231,6 +1253,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             state_cb=lambda: self.display_units_relative,
             tooltip="Display values relative to the current zero/reference",
         )
+        self.preview_canvas.set_relative_axes_menu_callback(self.on_relative_axes_toggled)
         self.preview_canvas.set_compare_menu_callback(
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
             state_cb=self.compare_menu_state,
@@ -1302,12 +1325,12 @@ class SXMGridViewer(QtWidgets.QWidget):
                 source_canvas=self.preview_canvas,
                 persist=False,
             )
-        # An explicitly chosen default preset is applied on top of the last
-        # saved display, transiently - so "Back to custom display" still
-        # returns to the user's own tweaks. Deferred until the window is
-        # fully constructed (the preset notifies the main window).
-        if self.get_default_display_preset():
-            QtCore.QTimer.singleShot(0, self._apply_startup_display_preset)
+        # The default preset (the user's pick, else built-in Analysis) is
+        # applied on top of the last saved display, transiently - so "Back
+        # to custom display" still returns to the user's own tweaks.
+        # Deferred until the window is fully constructed (the preset
+        # notifies the main window).
+        QtCore.QTimer.singleShot(0, self._apply_startup_display_preset)
         self.quick_crop_toggle_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
         self.quick_crop_toggle_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
@@ -6003,6 +6026,9 @@ QLabel:hover {{
             self.image_meta.append({'path': Path(p), 'time': dt})
 
     def _build_metadata_html(self, header_path:Path, header:dict, fd:dict, channel_idx:int, unit_normalized:str, unit_display:str, arr_display:np.ndarray, zero_offset:float|None) -> str:
+        # Remember the inputs so a metadata font change can re-render just
+        # this HTML (see on_meta_font_changed) without rebuilding the preview.
+        self._last_metadata_html_args = (header_path, header, fd, channel_idx, unit_normalized, unit_display, arr_display, zero_offset)
         return viewer_preview._build_metadata_html(self, header_path, header, fd, channel_idx, unit_normalized, unit_display, arr_display, zero_offset)
 
     def _build_single_channel_view(self, header_path_str, channel_idx: int, *, cmap_override=None, use_local_cmap=False):
@@ -9439,18 +9465,30 @@ QLabel:hover {{
             size_grp.addAction(act)
         return menu
 
+    def on_copy_metadata(self, full_header=False):
+        if viewer_preview.copy_metadata(self, full_header=full_header):
+            self._show_toast("Full header copied" if full_header else "Metadata copied", duration_ms=1400)
+        else:
+            self._show_toast("Select an image first", duration_ms=1400)
+
     def on_meta_font_changed(self, val:int):
         try:
             font = self.meta_box.font()
             font.setPointSize(int(val))
             self.meta_box.setFont(font)
             self.config['meta_font_size'] = int(val); save_config(self.config)
-            # Re-render current metadata HTML so inline styles reflect the new font size
-            try:
-                if getattr(self, 'last_preview', None):
-                    self.show_file_channel(self.last_preview[0], self.last_preview[1])
-            except Exception:
-                pass
+            # Re-render only the metadata HTML so its inline font size updates.
+            # A full show_file_channel here rebuilt the preview too, resetting
+            # its zoom, profiles and text styling.
+            args = getattr(self, '_last_metadata_html_args', None)
+            if args:
+                try:
+                    sb = self.meta_box.verticalScrollBar()
+                    prev_pos = sb.value()
+                    self.meta_box.setHtml(self._build_metadata_html(*args))
+                    QtCore.QTimer.singleShot(0, lambda pos=prev_pos: sb.setValue(pos))
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -10025,12 +10063,13 @@ QLabel:hover {{
         save_config(self.config)
 
     def _apply_startup_display_preset(self):
+        """Show the default display preset (startup and after a session
+        load); falls back to the built-in default when none is chosen."""
         canvas = getattr(self, "preview_canvas", None)
-        name = self.get_default_display_preset()
-        if canvas is None or not name:
+        if canvas is None:
             return
         try:
-            canvas.apply_display_preset(name, announce=False)
+            canvas.apply_display_preset(canvas.default_display_preset(), announce=False)
         except Exception:
             pass
 
@@ -10086,6 +10125,13 @@ QLabel:hover {{
             rel = normalized["relative_axes_override"]
             if rel is not None:
                 normalized["relative_axes_override"] = bool(rel)
+                # The canvas override is what the preview actually shows;
+                # keep the viewer flag and its Relative axes toggles in step.
+                self.relative_axes = bool(rel)
+                set_many_silent((
+                    getattr(self, "relative_axes_cb", None),
+                    getattr(self, "relative_axes_act", None),
+                ), checked=self.relative_axes)
 
             self.show_molecules = normalized["show_molecules"]
             self.show_molecule_gizmo = normalized["show_molecule_gizmo"]
@@ -10206,6 +10252,8 @@ QLabel:hover {{
                 self.config["show_acquisition_overlay"] = self.show_acquisition_overlay
                 self.config["show_filter_summary"] = self.show_filter_summary
                 self.config["show_scale_bar"] = normalized["scale_bar_enabled"]
+                if rel is not None:
+                    self.config["relative_axes"] = bool(rel)
                 save_config(self.config)
         finally:
             self._canvas_display_syncing = False
