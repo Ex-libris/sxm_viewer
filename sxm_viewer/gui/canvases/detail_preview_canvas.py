@@ -7474,6 +7474,7 @@ class MultiPreviewCanvas(FigureCanvas):
             if self._profile_move_only:
                 return
             self.push_undo_state("start_profile")
+            self._reveal_profile_overlays_for_drawing()
             self._set_profile_pts((x, y, x, y))
             self._ensure_profile_artists()
             self._dragging = 'p1'
@@ -7526,6 +7527,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self.push_undo_state("start_profile")
         if self._profile_move_only:
             return
+        self._reveal_profile_overlays_for_drawing()
         self._active_profile_original_color = None
         self._active_profile_original_id = None
         self._set_profile_pts((x, y, x, y))
@@ -7539,6 +7541,24 @@ class MultiPreviewCanvas(FigureCanvas):
             self._draw_profile_animated()
             self._blit_profile_artists()
         self._update_profile_artists()
+
+    def _reveal_profile_overlays_for_drawing(self):
+        """Turn profile overlays back on when the user starts drawing a line.
+
+        With overlays hidden (Ctrl+1, a display preset, or a persisted
+        ``show_profile_overlays: false``) a freshly drawn profile was created
+        invisible while its Profile window still opened. Popup canvases
+        already force overlays on via ``PopupProfileController``; this gives
+        the main preview the same behaviour. Folded into the caller's
+        "start_profile" undo entry rather than pushing its own.
+        """
+        if self._show_profile_overlays:
+            return
+        self._undo_suspend_depth += 1
+        try:
+            self.set_show_profile_overlays(True)
+        finally:
+            self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
 
     def _show_profile_context_menu(self, event, overlay_idx=None, active=False, global_pos=None):
         menu = QtWidgets.QMenu(self)
@@ -8468,18 +8488,24 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 if self.angle_enabled:
                     self.set_angle_tool_enabled(False)
-                was_enabled = bool(self.profile_enabled)
+                # If _on_press is already connected (tool on, or move-only
+                # after an earlier Ctrl-draw), matplotlib delivers this same
+                # press to it after we return. Calling it here as well ran it
+                # twice: the first call started the line at the click, the
+                # second grabbed that fresh zero-length line's A endpoint, so
+                # every profile after the first was dragged out B -> A.
+                press_handler_connected = bool(self._cids)
                 if self._profile_move_only:
                     self._profile_move_only = False
                     self._profile_user_enabled = True
                     self._profile_quick_transient = True
-                    was_enabled = False
                 if not self.profile_enabled:
                     self.set_profile_tool_enabled(True)
                     self._profile_quick_transient = True
-                if not was_enabled:
+                if not press_handler_connected:
                     # Start the first profile drag immediately when the tool
-                    # is activated via Ctrl+Click.
+                    # is activated via Ctrl+Click (handlers connected during
+                    # this dispatch don't receive the current event).
                     self._on_press(event)
             except Exception:
                 pass
