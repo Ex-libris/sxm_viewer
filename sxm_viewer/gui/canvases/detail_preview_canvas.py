@@ -128,6 +128,15 @@ _DEFAULT_MOLECULE_STYLE = {
     "atom_color_map": {},
 }
 
+DISPLAY_PRESETS = ("focus", "analysis", "publication")
+BUILTIN_DEFAULT_DISPLAY_PRESET = "analysis"
+DISPLAY_PRESET_DESCRIPTIONS = {
+    "focus": "Image only - no ticks, colorbar, title or overlays",
+    "analysis": "Ticks, colorbar, title, scale bar and measurement overlays",
+    "publication": "Clean figure - scale bar and a compact bottom colorbar",
+}
+
+
 class MultiPreviewCanvas(FigureCanvas):
     _RECENT_MOLECULES = []
     _RECENT_SVG_MOLECULES = []
@@ -321,6 +330,11 @@ class MultiPreviewCanvas(FigureCanvas):
         self._publication_mode = False
         self._display_preset_transient = False
         self._display_preset_base_state = None
+        # Name of the preset currently shown, or None once the user tweaks
+        # any display option ("Custom").
+        self._active_display_preset = None
+        self._default_preset_getter = None
+        self._default_preset_setter = None
         self._shortcut_hint_artist = None
         self._fit_to_canvas = False
         self._frame_fill_mode = False
@@ -575,11 +589,12 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             pass
 
-    def apply_display_preset(self, preset: str):
+    def apply_display_preset(self, preset: str, announce: bool = True):
         preset = (preset or "").strip().lower()
-        if preset not in {"focus", "analysis", "publication"}:
+        if preset not in DISPLAY_PRESETS:
             return
         self.push_undo_state(f"preset:{preset}")
+        self._active_display_preset = preset
         preset_state = {
             "focus": {
                 "show_ticks": False,
@@ -656,6 +671,134 @@ class MultiPreviewCanvas(FigureCanvas):
         self._refresh_scale_bars()
         self._redraw()
         self._notify_views_callback()
+        if announce:
+            self._announce_display_preset(preset)
+
+    # ----- display preset defaults / menu ---------------------------------
+    def set_default_display_preset_callbacks(self, getter, setter):
+        """Wire the owner's persisted default preset (getter() -> name or
+        None for the built-in default; setter(name or None))."""
+        self._default_preset_getter = getter
+        self._default_preset_setter = setter
+
+    def user_default_display_preset(self):
+        """The user's explicitly chosen default preset, or None."""
+        name = None
+        try:
+            if callable(self._default_preset_getter):
+                name = self._default_preset_getter()
+        except Exception:
+            name = None
+        name = str(name or "").strip().lower()
+        return name if name in DISPLAY_PRESETS else None
+
+    def default_display_preset(self):
+        return self.user_default_display_preset() or BUILTIN_DEFAULT_DISPLAY_PRESET
+
+    def set_default_display_preset(self, preset):
+        preset = str(preset or "").strip().lower() or None
+        if preset is not None and preset not in DISPLAY_PRESETS:
+            return
+        if callable(self._default_preset_setter):
+            try:
+                self._default_preset_setter(preset)
+            except Exception:
+                pass
+        shown = (preset or BUILTIN_DEFAULT_DISPLAY_PRESET).title()
+        self._show_canvas_toast(f"Default display preset: {shown}")
+
+    def reset_to_default_display_preset(self):
+        self.apply_display_preset(self.default_display_preset())
+
+    def active_display_preset(self):
+        name = self._active_display_preset
+        return name if name in DISPLAY_PRESETS else None
+
+    def _previous_display_label(self):
+        """Human name of what "Back" would restore, or None if nothing."""
+        baseline = self._display_preset_base_state
+        if not isinstance(baseline, dict):
+            return None
+        name = baseline.get("active_display_preset")
+        return str(name).title() if name in DISPLAY_PRESETS else "custom display"
+
+    def _show_canvas_toast(self, text, msec=3500):
+        try:
+            QtWidgets.QToolTip.showText(
+                self.mapToGlobal(QtCore.QPoint(16, 16)), text, self, self.rect(), int(msec)
+            )
+        except Exception:
+            pass
+
+    def _announce_display_preset(self, preset):
+        back = self._previous_display_label()
+        hint = f"{preset.title()} preset"
+        if back:
+            hint += f"  -  right-click > Display preset > Back to {back}"
+        self._show_canvas_toast(hint)
+
+    def populate_display_preset_menu(self, menu):
+        """Fill `menu` with the preset picker, back/reset and default actions.
+
+        Shared by the image right-click menu and the main window's Display
+        toolbar menu so both stay identical.
+        """
+        try:
+            menu.setToolTipsVisible(True)
+        except Exception:
+            pass
+        active = self.active_display_preset()
+        default = self.default_display_preset()
+        group = QtWidgets.QActionGroup(menu)
+        group.setExclusive(True)
+        for name in DISPLAY_PRESETS:
+            text = name.title() + ("  \u2605 default" if name == default else "")
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(name == active)
+            act.setToolTip(DISPLAY_PRESET_DESCRIPTIONS.get(name, ""))
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, n=name: self.apply_display_preset(n))
+        if active is None:
+            custom = menu.addAction("Custom (edited)")
+            custom.setCheckable(True)
+            custom.setChecked(True)
+            custom.setEnabled(False)
+        menu.addSeparator()
+        back = self._previous_display_label()
+        back_act = menu.addAction(f"Back to {back}" if back else "Back to previous display")
+        back_act.setEnabled(bool(back))
+        back_act.setToolTip("Undo the last preset switch, restoring exactly the display you had before it")
+        back_act.triggered.connect(lambda _=False: self.restore_previous_display())
+        reset_act = menu.addAction(f"Reset to default ({default.title()})")
+        reset_act.setToolTip("Apply your default display preset")
+        reset_act.triggered.connect(lambda _=False: self.reset_to_default_display_preset())
+        menu.addSeparator()
+        if active is not None and active != default:
+            make_act = menu.addAction(f"Make {active.title()} my default")
+            make_act.setToolTip("Use this preset at startup and for Reset to default")
+            make_act.triggered.connect(lambda _=False, n=active: self.set_default_display_preset(n))
+        default_menu = menu.addMenu("Default preset")
+        try:
+            default_menu.setToolTipsVisible(True)
+        except Exception:
+            pass
+        dgroup = QtWidgets.QActionGroup(default_menu)
+        dgroup.setExclusive(True)
+        for name in DISPLAY_PRESETS:
+            act = default_menu.addAction(name.title())
+            act.setCheckable(True)
+            act.setChecked(name == default)
+            act.setToolTip("Applied at startup and by Reset to default")
+            dgroup.addAction(act)
+            act.triggered.connect(lambda _=False, n=name: self.set_default_display_preset(n))
+        default_menu.addSeparator()
+        builtin_act = default_menu.addAction(
+            f"Restore built-in default ({BUILTIN_DEFAULT_DISPLAY_PRESET.title()})"
+        )
+        builtin_act.setEnabled(self.user_default_display_preset() is not None)
+        builtin_act.triggered.connect(lambda _=False: self.set_default_display_preset(None))
+        return menu
 
     def set_show_filter_summary_overlay(self, show: bool):
         """Toggle the optional filter summary drawn over the image."""
@@ -1752,6 +1895,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "frame_fill_mode": bool(self._frame_fill_mode),
             "publication_mode": bool(self._publication_mode),
             "display_preset_transient": bool(self._display_preset_transient),
+            "active_display_preset": self._active_display_preset,
             "frame_fill_prev_state": self._clone_undo_value(self._frame_fill_prev_state),
             "fit_to_canvas": bool(self._fit_to_canvas),
             "relative_axes_override": self._clone_undo_value(self._relative_axes_override),
@@ -1787,13 +1931,18 @@ class MultiPreviewCanvas(FigureCanvas):
                         state[key] = self._clone_undo_value(baseline[key])
         state.pop("publication_mode", None)
         state.pop("display_preset_transient", None)
+        state.pop("active_display_preset", None)
         return state
 
     def push_undo_state(self, label=None):
         if self._undo_restore_in_progress or self._undo_suspend_depth > 0:
             return False
+        # The snapshot describes the display *before* this change, so it
+        # keeps the preset name that was showing then.
+        shown_preset = self._active_display_preset
         if label is not None and not str(label).startswith("preset:"):
             self._display_preset_transient = False
+            self._active_display_preset = None
             # Keep the pre-preset snapshot available for the explicit
             # "Restore previous display" action even if another display
             # change is made while the preset is active.
@@ -1801,6 +1950,7 @@ class MultiPreviewCanvas(FigureCanvas):
             state = self.export_canvas_undo_state()
         except Exception:
             return False
+        state["active_display_preset"] = shown_preset
         if label is not None:
             state["_label"] = str(label)
         self._undo_history.append(state)
@@ -1884,6 +2034,7 @@ class MultiPreviewCanvas(FigureCanvas):
             self._frame_fill_mode = bool(state.get("frame_fill_mode", self._frame_fill_mode))
             self._publication_mode = bool(state.get("publication_mode", self._publication_mode))
             self._display_preset_transient = bool(state.get("display_preset_transient", self._display_preset_transient))
+            self._active_display_preset = state.get("active_display_preset")
             if not self._display_preset_transient:
                 self._display_preset_base_state = None
             self._frame_fill_prev_state = self._clone_undo_value(state.get("frame_fill_prev_state"))
@@ -9810,16 +9961,12 @@ class MultiPreviewCanvas(FigureCanvas):
         histogram_act = quick_menu.addAction("Histogram...")
         histogram_act.setEnabled(callable(self._histogram_dialog_callback))
 
+        _active_preset = self.active_display_preset()
+        presets_menu = menu.addMenu(
+            f"Display preset: {_active_preset.title() if _active_preset else 'Custom'}"
+        )
+        self.populate_display_preset_menu(presets_menu)
         display_menu = menu.addMenu("Display")
-        presets_menu = display_menu.addMenu("Preset")
-        preset_focus_act = presets_menu.addAction("Focus")
-        preset_analysis_act = presets_menu.addAction("Analysis")
-        preset_publication_act = presets_menu.addAction("Publication")
-        presets_menu.addSeparator()
-        undo_preset_act = presets_menu.addAction("Restore previous display")
-        undo_preset_act.setEnabled(bool(self._undo_history))
-        undo_preset_act.setToolTip("Restore the complete display state from before the active preset")
-        display_menu.addSeparator()
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
         show_scale_act.setChecked(bool(self.scale_bar_enabled))
@@ -10257,14 +10404,6 @@ class MultiPreviewCanvas(FigureCanvas):
                 self._histogram_dialog_callback(self)
             except Exception:
                 pass
-        elif chosen == preset_focus_act:
-            self.apply_display_preset("focus")
-        elif chosen == preset_analysis_act:
-            self.apply_display_preset("analysis")
-        elif chosen == preset_publication_act:
-            self.apply_display_preset("publication")
-        elif chosen == undo_preset_act:
-            self.restore_previous_display()
         elif chosen == show_scale_act:
             self.enable_scale_bar(show_scale_act.isChecked())
             self._notify_views_callback()

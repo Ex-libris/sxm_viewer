@@ -321,6 +321,22 @@ def _ensure_display_menu(viewer):
     viewer.display_menu.aboutToShow.connect(_sync_display_filter_actions)
     _sync_display_filter_actions()
     viewer.display_menu.addSeparator()
+    # Same preset picker as the image right-click menu, built from the
+    # preview canvas each time it opens so the checkmarks/labels are live.
+    viewer.display_preset_menu = viewer.display_menu.addMenu("Display preset")
+    viewer.display_preset_menu.setToolTipsVisible(True)
+
+    def _populate_display_preset_menu():
+        menu = viewer.display_preset_menu
+        menu.clear()
+        canvas = getattr(viewer, "preview_canvas", None)
+        if canvas is None or not hasattr(canvas, "populate_display_preset_menu"):
+            menu.addAction("Preview not ready").setEnabled(False)
+            return
+        canvas.populate_display_preset_menu(menu)
+
+    viewer.display_preset_menu.aboutToShow.connect(_populate_display_preset_menu)
+    viewer.display_menu.addSeparator()
     viewer.display_units_si_act = viewer.display_menu.addAction("Show SI units")
     viewer.display_units_si_act.setCheckable(True)
     viewer.display_units_si_act.setChecked(bool(getattr(viewer, "display_units_si", False)))
