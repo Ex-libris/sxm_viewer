@@ -224,6 +224,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._display_relative_zero_menu_callback = None
         self._display_relative_zero_menu_state_callback = None
         self._display_relative_zero_menu_tooltip = ""
+        self._relative_axes_menu_callback = None
         self._apply_popup_style_callback = None
         self._apply_popup_style_label = "Apply this style to all pop-ups"
         self._apply_popup_style_tooltip = ""
@@ -1469,6 +1470,12 @@ class MultiPreviewCanvas(FigureCanvas):
         self._display_relative_zero_menu_callback = cb
         self._display_relative_zero_menu_state_callback = state_cb
         self._display_relative_zero_menu_tooltip = str(tooltip or "")
+
+    def set_relative_axes_menu_callback(self, cb):
+        """Route the right-click "Relative axes" toggle through the owner
+        (cb(checked)) so its own controls stay in sync; without one the
+        toggle only sets this canvas' override."""
+        self._relative_axes_menu_callback = cb
 
     def set_apply_popup_style_callback(self, cb, label=None, tooltip=None):
         """Register an optional action that applies this popup style to peer popups."""
@@ -10191,6 +10198,23 @@ class MultiPreviewCanvas(FigureCanvas):
             f"Display preset: {_active_preset.title() if _active_preset else 'Custom'}"
         )
         self.populate_display_preset_menu(presets_menu)
+        # Zero / relative axes are frequent per-image toggles, so they sit
+        # at the top level rather than inside the long Display submenu.
+        rel_zero_act = None
+        if callable(self._display_relative_zero_menu_callback):
+            rel_zero_act = menu.addAction("Zero (values relative to reference)")
+            rel_zero_act.setCheckable(True)
+            try:
+                rel_zero_act.setChecked(bool(self._display_relative_zero_menu_state_callback()))
+            except Exception:
+                rel_zero_act.setChecked(False)
+            rel_zero_tip = self._display_relative_zero_menu_tooltip or "Display values relative to the current zero/reference"
+            rel_zero_act.setToolTip(rel_zero_tip)
+            rel_zero_act.setStatusTip(rel_zero_tip)
+        rel_axes_act = menu.addAction("Relative axes")
+        rel_axes_act.setCheckable(True)
+        rel_axes_act.setChecked(bool(self._use_relative_axes(view)) if view else bool(self._relative_axes_override))
+        rel_axes_act.setToolTip("Show axes relative to the image origin instead of absolute positions")
         display_menu = menu.addMenu("Display")
         show_scale_act = display_menu.addAction("Show Scale bar")
         show_scale_act.setCheckable(True)
@@ -10203,17 +10227,6 @@ class MultiPreviewCanvas(FigureCanvas):
         show_cbar_act = display_menu.addAction("Show Colorbar")
         show_cbar_act.setCheckable(True)
         show_cbar_act.setChecked(bool(self._show_colorbar))
-        rel_zero_act = None
-        if callable(self._display_relative_zero_menu_callback):
-            rel_zero_act = display_menu.addAction("Values relative to zero/reference")
-            rel_zero_act.setCheckable(True)
-            try:
-                rel_zero_act.setChecked(bool(self._display_relative_zero_menu_state_callback()))
-            except Exception:
-                rel_zero_act.setChecked(False)
-            rel_zero_tip = self._display_relative_zero_menu_tooltip or "Display values relative to the current zero/reference"
-            rel_zero_act.setToolTip(rel_zero_tip)
-            rel_zero_act.setStatusTip(rel_zero_tip)
         cbar_orient_menu = display_menu.addMenu("Colorbar orientation")
         cbar_orient_group = QtWidgets.QActionGroup(self)
         cbar_orient_group.setExclusive(True)
@@ -10308,9 +10321,6 @@ class MultiPreviewCanvas(FigureCanvas):
         frame_fill_act = display_menu.addAction("Frame fill")
         frame_fill_act.setCheckable(True)
         frame_fill_act.setChecked(bool(self._frame_fill_mode))
-        rel_axes_act = display_menu.addAction("Relative axes")
-        rel_axes_act.setCheckable(True)
-        rel_axes_act.setChecked(bool(self._use_relative_axes(view)))
         apply_popup_style_act = None
         if callable(self._apply_popup_style_callback):
             display_menu.addSeparator()
@@ -10685,7 +10695,13 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_frame_fill_mode(frame_fill_act.isChecked())
             self._notify_views_callback()
         elif chosen == rel_axes_act:
-            self.set_relative_axes_override(rel_axes_act.isChecked())
+            if callable(self._relative_axes_menu_callback):
+                try:
+                    self._relative_axes_menu_callback(rel_axes_act.isChecked())
+                except Exception:
+                    pass
+            else:
+                self.set_relative_axes_override(rel_axes_act.isChecked())
         elif apply_popup_style_act and chosen == apply_popup_style_act:
             try:
                 self._apply_popup_style_callback()
