@@ -949,21 +949,32 @@ class SXMGridViewer(QtWidgets.QWidget):
             "Save the current preview colormap as your default (used at startup and in reports). "
             "Clear via Display → Reset colormap defaults.",
             lambda: self.set_favorite_cmap('preview', self.preview_cmap_combo.currentText()))
-        self.preview_cmap_gallery_btn = QtWidgets.QToolButton()
-        self.preview_cmap_gallery_btn.setText("🎨")
-        self.preview_cmap_gallery_btn.setAutoRaise(True)
-        self.preview_cmap_gallery_btn.setFixedWidth(22)
-        self.preview_cmap_gallery_btn.setToolTip(
+        def _cmap_gallery_button(tooltip, on_click):
+            btn = QtWidgets.QToolButton()
+            btn.setText("🎨")
+            btn.setAutoRaise(True)
+            btn.setFixedWidth(22)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(on_click)
+            return btn
+
+        self.thumb_cmap_gallery_btn = _cmap_gallery_button(
+            "Browse thumbnail colormaps in a gallery. "
+            "Click 🔄 on any card to reverse it; sort by function, color, or usage. "
+            "Apply sets the selected thumbnails (or all thumbnails if none are selected).",
+            self.on_open_thumb_colormap_gallery)
+        self.preview_cmap_gallery_btn = _cmap_gallery_button(
             "Browse colormaps in a gallery with live preview. "
             "Click 🔄 on any card to reverse it; sort by function, color, or usage. "
-            "Apply commits, Cancel restores.")
-        self.preview_cmap_gallery_btn.clicked.connect(self.on_open_colormap_gallery)
+            "Apply commits, Cancel restores.",
+            self.on_open_colormap_gallery)
         preview_state_row = QtWidgets.QHBoxLayout()
         preview_state_row.setContentsMargins(0, 0, 0, 0)
         preview_state_row.setSpacing(8)
         preview_state_row.addWidget(self.thumb_cmap_label)
         preview_state_row.addWidget(self.thumb_cmap_combo)
         preview_state_row.addWidget(self.thumb_cmap_star_btn)
+        preview_state_row.addWidget(self.thumb_cmap_gallery_btn)
         preview_state_row.addSpacing(8)
         preview_state_row.addWidget(self.preview_cmap_label)
         preview_state_row.addWidget(self.preview_cmap_combo)
@@ -7721,8 +7732,14 @@ QLabel:hover {{
                 view = item
                 manual_length = self.preview_canvas._scale_bar_manual_length(view)
                 size, label = self.preview_canvas._calculate_best_scale_bar(width, unit, manual_length=manual_length)
-                sb_text_col = self.preview_canvas._scale_bar_setting('text_color', view=view) or text_color
-                sb_bar_col = self.preview_canvas._scale_bar_setting('bar_color', view=view) or text_color
+                try:
+                    auto_col = self.preview_canvas._scale_bar_auto_color(
+                        ax, view, size, font_scale=font_scale, anchor=sb_pos, loc='center'
+                    )
+                except Exception:
+                    auto_col = text_color
+                sb_text_col = self.preview_canvas._scale_bar_setting('text_color', view=view) or auto_col
+                sb_bar_col = self.preview_canvas._scale_bar_setting('bar_color', view=view) or auto_col
                 sb_font = self.preview_canvas._scale_bar_setting('font_family', view=view, default='sans-serif')
                 sb = AnchoredSizeBar(ax.transData, size, label, loc='center',
                                      pad=0.4, borderpad=0, sep=3, frameon=False,
@@ -9000,22 +9017,18 @@ QLabel:hover {{
             for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
                 if name in cmap_names and name not in featured:
                     featured.append(name)
-            remaining = [name for name in cmap_names if name not in featured]
-            shown = featured + remaining
-            more_cmaps_menu = None
-            for idx, cmap_name in enumerate(shown):
-                parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
-                if parent_menu is None:
-                    more_cmaps_menu = cmap_menu.addMenu("More...")
-                    parent_menu = more_cmaps_menu
-                act = QtWidgets.QAction(cmap_name, parent_menu)
+            for cmap_name in featured:
+                act = QtWidgets.QAction(cmap_name, cmap_menu)
                 try:
                     act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
                 except Exception:
                     pass
                 act.triggered.connect(lambda _, paths=list(virtual_targets), name=cmap_name: self._set_virtual_copy_cmap(paths, name))
-                parent_menu.addAction(act)
+                cmap_menu.addAction(act)
             cmap_menu.addSeparator()
+            cmap_gallery = QtWidgets.QAction("\U0001F3A8 Colormap gallery...", cmap_menu)
+            cmap_gallery.triggered.connect(lambda _, paths=list(virtual_targets): self._pick_virtual_copy_cmap_from_gallery(paths))
+            cmap_menu.addAction(cmap_gallery)
             cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
             cmap_reset.triggered.connect(lambda _, paths=list(virtual_targets): self._set_virtual_copy_cmap(paths, None))
             cmap_menu.addAction(cmap_reset)
@@ -9607,6 +9620,61 @@ QLabel:hover {{
         manager = ColormapManager(current, parent=self)
         manager.pending_changed.connect(self._on_gallery_cmap_pending)
         manager.applied_changed.connect(self._on_gallery_cmap_applied)
+        sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
+        strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
+        dlg = ColormapGalleryDialog(
+            manager, sorter=sorter, strategy=strategy, parent=self)
+        dlg.strategy_changed.connect(self._on_gallery_strategy_changed)
+        dlg.exec_()
+        manager.deleteLater()
+
+    def on_open_thumb_colormap_gallery(self):
+        """Colormap gallery for the Thumb combo.
+
+        No live preview (re-rendering every thumbnail per card click is too
+        costly); Apply routes through on_thumb_cmap_changed, so targeting
+        matches a manual Thumb combo change.
+        """
+        current = self.thumb_cmap_combo.currentText() or self.thumb_cmap
+        manager = ColormapManager(current, parent=self)
+
+        def _on_applied(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            cmap_name = cmap_registry.join_cmap_name(name, is_reversed)
+            combo = self.thumb_cmap_combo
+            if combo.findText(cmap_name) < 0:
+                try:
+                    icon = _colormap_icon(cmap_name, width=96, height=14)
+                except Exception:
+                    icon = QIcon()
+                combo.addItem(icon, cmap_name)
+            self._set_combo_text_silent(combo, cmap_name)
+            self.on_thumb_cmap_changed(combo.currentIndex())
+            try:
+                self._record_cmap_usage(name)
+            except Exception:
+                pass
+
+        manager.applied_changed.connect(_on_applied)
+        sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
+        strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
+        dlg = ColormapGalleryDialog(
+            manager, sorter=sorter, strategy=strategy, parent=self)
+        dlg.setWindowTitle("Colormap Gallery — Thumbnails")
+        dlg.strategy_changed.connect(self._on_gallery_strategy_changed)
+        dlg.exec_()
+        manager.deleteLater()
+
+    def _pick_virtual_copy_cmap_from_gallery(self, paths):
+        """Gallery picker for the thumbnail Virtual copy > Colormap menu."""
+        current = self.preview_cmap_combo.currentText() or self.preview_cmap
+        manager = ColormapManager(current, parent=self)
+
+        def _on_applied(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            self._set_virtual_copy_cmap(paths, cmap_registry.join_cmap_name(name, is_reversed))
+
+        manager.applied_changed.connect(_on_applied)
         sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
         strategy = self.config.get('colormap_sort_strategy') or DEFAULT_STRATEGY
         dlg = ColormapGalleryDialog(

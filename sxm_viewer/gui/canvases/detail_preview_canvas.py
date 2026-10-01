@@ -46,6 +46,7 @@ from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SU
 from .canvas_rendering import iso_export_filename
 from ..dialogs.svg_molecule_style import SvgMoleculeStyleDialog
 from . import preview_export_figures
+from . import scale_bar_contrast
 from .preview_axes_sync import sync_axes_to_view, style_colorbar
 from . import colorbar_fit
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style
@@ -1441,6 +1442,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     except Exception:
                         pass
         if changed:
+            self._recolor_scale_bars()
             try:
                 self.draw_idle()
             except Exception:
@@ -4113,8 +4115,7 @@ class MultiPreviewCanvas(FigureCanvas):
         label = label if label and str(label).strip() else None
         
         font_scale = getattr(self, '_view_font_scale', 1.0)
-        dark = bool(self._detail_dark)
-        default_color = '#f5f5f5' if dark else '#111111'
+        default_color = self._scale_bar_auto_color(ax, view, size, font_scale=font_scale)
         sb_text_col = self._scale_bar_setting('text_color', view=view) or default_color
         sb_bar_col = self._scale_bar_setting('bar_color', view=view) or default_color
         font_family = self._scale_bar_setting('font_family', view=view, default='sans-serif')
@@ -4153,9 +4154,53 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             pass
         sb.set_zorder(20)
-        
+        # Remembered so theme switches / drags can re-derive the automatic
+        # color without rebuilding the artist.
+        sb._sxm_bar_length = size
+
         ax.add_artist(sb)
         self._scale_bar_artists.append(sb)
+
+    def _scale_bar_theme_color(self):
+        return scale_bar_contrast.LIGHT if bool(self._detail_dark) else scale_bar_contrast.DARK
+
+    def _scale_bar_auto_color(self, ax, view, bar_length, font_scale=None, anchor=None, loc='lower right'):
+        """Black or white, whichever contrasts with the image under the bar.
+
+        Used whenever the user has not picked an explicit text/bar color.
+        Falls back to the theme color when the bar is off the image.
+        """
+        fallback = self._scale_bar_theme_color()
+        if font_scale is None:
+            font_scale = getattr(self, '_view_font_scale', 1.0)
+        region = scale_bar_contrast.estimate_region(
+            ax,
+            anchor if anchor is not None else self._scale_bar_pos,
+            loc,
+            bar_length,
+            self._scale_bar_font_size(font_scale, view=view),
+        )
+        return scale_bar_contrast.contrast_color(ax, region, fallback)
+
+    def _recolor_scale_bars(self):
+        """Re-apply automatic/explicit colors to existing scale-bar artists."""
+        for sb in self._scale_bar_artists:
+            try:
+                ax = getattr(sb, "axes", None)
+                view = self._ax_view_map.get(ax)
+                auto = None
+                text_col = self._scale_bar_setting('text_color', view=view)
+                bar_col = self._scale_bar_setting('bar_color', view=view)
+                if not text_col or not bar_col:
+                    length = getattr(sb, "_sxm_bar_length", None)
+                    if ax is not None and length is not None:
+                        auto = self._scale_bar_auto_color(ax, view, length)
+                    else:
+                        auto = self._scale_bar_theme_color()
+                sb.size_bar.get_children()[0].set_color(bar_col or auto)
+                sb.txt_label.get_children()[0].set_color(text_col or auto)
+            except Exception:
+                pass
 
     def _refresh_scale_bars(self, ax=None, redraw: bool = False):
         keep = []
@@ -4203,41 +4248,20 @@ class MultiPreviewCanvas(FigureCanvas):
             self._show_sb_context_menu(event)
 
     def _show_sb_context_menu(self, event):
+        edit_ax = None
         if event is not None and getattr(event, "inaxes", None) in self._ax_view_map:
             self._set_active_view_ax(event.inaxes)
-            edit_view = self._ax_view_map.get(event.inaxes)
+            edit_ax = event.inaxes
+            edit_view = self._ax_view_map.get(edit_ax)
         else:
-            edit_view, _edit_ax = self.active_view_and_axes()
+            edit_view, edit_ax = self.active_view_and_axes()
         self._scale_bar_edit_view_key = self._scale_bar_view_key(edit_view)
 
         menu = QtWidgets.QMenu(self)
 
         scale_menu = menu.addMenu("Scale bar")
-        auto_length_act = scale_menu.addAction("Automatic length")
-        auto_length_act.setCheckable(True)
-        auto_length_act.setChecked(self._scale_bar_manual_length(edit_view) is None)
-        auto_length_act.setToolTip("Choose a rounded length based on the displayed image width")
-        auto_length_act.triggered.connect(lambda _checked=False: self._set_sb_length(None))
-
-        length_widget = QtWidgets.QWidget()
-        length_layout = QtWidgets.QHBoxLayout(length_widget)
-        length_layout.setContentsMargins(8, 2, 8, 2)
-        length_layout.setSpacing(6)
-        length_layout.addWidget(QtWidgets.QLabel("Manual length"))
-        length_spin = QtWidgets.QDoubleSpinBox()
-        length_spin.setRange(0.000001, 1e12)
-        length_spin.setDecimals(6)
-        length_spin.setSingleStep(1.0)
-        length_spin.setKeyboardTracking(False)
-        current_length = self._scale_bar_manual_length(edit_view)
-        length_spin.setValue(current_length if current_length is not None else 1.0)
-        length_spin.setToolTip("Scale-bar length in the image's displayed data units")
-        length_layout.addWidget(length_spin)
-        length_action = QtWidgets.QWidgetAction(scale_menu)
-        length_action.setDefaultWidget(length_widget)
-        scale_menu.addAction(length_action)
-        length_spin.valueChanged.connect(self._set_sb_length)
-        length_spin.valueChanged.connect(lambda _value: auto_length_act.setChecked(False))
+        self._populate_sb_length_menu(scale_menu, edit_ax, edit_view)
+        scale_menu.addSeparator()
 
         weight_menu = scale_menu.addMenu("Label weight")
         weight_group = QtWidgets.QActionGroup(weight_menu)
@@ -4271,8 +4295,29 @@ class MultiPreviewCanvas(FigureCanvas):
         size_spin.valueChanged.connect(self._set_sb_font_size)
         
         col_menu = menu.addMenu("Colors")
-        txt_act = col_menu.addAction("Text Color")
-        bar_act = col_menu.addAction("Bar Color")
+        explicit_text = self._scale_bar_setting('text_color', view=edit_view)
+        explicit_bar = self._scale_bar_setting('bar_color', view=edit_view)
+        color_group = QtWidgets.QActionGroup(col_menu)
+        color_group.setExclusive(True)
+        auto_col_act = col_menu.addAction("Automatic (contrast with image)")
+        auto_col_act.setToolTip("Black or white, whichever stands out against the image under the bar")
+        white_act = col_menu.addAction("White")
+        black_act = col_menu.addAction("Black")
+        for act in (auto_col_act, white_act, black_act):
+            act.setCheckable(True)
+            color_group.addAction(act)
+        if not explicit_text and not explicit_bar:
+            auto_col_act.setChecked(True)
+        elif explicit_text == explicit_bar == '#ffffff':
+            white_act.setChecked(True)
+        elif explicit_text == explicit_bar == '#000000':
+            black_act.setChecked(True)
+        auto_col_act.triggered.connect(lambda _c=False: self._set_sb_colors(None))
+        white_act.triggered.connect(lambda _c=False: self._set_sb_colors('#ffffff'))
+        black_act.triggered.connect(lambda _c=False: self._set_sb_colors('#000000'))
+        col_menu.addSeparator()
+        txt_act = col_menu.addAction("Custom text color...")
+        bar_act = col_menu.addAction("Custom bar color...")
         
         font_menu = menu.addMenu("Font")
         # Top common fonts in Python/World (Windows/Linux/Mac safe-ish subset)
@@ -4303,6 +4348,88 @@ class MultiPreviewCanvas(FigureCanvas):
                 global_pos = None
         menu.exec_(global_pos or QtGui.QCursor.pos())
 
+    @staticmethod
+    def _nice_scale_bar_lengths(width):
+        """1/2/5 x 10^k lengths between ~3% and ~60% of the displayed width."""
+        if not (width and math.isfinite(width) and width > 0):
+            return []
+        lo, hi = width * 0.03, width * 0.6
+        out = []
+        for exponent in range(math.floor(math.log10(lo)) - 1, math.ceil(math.log10(hi)) + 1):
+            for mantissa in (1, 2, 5):
+                value = float(f"{mantissa * 10.0 ** exponent:.12g}")
+                if lo <= value <= hi:
+                    out.append(value)
+        return out
+
+    def _populate_sb_length_menu(self, menu, ax, view):
+        """Length choices: automatic, rounded presets, or a typed custom value.
+
+        Replaces an embedded 6-decimal spinbox, which redrew on every wheel
+        tick/click and was easy to nudge accidentally inside the menu.
+        """
+        width, unit = (0.0, 'nm')
+        if ax is not None and view is not None:
+            try:
+                width, unit = self._scale_bar_span(ax, view)
+            except Exception:
+                pass
+        manual = self._scale_bar_manual_length(view)
+        auto_size, auto_label = self._calculate_best_scale_bar(width, unit, manual_length=None) if width > 0 else (None, "")
+        group = QtWidgets.QActionGroup(menu)
+        group.setExclusive(True)
+        auto_text = "Automatic length" + (f" ({auto_label})" if auto_label else "")
+        auto_act = menu.addAction(auto_text)
+        auto_act.setCheckable(True)
+        auto_act.setChecked(manual is None)
+        auto_act.setToolTip("Choose a rounded length based on the displayed image width")
+        group.addAction(auto_act)
+        auto_act.triggered.connect(lambda _c=False: self._set_sb_length(None))
+
+        presets = self._nice_scale_bar_lengths(width)
+        matched = False
+        if presets:
+            length_menu = menu.addMenu("Length")
+            for value in presets:
+                act = length_menu.addAction(self._format_scale_bar_label(value, unit))
+                act.setCheckable(True)
+                is_current = manual is not None and math.isclose(manual, value, rel_tol=1e-6)
+                matched = matched or is_current
+                act.setChecked(is_current)
+                group.addAction(act)
+                act.triggered.connect(lambda _c=False, v=value: self._set_sb_length(v))
+        custom_text = "Custom length..."
+        if manual is not None and not matched:
+            custom_text = f"Custom length ({self._format_scale_bar_label(manual, unit)})..."
+        custom_act = menu.addAction(custom_text)
+        custom_act.setCheckable(True)
+        custom_act.setChecked(manual is not None and not matched)
+        group.addAction(custom_act)
+        start = manual if manual is not None else (auto_size or 1.0)
+        custom_act.triggered.connect(
+            lambda _c=False, u=unit, v=start: self._prompt_sb_length(u, v)
+        )
+
+    def _prompt_sb_length(self, unit, current):
+        try:
+            current = float(current)
+        except (TypeError, ValueError):
+            current = 1.0
+        # Enough decimals for sub-unit bars (e.g. 0.25 nm) without the
+        # 6-decimal noise; the label itself is formatted separately.
+        decimals = 3 if current < 10 else 1
+        value, ok = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Scale bar length",
+            f"Length ({unit or 'data units'}):",
+            current,
+            1e-6,
+            1e12,
+            decimals,
+        )
+        if ok and value > 0:
+            self._set_sb_length(value)
+
     def _set_sb_length(self, length):
         if length is None:
             value = None
@@ -4314,7 +4441,14 @@ class MultiPreviewCanvas(FigureCanvas):
             if not math.isfinite(value) or value <= 0:
                 return
         self._set_scale_bar_setting('length', value)
-        self._redraw()
+        self._refresh_scale_bars(redraw=True)
+
+    def _set_sb_colors(self, color):
+        """Set text+bar to one color, or None for automatic contrast."""
+        self._set_scale_bar_setting('text_color', color)
+        self._set_scale_bar_setting('bar_color', color)
+        self._recolor_scale_bars()
+        self.draw_idle()
 
     def _set_sb_font_size(self, size):
         try:
@@ -4324,29 +4458,29 @@ class MultiPreviewCanvas(FigureCanvas):
         if not math.isfinite(value) or value <= 0:
             return
         self._set_scale_bar_setting('font_size_pt', value)
-        self._redraw()
+        self._refresh_scale_bars(redraw=True)
 
     def _set_sb_font_weight(self, weight):
         if str(weight).lower() not in {'light', 'normal', 'medium', 'semibold', 'bold', 'heavy'}:
             return
         self._set_scale_bar_setting('font_weight', str(weight).lower())
-        self._redraw()
+        self._refresh_scale_bars(redraw=True)
 
     def _set_sb_font(self, font):
         self._set_scale_bar_setting('font_family', font)
-        self._redraw()
+        self._refresh_scale_bars(redraw=True)
 
     def _pick_sb_text_color(self):
         col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Text Color")
         if col.isValid():
             self._set_scale_bar_setting('text_color', col.name())
-            self._redraw()
+            self._refresh_scale_bars(redraw=True)
 
     def _pick_sb_bar_color(self):
         col = QtWidgets.QColorDialog.getColor(QtCore.Qt.white, self, "Select Bar Color")
         if col.isValid():
             self._set_scale_bar_setting('bar_color', col.name())
-            self._redraw()
+            self._refresh_scale_bars(redraw=True)
 
     def _on_sb_motion(self, event):
         if self._scale_bar_drag_start is None:
@@ -4373,6 +4507,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
 
     def _on_sb_release(self, event):
+        if self._scale_bar_drag_start is not None:
+            # The bar may now sit over a lighter/darker part of the image.
+            self._recolor_scale_bars()
+            self.draw_idle()
         self._scale_bar_drag_start = None
 
     # ---------- Interactive profile helpers ----------
@@ -4944,16 +5082,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 cbar.outline.set_edgecolor(text_color)
             except Exception:
                 pass
-        # Update scale bar colors
-        for sb in self._scale_bar_artists:
-            try:
-                view = self._ax_view_map.get(getattr(sb, "axes", None))
-                sb_text_col = self._scale_bar_setting('text_color', view=view) or text_color
-                sb_bar_col = self._scale_bar_setting('bar_color', view=view) or text_color
-                sb.size_bar.get_children()[0].set_color(sb_bar_col)
-                sb.txt_label.get_children()[0].set_color(sb_text_col)
-            except Exception:
-                pass
+        # Update scale bar colors (automatic contrast unless user-picked)
+        self._recolor_scale_bars()
         if self.angle_pts:
             self._update_angle_artists()
         self._theme_sig = self._compute_theme_sig()
@@ -9284,6 +9414,75 @@ class MultiPreviewCanvas(FigureCanvas):
             self._notify_views_callback()
         return True
 
+    def open_view_colormap_gallery(self, view):
+        """Pick a colormap for ``view`` from the full Colormap Gallery.
+
+        Card clicks recolor the view live (no undo entry, no owner
+        notification); Apply commits once through ``apply_view_colormap``
+        so undo + per-file persistence behave like a menu pick, and
+        Cancel/close restores the original cmap. Self-contained (no main
+        window hook) so it works the same in pop-out previews.
+        """
+        if view is None:
+            return
+        from ..colormap_gallery import ColormapGalleryDialog
+        from ..colormap_manager import ColormapManager
+        from ...cmap_sorting import ColormapSorter, DEFAULT_STRATEGY
+
+        original = str(view.get("cmap") or "viridis")
+        try:
+            config = load_config() or {}
+        except Exception:
+            config = {}
+
+        def _usage_stats():
+            stats = {}
+            for base, rec in (config.get("colormap_usage") or {}).items():
+                try:
+                    count, last = rec
+                    stats[str(base)] = (int(count), float(last))
+                except Exception:
+                    continue
+            return stats
+
+        def _show(cmap_name):
+            if str(view.get("cmap") or "") == cmap_name:
+                return
+            if len(self.views or []) == 1 and self.views[0] is view:
+                self.set_cmap_for_current_views(cmap_name)
+            else:
+                view["cmap"] = cmap_name
+                self._redraw()
+
+        def _on_pending(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            _show(cmap_registry.join_cmap_name(name, is_reversed))
+
+        applied = []
+
+        def _on_applied(name, is_reversed):
+            cmap_registry.get_colormap(name, is_reversed)
+            applied.append(cmap_registry.join_cmap_name(name, is_reversed))
+
+        manager = ColormapManager(original, parent=self)
+        manager.pending_changed.connect(_on_pending)
+        manager.applied_changed.connect(_on_applied)
+        dlg = ColormapGalleryDialog(
+            manager,
+            sorter=ColormapSorter(usage_provider=_usage_stats),
+            strategy=config.get("colormap_sort_strategy") or DEFAULT_STRATEGY,
+            parent=self)
+        dlg.exec_()
+        manager.deleteLater()
+        if applied:
+            # Roll the live preview back silently, then commit once so the
+            # undo stack records original -> chosen.
+            view["cmap"] = original
+            if not self.apply_view_colormap(applied[-1], target_view=view, notify=True):
+                self._redraw()
+        else:
+            _show(original)
+
     def _show_molecule_menu(self, event, mol):
         style = QtWidgets.QApplication.style()
         icon = lambda std: style.standardIcon(std) if style else QtGui.QIcon()
@@ -10239,20 +10438,19 @@ class MultiPreviewCanvas(FigureCanvas):
         cmap_actions = {}
         cmap_group = QtWidgets.QActionGroup(self)
         cmap_group.setExclusive(True)
-        common_cmaps = cmap_registry.featured_cmap_names("general")
-        available_cmaps = cmap_registry.all_cmap_names()
-        seen_cmaps = []
-        for cmap_name in common_cmaps + available_cmaps:
-            if cmap_name not in seen_cmaps:
-                seen_cmaps.append(cmap_name)
+        # Only a short featured list goes inline; the full catalogue (which
+        # can be ~1000 maps with the extras package) is browsed in the
+        # gallery instead of a screen-filling "More..." submenu.
         current_cmap = str((view or {}).get("cmap") or "viridis")
-        more_cmaps_menu = None
-        for idx, cmap_name in enumerate(seen_cmaps):
-            parent_menu = cmap_menu if idx < 12 else more_cmaps_menu
-            if parent_menu is None:
-                more_cmaps_menu = cmap_menu.addMenu("More...")
-                parent_menu = more_cmaps_menu
-            act = parent_menu.addAction(cmap_name)
+        shown_cmaps = []
+        for cmap_name in cmap_registry.featured_cmap_names("general"):
+            if cmap_name not in shown_cmaps:
+                shown_cmaps.append(cmap_name)
+        shown_cmaps = shown_cmaps[:12]
+        if current_cmap not in shown_cmaps:
+            shown_cmaps.append(current_cmap)
+        for cmap_name in shown_cmaps:
+            act = cmap_menu.addAction(cmap_name)
             act.setCheckable(True)
             act.setChecked(cmap_name == current_cmap)
             try:
@@ -10261,6 +10459,9 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             cmap_group.addAction(act)
             cmap_actions[act] = cmap_name
+        cmap_menu.addSeparator()
+        cmap_gallery_act = cmap_menu.addAction("\U0001F3A8 Colormap gallery...")
+        cmap_gallery_act.setEnabled(view is not None)
         if callable(self._apply_popup_style_callback):
             cmap_menu.addSeparator()
             popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
@@ -10524,6 +10725,8 @@ class MultiPreviewCanvas(FigureCanvas):
                 self.apply_view_colormap(cmap_actions[chosen], target_view=view, notify=True)
             except Exception:
                 pass
+        elif chosen == cmap_gallery_act:
+            self.open_view_colormap_gallery(view)
         elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
             try:
                 self._apply_popup_style_callback()

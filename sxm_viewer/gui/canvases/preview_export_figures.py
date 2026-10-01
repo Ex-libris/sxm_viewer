@@ -139,8 +139,9 @@ def render_view_figure(canvas, view):
         label = label if label and label.strip() else None
         font_scale = getattr(canvas, '_view_font_scale', 1.0)
         
-        dark = bool(canvas._detail_dark)
-        default_color = '#f5f5f5' if dark else '#111111'
+        default_color = canvas._scale_bar_auto_color(
+            ax, view, size, font_scale=font_scale, loc='center'
+        )
         sb_text_col = canvas._scale_bar_setting('text_color', view=view) or default_color
         sb_bar_col = canvas._scale_bar_setting('bar_color', view=view) or default_color
         font_family = canvas._scale_bar_setting('font_family', view=view, default='sans-serif')
