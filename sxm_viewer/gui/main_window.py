@@ -1302,12 +1302,12 @@ class SXMGridViewer(QtWidgets.QWidget):
                 source_canvas=self.preview_canvas,
                 persist=False,
             )
-        # An explicitly chosen default preset is applied on top of the last
-        # saved display, transiently - so "Back to custom display" still
-        # returns to the user's own tweaks. Deferred until the window is
-        # fully constructed (the preset notifies the main window).
-        if self.get_default_display_preset():
-            QtCore.QTimer.singleShot(0, self._apply_startup_display_preset)
+        # The default preset (the user's pick, else built-in Analysis) is
+        # applied on top of the last saved display, transiently - so "Back
+        # to custom display" still returns to the user's own tweaks.
+        # Deferred until the window is fully constructed (the preset
+        # notifies the main window).
+        QtCore.QTimer.singleShot(0, self._apply_startup_display_preset)
         self.quick_crop_toggle_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self)
         self.quick_crop_toggle_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_toggle_shortcut.activated.connect(lambda: self._set_quick_crop_mode(not self.quick_crop_mode))
@@ -10025,12 +10025,13 @@ QLabel:hover {{
         save_config(self.config)
 
     def _apply_startup_display_preset(self):
+        """Show the default display preset (startup and after a session
+        load); falls back to the built-in default when none is chosen."""
         canvas = getattr(self, "preview_canvas", None)
-        name = self.get_default_display_preset()
-        if canvas is None or not name:
+        if canvas is None:
             return
         try:
-            canvas.apply_display_preset(name, announce=False)
+            canvas.apply_display_preset(canvas.default_display_preset(), announce=False)
         except Exception:
             pass
 

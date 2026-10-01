@@ -1391,6 +1391,12 @@ class SessionController:
                     )
         except Exception:
             pass
+        # The session's saved display is kept as the "Back to ..." baseline;
+        # what's shown on open is the default preset, as at startup.
+        try:
+            viewer._apply_startup_display_preset()
+        except Exception:
+            pass
         preview_dt = time.perf_counter() - t_phase
 
         try:
