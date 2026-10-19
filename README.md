@@ -83,4 +83,4 @@ This work was funded by the Biotechnology and Biological Sciences Research Counc
 
 Thanks to Olivier Durif, Alejandro Lynch Gonzalez and Michael Foster for code contributions.
 
-SXM Viewer was inspired by [LMAPper](https://sourceforge.net/p/spm-and-mol-viewer/wiki/Pre-print/) (L. M. A. Perdigão) and [WSxM](https://wsxm.eu/) (Horcas et al., *Rev. Sci. Instrum.* 78, 013705 (2007)). Anfatec/Omicron support follows the file structures defined by Anfatec Instruments AG.
+SXM Viewer was inspired by [LMAPper](https://sourceforge.net/p/spm-and-mol-viewer/wiki/Pre-print/) (L. M. A. Perdigão) and [WSxM](https://wsxm.eu/) (Horcas et al., *Rev. Sci. Instrum.* 78, 013705 (2007)) and [SpmImage Tycoon](https://github.com/alexriss/SpmImageTycoon.jl) (A. Riss, *J. Open Source Softw.* 7, 4644 (2022), https://doi.org/10.21105/joss.04644). Anfatec/Omicron support follows the file structures defined by Anfatec Instruments AG.
