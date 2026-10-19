@@ -61,9 +61,13 @@ independent Python implementation of:
   Visualisation Meet" (pre-print),
   <https://sourceforge.net/p/spm-and-mol-viewer/wiki/Pre-print/>.
 - WSxM (<https://wsxm.eu/>).
+- A. Riss, "SpmImage Tycoon: Organize and analyze scanning probe microscopy
+  data", *J. Open Source Softw.* 7(77), 4644 (2022),
+  <https://doi.org/10.21105/joss.04644>;
+  <https://github.com/alexriss/SpmImageTycoon.jl>.
 
-No code from either project is included (LMAPper is not written in Python,
-and WSxM is closed source).
+No code from any of these projects is included (LMAPper and SpmImage Tycoon
+are not written in Python, and WSxM is closed source).
 
 ## Runtime dependencies
 
