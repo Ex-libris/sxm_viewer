@@ -5,7 +5,7 @@ Names arrive in two flavors: sanitized spectroscopy channel labels
 channel captions from headers ("Current", "Frequency Shift", "Topography").
 Classification is deliberately permissive substring matching over both.
 
-Report heuristics encoded here (user-specified):
+Report heuristics encoded here (deliberate design choices):
 - constant-height images are best represented by current + frequency-shift
   (or lock-in / dI/dV-like) channels, not topography;
 - constant-current / topographic images by topography only;

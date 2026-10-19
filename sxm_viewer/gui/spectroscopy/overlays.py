@@ -604,7 +604,7 @@ def _render_spectroscopy_overlays(
         # "cloud" groups (loose, non-grid/line point clusters) are excluded
         # from the compact-footprint treatment - unlike an actual grid or a
         # line of points, a cloud has no shape that a single bounding-box
-        # summary conveys, so the user wants every point visible rather
+        # summary conveys, so every point should stay visible rather
         # than merged into one rectangle. Grid/line groups keep the
         # existing footprint behavior.
         groups_here = {

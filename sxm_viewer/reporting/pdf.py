@@ -643,7 +643,7 @@ def page_grid_kpfm(grid):
     rows, cols = grid["rows"], grid["cols"]
     dx, dy = grid["local_dx"], grid["local_dy"]
     local_extent = (0.0, cols * dx, rows * dy, 0.0)
-    # Colormap conventions (user-specified, matching MatrixFitDialog's
+    # Colormap conventions (matching MatrixFitDialog's
     # PARAM_INFO): LCPD diverging bwr, c in gray (more negative = darker),
     # errors in viridis.
     panels = (

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sxm-viewer"
+dynamic = ["version"]
+description = "Desktop viewer and analysis tool for scanning probe microscopy (SPM) data: Anfatec/Omicron and Nanonis."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Benjamin Mallada", email = "etellion@gmail.com" }]
+requires-python = ">=3.10"
+keywords = ["scanning probe microscopy", "SPM", "STM", "AFM", "KPFM", "Nanonis", "Omicron"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Environment :: X11 Applications :: Qt",
+]
+dependencies = [
+    "numpy>=1.26.4,<3.0",
+    "matplotlib>=3.8.2,<4.0",
+    "PyQt5>=5.15.11,<5.16",
+    "scipy>=1.11.4,<2.0",
+    "opencv-python>=4.8.1.78,<5.0",
+    "scikit-image>=0.24.0,<1.0",
+    "pywin32>=306; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+# Drift-correction animation export (GIF/MP4)
+animation = ["imageio>=2.31", "Pillow>=10.0"]
+# Extra colormap collection, detected at runtime
+colormaps = ["colormaps"]
+
+[project.scripts]
+sxm-viewer = "sxm_viewer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Ex-libris/sxm_viewer"
+Documentation = "https://ex-libris.github.io/sxm_viewer/"
+
+[tool.setuptools.dynamic]
+version = { attr = "sxm_viewer.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["sxm_viewer*"]
+
+[tool.setuptools.package-data]
+sxm_viewer = ["*.svg", "providers/nanonis/vendor/**/*"]

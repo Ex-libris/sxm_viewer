@@ -1,0 +1,67 @@
+{
+  "title": "SXM Viewer",
+  "upload_type": "software",
+  "description": "<p>SXM Viewer is a Python/PyQt5 desktop application for browsing, analysing and visualising scanning probe microscopy (SPM) data. It reads Anfatec/Omicron data natively and Nanonis .sxm/.dat/.3ds files through a conversion adapter, and provides image analysis (profiles, angles, cropping, filtering), spectroscopy and grid-spectroscopy visualisation and fitting (including KPFM), overlays, publication figure composition and PDF folder reports.</p><p>Documentation: <a href=\"https://ex-libris.github.io/sxm_viewer/\">https://ex-libris.github.io/sxm_viewer/</a></p>",
+  "creators": [
+    {
+      "name": "Mallada, Benjamin",
+      "orcid": "0000-0002-8209-9977",
+      "affiliation": "Department of Chemistry, University of Oxford"
+    },
+    {
+      "name": "Rauschenbach, Stephan",
+      "orcid": "0000-0001-9382-1948",
+      "affiliation": "Department of Chemistry, University of Oxford"
+    }
+  ],
+  "contributors": [
+    {
+      "name": "Durif, Olivier",
+      "orcid": "0000-0001-6813-3799",
+      "affiliation": "Max Planck Institute for Solid State Research",
+      "type": "Other"
+    },
+    {
+      "name": "Lynch Gonzalez, Alejandro",
+      "orcid": "0000-0001-9684-4782",
+      "affiliation": "University of Oxford",
+      "type": "Other"
+    },
+    {
+      "name": "Foster, Michael",
+      "orcid": "0009-0003-4747-9151",
+      "affiliation": "University of Oxford",
+      "type": "Other"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "scanning probe microscopy",
+    "SPM",
+    "STM",
+    "AFM",
+    "nc-AFM",
+    "KPFM",
+    "scanning tunneling spectroscopy",
+    "Nanonis",
+    "Omicron",
+    "Anfatec",
+    "data visualization"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://ex-libris.github.io/sxm_viewer/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ],
+  "notes": "Developed with funding from the Biotechnology and Biological Sciences Research Council (BBSRC), UK Research and Innovation, grant BB/W017024/1 (Mapping Protein Glycosylation by High-Resolution Single Molecule Imaging). Parts of the code and documentation were written with the assistance of AI tools (Claude Code by Anthropic and ChatGPT by OpenAI); all code was directed and reviewed by the author, who takes full responsibility for the software.",
+  "references": [
+    "Welker, J., Illek, E., Giessibl, F. J. (2012). Analysis of force-deconvolution methods in frequency-modulation atomic force microscopy. Beilstein J. Nanotechnol. 3, 238-248. https://doi.org/10.3762/bjnano.3.27",
+    "Sader, J. E., Jarvis, S. P. (2004). Accurate formulas for interaction force and energy in frequency modulation force spectroscopy. Appl. Phys. Lett. 84, 1801. https://doi.org/10.1063/1.1667267",
+    "Giessibl, F. J. (2001). A direct method to calculate tip-sample forces from frequency shifts in frequency-modulation atomic force microscopy. Appl. Phys. Lett. 78, 123. https://doi.org/10.1063/1.1335546",
+    "Horcas, I. et al. (2007). WSxM: A software for scanning probe microscopy and a tool for nanotechnology. Rev. Sci. Instrum. 78, 013705. https://doi.org/10.1063/1.2432410",
+    "Perdigão, L. M. A. LMAPper - Where Scanning Probe Microscopy and Molecular Visualisation Meet (pre-print). https://sourceforge.net/p/spm-and-mol-viewer/wiki/Pre-print/",
+    "Ceddia, J. nanonispy2 1.2.0. https://pypi.org/project/nanonispy2/"
+  ]
+}

@@ -7,3 +7,6 @@ scikit-image>=0.24.0,<1.0
 pywin32>=306; platform_system == "Windows"
 # For loading .env automatically in the launcher
 python-dotenv==1.0.1
+# Optional: drift-correction animation export
+imageio>=2.31
+Pillow>=10.0

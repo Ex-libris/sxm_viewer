@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use SXM Viewer in your research, please cite it using the metadata below."
+title: "SXM Viewer"
+type: software
+abstract: >-
+  SXM Viewer is a Python/PyQt5 desktop application for browsing, analysing and
+  visualising scanning probe microscopy (SPM) data. It reads Anfatec/Omicron
+  data natively and Nanonis .sxm/.dat/.3ds files through a conversion adapter,
+  and provides image analysis (profiles, angles, cropping, filtering),
+  spectroscopy and grid-spectroscopy visualisation and fitting (including
+  KPFM), overlays, publication figure composition and PDF folder reports.
+authors:
+  - family-names: Mallada
+    given-names: Benjamin
+    orcid: "https://orcid.org/0000-0002-8209-9977"
+    affiliation: "Department of Chemistry, University of Oxford"
+  - family-names: Rauschenbach
+    given-names: Stephan
+    orcid: "https://orcid.org/0000-0001-9382-1948"
+    affiliation: "Department of Chemistry, University of Oxford"
+repository-code: "https://github.com/Ex-libris/sxm_viewer"
+url: "https://ex-libris.github.io/sxm_viewer/"
+license: MIT
+keywords:
+  - scanning probe microscopy
+  - SPM
+  - STM
+  - AFM
+  - nc-AFM
+  - KPFM
+  - scanning tunneling spectroscopy
+  - Nanonis
+  - Omicron
+  - Anfatec
+  - data visualization
