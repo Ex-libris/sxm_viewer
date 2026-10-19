@@ -491,7 +491,7 @@ relative / virtual-copy / WSxM), `matrix_fit.py`'s `_grid_local_orientation`
 choice, for locality/perf), so they are kept in sync by hand.
 
 ### Spectroscopy position mapping (rotation/frame gotchas)
-This bug class ate an entire session before being nailed down, across three
+This bug class took a long investigation to pin down, across three
 distinct-but-related failure modes. All of it flows from one function:
 
 **`_map_spec_to_pixels(self, spec, header, xpix, ypix, file_key=None,
@@ -576,7 +576,7 @@ need to render *somewhere*, and the established approach has two rules:
 `MatrixSpectroViewer` (`gui/dialogs/spectroscopy_dialogs.py`, the "Grid map"
 window for a `.3ds`/matrix file) went through a second, longer rotation/frame
 investigation on top of the one above — warped points, a tilted slice view,
-and mirrored virtual copies were reported and each "fixed" across several
+and mirrored virtual copies were each "fixed" across several
 rounds before the real root causes were found. Every stage below is a
 distinct, real bug; earlier fixes were genuine but kept getting silently
 undone by a later one in the list, which is why this took so long to nail
@@ -628,8 +628,7 @@ truthiness.
 
 **4. The recurring bug: hydration silently wipes derived per-spec fields.**
 This is the one that made every fix above look like it kept "not
-sticking," across multiple clean-restart-and-reload cycles reported by the
-user. `hydrate_spectro_entries`/`hydrate_spectro_file`
+sticking," across multiple clean-restart-and-reload cycles. `hydrate_spectro_entries`/`hydrate_spectro_file`
 (`gui/viewer/loader.py`) re-parse a spec's source file to fill in
 lazily-deferred payload (`channels`/`V`) — and this runs **every time** a
 lazily-loaded grid dataset is opened in the Grid Map Explorer, not once
@@ -712,7 +711,7 @@ correct display orientation regardless of what any cached thumbnail shows.
 and make sure your ground truth isn't itself corrupted.** This bit three
 times. (1) The flip's row condition was first validated by "does the
 local view match its own virtual copy," which passed even with the sign
-backwards since both shared the same code path. (2) A later session
+backwards since both shared the same code path. (2) A later change
 "fixed" an apparent vertical mirror of both metric views against the
 anchor thumbnail by inverting the absolute view's ylim and the flip
 condition — but the thumbnail itself was the mirrored one: its `.sxm`
@@ -873,12 +872,12 @@ entirely off-thread. Never let the worker touch the viewer.
   sequence-page-specific convention that deliberately differs from the
   general current -> Blues rule) - so both channels of the same file
   always correspond vertically.
-- **Channel-selection heuristics** (`reporting/channels.py`, user-specified):
+- **Channel-selection heuristics** (`reporting/channels.py`, deliberate design choices):
   constant-height images show current + frequency-shift/lock-in panels
   instead of flat topo (with a dead-flat-Z retry for untagged CH scans);
   spectroscopy curves prefer freq shift > current > lock-in; z-spectroscopy
   keeps its Z sweep axis; grid slice defaults to the smallest |bias|.
-- **Presentation conventions** (also user-specified, in `pdf.py`): current →
+- **Presentation conventions** (also deliberate, in `pdf.py`): current →
   Blues, frequency shift → gray, topography → Blues; KPFM maps bwr (LCPD) /
   gray (c, more negative = darker) / viridis (errors) — matching
   `MatrixFitDialog.PARAM_INFO`; a scale bar on every image panel; grid

@@ -8,9 +8,6 @@ All media referenced by the docs should live under:
 
 That keeps the files inside MkDocs' published `docs_dir`, so they are included in the built site.
 
-Older or duplicate captures can be kept under:
-
-- `sxm_docs/docs/assets/screenshots/legacy/`
 
 ---
 
