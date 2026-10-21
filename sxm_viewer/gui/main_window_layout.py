@@ -394,6 +394,11 @@ def _ensure_display_menu(viewer):
     viewer.acquisition_overlay_act.setChecked(getattr(viewer, "show_acquisition_overlay", False))
     viewer.acquisition_overlay_act.setToolTip("Show CC/CH acquisition parameters in the top-right of preview and pop-ups")
     viewer.acquisition_overlay_act.toggled.connect(viewer.on_show_acquisition_overlay_toggled)
+    viewer.ch_height_menu = viewer.display_menu.addMenu("CH height label")
+    viewer.ch_height_menu.setToolTip("Constant-height label: absolute z_abs or Δz relative to a reference image")
+    viewer.ch_height_menu.aboutToShow.connect(
+        lambda m=viewer.ch_height_menu: (m.clear(), viewer._populate_ch_height_menu(m))
+    )
     viewer.filter_summary_act = viewer.display_menu.addAction("Show filter label")
     viewer.filter_summary_act.setCheckable(True)
     viewer.filter_summary_act.setChecked(getattr(viewer, "show_filter_summary", True))

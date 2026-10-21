@@ -11,6 +11,7 @@ from typing import Any
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...data.io import parse_header
+from ..viewer import ch_height as viewer_ch_height
 from ..viewer import measurement as viewer_measurement
 
 
@@ -388,6 +389,8 @@ class SessionController:
             "thumbnail_filters": getattr(viewer, "thumbnail_filters", {}),
             "image_orientation": dict(getattr(viewer, "image_orientation", {}) or {}),
             "image_zero": dict(getattr(viewer, "image_zero", {}) or {}),
+            "ch_z_label_mode": getattr(viewer, "ch_z_label_mode", "abs"),
+            "ch_z_reference": getattr(viewer, "ch_z_reference", None),
             "per_file_channel_cmap": getattr(viewer, "per_file_channel_cmap", {}),
             "extra_view_specs": getattr(viewer, "extra_view_specs", []),
             "tags": getattr(viewer, "tags", {}),
@@ -673,6 +676,10 @@ class SessionController:
         viewer.image_zero = {
             str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
         }
+        if "ch_z_reference" in payload:
+            viewer_ch_height.restore_state(
+                viewer, payload.get("ch_z_label_mode", "abs"), payload.get("ch_z_reference"),
+                refresh=False)
         viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
         viewer.tags = payload.get("tags") or {}
@@ -1775,6 +1782,10 @@ class SessionController:
         viewer.image_zero = {
             str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
         }
+        if "ch_z_reference" in payload:
+            viewer_ch_height.restore_state(
+                viewer, payload.get("ch_z_label_mode", "abs"), payload.get("ch_z_reference"),
+                refresh=False)
         viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
         viewer.tags = payload.get("tags") or {}

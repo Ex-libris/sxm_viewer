@@ -37,6 +37,7 @@ from .controllers.filter_controller import FilterController
 from .controllers.recent_files_controller import RecentFilesController
 from .controllers.report import ReportController
 from .controllers.session import SessionController
+from .viewer import ch_height as viewer_ch_height
 from .controllers.spectro_compare import SpectroCompareController
 from .debounce import ACCUMULATE, LATEST, Debouncer
 from .palettes import DEFAULT_COLOR_CYCLE
@@ -215,6 +216,8 @@ def init_state(self):
     self.show_molecules = bool(self.config.get('show_molecules', True))
     self.show_molecule_gizmo = bool(self.config.get("show_molecule_gizmo", False))
     self.show_acquisition_overlay = bool(self.config.get("show_acquisition_overlay", False))
+    # CH height label: z_abs or Δz to a reference image (gui/viewer/ch_height.py).
+    viewer_ch_height.init_state(self)
     self.show_filter_summary = bool(self.config.get("show_filter_summary", True))
     self.profile_label_mode = str(self.config.get("profile_label_mode", "length") or "length").strip().lower()
     if self.profile_label_mode not in {"length", "full", "hidden"}:

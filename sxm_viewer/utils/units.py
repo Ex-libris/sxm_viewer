@@ -101,3 +101,23 @@ __all__ = [
 
 
 
+
+
+def format_ch_height_label(z_abs_nm, ref_nm=None, is_reference=False) -> str:
+    """Constant-height acquisition label: ``CH  z_abs 1.234 nm``, or, with a
+    reference height, ``CH  Δz = +20 pm`` (positive = tip further from the
+    surface than at the reference). Returns "CH" when z is unknown."""
+    z = _safe_float(z_abs_nm)
+    if z is None or not math.isfinite(z):
+        return "CH"
+    ref = _safe_float(ref_nm)
+    if ref is None or not math.isfinite(ref):
+        return f"CH  z_abs {z:.3f} nm"
+    dz_pm = (z - ref) * 1e3
+    if abs(dz_pm) < 0.5:
+        text = "CH  Δz = 0 pm"
+    elif abs(dz_pm) < 1000.0:
+        text = f"CH  Δz = {dz_pm:+.0f} pm"
+    else:
+        text = f"CH  Δz = {dz_pm / 1e3:+.3f} nm"
+    return text + "  (ref)" if is_reference else text

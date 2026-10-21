@@ -898,6 +898,31 @@ entirely off-thread. Never let the worker touch the viewer.
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
 
+### CH height label: z_abs or Δz to a reference (`gui/viewer/ch_height.py`)
+The acquisition HUD's CH line is resolved at *draw* time, not baked into the
+view: `MultiPreviewCanvas._ch_height_overlay_text` reads the view's
+`meta["acquisition_z_abs_nm"]` and asks the owner via
+`set_ch_height_label_callbacks` (wired by `ch_height.install_canvas_callbacks`
+for the main preview and every pop-up). So switching mode/reference is a
+redraw (`ch_height.refresh_labels`), never a view rebuild. Text formatting is
+the Qt-free `utils.units.format_ch_height_label` (Δz > 0 = tip retracted,
+same sign as the folder report's `z_rel_pm`). State: `ch_z_label_mode`
+(`abs`/`rel`), `ch_z_reference` (`{file_key, z_abs_nm}` - the height is
+stored so it works with the reference file unloaded), and
+`ch_label_in_publication` (Publication preset hides the HUD; this opt-in
+draws only the CH line, figure-style, via `_draw_publication_ch_label`).
+Persisted in config and sessions; reference changes push `("chref", mode,
+ref)` onto `_adjustment_undo_stack`. One shared menu builder,
+`ch_height.populate_menu`, feeds Display > CH height label, the thumbnail
+right-click menu and the preview's Display Options. The reference z comes
+from `_build_acquisition_overlay_info`, i.e. the same raw source as the
+displayed z_abs, so Δz never picks up filter/Zero offsets.
+`reference_nm` re-reads a loaded reference's live height (the stored value
+is only the unloaded-file fallback). Manual CH tags saved before `9a70df9`
+carry a bogus `abs_z_pm` (~0, the displayed current channel's median);
+`_heal_manual_ch_abs_z` recomputes them from the topography channel once
+during `_auto_detect_tags_for_folder` and marks them `abs_z_src: "topo"`.
+
 ### Quarter-turn image orientation (R / Shift+R)
 A per-file *display* state, `viewer.image_orientation` (`file_key ->`
 clockwise quarter turns 1..3), distinct from Crop/Rotate below (which makes

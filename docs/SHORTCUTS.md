@@ -254,6 +254,10 @@ Overlay toggles:
 - `Ctrl+3` - show / hide molecule overlays.
 - `Ctrl+4` - show / hide scale bar.
 - `Ctrl+5` - show / hide acquisition HUD.
+  For constant-height (CH) images the HUD shows `z_abs`, or `Δz` relative
+  to a reference image picked via right-click > CH height label > Set as Δz
+  reference (Δz > 0 = tip further from the surface). The same menu can keep
+  the CH line visible in the Publication preset.
 - `Ctrl+H` - show / hide the in-canvas shortcut hint.
 
 Contrast:
