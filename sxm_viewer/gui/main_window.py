@@ -7631,6 +7631,11 @@ QLabel:hover {{
                 QtWidgets.QMessageBox.warning(
                     self, "Crop/Rotate", "Could not create the virtual copy.")
                 return
+            # The dialog works on the unturned base array, so the copy
+            # takes the source's quarter-turn to display like its source.
+            turns = self._get_image_orientation(file_key)
+            if turns:
+                self.image_orientation[str(new_key)] = turns
             self._adjustment_undo_stack.append(("copy", str(new_key)))
             # Tone settings ride along on the copy (still live/reversible
             # there); the ORIGINAL's display spec is untouched by design.
