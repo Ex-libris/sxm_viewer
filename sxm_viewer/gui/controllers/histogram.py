@@ -186,7 +186,7 @@ def open_histogram_dialog(owner, canvas):
     def on_reset():
         view = views[state.get("view_idx", 0)]
         try:
-            vmin, vmax, _finite = owner._view_finite_values(view)
+            vmin, vmax = owner._reset_view_clim(view) or (None, None)
         except Exception:
             vmin = vmax = None
         if vmin is None:

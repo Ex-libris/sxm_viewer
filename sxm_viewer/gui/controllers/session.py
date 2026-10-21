@@ -387,6 +387,7 @@ class SessionController:
             "image_adjustments": getattr(viewer, "image_adjustments", {}),
             "thumbnail_filters": getattr(viewer, "thumbnail_filters", {}),
             "image_orientation": dict(getattr(viewer, "image_orientation", {}) or {}),
+            "image_zero": dict(getattr(viewer, "image_zero", {}) or {}),
             "per_file_channel_cmap": getattr(viewer, "per_file_channel_cmap", {}),
             "extra_view_specs": getattr(viewer, "extra_view_specs", []),
             "tags": getattr(viewer, "tags", {}),
@@ -668,6 +669,9 @@ class SessionController:
         viewer.thumbnail_filters = payload.get("thumbnail_filters") or {}
         viewer.image_orientation = {
             str(k): int(v) % 4 for k, v in (payload.get("image_orientation") or {}).items() if int(v) % 4
+        }
+        viewer.image_zero = {
+            str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
         }
         viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
@@ -1767,6 +1771,9 @@ class SessionController:
         viewer.thumbnail_filters = payload.get("thumbnail_filters") or {}
         viewer.image_orientation = {
             str(k): int(v) % 4 for k, v in (payload.get("image_orientation") or {}).items() if int(v) % 4
+        }
+        viewer.image_zero = {
+            str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
         }
         viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
         viewer.extra_view_specs = payload.get("extra_view_specs") or []

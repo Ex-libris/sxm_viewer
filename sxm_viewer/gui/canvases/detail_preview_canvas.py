@@ -876,19 +876,30 @@ class MultiPreviewCanvas(FigureCanvas):
             return f"{value:.3g}"
         return f"{value:.3g}"
 
+    @staticmethod
+    def _snap_limits_to_zero(low, high):
+        """Show an end that is zero up to float residue (e.g. -4e-19 after
+        Zero subtracts the robust minimum) as exactly 0."""
+        tol = 1e-9 * abs(high - low)
+        if abs(low) <= tol:
+            low = 0.0
+        if abs(high) <= tol:
+            high = 0.0
+        return low, high
+
     def _publication_colorbar_limits(self, image, view):
         try:
             low, high = image.get_clim()
             low, high = float(low), float(high)
             if np.isfinite(low) and np.isfinite(high):
-                return low, high
+                return self._snap_limits_to_zero(low, high)
         except Exception:
             pass
         try:
             finite = np.asarray(view.get("arr"), dtype=float)
             finite = finite[np.isfinite(finite)]
             if finite.size:
-                return float(np.min(finite)), float(np.max(finite))
+                return self._snap_limits_to_zero(float(np.min(finite)), float(np.max(finite)))
         except Exception:
             pass
         return None, None
@@ -5726,6 +5737,11 @@ class MultiPreviewCanvas(FigureCanvas):
                     setter(not bool(getattr(self, "_popup_relative_zero_enabled", False)))
                 except Exception:
                     pass
+                return True
+            # Main preview: per-file zero lives on the viewer (selection-aware).
+            zero_image = getattr(self, "_zero_image_callback", None)
+            if callable(zero_image):
+                zero_image()
                 return True
         return False
 

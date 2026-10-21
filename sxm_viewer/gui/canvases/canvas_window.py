@@ -1048,7 +1048,7 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         unit_norm, arr_base = self.viewer._get_filtered_channel_array(file_key, channel_idx, header, fd)
         arr_adj, adj_extent = self.viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_base, base_extent)
         disp_extent = self.viewer._display_extent(adj_extent, header)
-        unit_display, arr_display, _ = self.viewer._scale_unit_for_display(unit_norm, arr_adj)
+        unit_display, arr_display, _ = self.viewer._scale_unit_for_display(unit_norm, arr_adj, file_key)
         caption = fd.get("Caption", fd.get("FileName", f"chan{channel_idx}"))
         title = caption
         colorbar_label = self._display_channel_label(kind, unit_display) or caption

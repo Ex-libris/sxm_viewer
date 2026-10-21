@@ -109,7 +109,7 @@ def _collect_channel_exports(viewer, header_path_str, main_channel_idx=None):
         cap = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
         adj_arr, adj_extent = viewer._apply_adjustments_for_channel(file_key, idx, arr_conv, base_extent)
         disp_extent = viewer._display_extent(adj_extent, header)
-        disp_unit, disp_arr, _ = viewer._scale_unit_for_display(unit_final, adj_arr)
+        disp_unit, disp_arr, _ = viewer._scale_unit_for_display(unit_final, adj_arr, file_key)
         cbar_label = cap
         if disp_unit:
             cbar_label = f"{cap} [{disp_unit}]"

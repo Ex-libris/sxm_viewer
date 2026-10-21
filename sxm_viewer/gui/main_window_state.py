@@ -426,10 +426,15 @@ def init_state(self):
     # Per-file display orientation: file_key -> clockwise quarter turns
     # (1..3; absent = as acquired). Applied by _apply_adjustments_for_channel.
     self.image_orientation = {}
+    # Per-file "Zero" (values shown relative to the image minimum):
+    # file_key -> bool, only for images that differ from the global
+    # default display_units_relative ("Zero all images").
+    self.image_zero = {}
     # Global-undo entries for Crop/Rotate actions: ("tone", key, ch,
     # old_spec) restores a display spec, ("copy", key) removes an
     # [edit] virtual copy, ("orient", {key: old_turns}) restores
-    # orientations. Consumed by _undo_last_adjustment.
+    # orientations, ("zero", default, overrides) restores zero state.
+    # Consumed by _undo_last_adjustment.
     self._adjustment_undo_stack = []
     self._last_base_array = None
     self._last_base_extent = None

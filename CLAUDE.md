@@ -210,7 +210,14 @@ re-grep the method name to confirm before relying on an exact line.
   histogram auto-contrast, `M` opens molecule load, `Home` resets zoom,
   `R`/`Shift+R` turn the image 90° CW/CCW (main preview only, via
   `_rotate_image_callback`), X/Y/Z rotate the selected molecule
-  (`Shift+Home` resets it), Enter/Esc apply/cancel crop-transform mode.
+  (`Shift+Home` resets it), otherwise `Z` toggles per-image Zero
+  (`_zero_image_callback` → `toggle_zero_images`; popups use their own
+  `_popup_relative_zero_setter`), Enter/Esc apply/cancel crop-transform mode.
+- Per-image Zero: `viewer.image_zero` (`file_key -> bool`, only overrides of
+  the global `display_units_relative` "Zero all images" default); always
+  query `_is_image_zeroed(file_key)` and pass `file_key` to
+  `_scale_unit_for_display`. Changes go through `_restore_zero_state`
+  (undo entry `("zero", default, overrides)`, session key `image_zero`).
 - The publication canvas has yet another independent key map
   (`CanvasGraphicsView.keyPressEvent` / `ExperimentalCanvasWindow._handle_canvas_key`
   in `gui/canvases/canvas_view.py` / `canvas_window.py`): arrows nudge
