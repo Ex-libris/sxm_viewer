@@ -7443,7 +7443,10 @@ QLabel:hover {{
             count = len(items)
             outer_margin = 24.0
             gutter = 16.0
-            caption_h = 28.0
+            # Room for a 3-line caption (name / channel / timestamp wrap in
+            # narrow cells) at caption_pt, so it can't run into the next row.
+            caption_pt = 10.0
+            caption_h = 6.0 + 3 * 1.2 * caption_pt
             cols = self._powerpoint_grid_columns(
                 [payload for payload, _label in items], slide_w, slide_h,
                 outer_margin=outer_margin, gutter=gutter, caption_h=caption_h,
@@ -7467,6 +7470,7 @@ QLabel:hover {{
                     top=top,
                     width=cell_w,
                     height=image_h,
+                    label_font_size=caption_pt,
                 )
             canvas._show_powerpoint_success(slide_index, shape_name)
         except ConnectionError:

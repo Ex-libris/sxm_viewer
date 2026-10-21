@@ -13,6 +13,13 @@ PPT_LAYOUT_BLANK = 12
 MSO_TEXT_ORIENTATION_HORIZONTAL = 1
 PP_ALIGN_CENTER = 2
 MSO_GRAPHIC = 28  # MsoShapeType.msoGraphic (inserted SVG)
+MSO_GROUP = 6
+PP_AUTOSIZE_SHAPE_TO_FIT_TEXT = 1
+PP_ALIGN_BY_ANCHOR = {"start": 1, "middle": 2, "end": 3}  # ppAlignLeft/Center/Right
+# PowerPoint's single line spacing is 1.2 em, split between ascent and
+# descent in the font's own proportion; measured for Segoe UI (0.975 em
+# from box top to baseline with zero margins) - see _baseline_em.
+PPT_LINE_HEIGHT_EM = 1.2
 
 pythoncom = None
 win32com = None
@@ -177,12 +184,17 @@ class PowerPointBridge:
         preserve_aspect: bool = True,
         convert_to_shapes: bool = False,
         fallback_path_factory=None,
+        text_anchors=None,
+        label_font_size: float = 12.0,
     ) -> tuple[int, str]:
         """Insert an image file into the active PowerPoint presentation.
 
         With ``convert_to_shapes`` (SVG input), the inserted graphic is run
         through PowerPoint's own "Convert to Shape" so it lands as one native,
         ungroupable group of editable shapes instead of an opaque SVG icon.
+        ``text_anchors`` (from ``vector_export.svg_text_anchors``) then
+        re-sizes and re-places the converted text boxes, which PowerPoint
+        gets wrong whenever the picture isn't inserted at its natural size.
         """
         if not image_path:
             raise ValueError("Image path is required.")
@@ -232,6 +244,14 @@ class PowerPointBridge:
             convert_to_shapes = False
         if convert_to_shapes:
             shape = self._convert_graphic_to_shapes(slide, shape)
+            if text_anchors and int(shape.Type) != MSO_GRAPHIC:
+                viewbox_width, entries = text_anchors
+                if viewbox_width:
+                    try:
+                        self._fix_converted_text(
+                            shape, entries, shape_left, shape_top, shape_width / float(viewbox_width))
+                    except Exception as exc:  # pragma: no cover - depends on Office build
+                        LOGGER.info("PowerPoint text re-placement skipped: %s", exc)
 
         label_text = str(label).strip() if label is not None else ""
         if label_text:
@@ -251,7 +271,7 @@ class PowerPointBridge:
             text_range = text_box.TextFrame.TextRange
             text_range.Text = label_text
             try:
-                text_range.Font.Size = 12
+                text_range.Font.Size = float(label_font_size)
             except Exception:
                 pass
             try:
@@ -265,6 +285,63 @@ class PowerPointBridge:
                 pass
 
         return int(slide.SlideIndex), str(shape.Name)
+
+    def _fix_converted_text(self, shape, entries, origin_left, origin_top, scale):
+        """Re-size and re-place the text boxes "Convert to Shape" produced.
+
+        PowerPoint turns each SVG ``<text>`` into a left-aligned, auto-sized
+        text box whose font size ignores the picture's scale (px * 0.75 at
+        any size). In a picture shrunk to fit a grid cell the text is then
+        too big, spills out of end-anchored boxes and sinks below its
+        baseline (colorbar labels cut off, "1 nm" crossed by its own bar).
+        Each box is matched to its SVG entry by text (document order breaks
+        ties) and gets the SVG font size times the picture scale, the SVG
+        text-anchor as alignment, zero margins, and a position putting its
+        baseline anchor point where the SVG has it, rotated about that point
+        like the SVG.
+        """
+        import math
+
+        unused = list(entries)
+        for item in _iter_leaf_shapes(shape):
+            try:
+                if not (item.HasTextFrame and item.TextFrame.HasText):
+                    continue
+                text_range = item.TextFrame.TextRange
+                key = _normalize_text(text_range.Text)
+            except Exception:
+                continue
+            match = next((e for e in unused if _normalize_text(e["text"]) == key), None)
+            if match is None:
+                continue
+            unused.remove(match)
+            size_pt = max(1.0, float(match["size"]) * scale)
+            frame = item.TextFrame
+            item.Rotation = 0
+            frame.MarginLeft = frame.MarginRight = frame.MarginTop = frame.MarginBottom = 0
+            frame.WordWrap = 0
+            frame.AutoSize = PP_AUTOSIZE_SHAPE_TO_FIT_TEXT
+            frame.VerticalAnchor = 1  # msoAnchorTop
+            text_range.ParagraphFormat.Alignment = PP_ALIGN_BY_ANCHOR[match["anchor"]]
+            text_range.ParagraphFormat.LineRuleWithin = -1  # spacing in lines
+            text_range.ParagraphFormat.SpaceWithin = 1.0
+            text_range.Font.Size = round(size_pt, 1)
+            width, height = float(item.Width), float(item.Height)
+            anchor_x = origin_left + float(match["x"]) * scale
+            anchor_y = origin_top + float(match["y"]) * scale
+            family = match.get("family") or str(text_range.Font.Name or "")
+            box_left = anchor_x - {"start": 0.0, "middle": 0.5, "end": 1.0}[match["anchor"]] * width
+            box_top = anchor_y - _baseline_em(family, bool(match.get("bold"))) * size_pt
+            # PowerPoint rotates about the box centre, the SVG about the
+            # anchor point: rotate the centre about the anchor to match.
+            theta = math.radians(float(match["angle"]))
+            dx = box_left + width / 2.0 - anchor_x
+            dy = box_top + height / 2.0 - anchor_y
+            centre_x = anchor_x + dx * math.cos(theta) - dy * math.sin(theta)
+            centre_y = anchor_y + dx * math.sin(theta) + dy * math.cos(theta)
+            item.Rotation = float(match["angle"]) % 360.0
+            item.Left = centre_x - width / 2.0
+            item.Top = centre_y - height / 2.0
 
     def _convert_graphic_to_shapes(self, slide, shape):
         """Run "Convert to Shape" on an inserted SVG graphic; best effort.
@@ -291,6 +368,49 @@ class PowerPointBridge:
         except Exception as exc:  # pragma: no cover - depends on Office build
             LOGGER.info("PowerPoint 'Convert to Shape' unavailable: %s", exc)
         return shape
+
+
+def _iter_leaf_shapes(shape):
+    """Every non-group shape inside ``shape`` (depth first, paint order)."""
+    try:
+        if int(shape.Type) == MSO_GROUP:
+            items = shape.GroupItems
+            for idx in range(1, int(items.Count) + 1):
+                yield from _iter_leaf_shapes(items.Item(idx))
+            return
+    except Exception:
+        pass
+    yield shape
+
+
+def _normalize_text(text) -> str:
+    return " ".join(str(text or "").replace("\u00a0", " ").split())
+
+
+_BASELINE_EM_CACHE: dict = {}
+
+
+def _baseline_em(family: str, bold: bool) -> float:
+    """Distance from a zero-margin PowerPoint text box's top to its first
+    baseline, in em: PowerPoint's 1.2 em single line split in the font's
+    ascent:descent ratio (0.975 for Segoe UI, measured on a rendered slide)."""
+    key = (family, bool(bold))
+    if key not in _BASELINE_EM_CACHE:
+        value = 0.975
+        try:
+            from PyQt5 import QtGui
+
+            font = QtGui.QFont(family or "Segoe UI")
+            font.setBold(bool(bold))
+            font.setPointSizeF(100.0)
+            metrics = QtGui.QFontMetricsF(font)
+            ascent, descent = float(metrics.ascent()), float(metrics.descent())
+            if ascent > 0 and descent >= 0:
+                value = PPT_LINE_HEIGHT_EM * ascent / (ascent + descent)
+        except Exception:
+            pass
+        _BASELINE_EM_CACHE[key] = value
+    return _BASELINE_EM_CACHE[key]
 
 
 _bridge = PowerPointBridge()
@@ -345,6 +465,13 @@ def send_svg_to_ppt(
     try:
         if "image_size" not in kwargs:
             kwargs["image_size"] = _svg_size_pt(svg_bytes)
+        if convert_to_shapes and "text_anchors" not in kwargs:
+            try:
+                from . import vector_export
+
+                kwargs["text_anchors"] = vector_export.svg_text_anchors(svg_bytes)
+            except Exception as exc:
+                LOGGER.info("Could not read SVG text positions: %s", exc)
         return _bridge.send_image(
             _write_temp(svg_bytes, ".svg"),
             label=label,

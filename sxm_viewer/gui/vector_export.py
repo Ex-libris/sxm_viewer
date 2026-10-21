@@ -199,6 +199,103 @@ def to_inkscape_layers(svg_bytes: bytes, molecule_names: dict[int, str] | None =
     return _dump(tree)
 
 
+_TRANSFORM_RE = re.compile(r"(matrix|translate|scale|rotate)\s*\(([^)]*)\)")
+_TEXT_ANCHORS = {"start", "middle", "end"}
+
+
+def _mul(m, n):
+    """Compose SVG affine matrices (a, b, c, d, e, f): apply ``n`` then ``m``."""
+    a, b, c, d, e, f = m
+    a2, b2, c2, d2, e2, f2 = n
+    return (a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2,
+            a * e2 + c * f2 + e, b * e2 + d * f2 + f)
+
+
+def _parse_transform(text: str | None):
+    import math
+
+    m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    for name, raw in _TRANSFORM_RE.findall(text or ""):
+        v = [float(x) for x in re.split(r"[\s,]+", raw.strip()) if x]
+        if name == "matrix" and len(v) == 6:
+            step = tuple(v)
+        elif name == "translate" and v:
+            step = (1.0, 0.0, 0.0, 1.0, v[0], v[1] if len(v) > 1 else 0.0)
+        elif name == "scale" and v:
+            step = (v[0], 0.0, 0.0, v[1] if len(v) > 1 else v[0], 0.0, 0.0)
+        elif name == "rotate" and v:
+            t = math.radians(v[0])
+            step = (math.cos(t), math.sin(t), -math.sin(t), math.cos(t), 0.0, 0.0)
+            if len(v) >= 3:  # rotate(a cx cy) = translate(c) rotate(a) translate(-c)
+                step = _mul(_mul((1.0, 0.0, 0.0, 1.0, v[1], v[2]), step), (1.0, 0.0, 0.0, 1.0, -v[1], -v[2]))
+        else:
+            continue
+        m = _mul(m, step)
+    return m
+
+
+def _style_map(element) -> dict:
+    style = {}
+    for part in (element.get("style") or "").split(";"):
+        if ":" in part:
+            key, value = part.split(":", 1)
+            style[key.strip()] = value.strip()
+    for key in ("font-size", "font-family", "font-weight", "text-anchor"):
+        if element.get(key) and key not in style:
+            style[key] = element.get(key)
+    return style
+
+
+def svg_text_anchors(svg_bytes: bytes):
+    """Where each ``<text>`` really sits, for re-placing PowerPoint text.
+
+    Returns ``(viewbox_width, entries)``; each entry has the text, its
+    baseline anchor point ``x``/``y`` in viewBox units, ``angle`` in degrees
+    (clockwise on screen, PowerPoint's ``Rotation`` sense), ``size`` in
+    viewBox units, ``anchor`` (start/middle/end), ``family`` and ``bold``,
+    in document order. matplotlib (``svg.fonttype='none'``) writes either
+    ``x``/``y`` + ``rotate(-a x y)`` or ``translate(x y) rotate(-a)``; both,
+    and any ancestor ``<g>`` transforms, collapse into one matrix here.
+    """
+    import math
+
+    root = ET.fromstring(svg_bytes)
+    try:
+        viewbox_width = float(re.split(r"[\s,]+", (root.get("viewBox") or "").strip())[2])
+    except Exception:
+        viewbox_width = None
+    entries = []
+
+    def _walk(element, matrix):
+        matrix = _mul(matrix, _parse_transform(element.get("transform")))
+        if element.tag == f"{{{SVG_NS}}}text":
+            text = "".join(element.itertext())
+            style = _style_map(element)
+            size_match = re.match(r"\s*([0-9.]+)", style.get("font-size") or "")
+            if text.strip() and size_match:
+                a, b, c, d, e, f = matrix
+                x = float(element.get("x") or 0.0)
+                y = float(element.get("y") or 0.0)
+                anchor = (style.get("text-anchor") or "start").strip().lower()
+                weight = (style.get("font-weight") or "").strip().lower()
+                entries.append({
+                    "text": text,
+                    "x": a * x + c * y + e,
+                    "y": b * x + d * y + f,
+                    "angle": math.degrees(math.atan2(b, a)) % 360.0,
+                    "size": float(size_match.group(1)) * math.hypot(a, b),
+                    "anchor": anchor if anchor in _TEXT_ANCHORS else "start",
+                    "family": (style.get("font-family") or "").split(",")[0].strip().strip("'\""),
+                    "bold": weight in ("bold", "bolder") or (weight.isdigit() and int(weight) >= 600),
+                })
+            return
+        for child in element:
+            _walk(child, matrix)
+
+    _walk(root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+    return viewbox_width, entries
+
+
 def find_inkscape() -> str | None:
     """Path to the Inkscape executable, or None when it isn't installed."""
     import os
