@@ -207,8 +207,10 @@ re-grep the method name to confirm before relying on an exact line.
   `detail_preview_canvas.py`) has its own independent key map: Ctrl+1..5 toggle
   profile/angle/molecule/scale-bar/acquisition overlays, Ctrl+H toggles the
   shortcut hint, Ctrl+C copies the displayed image, Ctrl+Z undoes, `A` triggers
-  histogram auto-contrast, `M` opens molecule load, `R` resets zoom, X/Y/Z
-  rotate the selected molecule, Enter/Esc apply/cancel crop-transform mode.
+  histogram auto-contrast, `M` opens molecule load, `Home` resets zoom,
+  `R`/`Shift+R` turn the image 90° CW/CCW (main preview only, via
+  `_rotate_image_callback`), X/Y/Z rotate the selected molecule
+  (`Shift+Home` resets it), Enter/Esc apply/cancel crop-transform mode.
 - The publication canvas has yet another independent key map
   (`CanvasGraphicsView.keyPressEvent` / `ExperimentalCanvasWindow._handle_canvas_key`
   in `gui/canvases/canvas_view.py` / `canvas_window.py`): arrows nudge
@@ -888,6 +890,41 @@ entirely off-thread. Never let the worker touch the viewer.
   `MatrixSpectroViewer` methods (which live on a QDialog and can't be
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
+
+### Quarter-turn image orientation (R / Shift+R)
+A per-file *display* state, `viewer.image_orientation` (`file_key ->`
+clockwise quarter turns 1..3), distinct from Crop/Rotate below (which makes
+resampled `[edit]` copies). Pure helpers live in
+`sxm_viewer/geometry/orientation.py`. The turn is applied in one place,
+`_apply_adjustments_for_channel` (array via `rotate_array`, extent via
+`rotate_extent`, which swaps spans for odd turns), so preview, popups,
+exports, PowerPoint and the publication canvas all get it; the folder report
+deliberately doesn't. Raw arrays, headers and spec positions stay in the
+acquisition raster frame — so this is another instance of "the one rule"
+above, and every raster-frame overlay drawn on a turned image must be turned
+too:
+- **Thumbnails** call it with `orient=False` and turn *after*
+  `detect_valid_scan_region`, so `thumb_crop` (r0/r1) stays raster-frame for
+  `_map_spec_to_pixels`; the turn is part of the thumbnail data-cache key.
+  `_render_spectroscopy_overlays(turns=...)` lays markers/footprints out in
+  the unturned box, then turns positions (and off-frame compass letters,
+  `_turn_compass`) onto the pixmap; `_spectros_near_thumb_pos` un-turns the
+  click. Only `_decorate_thumbnail_pixmap` passes `turns` — other callers
+  draw on unturned pixmaps.
+- **Preview** markers: `preview._turn_spec_pixel` turns each
+  `_map_spec_to_pixels` result before it goes into `spec_pixels`.
+- Turning re-renders with `_suppress_profile_restore` and resets zoom
+  (profile/angle lines are in the old frame's data coords). Per-file
+  molecules and quick-crop history are *not* migrated.
+- `_last_display_extent` (only read by Crop/Rotate, which works on the
+  unturned `_last_base_array`) is kept in the acquired orientation.
+- Virtual copies: channel copies (`create_virtual_channel_copies`) re-read
+  the source's raw arrays, so they inherit the source's turn; view/crop
+  copies are built from the displayed (already turned) array and must
+  *not* get an orientation entry, or they'd be turned twice.
+- Undo: `("orient", {key: old_turns})` on `_adjustment_undo_stack`; sessions
+  persist `image_orientation`; the thumbnail chip is the teal `↻90°` badge
+  next to ADJ.
 
 ### Crop/Rotate (Image menu) vs quick-crop — two tools, one output convention
 Both crop tools are non-destructive and produce **virtual copies**

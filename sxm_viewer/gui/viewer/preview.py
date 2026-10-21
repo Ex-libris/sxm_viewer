@@ -39,6 +39,7 @@ from ...data.io import parse_header
 from ...processing.detection import _find_topography_channel, _sample_channel_values_for_tagging, header_indicates_constant
 from ...data.io import normalize_unit_and_data
 from ...utils.units import _auto_display_unit, _safe_float
+from ...geometry import orientation
 from ..spectroscopy import overlays as spectro_overlays
 from ..thumbnail_render import detect_valid_scan_region
 from .. import theme as ui_theme
@@ -99,6 +100,16 @@ def _build_spec_transform(header, xpix, ypix):
         'xpix': xp,
         'ypix': yp,
     }
+
+
+def _turn_spec_pixel(viewer, file_key, coords, xpix, ypix):
+    """Carry a raster-frame (col, row) from _map_spec_to_pixels onto the
+    image as displayed, i.e. through the file's quarter-turn orientation."""
+    col, row = float(coords[0]), float(coords[1])
+    turns = viewer._get_image_orientation(str(file_key))
+    if not turns:
+        return col, row
+    return orientation.rotate_index_coords(col, row, xpix, ypix, turns)
 
 
 def _coerce_float(value):
@@ -775,7 +786,8 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         except Exception:
             coords = None
         if coords is not None:
-            spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+            col, row = _turn_spec_pixel(viewer, header_path, coords, xpix, ypix)
+            spec_pixels.append((spec, col, row))
     stack_badges = spectro_overlays._stack_badges_from_coords(spec_pixels)
     spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
         spec_pixels,
@@ -936,7 +948,12 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj)
         viewer._last_display_array = np.asarray(display_arr)
         viewer._last_display_unit = display_unit
-        viewer._last_display_extent = display_extent
+        # Consumed only by Image > Crop/Rotate, which works on the unturned
+        # _last_base_array, so give it the acquired-orientation extent.
+        viewer._last_display_extent = (
+            viewer._display_extent(base_extent, header)
+            if viewer._get_image_orientation(file_key) else display_extent
+        )
         viewer._last_colorbar_label = None
         axis_unit = header.get('XPhysUnit') or header.get('YPhysUnit') or header.get('ScanUnit') or ''
         if not axis_unit:
@@ -1036,7 +1053,8 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         except Exception:
             coords = None
         if coords is not None:
-            spec_pixels.append((spec, float(coords[0]), float(coords[1])))
+            col, row = _turn_spec_pixel(viewer, header_path, coords, xpix, ypix)
+            spec_pixels.append((spec, col, row))
     stack_badges = spectro_overlays._stack_badges_from_coords(spec_pixels)
     spec_pixels = spectro_overlays._spread_overlapping_marker_coords(
         spec_pixels,

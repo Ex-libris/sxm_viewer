@@ -182,6 +182,15 @@ def create_main_toolbar(viewer):
     viewer.toolbar_reset_adjust_act.setToolTip(
         "Clear the previewed image's clip/gamma display adjustments (Ctrl+Z restores)")
     viewer.toolbar_reset_adjust_act.triggered.connect(viewer.on_reset_image_adjustments)
+    viewer.toolbar_image_menu.addSeparator()
+    viewer.toolbar_rotate_cw_act = viewer.toolbar_image_menu.addAction("Rotate 90° clockwise  (R)")
+    viewer.toolbar_rotate_cw_act.triggered.connect(lambda: viewer.rotate_images(1))
+    viewer.toolbar_rotate_ccw_act = viewer.toolbar_image_menu.addAction("Rotate 90° anticlockwise  (Shift+R)")
+    viewer.toolbar_rotate_ccw_act.triggered.connect(lambda: viewer.rotate_images(-1))
+    viewer.toolbar_reset_orient_act = viewer.toolbar_image_menu.addAction("Reset orientation")
+    viewer.toolbar_reset_orient_act.setToolTip(
+        "Show the selected/previewed image in its acquired orientation again (Ctrl+Z restores)")
+    viewer.toolbar_reset_orient_act.triggered.connect(lambda: viewer.reset_image_orientation())
 
     def _sync_image_menu():
         act = getattr(viewer, "toolbar_reset_adjust_act", None)
@@ -194,6 +203,11 @@ def create_main_toolbar(viewer):
         except Exception:
             has_spec = False
         act.setEnabled(has_spec)
+        try:
+            viewer.toolbar_reset_orient_act.setEnabled(
+                any(viewer._get_image_orientation(p) for p in viewer._orientation_targets()))
+        except Exception:
+            pass
 
     viewer.toolbar_image_menu.aboutToShow.connect(_sync_image_menu)
     viewer.toolbar_image_btn.setMenu(viewer.toolbar_image_menu)

@@ -423,9 +423,13 @@ def init_state(self):
     self.virtual_copy_order = []
     self.thumbnail_filters = {}
     self.image_adjustments = defaultdict(dict)
+    # Per-file display orientation: file_key -> clockwise quarter turns
+    # (1..3; absent = as acquired). Applied by _apply_adjustments_for_channel.
+    self.image_orientation = {}
     # Global-undo entries for Crop/Rotate actions: ("tone", key, ch,
     # old_spec) restores a display spec, ("copy", key) removes an
-    # [edit] virtual copy. Consumed by _undo_last_adjustment.
+    # [edit] virtual copy, ("orient", {key: old_turns}) restores
+    # orientations. Consumed by _undo_last_adjustment.
     self._adjustment_undo_stack = []
     self._last_base_array = None
     self._last_base_extent = None

@@ -35,7 +35,7 @@ from . import virtual_copies
 from .virtual_copies import VIRTUAL_COPY_INSERT_START
 from . import main_window_state
 from .debounce import ACCUMULATE, LATEST, Debouncer
-from ..geometry import spec_mapping
+from ..geometry import orientation, spec_mapping
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
@@ -1012,6 +1012,28 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addSpacing(4)
         preview_state_row.addWidget(self.preview_zero_cb)
         preview_state_row.addWidget(self.relative_axes_cb)
+        preview_state_row.addSpacing(4)
+
+        def _orient_button(text, tooltip, on_click):
+            btn = QtWidgets.QToolButton()
+            btn.setText(text)
+            btn.setAutoRaise(True)
+            btn.setFixedWidth(24)
+            btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(on_click)
+            preview_state_row.addWidget(btn)
+            return btn
+
+        self.rotate_ccw_btn = _orient_button(
+            "↺", "Rotate 90° anticlockwise (Shift+R) - selected thumbnails, or the previewed image",
+            lambda: self.rotate_images(-1))
+        self.rotate_cw_btn = _orient_button(
+            "↻", "Rotate 90° clockwise (R) - selected thumbnails, or the previewed image",
+            lambda: self.rotate_images(1))
+        self.rotate_reset_btn = _orient_button(
+            "⟲", "Reset to the acquired orientation (Ctrl+Z restores)",
+            lambda: self.reset_image_orientation())
         preview_state_row.addStretch(1)
         preview_workspace_layout.addLayout(preview_state_row)
         preview_panel_layout.addWidget(self.preview_workspace_frame)
@@ -1238,6 +1260,9 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_spectra_compare_all_callback(
             lambda file_key: self.spectro_compare_controller.open_all_specs_popup(file_key)
         )
+        # R / Shift+R on the main preview turn the image (popups don't get
+        # this: orientation is per-file viewer state, not per-canvas).
+        self.preview_canvas._rotate_image_callback = lambda turns: self.rotate_images(turns)
         self.preview_canvas.set_crop_callback(lambda v, c=self.preview_canvas: self._on_preview_crop(v, c))
         self.preview_canvas.set_virtual_copy_callback(self._create_virtual_copy_from_popup_view)
         # Double-click popup disabled — opens redundant windows when preview is already visible
@@ -3520,6 +3545,12 @@ QLabel:hover {{
                     self.toggle_star_for_paths(sorted(targets))
                     event.accept()
                     return
+        if key == QtCore.Qt.Key_R and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier)):
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                if self.rotate_images(-1 if (mods & QtCore.Qt.ShiftModifier) else 1):
+                    event.accept()
+                    return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
@@ -4790,6 +4821,7 @@ QLabel:hover {{
         self.current_spectro_thumb_files = []
         self.selected_spectro_thumb_file = None
         self.thumbnail_filters = {}
+        self.image_orientation = {}
         self.virtual_copy_order = []
         self.extra_view_specs = []
         self.molecule_overlays = {}
@@ -5145,6 +5177,21 @@ QLabel:hover {{
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
             painter.drawText(chip, QtCore.Qt.AlignCenter, "ADJ")
             painter.end()
+        turns = self._get_image_orientation(file_key)
+        if turns:
+            # Teal turn chip, bottom-left (after ADJ): the image is shown
+            # rotated from its acquired orientation; reset via right-click
+            # > Orientation or the preview's ⟲ button.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = QtCore.QRectF(6 + (40 if has_adjust else 0), pix.height() - 24, 40, 18)
+            painter.setBrush(QtGui.QColor(0, 150, 160, 225))
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 60, 66), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, f"↻{turns * 90}°")
+            painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
@@ -5165,6 +5212,7 @@ QLabel:hover {{
                     ypix,
                     selected_spec=highlight_spec,
                     thumb_crop=thumb_crop,
+                    turns=self._get_image_orientation(file_key),
                 )
             except Exception:
                 marker_defs = []
@@ -7253,11 +7301,106 @@ QLabel:hover {{
             if mapping and not mapping:
                 self.image_adjustments.pop(file_key, None)
 
-    def _apply_adjustments_for_channel(self, file_key, channel_idx, arr, extent):
+    def _apply_adjustments_for_channel(self, file_key, channel_idx, arr, extent, orient=True):
+        """Display adjustments + (unless ``orient=False``) the file's
+        quarter-turn orientation. Preview, exports and the publication
+        canvas take the turned result; thumbnails pass orient=False and turn
+        after their blank-row crop so the crop stays in the raster frame
+        that spectroscopy marker mapping assumes."""
         spec = self._get_adjust_spec(file_key, channel_idx)
         if not spec:
-            return np.array(arr, dtype=float, copy=True), extent
-        return apply_adjustment_spec(arr, extent, spec)
+            arr, extent = np.array(arr, dtype=float, copy=True), extent
+        else:
+            arr, extent = apply_adjustment_spec(arr, extent, spec)
+        turns = self._get_image_orientation(file_key) if orient else 0
+        if turns:
+            arr = orientation.rotate_array(arr, turns)
+            extent = orientation.rotate_extent(extent, turns)
+        return arr, extent
+
+    # ---------- quarter-turn image orientation ----------
+    def _get_image_orientation(self, file_key):
+        """Clockwise quarter turns (0..3) applied to file_key's display."""
+        try:
+            return orientation.normalize_turns(
+                (getattr(self, "image_orientation", None) or {}).get(str(file_key), 0))
+        except Exception:
+            return 0
+
+    def _orientation_targets(self, paths=None):
+        """Explicit paths, else the thumbnail selection, else the previewed image."""
+        if paths:
+            return [str(Path(p)) for p in paths if p]
+        targets = list(getattr(self, "_ordered_thumbnail_selection", lambda: [])() or [])
+        if not targets:
+            current = str(getattr(self, "selected_file_for_thumbs", "") or "")
+            if not current and self.last_preview:
+                current = str(self.last_preview[0])
+            if current:
+                targets = [current]
+        return [str(p) for p in targets if str(p) in getattr(self, "thumb_widgets", {})]
+
+    def _set_image_orientation(self, turns_by_key, *, push_undo=True):
+        """Apply {file_key: turns}; re-renders thumbnails and the preview."""
+        if not turns_by_key:
+            return False
+        store = self.image_orientation
+        old = {key: self._get_image_orientation(key) for key in turns_by_key}
+        changed = {key: orientation.normalize_turns(k) for key, k in turns_by_key.items()
+                   if orientation.normalize_turns(k) != old[key]}
+        if not changed:
+            return False
+        for key, turns in changed.items():
+            if turns:
+                store[key] = turns
+            else:
+                store.pop(key, None)
+        if push_undo:
+            self._adjustment_undo_stack.append(("orient", {key: old[key] for key in changed}))
+        try:
+            self._invalidate_thumbnail_cache(paths=list(changed))
+        except Exception:
+            pass
+        try:
+            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+        except Exception:
+            pass
+        if self.last_preview and str(self.last_preview[0]) in changed:
+            # Profile/angle lines and the zoom window are in the old frame's
+            # data coordinates: drop them rather than show them misplaced.
+            self._suppress_profile_restore = True
+            try:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1], use_local_cmap=True)
+            except Exception:
+                pass
+            try:
+                self.preview_canvas._reset_view_zoom()
+            except Exception:
+                pass
+        return True
+
+    def rotate_images(self, quarter_turns, paths=None):
+        """Turn the target images by ``quarter_turns`` (+1 = 90° clockwise)."""
+        targets = self._orientation_targets(paths)
+        if not targets:
+            return False
+        changed = self._set_image_orientation(
+            {key: self._get_image_orientation(key) + int(quarter_turns) for key in targets})
+        if changed:
+            what = Path(targets[0]).name if len(targets) == 1 else f"{len(targets)} images"
+            direction = "clockwise" if int(quarter_turns) > 0 else "anticlockwise"
+            log_status(f"[Orientation] Rotated {what} {abs(int(quarter_turns)) * 90}° {direction} (Ctrl+Z undoes)")
+        return changed
+
+    def reset_image_orientation(self, paths=None):
+        targets = [key for key in self._orientation_targets(paths) if self._get_image_orientation(key)]
+        if not targets:
+            log_status("[Orientation] Image is already in its acquired orientation")
+            return False
+        changed = self._set_image_orientation({key: 0 for key in targets})
+        if changed:
+            log_status("[Orientation] Restored acquired orientation (Ctrl+Z undoes)")
+        return changed
 
     def _scale_unit_for_display(self, unit, arr):
         arr_np = np.asarray(arr, dtype=float)
@@ -7542,6 +7685,11 @@ QLabel:hover {{
                 QtWidgets.QMessageBox.warning(
                     self, "Crop/Rotate", "Could not create the virtual copy.")
                 return
+            # The dialog works on the unturned base array, so the copy
+            # takes the source's quarter-turn to display like its source.
+            turns = self._get_image_orientation(file_key)
+            if turns:
+                self.image_orientation[str(new_key)] = turns
             self._adjustment_undo_stack.append(("copy", str(new_key)))
             # Tone settings ride along on the copy (still live/reversible
             # there); the ORIGINAL's display spec is untouched by design.
@@ -7612,6 +7760,10 @@ QLabel:hover {{
                 self._refresh_adjusted_channel(file_key, channel_idx)
                 log_status("[Crop/Rotate] Display adjustments restored")
                 return True
+            if entry[0] == "orient":
+                self._set_image_orientation(dict(entry[1]), push_undo=False)
+                log_status("[Orientation] Orientation restored")
+                return True
             if entry[0] == "copy":
                 new_key = entry[1]
                 if new_key not in getattr(self, '_processed_views', {}):
@@ -7653,6 +7805,11 @@ QLabel:hover {{
             label = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
             cmap = config.get('cmaps', {}).get(key, self.preview_cmap_combo.currentText() or self.preview_cmap)
             unit_display, arr_display, _ = self._scale_unit_for_display(unit_final, arr_conv)
+            turns = self._get_image_orientation(str(header_path))
+            item_extent = extent
+            if turns:
+                arr_display = orientation.rotate_array(arr_display, turns)
+                item_extent = orientation.rotate_extent(extent, turns)
             v_range = config.get('vmin_vmax', {}).get(key)
             vmin = vmax = None
             if isinstance(v_range, (list, tuple)) and len(v_range) == 2:
@@ -7661,7 +7818,7 @@ QLabel:hover {{
             if unit_display:
                 colorbar_label = f"{label} [{unit_display}]"
             title_text = f"{header_path.name} - {label}"
-            render_items.append({'arr': arr_display, 'extent': extent, 'unit': unit_display, 'label': label,
+            render_items.append({'arr': arr_display, 'extent': item_extent, 'unit': unit_display, 'label': label,
                                  'cmap': cmap, 'vmin': vmin, 'vmax': vmax, 'relative_axes': bool(self.relative_axes),
                                  'colorbar_label': colorbar_label, 'title': title_text,
                                  'path': str(header_path), 'channel_idx': idx})
@@ -8630,6 +8787,7 @@ QLabel:hover {{
         entries_override=None,
         matrix_as_points=False,
         thumb_crop=None,
+        turns=0,
     ):
         """Render spectroscopy markers directly on the thumbnail pixmap."""
         if not self.show_spectra and not reveal_points_override:
@@ -8653,6 +8811,7 @@ QLabel:hover {{
             entries_override=entries_override,
             matrix_as_points=matrix_as_points,
             thumb_crop=thumb_crop,
+            turns=turns,
         )
 
     def _matrix_bbox_pixels(self, m_specs, header, xpix, ypix, w_scale, h_scale, file_key=None, thumb_crop=None):
@@ -9079,6 +9238,20 @@ QLabel:hover {{
         adjust_act = QtWidgets.QAction("Adjust image...", menu)
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
+        orient_targets = [str(p) for p in targets if str(p) in getattr(self, "thumb_widgets", {})]
+        if orient_targets:
+            orient_menu = menu.addMenu("Orientation" + (f" ({len(orient_targets)} selected)" if len(orient_targets) > 1 else ""))
+            for text, turns in (("Rotate 90° clockwise  (R)", 1),
+                                ("Rotate 90° anticlockwise  (Shift+R)", -1),
+                                ("Rotate 180°", 2)):
+                act = QtWidgets.QAction(text, orient_menu)
+                act.triggered.connect(lambda _, paths=list(orient_targets), k=turns: self.rotate_images(k, paths))
+                orient_menu.addAction(act)
+            orient_menu.addSeparator()
+            orient_reset = QtWidgets.QAction("Reset to acquired orientation", orient_menu)
+            orient_reset.setEnabled(any(self._get_image_orientation(p) for p in orient_targets))
+            orient_reset.triggered.connect(lambda _, paths=list(orient_targets): self.reset_image_orientation(paths))
+            orient_menu.addAction(orient_reset)
 
         # Per-image colormap for every selected thumbnail (real files and
         # virtual copies alike) — stored in per_file_channel_cmap, so the

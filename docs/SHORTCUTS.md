@@ -127,6 +127,8 @@ Thumbnail actions:
   `Ctrl+Alt+F` or the `Starred` entry of the thumbnail filter dropdown.
   An in-app explanation lives at `Display -> Show only -> How favourites &
   filters work...`.
+- `R` / `Shift+R` while focus is in the thumbnail area - rotate the selected
+  thumbnails 90° clockwise / anticlockwise (see "Image orientation" below).
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.
@@ -140,6 +142,8 @@ Thumbnail context menu:
 - Copy selected thumbnails as SVG using the current rendered view.
 - Export PNGs, XYZ, or WSxM STP.
 - Open the image-adjust dialog.
+- `Orientation` - rotate the selected images 90° clockwise / anticlockwise /
+  180°, or reset them to the acquired orientation.
 - Toggle spectroscopy overlays, miniatures, glow, and marker style.
 - Create virtual copies for the current or chosen channel.
 - Remove selected virtual copies.
@@ -202,8 +206,24 @@ Other:
 Core navigation:
 - `Mouse wheel` - zoom centered at the cursor.
 - `Left drag` or `Middle drag` while already zoomed - pan the current axes.
-- `R` - reset zoom.
+- `Home` - reset zoom (was `R` before image rotation took that key).
 - `Double click` a view - open it in a popup.
+
+Image orientation (main preview):
+- `R` - rotate the image 90° clockwise.
+- `Shift+R` - rotate the image 90° anticlockwise.
+- The `↺` / `↻` / `⟲` buttons right of the `Relative axes` checkbox do the
+  same, and `⟲` resets to the acquired orientation. They act on the selected
+  thumbnails, or on the previewed image when nothing is multi-selected.
+  `Image` menu and the thumbnail context menu (`Orientation`) have the same
+  actions.
+- The turn is a per-image display state: ticks, colorbar, scale bar, title
+  and spectroscopy markers follow it, and it applies to exports, PowerPoint,
+  popups and the publication canvas too (the folder report keeps the acquired
+  orientation). Turned thumbnails show a teal `↻90°` / `↻180°` / `↻270°` chip.
+  `Ctrl+Z` undoes a turn; sessions save it.
+- Turning clears profile / angle lines on that image (they were measured in
+  the old orientation).
 
 Clipboard and undo:
 - `Ctrl+C` - copy the displayed canvas as PNG, including overlays.
@@ -393,6 +413,7 @@ Direct manipulation on the image:
 
 Molecule context menu:
 - Properties dialog for rotate / scale.
+- `Shift+Home` - reset the selected molecule to its file state.
 - Toggle shadows.
 - Toggle hydrogens.
 - Palette selection.

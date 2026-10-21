@@ -9,6 +9,8 @@ Modules:
 
 * ``spec_mapping`` - absolute nm <-> image raster pixel transforms for
   spectroscopy positions. Previously methods on ``SXMGridViewer``.
+* ``orientation`` - per-image quarter-turn display orientation: turning
+  arrays/extents and carrying raster coordinates through the same turn.
 """
 from .spec_mapping import (  # noqa: F401
     header_extent,

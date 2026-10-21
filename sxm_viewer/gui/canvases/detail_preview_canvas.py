@@ -5695,7 +5695,7 @@ class MultiPreviewCanvas(FigureCanvas):
                     return
         if event is not None:
             try:
-                if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_R:
+                if event.modifiers() == QtCore.Qt.NoModifier and event.key() == QtCore.Qt.Key_Home:
                     self._reset_view_zoom()
                     return
             except Exception:
@@ -5708,8 +5708,17 @@ class MultiPreviewCanvas(FigureCanvas):
             return False
         if self._rotate_selected_molecule_from_key(key, reverse=shift):
             return True
-        if shift and key == QtCore.Qt.Key_R:
+        if shift and key == QtCore.Qt.Key_Home:
             return self._reset_molecule_to_file_state()
+        if key == QtCore.Qt.Key_R:
+            # R / Shift+R turn the image 90° clockwise / anticlockwise. The
+            # turn is per-file viewer state, so only canvases given a
+            # callback (the main preview) handle it.
+            rotate = getattr(self, "_rotate_image_callback", None)
+            if callable(rotate):
+                rotate(-1 if shift else 1)
+                return True
+            return False
         if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
             setter = getattr(self, "_popup_relative_zero_setter", None)
             if callable(setter):
@@ -9518,7 +9527,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
         # Reset/state
         reset_file_act = menu.addAction(icon(QtWidgets.QStyle.SP_BrowserReload), "Reset to file state")
-        reset_file_act.setShortcut(QtGui.QKeySequence("Shift+R"))
+        reset_file_act.setShortcut(QtGui.QKeySequence("Shift+Home"))
         reset_file_act.setEnabled(bool(getattr(mol, "filepath", None)))
         reset_all_act = menu.addAction(icon(QtWidgets.QStyle.SP_MessageBoxWarning), "Reset all molecules")
 
