@@ -99,6 +99,7 @@ from .controllers.recent_files_controller import RecentFilesController
 from .controllers.report import ReportController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
+from .viewer import ch_height as viewer_ch_height
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
 from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
@@ -1273,6 +1274,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_canvas.set_spectra_compare_all_callback(
             lambda file_key: self.spectro_compare_controller.open_all_specs_popup(file_key)
         )
+        viewer_ch_height.install_canvas_callbacks(self, self.preview_canvas)
         # R / Shift+R on the main preview turn the image (popups don't get
         # this: orientation is per-file viewer state, not per-canvas).
         self.preview_canvas._rotate_image_callback = lambda turns: self.rotate_images(turns)
@@ -5071,6 +5073,36 @@ QLabel:hover {{
         """Backward-compatible wrapper for shared font family updates."""
         return self.set_plot_typography(family=family, refresh=refresh)
 
+    def _heal_manual_ch_abs_z(self, key):
+        """Recompute a manual CH tag's abs_z_pm from the topography channel
+        and mark it (abs_z_src='topo') so it is done once. Returns True when
+        the tag changed."""
+        info = dict(self.tags.get(key) or {})
+        hdr, fds = self.headers.get(key, (None, None))
+        if not fds:
+            return False
+        topo_idx = _find_topography_channel(fds)
+        if topo_idx is None:
+            topo_idx = 0
+        fd = fds[topo_idx]
+        try:
+            arr = self._get_channel_array(key, topo_idx, hdr, fd)
+            _, arr_nm = normalize_unit_and_data(arr, fd.get('PhysUnit', ''))
+            arr_nm = np.asarray(arr_nm, dtype=float)
+            finite = arr_nm[np.isfinite(arr_nm)]
+        except Exception:
+            return False
+        if not finite.size:
+            return False
+        abs_pm = int(round(float(np.median(finite)) * 1000.0))
+        if info.get('abs_z_pm') != abs_pm:
+            log_status(f"[Tags] {Path(key).name}: CH z_abs corrected "
+                       f"{info.get('abs_z_pm')} -> {abs_pm} pm (topography channel)")
+        info['abs_z_pm'] = abs_pm
+        info['abs_z_src'] = 'topo'
+        self.tags[key] = info
+        return True
+
     def _auto_detect_tags_for_folder(self):
         """Auto-detect CH/CC (topography variance rule) for the current folder."""
         changed = False
@@ -5078,7 +5110,13 @@ QLabel:hover {{
             key = str(p)
             tag_info = self.tags.get(key, {})
             if tag_info.get('manual'):
-                continue  # keep user overrides
+                # Keep user overrides, but heal manual CH heights stored
+                # before 9a70df9 (read from the displayed channel, so a
+                # current map's ~0 pm median became the tip height).
+                if (tag_info.get('tag') == 'constant-height'
+                        and tag_info.get('abs_z_src') != 'topo'):
+                    changed = self._heal_manual_ch_abs_z(key) or changed
+                continue
             hdr, fds = self.headers.get(key, (None, None))
             if not fds:
                 continue
@@ -7568,6 +7606,13 @@ QLabel:hover {{
         reset_act.setEnabled(bool(getattr(self, "image_zero", None)))
         reset_act.triggered.connect(lambda _=False: self.reset_image_zero())
 
+    def _populate_ch_height_menu(self, menu):
+        """Display > CH height label, targeting the previewed image."""
+        key = str(self.last_preview[0]) if self.last_preview else None
+        if key and viewer_ch_height.ch_abs_z_nm(self, key) is None:
+            key = None
+        viewer_ch_height.populate_menu(self, menu, key)
+
     def _zero_reference(self, arr):
         """Value that "Zero" maps to 0: the bottom of the auto colour range
         (robust 1st percentile of the valid scan region), so the colorbar
@@ -7945,6 +7990,10 @@ QLabel:hover {{
             if entry[0] == "zero":
                 self._restore_zero_state(entry[1], entry[2])
                 log_status("[Zero] Zero state restored")
+                return True
+            if entry[0] == "chref":
+                viewer_ch_height.restore_state(self, entry[1], entry[2])
+                log_status("[CH height] Δz reference restored")
                 return True
             if entry[0] == "copy":
                 new_key = entry[1]
@@ -8625,15 +8674,18 @@ QLabel:hover {{
             if tag == 'constant-height':
                 try:
                     hdr, fds = self.headers.get(key)
+                    # Never the displayed channel: a current map's median
+                    # would be stored as the tip height (~0 pm).
                     topo_idx = _find_topography_channel(fds)
                     if topo_idx is None:
-                        topo_idx = ch_idx
+                        topo_idx = 0
                     fd = fds[topo_idx]
                     arr = self._get_channel_array(key, topo_idx, hdr, fd)
                     _, arr_nm = normalize_unit_and_data(arr, fd.get('PhysUnit',''))
                     tag_info = self._classify_topography_values(arr_nm)
                     info['abs_z_pm'] = tag_info.get('abs_pm') if tag_info else None
                     info['rng_nm'] = tag_info.get('rng_nm') if tag_info else None
+                    info['abs_z_src'] = 'topo'
                 except Exception:
                     info['abs_z_pm'] = None
                     info['rng_nm'] = None
@@ -9459,6 +9511,9 @@ QLabel:hover {{
             orient_menu.addAction(orient_reset)
             zero_menu = menu.addMenu("Zero" + (f" ({len(orient_targets)} selected)" if len(orient_targets) > 1 else ""))
             self._populate_zero_menu(zero_menu, orient_targets)
+            if len(orient_targets) == 1 and viewer_ch_height.ch_abs_z_nm(self, orient_targets[0]) is not None:
+                ch_menu = menu.addMenu("CH height label")
+                viewer_ch_height.populate_menu(self, ch_menu, orient_targets[0])
 
         # Per-image colormap for every selected thumbnail (real files and
         # virtual copies alike) — stored in per_file_channel_cmap, so the

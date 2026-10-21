@@ -53,6 +53,7 @@ from ..plot_typography import add_font_menu_action, normalize_font_family, apply
 from ..palettes import DEFAULT_COLOR_CYCLE, get_color_cycle
 from ..profile_links import register_profile_canvas, notify_profile_source_changed
 from ...reporting.channels import classify_channel
+from ...utils.units import format_ch_height_label
 from ..ppt_bridge import powerpoint_support_status, send_rendered_to_ppt
 from .. import vector_export
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
@@ -223,6 +224,14 @@ class MultiPreviewCanvas(FigureCanvas):
         self._fixed_crop_cursor_mode = None
         self._double_click_callback = None  # callable(view_dict) -> None
         self._filter_menu_callback = None  # callable(menu, view, canvas)
+        # CH height label (owner-provided, see gui/viewer/ch_height.py):
+        # text_cb(file_key, z_abs_nm) -> str, publication_cb() -> bool,
+        # menu_cb(menu, file_key) fills the "CH Height Label" submenu,
+        # style_cb() -> dict of user overrides (see dialogs/ch_label_style.py).
+        self._ch_height_text_callback = None
+        self._ch_height_style_callback = None
+        self._ch_height_publication_callback = None
+        self._ch_height_menu_callback = None
         self._histogram_dialog_callback = None
         self._histogram_auto_callback = None
         self._histogram_reset_callback = None
@@ -1469,6 +1478,17 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_filter_menu_callback(self, cb):
         """Provide a callback to populate filter actions on the context menu."""
         self._filter_menu_callback = cb
+
+    def set_ch_height_label_callbacks(self, text_cb=None, publication_cb=None, menu_cb=None, style_cb=None):
+        """CH height label hooks: ``text_cb(file_key, z_abs_nm)`` returns the
+        label (z_abs or Δz to the owner's reference), ``publication_cb()``
+        whether the CH line stays visible in the Publication preset,
+        ``menu_cb(menu, file_key)`` fills the right-click submenu, and
+        ``style_cb()`` returns the user's style overrides."""
+        self._ch_height_text_callback = text_cb
+        self._ch_height_style_callback = style_cb
+        self._ch_height_publication_callback = publication_cb
+        self._ch_height_menu_callback = menu_cb
 
     def set_histogram_dialog_callback(self, cb):
         """Register callback to open the histogram dialog for this canvas."""
@@ -10338,6 +10358,12 @@ class MultiPreviewCanvas(FigureCanvas):
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
         acq_overlay_act.setCheckable(True)
         acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
+        if callable(self._ch_height_menu_callback) and self._ch_height_overlay_text(view):
+            ch_height_menu = display_menu.addMenu("CH Height Label")
+            try:
+                self._ch_height_menu_callback(ch_height_menu, view.get("path"))
+            except Exception:
+                pass
         filter_summary_act = display_menu.addAction("Show Filter Label")
         filter_summary_act.setCheckable(True)
         filter_summary_act.setChecked(bool(getattr(self, "_show_filter_summary", True)))
@@ -11201,9 +11227,37 @@ class MultiPreviewCanvas(FigureCanvas):
         return preview_export_figures.render_views_grid(self, views)
 
 
+    def _ch_height_overlay_text(self, view):
+        """CH line resolved at draw time (z_abs or Δz), or "" for non-CH."""
+        if not isinstance(view, dict):
+            return ""
+        meta = view.get("meta") or {}
+        if str(meta.get("acquisition_mode") or "").strip().upper() != "CH":
+            return ""
+        z_nm = meta.get("acquisition_z_abs_nm")
+        cb = self._ch_height_text_callback
+        if callable(cb):
+            try:
+                text = cb(view.get("path") or meta.get("file_path"), z_nm)
+                if text:
+                    return str(text).strip()
+            except Exception:
+                pass
+        return format_ch_height_label(z_nm)
+
+    def _ch_height_in_publication(self):
+        cb = self._ch_height_publication_callback
+        try:
+            return bool(self._publication_mode and callable(cb) and cb())
+        except Exception:
+            return False
+
     def _acquisition_overlay_text(self, view):
         if not view:
             return ""
+        ch_text = self._ch_height_overlay_text(view)
+        if ch_text:
+            return ch_text
         text = view.get("acquisition_overlay_text")
         if text:
             return str(text).strip()
@@ -11212,12 +11266,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if text:
             return str(text).strip()
         mode = str(meta.get("acquisition_mode") or "").strip().upper()
-        if mode == "CH":
-            z_nm = meta.get("acquisition_z_abs_nm")
-            try:
-                return f"CH  z_abs {float(z_nm):.3f} nm"
-            except Exception:
-                return ""
         if mode == "CC":
             parts = []
             bias = meta.get("acquisition_bias_text")
@@ -11231,7 +11279,16 @@ class MultiPreviewCanvas(FigureCanvas):
         return ""
 
     def _draw_acquisition_overlay(self, ax, view):
-        if not self._show_acquisition_overlay or ax is None:
+        if ax is None:
+            return
+        if not self._show_acquisition_overlay:
+            # Publication hides the HUD; the opt-in keeps only the CH line.
+            if self._ch_height_in_publication():
+                self._draw_publication_ch_label(ax, view)
+            return
+        ch_text = self._ch_height_overlay_text(view)
+        if ch_text:
+            self._draw_ch_label(ax, ch_text, publication=False)
             return
         text = self._acquisition_overlay_text(view)
         if not text:
@@ -11260,6 +11317,81 @@ class MultiPreviewCanvas(FigureCanvas):
             apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
         except Exception:
             pass
+
+    def _draw_publication_ch_label(self, ax, view):
+        text = self._ch_height_overlay_text(view)
+        if text:
+            self._draw_ch_label(ax, text, publication=True)
+
+    def _ch_label_style(self, publication):
+        """Per-mode defaults (boxed HUD / outlined figure text) overlaid
+        with whatever the user set in the CH label style dialog."""
+        style = {
+            "font_size": 0.0,
+            "font_family": "",
+            "bold": None,  # None = follow the plot typography
+            "color": "white" if publication else "#f5f7fb",
+            "outline": bool(publication),
+            "outline_color": "black",
+            "box": not publication,
+            "box_color": "black",
+            "box_alpha": 0.42,
+            "position": "top-right",
+        }
+        cb = self._ch_height_style_callback
+        if callable(cb):
+            try:
+                style.update({k: v for k, v in (cb() or {}).items() if k in style})
+            except Exception:
+                pass
+        return style
+
+    def _draw_ch_label(self, ax, text, publication=False):
+        """CH height label: Analysis HUD look or figure-style outlined text
+        (Publication), with the user's style overrides on top."""
+        style = self._ch_label_style(publication)
+        scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        try:
+            fontsize = float(style["font_size"] or 0.0)
+        except (TypeError, ValueError):
+            fontsize = 0.0
+        if fontsize <= 0:
+            fontsize = max(8.0, 10.0 * scale) if publication else max(7.0, 8.5 * scale)
+        inset = 0.03 if publication else 0.015
+        position = str(style["position"] or "top-right")
+        top = not position.startswith("bottom")
+        right = not position.endswith("left")
+        bbox = None
+        if style["box"]:
+            bbox = {
+                "facecolor": style["box_color"],
+                "alpha": float(style["box_alpha"]),
+                "edgecolor": "none",
+                "boxstyle": "round,pad=0.22",
+            }
+        text_artist = ax.text(
+            1.0 - inset if right else inset,
+            1.0 - inset if top else inset,
+            text,
+            transform=ax.transAxes,
+            ha="right" if right else "left",
+            va="top" if top else "bottom",
+            fontsize=fontsize,
+            fontweight="semibold",
+            color=style["color"],
+            bbox=bbox,
+            zorder=26,
+        )
+        try:
+            apply_text_style(text_artist, family=style["font_family"] or self._font_family,
+                             **self._plot_style_state())
+            if style["bold"] is not None:
+                text_artist.set_fontweight("bold" if style["bold"] else "normal")
+        except Exception:
+            pass
+        if style["outline"]:
+            text_artist.set_path_effects(
+                [PathEffects.withStroke(linewidth=max(1.5, fontsize / 4.5), foreground=style["outline_color"])])
 
     def _draw_filter_summary_overlay(self, ax, view):
         if ax is None or not self._show_filter_summary_overlay:

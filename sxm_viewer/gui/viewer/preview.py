@@ -181,9 +181,7 @@ def _infer_abs_z_pm_from_topography(viewer, file_key: str, header: dict, fds: li
     try:
         topo_idx = _find_topography_channel(fds)
         if topo_idx is None:
-            topo_idx = channel_idx if (0 <= channel_idx < len(fds)) else None
-        if topo_idx is None:
-            return None
+            topo_idx = 0  # same fallback as auto-tagging, never the displayed channel
         fd_topo = fds[topo_idx]
         samples = _sample_channel_values_for_tagging(file_key, header, fd_topo, CH_SAMPLE_POINTS)
         if samples is None or not np.asarray(samples).size:
@@ -376,7 +374,7 @@ def _build_metadata_html(viewer, header_path:Path, header:dict, fd:dict, channel
             try:
                 topo_idx = _find_topography_channel(fds_all)
                 if topo_idx is None:
-                    topo_idx = channel_idx if (fds_all and 0 <= channel_idx < len(fds_all)) else None
+                    topo_idx = 0 if fds_all else None
                 if topo_idx is not None:
                     fd_topo = fds_all[topo_idx] if fds_all else None
                     if fd_topo is None:
@@ -1393,12 +1391,21 @@ def _maybe_auto_tag_file(viewer, header_path:Path, header:dict, fds:list, channe
         return
     if not fds:
         return
+    # Same channel choice as the folder pass (_auto_detect_tags_for_folder):
+    # never fall back to the *displayed* channel - a CH scan's current /
+    # frequency-shift map is not flat, so viewing it re-tagged the file CC
+    # (Nanonis "Z (Forward)" in unit "m" is missed by _find_topography_channel).
     topo_idx = _find_topography_channel(fds)
     if topo_idx is None:
-        topo_idx = channel_idx if 0 <= channel_idx < len(fds) else 0
-    if topo_idx is None or topo_idx >= len(fds):
+        topo_idx = 0
+    if topo_idx >= len(fds):
         return
     fd_topo = fds[topo_idx]
+    try:
+        if viewer._auto_tag_cache_matches(existing, viewer._auto_tag_cache_signature(key, topo_idx, fd_topo)):
+            return  # folder pass already classified this exact data
+    except Exception:
+        pass
     try:
         raw_arr = viewer._get_channel_array(key, topo_idx, header, fd_topo)
         _, arr_nm = normalize_unit_and_data(raw_arr, fd_topo.get('PhysUnit',''))
