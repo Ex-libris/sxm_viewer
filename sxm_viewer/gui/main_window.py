@@ -8625,9 +8625,11 @@ QLabel:hover {{
             if tag == 'constant-height':
                 try:
                     hdr, fds = self.headers.get(key)
+                    # Never the displayed channel: a current map's median
+                    # would be stored as the tip height (~0 pm).
                     topo_idx = _find_topography_channel(fds)
                     if topo_idx is None:
-                        topo_idx = ch_idx
+                        topo_idx = 0
                     fd = fds[topo_idx]
                     arr = self._get_channel_array(key, topo_idx, hdr, fd)
                     _, arr_nm = normalize_unit_and_data(arr, fd.get('PhysUnit',''))
