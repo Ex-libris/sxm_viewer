@@ -269,6 +269,16 @@ re-grep the method name to confirm before relying on an exact line.
   (`_save_recovery_snapshot`, `_maybe_offer_recovery_session` in
   `main_window.py`) reuse the same `save_session`/`load_session` machinery.
   Collections are **not** part of the session payload.
+  **JSON key trap**: `_jsonify` stringifies every dict key, so tuple/int-keyed
+  state must be encoded explicitly and decoded on load -
+  `per_file_channel_cmap` is saved as `[[file, ch, name], ...]`
+  (`_decode_cmap_map` also reads the old `"('file', 0)"` form) and
+  `image_adjustments` channel keys go back to int (`_decode_adjustments`);
+  both used to come back silently unmatched. Virtual copies persist their
+  arrays plus `insert_after`/`virtual_copy_order`, and restore bumps
+  `viewer._virtual_counter` past restored keys so new copies can't reuse
+  one. Both load paths share `_restore_processed_views_payload` +
+  `_apply_basic_session_payload`.
 - **Collection** (`gui/controllers/collection.py`, `CollectionController`) — a
   standalone, user-named "scrapbook" of view/popup/crop snapshots gathered
   from anywhere, independent of which folder/session is currently loaded.
