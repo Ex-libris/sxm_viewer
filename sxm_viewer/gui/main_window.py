@@ -944,6 +944,14 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.preview_cmap_label.setToolTip("Colormap used for the preview")
         self.thumb_cmap_combo.setMinimumWidth(120)
         self.preview_cmap_combo.setMinimumWidth(120)
+        # Mouse-driven pickers must not keep keyboard focus after a pick: a
+        # focused combo eats Up/Down (silently stepping to the next cmap /
+        # channel / filter) and _focus_widget_blocks_thumb_nav blocks
+        # Left/Right, so arrow-key thumbnail navigation stopped updating the
+        # preview after any change made through them.
+        for combo in (self.thumb_cmap_combo, self.preview_cmap_combo, self.channel_dropdown,
+                      self.thumb_sort_combo, self.thumb_filter_combo):
+            combo.setFocusPolicy(QtCore.Qt.NoFocus)
         self.preview_zero_cb = QtWidgets.QCheckBox("Zero")
         self.preview_zero_cb.setChecked(self.display_units_relative)
         self.preview_zero_cb.setToolTip("Display values relative to the current zero/reference")
@@ -5647,10 +5655,6 @@ QLabel:hover {{
                 pass
         return changed
 
-    def _set_virtual_copy_cmap(self, paths, cmap_name=None):
-        targets = [str(Path(p)) for p in list(paths or []) if self._is_processed_key(str(p))]
-        return self._set_thumbnail_entry_cmap(targets, cmap_name)
-
     def _normalize_virtual_copy_order(self):
         ordered = []
         seen = set()
@@ -9026,6 +9030,48 @@ QLabel:hover {{
         adjust_act.triggered.connect(self.on_adjust_image)
         menu.addAction(adjust_act)
 
+        # Per-image colormap for every selected thumbnail (real files and
+        # virtual copies alike) — stored in per_file_channel_cmap, so the
+        # rest of the grid keeps the global thumbnail cmap.
+        cmap_targets = [str(p) for p in targets if str(p) in getattr(self, "thumb_widgets", {})]
+        if cmap_targets:
+            cmap_suffix = f" ({len(cmap_targets)} selected)" if len(cmap_targets) > 1 else ""
+            cmap_menu = menu.addMenu("Colormap" + cmap_suffix)
+            ch_for_cmap = None
+            try:
+                ch_for_cmap = int(label_widget.property("channel_index"))
+            except Exception:
+                ch_for_cmap = None
+            current_cmaps = {
+                (self.per_file_channel_cmap or {}).get((p, ch_for_cmap)) for p in cmap_targets
+            }
+            current_cmap = next(iter(current_cmaps)) if len(current_cmaps) == 1 else None
+            cmap_names = cmap_registry.all_cmap_names()
+            featured = []
+            for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
+                if name in cmap_names and name not in featured:
+                    featured.append(name)
+            if current_cmap and current_cmap not in featured:
+                featured.insert(0, current_cmap)
+            for cmap_name in featured:
+                act = QtWidgets.QAction(cmap_name, cmap_menu)
+                try:
+                    act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
+                except Exception:
+                    pass
+                act.setCheckable(True)
+                act.setChecked(cmap_name == current_cmap)
+                act.triggered.connect(lambda _, paths=list(cmap_targets), name=cmap_name: self._set_thumbnail_entry_cmap(paths, name))
+                cmap_menu.addAction(act)
+            cmap_menu.addSeparator()
+            cmap_gallery = QtWidgets.QAction("\U0001F3A8 Colormap gallery...", cmap_menu)
+            cmap_gallery.triggered.connect(lambda _, paths=list(cmap_targets): self._pick_thumbnail_cmap_from_gallery(paths))
+            cmap_menu.addAction(cmap_gallery)
+            cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
+            cmap_reset.setEnabled(any(c for c in current_cmaps))
+            cmap_reset.triggered.connect(lambda _, paths=list(cmap_targets): self._set_thumbnail_entry_cmap(paths, None))
+            cmap_menu.addAction(cmap_reset)
+
         # Virtual copies submenu
         virt_menu = menu.addMenu("Virtual copy")
         virt_cur = QtWidgets.QAction("Current channel", virt_menu)
@@ -9034,30 +9080,6 @@ QLabel:hover {{
         virt_other = QtWidgets.QAction("Choose channel...", virt_menu)
         virt_other.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, None))
         virt_menu.addAction(virt_other)
-        virtual_targets = [str(p) for p in targets if self._is_processed_key(str(p))]
-        if virtual_targets:
-            virt_menu.addSeparator()
-            cmap_menu = virt_menu.addMenu("Colormap")
-            cmap_names = cmap_registry.all_cmap_names()
-            featured = []
-            for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
-                if name in cmap_names and name not in featured:
-                    featured.append(name)
-            for cmap_name in featured:
-                act = QtWidgets.QAction(cmap_name, cmap_menu)
-                try:
-                    act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
-                except Exception:
-                    pass
-                act.triggered.connect(lambda _, paths=list(virtual_targets), name=cmap_name: self._set_virtual_copy_cmap(paths, name))
-                cmap_menu.addAction(act)
-            cmap_menu.addSeparator()
-            cmap_gallery = QtWidgets.QAction("\U0001F3A8 Colormap gallery...", cmap_menu)
-            cmap_gallery.triggered.connect(lambda _, paths=list(virtual_targets): self._pick_virtual_copy_cmap_from_gallery(paths))
-            cmap_menu.addAction(cmap_gallery)
-            cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
-            cmap_reset.triggered.connect(lambda _, paths=list(virtual_targets): self._set_virtual_copy_cmap(paths, None))
-            cmap_menu.addAction(cmap_reset)
         virt_menu.addSeparator()
         virt_remove = QtWidgets.QAction("Remove virtual copies (selected)", virt_menu)
         virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))
@@ -9703,14 +9725,14 @@ QLabel:hover {{
         dlg.exec_()
         manager.deleteLater()
 
-    def _pick_virtual_copy_cmap_from_gallery(self, paths):
-        """Gallery picker for the thumbnail Virtual copy > Colormap menu."""
+    def _pick_thumbnail_cmap_from_gallery(self, paths):
+        """Gallery picker for the thumbnail context menu's Colormap submenu."""
         current = self.preview_cmap_combo.currentText() or self.preview_cmap
         manager = ColormapManager(current, parent=self)
 
         def _on_applied(name, is_reversed):
             cmap_registry.get_colormap(name, is_reversed)
-            self._set_virtual_copy_cmap(paths, cmap_registry.join_cmap_name(name, is_reversed))
+            self._set_thumbnail_entry_cmap(paths, cmap_registry.join_cmap_name(name, is_reversed))
 
         manager.applied_changed.connect(_on_applied)
         sorter = ColormapSorter(usage_provider=self._cmap_usage_stats)
