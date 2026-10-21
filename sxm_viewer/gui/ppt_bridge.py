@@ -11,6 +11,7 @@ import tempfile
 LOGGER = logging.getLogger(__name__)
 PPT_LAYOUT_BLANK = 12
 MSO_TEXT_ORIENTATION_HORIZONTAL = 1
+PP_ALIGN_CENTER = 2
 MSO_GRAPHIC = 28  # MsoShapeType.msoGraphic (inserted SVG)
 
 pythoncom = None
@@ -234,17 +235,27 @@ class PowerPointBridge:
 
         label_text = str(label).strip() if label is not None else ""
         if label_text:
+            # Size the caption to the layout box, not the aspect-fitted
+            # picture: a tall, narrow image fits to a thin sliver, and a
+            # word-wrapped caption that narrow stacks a few characters per
+            # line into a long vertical ribbon.
+            caption_width = max(float(width), shape_width, 1.0)
+            caption_left = shape_left + (shape_width - caption_width) * 0.5
             text_box = slide.Shapes.AddTextbox(
                 MSO_TEXT_ORIENTATION_HORIZONTAL,
-                shape_left,
+                caption_left,
                 shape_top + shape_height + 6.0,
-                shape_width,
+                caption_width,
                 24.0,
             )
             text_range = text_box.TextFrame.TextRange
             text_range.Text = label_text
             try:
                 text_range.Font.Size = 12
+            except Exception:
+                pass
+            try:
+                text_range.ParagraphFormat.Alignment = PP_ALIGN_CENTER
             except Exception:
                 pass
             try:
