@@ -918,6 +918,10 @@ too:
   molecules and quick-crop history are *not* migrated.
 - `_last_display_extent` (only read by Crop/Rotate, which works on the
   unturned `_last_base_array`) is kept in the acquired orientation.
+- Virtual copies: channel copies (`create_virtual_channel_copies`) re-read
+  the source's raw arrays, so they inherit the source's turn; view/crop
+  copies are built from the displayed (already turned) array and must
+  *not* get an orientation entry, or they'd be turned twice.
 - Undo: `("orient", {key: old_turns})` on `_adjustment_undo_stack`; sessions
   persist `image_orientation`; the thumbnail chip is the teal `↻90°` badge
   next to ADJ.

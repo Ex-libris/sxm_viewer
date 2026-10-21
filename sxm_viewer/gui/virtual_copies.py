@@ -113,6 +113,12 @@ def create_virtual_channel_copies(viewer, paths, channel_idx=None, insert_after_
                 'op': 'channel',
             }
             viewer.headers[key] = (dict(header), fds_new)
+            # The copy re-reads the source's raw channel arrays, so it must
+            # also take the source's quarter-turn orientation to look the
+            # same (view copies below bake the turn into their array).
+            turns = viewer._get_image_orientation(p)
+            if turns:
+                viewer.image_orientation[key] = turns
             viewer._inherit_star_for_virtual_copy(key, p)
             viewer._insert_processed_after_source(key, p, insert_after_key=anchor_key)
             if insert_after_key not in (None, "", VIRTUAL_COPY_INSERT_START):
