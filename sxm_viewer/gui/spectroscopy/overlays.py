@@ -32,6 +32,7 @@ from ..._shared import (
     matplotlib,
 )
 from ...data.spectroscopy import is_matrix_file_entry
+from ...geometry import orientation
 
 _MARKER_SYMBOLS = {"circle", "square", "triangle", "diamond"}
 
@@ -481,6 +482,13 @@ def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: 
         return []
     w, h = thumb_dims if thumb_dims else viewer._thumb_dimensions()
     px, py = int(thumb_pos_px.x()), int(thumb_pos_px.y())
+    turns = viewer._get_image_orientation(file_key) if hasattr(viewer, "_get_image_orientation") else 0
+    if turns:
+        # The thumbnail is drawn turned; undo the turn so the click lands in
+        # the acquisition raster frame the rest of this function assumes.
+        w, h = orientation.turned_shape(w, h, turns)
+        ux, uy = orientation.unrotate_continuous_coords(px, py, w, h, turns)
+        px, py = int(round(ux)), int(round(uy))
     px = min(max(px, 0), max(w - 1, 0))
     py = min(max(py, 0), max(h - 1, 0))
     extent = viewer._header_extent(header) if header is not None else [0.0, 1.0, 1.0, 0.0]
@@ -524,6 +532,20 @@ def _spectros_near_thumb_pos(viewer, file_key: str, header: dict, thumb_pos_px: 
     return [h[1] for h in hits]
 
 
+_COMPASS_CW = {"N": "E", "E": "S", "S": "W", "W": "N"}
+
+
+def _turn_compass(direction, turns):
+    """Turn an off-frame compass direction ("N", "SE", ...) by quarter turns,
+    keeping the N/S letter first as _draw_marker_symbol expects."""
+    if not direction or not turns:
+        return direction
+    letters = list(str(direction))
+    for _ in range(int(turns) % 4):
+        letters = [_COMPASS_CW.get(ch, ch) for ch in letters]
+    return "".join(sorted(letters, key=lambda ch: 0 if ch in "NS" else 1))
+
+
 def _render_spectroscopy_overlays(
     viewer,
     pixmap,
@@ -536,8 +558,15 @@ def _render_spectroscopy_overlays(
     entries_override=None,
     matrix_as_points=False,
     thumb_crop=None,
+    turns=0,
 ):
-    """Render spectroscopy overlays with configurable marker symbols and matrix footprints."""
+    """Render spectroscopy overlays with configurable marker symbols and matrix footprints.
+
+    ``turns`` is the image's clockwise quarter-turn display orientation:
+    ``pixmap`` is already turned, so positions are laid out in the unturned
+    (acquisition raster) box first and then turned onto the pixmap. Text
+    and glyphs stay upright; off-frame flag directions are turned too.
+    """
     if not viewer.show_spectra:
         return []
     specs = entries_override if entries_override is not None else viewer.spectros_by_image.get(file_key, [])
@@ -546,7 +575,20 @@ def _render_spectroscopy_overlays(
     markers = []
     painter = QtGui.QPainter(pixmap)
     painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-    w_scale = pixmap.width() / max(1, xpix - 1)
+    turns = orientation.normalize_turns(turns)
+    base_w, base_h = orientation.turned_shape(pixmap.width(), pixmap.height(), turns)
+
+    def _turn_pt(x, y):
+        return orientation.rotate_continuous_coords(x, y, base_w, base_h, turns)
+
+    def _turn_rect(r):
+        if not turns:
+            return r
+        xa, ya = _turn_pt(r.left(), r.top())
+        xb, yb = _turn_pt(r.right(), r.bottom())
+        return QtCore.QRectF(QtCore.QPointF(min(xa, xb), min(ya, yb)), QtCore.QPointF(max(xa, xb), max(ya, yb)))
+
+    w_scale = base_w / max(1, xpix - 1)
     crop_rows = None
     if thumb_crop:
         try:
@@ -557,7 +599,7 @@ def _render_spectroscopy_overlays(
         except Exception:
             crop_rows = None
     y_denom = max(1, (crop_rows - 1)) if crop_rows else max(1, ypix - 1)
-    h_scale = pixmap.height() / y_denom
+    h_scale = base_h / y_denom
     if reveal_points_override is None:
         reveal_points = hasattr(viewer, '_temp_reveal') and file_key in getattr(viewer, '_temp_reveal', set())
     else:
@@ -623,6 +665,7 @@ def _render_spectroscopy_overlays(
             )
             if rect is None:
                 continue
+            rect = _turn_rect(rect)
             kind = group.get("kind") or "cloud"
             footprint_color = color_matrix if kind == "grid" else color_cloud
             chip_rect = _draw_footprint(painter, rect, kind=kind, color=footprint_color, count=len(member_specs))
@@ -650,6 +693,7 @@ def _render_spectroscopy_overlays(
             )
             if rect is None:
                 continue
+            rect = _turn_rect(rect)
             try:
                 grid_cols = m_specs[0].get('grid_cols')
                 grid_rows = m_specs[0].get('grid_rows')
@@ -704,13 +748,15 @@ def _render_spectroscopy_overlays(
                 # points, to leave room for the flag on-canvas.
                 clearance = marker_size * 2.6
                 if "E" in off_frame_direction:
-                    x = min(x, pixmap.width() - clearance)
+                    x = min(x, base_w - clearance)
                 elif "W" in off_frame_direction:
                     x = max(x, clearance)
                 if "N" in off_frame_direction:
                     y = max(y, clearance)
                 elif "S" in off_frame_direction:
-                    y = min(y, pixmap.height() - clearance)
+                    y = min(y, base_h - clearance)
+                off_frame_direction = _turn_compass(off_frame_direction, turns)
+            x, y = _turn_pt(x, y)
             rect = _draw_marker_symbol(
                 painter,
                 x,
@@ -725,8 +771,7 @@ def _render_spectroscopy_overlays(
             )
             markers.append({'rect': rect, 'spec': spec, 'label': ''})
         for badge in badge_defs:
-            bx = float(badge["col"]) * w_scale
-            by = float(badge["row"]) * h_scale
+            bx, by = _turn_pt(float(badge["col"]) * w_scale, float(badge["row"]) * h_scale)
             rect = _draw_stack_icon(painter, bx, by, badge["count"], color=color_stack)
             markers.append({
                 'rect': rect,

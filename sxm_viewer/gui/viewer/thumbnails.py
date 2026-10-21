@@ -48,6 +48,7 @@ from ...data.io import (
     _binary_dtype_candidates,
 )
 from ...processing.filters import _filter_signature
+from ...geometry import orientation
 from ..thumbnail_render import detect_valid_scan_region
 
 def _thumbnail_filter_signature(viewer, file_key):
@@ -68,6 +69,7 @@ def _thumbnail_display_signature(viewer, file_key, channel_idx):
         bool(getattr(viewer, "display_units_si", False)),
         bool(getattr(viewer, "display_units_relative", False)),
         adjust_sig,
+        viewer._get_image_orientation(file_key),
     )
 
 
@@ -112,7 +114,8 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
     except Exception:
         base_extent = None
     try:
-        arr_use, _ = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_use, base_extent)
+        arr_use, _ = viewer._apply_adjustments_for_channel(
+            file_key, channel_idx, arr_use, base_extent, orient=False)
     except Exception:
         pass
     try:
@@ -136,6 +139,12 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
     except Exception:
         arr_use = np.asarray(arr_use, dtype=float)
         crop_info = None
+    # Turn only now, after the blank-row crop: crop_info (r0/r1) must stay
+    # in the acquisition raster frame that marker mapping (thumb_crop) uses;
+    # the overlay renderer turns marker positions to match.
+    turns = viewer._get_image_orientation(file_key)
+    if turns:
+        arr_use = orientation.rotate_array(arr_use, turns)
     thumb_arr = viewer._downsample_for_thumbnail(arr_use, thumb_w, thumb_h)
     with viewer._thumb_data_lock:
         viewer._thumb_data_cache[data_key] = thumb_arr
