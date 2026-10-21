@@ -20,6 +20,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from .._shared import QtCore, QtWidgets, np
+from ..data.io import parse_header
+from .canvases.detail_preview import MultiPreviewCanvas
+
+# Anchor meaning "before every real file" for a copy's insert_after slot.
+# Lives here (re-exported by main_window) because these functions use it
+# and main_window imports this module - the other way round is circular.
+VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
 
 def virtual_copy_source_anchor(viewer, view):

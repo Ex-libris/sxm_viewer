@@ -32,6 +32,7 @@ from .qt_helpers import set_silent, set_many_silent
 from .activity_log import ActivityLog
 from . import drift_animation
 from . import virtual_copies
+from .virtual_copies import VIRTUAL_COPY_INSERT_START
 from . import main_window_state
 from .debounce import ACCUMULATE, LATEST, Debouncer
 from ..geometry import spec_mapping
@@ -117,7 +118,6 @@ from . import theme as ui_theme
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
 CH_RANGE_TOL_NM = max(CH_EQUALITY_TOL_NM, 0.02)  # ~20 pm default floor
 AUTO_TAG_CACHE_VERSION = 1
-VIRTUAL_COPY_INSERT_START = "__virtual_copy_start__"
 
 
 class _CollectionTrayList(QtWidgets.QListWidget):
