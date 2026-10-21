@@ -1,6 +1,7 @@
 """Session save/load controller for SXM Viewer."""
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
@@ -294,6 +295,7 @@ class SessionController:
                 "extent_raw": data.get("extent_raw"),
                 "header": data.get("header"),
                 "fds": data.get("fds"),
+                "insert_after": data.get("insert_after"),
                 "arr_files": arr_files,
             }
         preview_state = {}
@@ -391,7 +393,14 @@ class SessionController:
             "image_zero": dict(getattr(viewer, "image_zero", {}) or {}),
             "ch_z_label_mode": getattr(viewer, "ch_z_label_mode", "abs"),
             "ch_z_reference": getattr(viewer, "ch_z_reference", None),
-            "per_file_channel_cmap": getattr(viewer, "per_file_channel_cmap", {}),
+            # (file_key, channel) tuple keys don't survive JSON (they were
+            # stringified and never matched again): store explicit entries.
+            "per_file_channel_cmap": [
+                [str(key[0]), int(key[1]), str(name)]
+                for key, name in (getattr(viewer, "per_file_channel_cmap", {}) or {}).items()
+                if isinstance(key, tuple) and len(key) == 2 and name
+            ],
+            "virtual_copy_order": list(getattr(viewer, "virtual_copy_order", []) or []),
             "extra_view_specs": getattr(viewer, "extra_view_specs", []),
             "tags": getattr(viewer, "tags", {}),
             "molecule_overlays": getattr(viewer, "molecule_overlays", {}),
@@ -630,63 +639,11 @@ class SessionController:
         data_dir = session_path.parent / data_dir if data_dir else session_path.parent
         processed_dir = data_dir / "processed"
         views_dir = data_dir / "views"
-        viewer._processed_views = {}
-        for key, entry in (payload.get("processed") or {}).items():
-            try:
-                arr_by_channel = {}
-                for ch_idx, rel_path in (entry.get("arr_files") or {}).items():
-                    arr_path = processed_dir / Path(rel_path).name
-                    if arr_path.exists():
-                        arr_by_channel[int(ch_idx)] = np.load(arr_path, allow_pickle=False)
-                header = entry.get("header") or {}
-                fds = entry.get("fds") or []
-                viewer._processed_views[str(key)] = {
-                    "arr_by_channel": arr_by_channel,
-                    "header": header,
-                    "fds": fds,
-                    "channel_idx": entry.get("channel_idx"),
-                    "lock_channel": entry.get("lock_channel", True),
-                    "source": entry.get("source"),
-                    "extent_raw": entry.get("extent_raw"),
-                    "label": entry.get("label"),
-                    "op": entry.get("op"),
-                }
-                self._hydrate_collection_processed_view(str(key))
-                restored = viewer._processed_views.get(str(key), {})
-                viewer.headers[str(key)] = (
-                    restored.get("header", header),
-                    restored.get("fds", fds),
-                )
-            except Exception:
-                continue
-        session_files = []
-        for fp in payload.get("files", []) or []:
-            path_str = str(fp)
-            if viewer._is_processed_key(path_str) and path_str in viewer._processed_views:
-                session_files.append(Path(path_str))
-            elif Path(path_str).exists():
-                session_files.append(Path(path_str))
+        self._restore_processed_views_payload(payload.get("processed") or {}, processed_dir)
+        session_files = self._session_files_from_payload(payload)
         if session_files:
             viewer.files = session_files
-        viewer.image_adjustments = payload.get("image_adjustments") or {}
-        viewer.thumbnail_filters = payload.get("thumbnail_filters") or {}
-        viewer.image_orientation = {
-            str(k): int(v) % 4 for k, v in (payload.get("image_orientation") or {}).items() if int(v) % 4
-        }
-        viewer.image_zero = {
-            str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
-        }
-        if "ch_z_reference" in payload:
-            viewer_ch_height.restore_state(
-                viewer, payload.get("ch_z_label_mode", "abs"), payload.get("ch_z_reference"),
-                refresh=False)
-        viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
-        viewer.extra_view_specs = payload.get("extra_view_specs") or []
-        viewer.tags = payload.get("tags") or {}
-        viewer.molecule_overlays = payload.get("molecule_overlays") or {}
-        viewer.svg_molecule_overlays = payload.get("svg_molecule_overlays") or {}
-        viewer.thumb_multi_select = set(payload.get("thumb_multi_select") or [])
-        viewer.selected_file_for_thumbs = payload.get("selected_file_for_thumbs")
+        self._apply_basic_session_payload(payload)
         pending_preview = payload.get("last_preview")
         viewer.last_preview = None
         ui = payload.get("ui") or {}
@@ -1742,16 +1699,20 @@ class SessionController:
                         arr_by_channel[int(ch_idx)] = np.load(arr_path, allow_pickle=False)
                 header = entry.get("header") or {}
                 fds = entry.get("fds") or []
-                viewer._processed_views[str(key)] = {
+                restored_entry = {
                     "arr_by_channel": arr_by_channel,
                     "header": header,
                     "fds": fds,
                     "channel_idx": entry.get("channel_idx"),
                     "lock_channel": entry.get("lock_channel", True),
                     "source": entry.get("source"),
+                    "extent_raw": entry.get("extent_raw"),
                     "label": entry.get("label"),
                     "op": entry.get("op"),
                 }
+                if entry.get("insert_after") is not None:
+                    restored_entry["insert_after"] = entry.get("insert_after")
+                viewer._processed_views[str(key)] = restored_entry
                 self._hydrate_collection_processed_view(str(key))
                 restored = viewer._processed_views.get(str(key), {})
                 viewer.headers[str(key)] = (
@@ -1760,6 +1721,56 @@ class SessionController:
                 )
             except Exception:
                 continue
+        # New copies are named processed_<stem>_<op>_<n> from a counter that
+        # restarts per process; continue past the restored ones or a new copy
+        # can take a restored copy's key and silently replace it.
+        highest = 0
+        for key in viewer._processed_views:
+            tail = str(key).rsplit("_", 1)[-1]
+            if tail.isdigit():
+                highest = max(highest, int(tail))
+        viewer._virtual_counter = max(int(getattr(viewer, "_virtual_counter", 0) or 0), highest)
+
+    @staticmethod
+    def _decode_cmap_map(raw):
+        """per_file_channel_cmap from a payload: [[file, ch, name], ...], or
+        the old stringified-tuple dict {"('file', 0)": name} -> {(file, ch): name}."""
+        out = {}
+        if isinstance(raw, list):
+            for item in raw:
+                try:
+                    file_key, ch_idx, name = item
+                    if name:
+                        out[(str(file_key), int(ch_idx))] = str(name)
+                except (TypeError, ValueError):
+                    continue
+        elif isinstance(raw, dict):
+            for key, name in raw.items():
+                try:
+                    parsed = ast.literal_eval(key) if isinstance(key, str) else key
+                    file_key, ch_idx = parsed
+                    if name:
+                        out[(str(file_key), int(ch_idx))] = str(name)
+                except (ValueError, SyntaxError, TypeError):
+                    continue
+        return out
+
+    @staticmethod
+    def _decode_adjustments(raw):
+        """image_adjustments with int channel keys (JSON turned them into str)."""
+        out = {}
+        for file_key, per_channel in (raw or {}).items():
+            if not isinstance(per_channel, dict):
+                continue
+            mapping = {}
+            for ch_idx, spec in per_channel.items():
+                try:
+                    mapping[int(ch_idx)] = spec
+                except (TypeError, ValueError):
+                    continue
+            if mapping:
+                out[str(file_key)] = mapping
+        return out
 
     def _session_files_from_payload(self, payload: dict):
         viewer = self.viewer
@@ -1774,7 +1785,7 @@ class SessionController:
 
     def _apply_basic_session_payload(self, payload: dict):
         viewer = self.viewer
-        viewer.image_adjustments = payload.get("image_adjustments") or {}
+        viewer.image_adjustments = self._decode_adjustments(payload.get("image_adjustments"))
         viewer.thumbnail_filters = payload.get("thumbnail_filters") or {}
         viewer.image_orientation = {
             str(k): int(v) % 4 for k, v in (payload.get("image_orientation") or {}).items() if int(v) % 4
@@ -1786,7 +1797,12 @@ class SessionController:
             viewer_ch_height.restore_state(
                 viewer, payload.get("ch_z_label_mode", "abs"), payload.get("ch_z_reference"),
                 refresh=False)
-        viewer.per_file_channel_cmap = payload.get("per_file_channel_cmap") or {}
+        viewer.per_file_channel_cmap = self._decode_cmap_map(payload.get("per_file_channel_cmap"))
+        if "virtual_copy_order" in payload:
+            viewer.virtual_copy_order = [
+                str(k) for k in (payload.get("virtual_copy_order") or [])
+                if str(k) in (getattr(viewer, "_processed_views", {}) or {})
+            ]
         viewer.extra_view_specs = payload.get("extra_view_specs") or []
         viewer.tags = payload.get("tags") or {}
         viewer.molecule_overlays = payload.get("molecule_overlays") or {}

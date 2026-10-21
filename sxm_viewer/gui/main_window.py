@@ -5725,6 +5725,15 @@ QLabel:hover {{
         if not targets:
             return 0
         changed = 0
+        # The preview can show a different channel than the thumbnail grid
+        # (cmaps are keyed per (file, channel)); keep the previewed image's
+        # preview channel in step so thumbnail and preview cmaps stay linked.
+        preview_cmap_key = None
+        if self.last_preview and str(Path(self.last_preview[0])) in targets:
+            try:
+                preview_cmap_key = (str(Path(self.last_preview[0])), int(self.last_preview[1]))
+            except Exception:
+                preview_cmap_key = None
         for key in targets:
             channel_idx = None
             label = (getattr(self, "_thumb_labels", {}) or {}).get(key)
@@ -5747,16 +5756,19 @@ QLabel:hover {{
                 channel_idx = int(channel_idx)
             except Exception:
                 continue
-            cmap_key = (key, channel_idx)
-            if cmap_name:
-                if self.per_file_channel_cmap.get(cmap_key) == str(cmap_name):
-                    continue
-                self.per_file_channel_cmap[cmap_key] = str(cmap_name)
-            else:
-                if cmap_key not in self.per_file_channel_cmap:
-                    continue
-                self.per_file_channel_cmap.pop(cmap_key, None)
-            changed += 1
+            cmap_keys = [(key, channel_idx)]
+            if preview_cmap_key and preview_cmap_key[0] == key and preview_cmap_key not in cmap_keys:
+                cmap_keys.append(preview_cmap_key)
+            for cmap_key in cmap_keys:
+                if cmap_name:
+                    if self.per_file_channel_cmap.get(cmap_key) == str(cmap_name):
+                        continue
+                    self.per_file_channel_cmap[cmap_key] = str(cmap_name)
+                else:
+                    if cmap_key not in self.per_file_channel_cmap:
+                        continue
+                    self.per_file_channel_cmap.pop(cmap_key, None)
+                changed += 1
         if changed:
             try:
                 self._invalidate_thumbnail_cache(paths=targets)
