@@ -100,7 +100,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
-from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge
+from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import details as spectro_details
 from .spectroscopy import loading as spectro_loading
@@ -7341,6 +7341,49 @@ QLabel:hover {{
         except Exception:
             return 0
 
+    @staticmethod
+    def _powerpoint_payload_aspect(payload):
+        """Width/height of a rendered PowerPoint payload, or None if unknown."""
+        try:
+            if isinstance(payload, dict):
+                payload = payload.get("svg") or b""
+            if isinstance(payload, (bytes, bytearray)):
+                size = _svg_size_pt(bytes(payload))
+            else:
+                size = (float(payload.width()), float(payload.height()))
+            if size and size[0] > 0 and size[1] > 0:
+                return float(size[0]) / float(size[1])
+        except Exception:
+            pass
+        return None
+
+    def _powerpoint_grid_columns(self, payloads, slide_w, slide_h, *, outer_margin, gutter, caption_h):
+        """Column count that gives the largest images on one slide.
+
+        A plain ceil(sqrt(n)) grid ignores aspect ratio, so tall (Y-long)
+        scans end up as thin slivers in wide cells; this tries every column
+        count and keeps the one whose aspect-fitted images are biggest.
+        """
+        count = len(payloads)
+        if count <= 1:
+            return 1
+        aspects = [a for a in (self._powerpoint_payload_aspect(p) for p in payloads) if a]
+        if not aspects:
+            return int(math.ceil(math.sqrt(count)))
+        aspect = sum(aspects) / len(aspects)
+        best_cols, best_area = 1, -1.0
+        for cols in range(1, count + 1):
+            rows = int(math.ceil(count / cols))
+            cell_w = (slide_w - 2 * outer_margin - (cols - 1) * gutter) / cols
+            image_h = (slide_h - 2 * outer_margin - (rows - 1) * gutter) / rows - caption_h
+            if cell_w <= 0 or image_h <= 0:
+                continue
+            fit_w = min(cell_w, image_h * aspect)
+            area = fit_w * (fit_w / aspect)
+            if area > best_area * 1.001:
+                best_cols, best_area = cols, area
+        return best_cols
+
     def _send_thumbnail_targets_to_powerpoint(self, paths, *, new_slide=True):
         targets = [str(Path(p)) for p in list(paths or []) if p]
         if not targets:
@@ -7402,11 +7445,17 @@ QLabel:hover {{
             slide_w = float(presentation.PageSetup.SlideWidth)
             slide_h = float(presentation.PageSetup.SlideHeight)
             count = len(items)
-            cols = int(math.ceil(math.sqrt(count)))
-            rows = int(math.ceil(count / max(cols, 1)))
             outer_margin = 24.0
             gutter = 16.0
-            caption_h = 28.0
+            # Room for a 3-line caption (name / channel / timestamp wrap in
+            # narrow cells) at caption_pt, so it can't run into the next row.
+            caption_pt = 10.0
+            caption_h = 6.0 + 3 * 1.2 * caption_pt
+            cols = self._powerpoint_grid_columns(
+                [payload for payload, _label in items], slide_w, slide_h,
+                outer_margin=outer_margin, gutter=gutter, caption_h=caption_h,
+            )
+            rows = int(math.ceil(count / max(cols, 1)))
             cell_w = max(120.0, (slide_w - 2 * outer_margin - max(0, cols - 1) * gutter) / max(cols, 1))
             cell_h = max(110.0, (slide_h - 2 * outer_margin - max(0, rows - 1) * gutter) / max(rows, 1))
             image_h = max(80.0, cell_h - caption_h)
@@ -7425,6 +7474,7 @@ QLabel:hover {{
                     top=top,
                     width=cell_w,
                     height=image_h,
+                    label_font_size=caption_pt,
                 )
             canvas._show_powerpoint_success(slide_index, shape_name)
         except ConnectionError:
