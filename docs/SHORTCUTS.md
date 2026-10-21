@@ -257,7 +257,8 @@ Overlay toggles:
   For constant-height (CH) images the HUD shows `z_abs`, or `Δz` relative
   to a reference image picked via right-click > CH height label > Set as Δz
   reference (Δz > 0 = tip further from the surface). The same menu can keep
-  the CH line visible in the Publication preset.
+  the CH line visible in the Publication preset, and "Label style..." edits
+  its font, size, colours, outline, background box and corner.
 - `Ctrl+H` - show / hide the in-canvas shortcut hint.
 
 Contrast:

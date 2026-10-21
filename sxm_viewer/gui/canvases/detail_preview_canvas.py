@@ -226,8 +226,10 @@ class MultiPreviewCanvas(FigureCanvas):
         self._filter_menu_callback = None  # callable(menu, view, canvas)
         # CH height label (owner-provided, see gui/viewer/ch_height.py):
         # text_cb(file_key, z_abs_nm) -> str, publication_cb() -> bool,
-        # menu_cb(menu, file_key) fills the "CH Height Label" submenu.
+        # menu_cb(menu, file_key) fills the "CH Height Label" submenu,
+        # style_cb() -> dict of user overrides (see dialogs/ch_label_style.py).
         self._ch_height_text_callback = None
+        self._ch_height_style_callback = None
         self._ch_height_publication_callback = None
         self._ch_height_menu_callback = None
         self._histogram_dialog_callback = None
@@ -1477,12 +1479,14 @@ class MultiPreviewCanvas(FigureCanvas):
         """Provide a callback to populate filter actions on the context menu."""
         self._filter_menu_callback = cb
 
-    def set_ch_height_label_callbacks(self, text_cb=None, publication_cb=None, menu_cb=None):
+    def set_ch_height_label_callbacks(self, text_cb=None, publication_cb=None, menu_cb=None, style_cb=None):
         """CH height label hooks: ``text_cb(file_key, z_abs_nm)`` returns the
         label (z_abs or Δz to the owner's reference), ``publication_cb()``
-        whether the CH line stays visible in the Publication preset, and
-        ``menu_cb(menu, file_key)`` fills the right-click submenu."""
+        whether the CH line stays visible in the Publication preset,
+        ``menu_cb(menu, file_key)`` fills the right-click submenu, and
+        ``style_cb()`` returns the user's style overrides."""
         self._ch_height_text_callback = text_cb
+        self._ch_height_style_callback = style_cb
         self._ch_height_publication_callback = publication_cb
         self._ch_height_menu_callback = menu_cb
 
@@ -11282,6 +11286,10 @@ class MultiPreviewCanvas(FigureCanvas):
             if self._ch_height_in_publication():
                 self._draw_publication_ch_label(ax, view)
             return
+        ch_text = self._ch_height_overlay_text(view)
+        if ch_text:
+            self._draw_ch_label(ax, ch_text, publication=False)
+            return
         text = self._acquisition_overlay_text(view)
         if not text:
             return
@@ -11311,28 +11319,79 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
 
     def _draw_publication_ch_label(self, ax, view):
-        """Figure-style CH height label: plain outlined text, no HUD box."""
         text = self._ch_height_overlay_text(view)
-        if not text:
-            return
+        if text:
+            self._draw_ch_label(ax, text, publication=True)
+
+    def _ch_label_style(self, publication):
+        """Per-mode defaults (boxed HUD / outlined figure text) overlaid
+        with whatever the user set in the CH label style dialog."""
+        style = {
+            "font_size": 0.0,
+            "font_family": "",
+            "bold": None,  # None = follow the plot typography
+            "color": "white" if publication else "#f5f7fb",
+            "outline": bool(publication),
+            "outline_color": "black",
+            "box": not publication,
+            "box_color": "black",
+            "box_alpha": 0.42,
+            "position": "top-right",
+        }
+        cb = self._ch_height_style_callback
+        if callable(cb):
+            try:
+                style.update({k: v for k, v in (cb() or {}).items() if k in style})
+            except Exception:
+                pass
+        return style
+
+    def _draw_ch_label(self, ax, text, publication=False):
+        """CH height label: Analysis HUD look or figure-style outlined text
+        (Publication), with the user's style overrides on top."""
+        style = self._ch_label_style(publication)
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
+        try:
+            fontsize = float(style["font_size"] or 0.0)
+        except (TypeError, ValueError):
+            fontsize = 0.0
+        if fontsize <= 0:
+            fontsize = max(8.0, 10.0 * scale) if publication else max(7.0, 8.5 * scale)
+        inset = 0.03 if publication else 0.015
+        position = str(style["position"] or "top-right")
+        top = not position.startswith("bottom")
+        right = not position.endswith("left")
+        bbox = None
+        if style["box"]:
+            bbox = {
+                "facecolor": style["box_color"],
+                "alpha": float(style["box_alpha"]),
+                "edgecolor": "none",
+                "boxstyle": "round,pad=0.22",
+            }
         text_artist = ax.text(
-            0.97,
-            0.97,
+            1.0 - inset if right else inset,
+            1.0 - inset if top else inset,
             text,
             transform=ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=max(8.0, 10.0 * scale),
+            ha="right" if right else "left",
+            va="top" if top else "bottom",
+            fontsize=fontsize,
             fontweight="semibold",
-            color="white",
+            color=style["color"],
+            bbox=bbox,
             zorder=26,
         )
         try:
-            apply_text_style(text_artist, family=self._font_family, **self._plot_style_state())
+            apply_text_style(text_artist, family=style["font_family"] or self._font_family,
+                             **self._plot_style_state())
+            if style["bold"] is not None:
+                text_artist.set_fontweight("bold" if style["bold"] else "normal")
         except Exception:
             pass
-        text_artist.set_path_effects([PathEffects.withStroke(linewidth=2.2, foreground="black")])
+        if style["outline"]:
+            text_artist.set_path_effects(
+                [PathEffects.withStroke(linewidth=max(1.5, fontsize / 4.5), foreground=style["outline_color"])])
 
     def _draw_filter_summary_overlay(self, ax, view):
         if ax is None or not self._show_filter_summary_overlay:

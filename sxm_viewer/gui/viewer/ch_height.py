@@ -33,6 +33,8 @@ def init_state(viewer):
     viewer.ch_z_label_mode = mode if mode in LABEL_MODES else "abs"
     viewer.ch_z_reference = _normalize_reference(config.get("ch_z_reference"))
     viewer.ch_label_in_publication = bool(config.get("ch_label_in_publication", False))
+    style = config.get("ch_label_style")
+    viewer.ch_label_style = dict(style) if isinstance(style, dict) else {}
 
 
 def _normalize_reference(ref):
@@ -93,6 +95,7 @@ def _persist(viewer):
     viewer.config["ch_z_label_mode"] = viewer.ch_z_label_mode
     viewer.config["ch_z_reference"] = dict(viewer.ch_z_reference) if viewer.ch_z_reference else None
     viewer.config["ch_label_in_publication"] = bool(viewer.ch_label_in_publication)
+    viewer.config["ch_label_style"] = dict(getattr(viewer, "ch_label_style", {}) or {})
     save_config(viewer.config)
 
 
@@ -193,7 +196,25 @@ def install_canvas_callbacks(viewer, canvas):
         text_cb=lambda file_key, z_nm: label_text(viewer, file_key, z_nm),
         publication_cb=lambda: bool(getattr(viewer, "ch_label_in_publication", False)),
         menu_cb=lambda menu, file_key: populate_menu(viewer, menu, file_key),
+        style_cb=lambda: getattr(viewer, "ch_label_style", None) or {},
     )
+
+
+def open_style_dialog(viewer):
+    """Font / colour / outline / box / corner editor, applied live."""
+    from ..dialogs.ch_label_style import ChLabelStyleDialog
+
+    dlg = ChLabelStyleDialog(getattr(viewer, "ch_label_style", None) or {}, viewer)
+
+    def _apply(style):
+        viewer.ch_label_style = dict(style)
+        refresh_labels(viewer)
+
+    dlg.style_changed.connect(_apply)
+    if not _any_label_visible(viewer):
+        log_status("[CH height] No CH label is visible - turn on Display > Show acquisition overlay to preview")
+    dlg.exec_()
+    _persist(viewer)
 
 
 def populate_menu(viewer, menu, file_key=None):
@@ -234,3 +255,5 @@ def populate_menu(viewer, menu, file_key=None):
     pub_act.setChecked(bool(getattr(viewer, "ch_label_in_publication", False)))
     pub_act.setToolTip("Publication otherwise hides the acquisition overlay; this keeps just the CH height line")
     pub_act.triggered.connect(lambda checked: set_label_in_publication(viewer, checked))
+    style_act = menu.addAction("Label style (font, colours, position)...")
+    style_act.triggered.connect(lambda _=False: open_style_dialog(viewer))

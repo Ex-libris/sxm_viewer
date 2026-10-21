@@ -922,6 +922,11 @@ is only the unloaded-file fallback). Manual CH tags saved before `9a70df9`
 carry a bogus `abs_z_pm` (~0, the displayed current channel's median);
 `_heal_manual_ch_abs_z` recomputes them from the topography channel once
 during `_auto_detect_tags_for_folder` and marks them `abs_z_src: "topo"`.
+Look is user-editable via the menu's "Label style..." (`dialogs/ch_label_style.py`,
+pure UI emitting `style_changed`): `viewer.ch_label_style` (config) holds only
+keys the user set; `MultiPreviewCanvas._ch_label_style` overlays them on the
+per-mode defaults (boxed HUD / outlined Publication text) and `_draw_ch_label`
+is the single CH label renderer for both modes. CC HUD text is unaffected.
 
 ### Quarter-turn image orientation (R / Shift+R)
 A per-file *display* state, `viewer.image_orientation` (`file_key ->`
