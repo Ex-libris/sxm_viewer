@@ -119,6 +119,27 @@ def _resolve_popup_channel_source(owner, views):
     }
 
 
+def _popup_zero_reference(owner, arr_np, clim):
+    """Zero maps the bottom of the colour range to 0: the view's current
+    clim low bound when it has one, else the viewer's robust auto minimum
+    (not nanmin, which a single spike drags far below the colorbar)."""
+    if clim is not None:
+        try:
+            return float(clim[0])
+        except Exception:
+            pass
+    zero_ref = getattr(owner, "_zero_reference", None)
+    if callable(zero_ref):
+        try:
+            ref = zero_ref(arr_np)
+            if ref is not None:
+                return float(ref)
+        except Exception:
+            pass
+    finite = arr_np[np.isfinite(arr_np)]
+    return float(np.nanmin(finite)) if finite.size else 0.0
+
+
 def _shift_view_relative_zero(owner, view, enabled: bool):
     def _normalized_relative_clim(arr, clim):
         if clim is None:
@@ -158,8 +179,7 @@ def _shift_view_relative_zero(owner, view, enabled: bool):
     except Exception:
         zero_offset = None
     if enabled and not is_relative:
-        finite = arr_np[np.isfinite(arr_np)]
-        zero_offset = float(np.nanmin(finite)) if finite.size else 0.0
+        zero_offset = _popup_zero_reference(owner, arr_np, new_view.get("clim"))
         orig_clim = new_view.get("clim")
         if orig_clim is not None:
             try:

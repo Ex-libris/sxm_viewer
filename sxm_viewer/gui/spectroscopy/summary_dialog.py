@@ -176,7 +176,7 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
             channel_label = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
             self.preview_lbl.ppt_image_label = f"{Path(self._file_key).name} - {channel_label}"
             unit_final, arr = self.viewer._get_filtered_channel_array(self._file_key, self._fds.index(fd), self._header, fd)
-            unit_disp, arr_disp, _ = self.viewer._scale_unit_for_display(unit_final, arr)
+            unit_disp, arr_disp, _ = self.viewer._scale_unit_for_display(unit_final, arr, self._file_key)
             arr_disp = self.viewer._downsample_for_thumbnail(arr_disp, 240, 200)
             qimg = array_to_qimage(arr_disp, cmap_name=self._dialog_cmap)
             pix = QtGui.QPixmap.fromImage(qimg.scaled(240, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))

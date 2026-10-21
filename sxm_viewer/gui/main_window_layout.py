@@ -342,10 +342,12 @@ def _ensure_display_menu(viewer):
     viewer.display_units_si_act.setChecked(bool(getattr(viewer, "display_units_si", False)))
     viewer.display_units_si_act.setToolTip("Show SI units in preview annotations")
     viewer.display_units_si_act.toggled.connect(viewer.on_unit_display_toggled)
-    viewer.display_units_relative_act = viewer.display_menu.addAction("Values relative to zero")
+    viewer.display_units_relative_act = viewer.display_menu.addAction("Zero all images")
     viewer.display_units_relative_act.setCheckable(True)
     viewer.display_units_relative_act.setChecked(bool(getattr(viewer, "display_units_relative", False)))
-    viewer.display_units_relative_act.setToolTip("Display values relative to the current zero/reference")
+    viewer.display_units_relative_act.setToolTip(
+        "Session default: show every image's values relative to its minimum. "
+        "Resets per-image choices; Z / the preview Zero box zero individual images.")
     viewer.display_units_relative_act.toggled.connect(viewer.on_unit_relative_toggled)
     viewer.relative_axes_act = viewer.display_menu.addAction("Relative axes")
     viewer.relative_axes_act.setCheckable(True)

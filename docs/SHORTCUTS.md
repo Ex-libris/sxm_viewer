@@ -129,6 +129,8 @@ Thumbnail actions:
   filters work...`.
 - `R` / `Shift+R` while focus is in the thumbnail area - rotate the selected
   thumbnails 90° clockwise / anticlockwise (see "Image orientation" below).
+- `Z` while focus is in the thumbnail area - zero / un-zero the selected
+  thumbnails (see "Zero" below).
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.
@@ -144,6 +146,8 @@ Thumbnail context menu:
 - Open the image-adjust dialog.
 - `Orientation` - rotate the selected images 90° clockwise / anticlockwise /
   180°, or reset them to the acquired orientation.
+- `Zero` - zero / un-zero the selected images, zero all images, or reset
+  per-image choices to the default.
 - Toggle spectroscopy overlays, miniatures, glow, and marker style.
 - Create virtual copies for the current or chosen channel.
 - Remove selected virtual copies.
@@ -224,6 +228,21 @@ Image orientation (main preview):
   `Ctrl+Z` undoes a turn; sessions save it.
 - Turning clears profile / angle lines on that image (they were measured in
   the old orientation).
+
+Zero (shift values so the bottom of the colour range is 0 - the robust
+minimum, 1st percentile, so a single spike doesn't set the zero; in a popup
+with a custom contrast range, that range's low end becomes 0):
+- `Z` - zero the selected thumbnails, or the previewed image when nothing is
+  multi-selected; pressing it again on zeroed images un-zeroes them. (With a
+  molecule selected, `Z` still rotates the molecule; in popups it toggles
+  that popup's own zero.)
+- The `Zero` checkbox in the preview bar shows and sets the previewed image's
+  state; its `▾` menu has `Zero selected images`, `Un-zero selected images`,
+  `Zero all images (session default)` and `Reset per-image zero to default`.
+- `Display -> Zero all images` sets the session default: every image is
+  zeroed unless set otherwise. Switching it resets per-image choices.
+- Zeroed thumbnails show a slate `ZERO` chip. `Ctrl+Z` undoes any zero change;
+  sessions save the per-image state.
 
 Clipboard and undo:
 - `Ctrl+C` - copy the displayed canvas as PNG, including overlays.

@@ -715,7 +715,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
     arr_base = np.asarray(arr_base)
     arr_adj, adjusted_extent = viewer._apply_adjustments_for_channel(file_key, channel_idx, arr_base, base_extent)
     display_extent = viewer._display_extent(adjusted_extent, header)
-    display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj)
+    display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj, file_key)
     display_arr = np.asarray(display_arr)
     axis_unit = header.get("XPhysUnit") or header.get("YPhysUnit") or header.get("ScanUnit") or ""
     if not axis_unit:
@@ -801,7 +801,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         "cmap": cmap_to_use,
         "unit_normalized": unit_normalized,
         "unit": display_unit,
-        "display_relative_zero": bool(getattr(viewer, "display_units_relative", False)),
+        "display_relative_zero": viewer._is_image_zeroed(file_key),
         "zero_offset": zero_offset,
         "title": title_text,
         "colorbar_label": colorbar_label,
@@ -826,7 +826,7 @@ def build_single_channel_view(viewer, header_path_str, channel_idx: int, *, cmap
         header_path,
         channel_idx,
         display_arr,
-        relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+        relative_zero=viewer._is_image_zeroed(file_key),
     )
     if clim:
         view["clim"] = clim
@@ -945,7 +945,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         viewer._last_base_unit = unit_normalized
         arr_adj, adjusted_extent = viewer._apply_adjustments_for_channel(file_key, channel_idx, viewer._last_base_array, base_extent)
         display_extent = viewer._display_extent(adjusted_extent, header)
-        display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj)
+        display_unit, display_arr, zero_offset = viewer._scale_unit_for_display(unit_normalized, arr_adj, file_key)
         viewer._last_display_array = np.asarray(display_arr)
         viewer._last_display_unit = display_unit
         # Consumed only by Image > Crop/Rotate, which works on the unturned
@@ -1043,7 +1043,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         file_key,
         channel_idx,
         display_arr,
-        relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+        relative_zero=viewer._is_image_zeroed(file_key),
     )
     spec_pixels = []
     for spec in overlay_specs:
@@ -1068,7 +1068,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
         'cmap': cmap_to_use,
         'unit_normalized': unit_normalized,
         'unit': display_unit,
-        'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
+        'display_relative_zero': viewer._is_image_zeroed(file_key),
         'zero_offset': zero_offset,
         'title': title_text,
         'colorbar_label': colorbar_label,
@@ -1115,7 +1115,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
             cmap2 = viewer._resolve_extra_spec_cmap(spec, file_key)
             arr2_adj, adj2_extent = viewer._apply_adjustments_for_channel(file_key, idx2, arr2_conv, base_extent)
             extent2 = viewer._display_extent(adj2_extent, header)
-            unit2_display, arr2_display, zero2_offset = viewer._scale_unit_for_display(unit2_final, arr2_adj)
+            unit2_display, arr2_display, zero2_offset = viewer._scale_unit_for_display(unit2_final, arr2_adj, file_key)
             caption2 = fd2.get('Caption', fd2.get('FileName', ''))
             if datetime_txt:
                 title2 = f"{Path(header_path).name}  {caption2}  {datetime_txt}"
@@ -1132,11 +1132,11 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
                 file_key,
                 idx2,
                 arr2_display,
-                relative_zero=bool(getattr(viewer, "display_units_relative", False)),
+                relative_zero=viewer._is_image_zeroed(file_key),
             )
             vdict = {'arr': arr2_display, 'extent': extent2, 'extent_raw': adj2_extent,
                      'cmap': cmap2, 'unit_normalized': unit2_final, 'unit': unit2_display,
-                     'display_relative_zero': bool(getattr(viewer, 'display_units_relative', False)),
+                     'display_relative_zero': viewer._is_image_zeroed(file_key),
                      'zero_offset': zero2_offset,
                      'title': title2,
                      'colorbar_label': cbar_label2, 'axis_unit': axis_unit,

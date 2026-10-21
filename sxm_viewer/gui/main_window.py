@@ -954,8 +954,20 @@ class SXMGridViewer(QtWidgets.QWidget):
             combo.setFocusPolicy(QtCore.Qt.NoFocus)
         self.preview_zero_cb = QtWidgets.QCheckBox("Zero")
         self.preview_zero_cb.setChecked(self.display_units_relative)
-        self.preview_zero_cb.setToolTip("Display values relative to the current zero/reference")
-        self.preview_zero_cb.toggled.connect(self.on_unit_relative_toggled)
+        self.preview_zero_cb.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.preview_zero_cb.setToolTip(
+            "Show this image's values relative to its minimum (Z) - applies to the "
+            "selected thumbnails, or the previewed image. ▾ for Zero all images.")
+        self.preview_zero_cb.toggled.connect(self.on_preview_zero_toggled)
+        self.preview_zero_menu_btn = QtWidgets.QToolButton()
+        self.preview_zero_menu_btn.setText("▾")
+        self.preview_zero_menu_btn.setAutoRaise(True)
+        self.preview_zero_menu_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.preview_zero_menu_btn.setToolTip("Zero options: selected images, all images, reset")
+        self.preview_zero_menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        _zero_menu = QtWidgets.QMenu(self.preview_zero_menu_btn)
+        _zero_menu.aboutToShow.connect(lambda m=_zero_menu: (m.clear(), self._populate_zero_menu(m)))
+        self.preview_zero_menu_btn.setMenu(_zero_menu)
         def _cmap_star_button(tooltip, on_click):
             btn = QtWidgets.QToolButton()
             btn.setText("★")
@@ -1011,6 +1023,7 @@ class SXMGridViewer(QtWidgets.QWidget):
         preview_state_row.addWidget(preview_state_sep)
         preview_state_row.addSpacing(4)
         preview_state_row.addWidget(self.preview_zero_cb)
+        preview_state_row.addWidget(self.preview_zero_menu_btn)
         preview_state_row.addWidget(self.relative_axes_cb)
         preview_state_row.addSpacing(4)
 
@@ -1282,10 +1295,13 @@ class SXMGridViewer(QtWidgets.QWidget):
         )
         self.preview_canvas.set_histogram_reset_callback(lambda c: self._reset_contrast(c))
         self.preview_canvas.set_display_relative_zero_menu_callback(
-            self.on_unit_relative_toggled,
-            state_cb=lambda: self.display_units_relative,
-            tooltip="Display values relative to the current zero/reference",
+            lambda checked: self.set_images_zeroed(bool(checked)),
+            state_cb=lambda: self._is_image_zeroed(self.last_preview[0] if self.last_preview else None),
+            tooltip="Show this image's values relative to its minimum (Z)",
         )
+        # Z on the main preview zeroes the selection/previewed image (popups
+        # keep their own canvas-local zero setter).
+        self.preview_canvas._zero_image_callback = lambda: self.toggle_zero_images()
         self.preview_canvas.set_relative_axes_menu_callback(self.on_relative_axes_toggled)
         self.preview_canvas.set_compare_menu_callback(
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
@@ -3551,6 +3567,12 @@ QLabel:hover {{
                 if self.rotate_images(-1 if (mods & QtCore.Qt.ShiftModifier) else 1):
                     event.accept()
                     return
+        if key == QtCore.Qt.Key_Z and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.ShiftModifier)):
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                if self.toggle_zero_images():
+                    event.accept()
+                    return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
@@ -4738,7 +4760,11 @@ QLabel:hover {{
                 vmax = float(np.nanpercentile(finite, 99.0))
             if vmin == vmax:
                 return None
-            return (vmin, vmax)
+            if relative_zero and abs(vmin) <= 1e-9 * abs(vmax - vmin):
+                # Zeroed data: the low end IS the zero reference; drop the
+                # float residue (e.g. -4e-19) left by the subtraction.
+                vmin = 0.0
+            return (float(vmin), float(vmax))
         except Exception:
             return None
 
@@ -4822,6 +4848,7 @@ QLabel:hover {{
         self.selected_spectro_thumb_file = None
         self.thumbnail_filters = {}
         self.image_orientation = {}
+        self.image_zero = {}
         self.virtual_copy_order = []
         self.extra_view_specs = []
         self.molecule_overlays = {}
@@ -5192,6 +5219,20 @@ QLabel:hover {{
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
             painter.drawText(chip, QtCore.Qt.AlignCenter, f"↻{turns * 90}°")
             painter.end()
+        if self._is_image_zeroed(file_key):
+            # Slate "ZERO" chip, bottom-left (after ADJ / turn): values are
+            # shown relative to the image minimum — toggle with Z.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip_x = 6 + (40 if has_adjust else 0) + (46 if turns else 0)
+            chip = QtCore.QRectF(chip_x, pix.height() - 24, 40, 18)
+            painter.setBrush(QtGui.QColor(70, 90, 120, 225))
+            painter.setPen(QtGui.QPen(QtGui.QColor(25, 35, 50), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, "ZERO")
+            painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
@@ -5380,7 +5421,7 @@ QLabel:hover {{
         except Exception:
             return None
         if relative_zero is None:
-            relative_zero = bool(getattr(self, "display_units_relative", False))
+            relative_zero = self._is_image_zeroed(key)
         return (key, idx, bool(relative_zero))
 
     def _set_combo_text_silent(self, widget, text):
@@ -5972,16 +6013,13 @@ QLabel:hover {{
             self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def on_unit_relative_toggled(self, checked: bool):
-        self.display_units_relative = bool(checked)
-        set_many_silent((
-            getattr(self, "unit_relative_cb", None),
-            getattr(self, "preview_zero_cb", None),
-            getattr(self, "display_units_relative_act", None),
-        ), checked=self.display_units_relative)
-        self.config['display_units_relative'] = self.display_units_relative
-        save_config(self.config)
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
+        """Global "Zero all images" toggle (Display menu)."""
+        self.set_zero_all_images(bool(checked))
+
+    def on_preview_zero_toggled(self, checked: bool):
+        """Preview "Zero" checkbox: per-image, for the selection/previewed image."""
+        if not self.set_images_zeroed(bool(checked)):
+            self._sync_preview_zero_control()
 
     def on_relative_axes_toggled(self, checked: bool):
         self.relative_axes = bool(checked)
@@ -6516,6 +6554,7 @@ QLabel:hover {{
                 self.collection_controller.apply_snapshot_for_file(new_key)
         except Exception:
             pass
+        self._sync_preview_zero_control()
         return result
 
     def _store_molecule_overlay(self, file_key=None):
@@ -7402,15 +7441,155 @@ QLabel:hover {{
             log_status("[Orientation] Restored acquired orientation (Ctrl+Z undoes)")
         return changed
 
-    def _scale_unit_for_display(self, unit, arr):
+    # ---------- per-image "Zero" (values relative to the image minimum) ----------
+    def _is_image_zeroed(self, file_key=None):
+        """Per-image override, else the global "Zero all images" default."""
+        default = bool(getattr(self, "display_units_relative", False))
+        if file_key is None:
+            return default
+        return bool((getattr(self, "image_zero", None) or {}).get(str(file_key), default))
+
+    def _zero_state_snapshot(self):
+        return (bool(getattr(self, "display_units_relative", False)),
+                dict(getattr(self, "image_zero", None) or {}))
+
+    def _restore_zero_state(self, default, overrides):
+        """Apply a (default, overrides) zero state and re-render everything
+        whose zero state changed."""
+        before = {key: self._is_image_zeroed(key) for key in getattr(self, "thumb_widgets", {})}
+        self.display_units_relative = bool(default)
+        self.image_zero = {str(k): bool(v) for k, v in (overrides or {}).items()
+                           if bool(v) != self.display_units_relative}
+        set_many_silent((
+            getattr(self, "unit_relative_cb", None),
+            getattr(self, "display_units_relative_act", None),
+        ), checked=self.display_units_relative)
+        if self.config.get('display_units_relative') != self.display_units_relative:
+            self.config['display_units_relative'] = self.display_units_relative
+            save_config(self.config)
+        changed = [key for key, was in before.items() if self._is_image_zeroed(key) != was]
+        if changed:
+            try:
+                self._invalidate_thumbnail_cache(paths=changed)
+            except Exception:
+                pass
+            try:
+                self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
+            except Exception:
+                pass
+        if self.last_preview:
+            try:
+                self.show_file_channel(self.last_preview[0], self.last_preview[1], use_local_cmap=True)
+            except Exception:
+                pass
+        self._sync_preview_zero_control()
+        return bool(changed)
+
+    def _sync_preview_zero_control(self):
+        """The preview's Zero checkbox mirrors the previewed image's state."""
+        key = str(self.last_preview[0]) if self.last_preview else None
+        set_many_silent((getattr(self, "preview_zero_cb", None),), checked=self._is_image_zeroed(key))
+
+    def set_images_zeroed(self, zeroed, paths=None):
+        """Zero / un-zero the target images (explicit paths, else the
+        thumbnail selection, else the previewed image). Ctrl+Z undoes."""
+        targets = self._orientation_targets(paths)
+        if not targets and paths is None and self.last_preview:
+            targets = [str(self.last_preview[0])]
+        targets = [key for key in targets if self._is_image_zeroed(key) != bool(zeroed)]
+        if not targets:
+            return False
+        old_default, old_overrides = self._zero_state_snapshot()
+        overrides = dict(old_overrides)
+        for key in targets:
+            overrides[key] = bool(zeroed)
+        self._adjustment_undo_stack.append(("zero", old_default, old_overrides))
+        self._restore_zero_state(old_default, overrides)
+        what = Path(targets[0]).name if len(targets) == 1 else f"{len(targets)} images"
+        log_status(f"[Zero] {what} {'zeroed' if zeroed else 'un-zeroed'} (Ctrl+Z undoes)")
+        return True
+
+    def toggle_zero_images(self, paths=None):
+        """Z key: zero the targets unless all of them already are, then un-zero."""
+        targets = self._orientation_targets(paths)
+        if not targets and paths is None and self.last_preview:
+            targets = [str(self.last_preview[0])]
+        if not targets:
+            return False
+        zeroed = not all(self._is_image_zeroed(key) for key in targets)
+        return self.set_images_zeroed(zeroed, targets)
+
+    def set_zero_all_images(self, zeroed):
+        """"Zero all images": set the session-wide default and drop every
+        per-image override so all images follow it."""
+        old_default, old_overrides = self._zero_state_snapshot()
+        if bool(zeroed) == old_default and not old_overrides:
+            self._restore_zero_state(old_default, old_overrides)  # resync controls
+            return False
+        self._adjustment_undo_stack.append(("zero", old_default, old_overrides))
+        self._restore_zero_state(bool(zeroed), {})
+        log_status(f"[Zero] All images {'zeroed' if zeroed else 'un-zeroed'} (Ctrl+Z undoes)")
+        return True
+
+    def reset_image_zero(self, paths=None):
+        """Return the target images (default: all) to the session default."""
+        old_default, old_overrides = self._zero_state_snapshot()
+        if paths is None:
+            overrides = {}
+        else:
+            drop = {str(Path(p)) for p in paths if p}
+            overrides = {k: v for k, v in old_overrides.items() if k not in drop}
+        if overrides == old_overrides:
+            return False
+        self._adjustment_undo_stack.append(("zero", old_default, old_overrides))
+        self._restore_zero_state(old_default, overrides)
+        log_status("[Zero] Per-image zero reset to the default (Ctrl+Z undoes)")
+        return True
+
+    def _populate_zero_menu(self, menu, paths=None):
+        """Shared Zero submenu: preview ▾ button and thumbnail right-click."""
+        targets = self._orientation_targets(paths)
+        if not targets and paths is None and self.last_preview:
+            targets = [str(self.last_preview[0])]
+        suffix = f" ({len(targets)})" if len(targets) > 1 else ""
+        zero_act = menu.addAction(f"Zero selected images{suffix}  (Z)")
+        zero_act.setEnabled(any(not self._is_image_zeroed(k) for k in targets))
+        zero_act.triggered.connect(lambda _=False, t=list(targets): self.set_images_zeroed(True, t))
+        unzero_act = menu.addAction(f"Un-zero selected images{suffix}")
+        unzero_act.setEnabled(any(self._is_image_zeroed(k) for k in targets))
+        unzero_act.triggered.connect(lambda _=False, t=list(targets): self.set_images_zeroed(False, t))
+        menu.addSeparator()
+        all_act = menu.addAction("Zero all images (session default)")
+        all_act.setCheckable(True)
+        all_act.setChecked(bool(getattr(self, "display_units_relative", False)))
+        all_act.setToolTip("Every image is zeroed unless set otherwise; resets per-image choices")
+        all_act.triggered.connect(self.set_zero_all_images)
+        reset_act = menu.addAction("Reset per-image zero to default")
+        reset_act.setEnabled(bool(getattr(self, "image_zero", None)))
+        reset_act.triggered.connect(lambda _=False: self.reset_image_zero())
+
+    def _zero_reference(self, arr):
+        """Value that "Zero" maps to 0: the bottom of the auto colour range
+        (robust 1st percentile of the valid scan region), so the colorbar
+        starts at 0. A plain nanmin is dragged off by single spikes / aborted
+        lines, leaving the colorbar at e.g. 17..34 instead of 0..17."""
+        lim = self._auto_preview_clim(arr)
+        if lim is not None:
+            return float(lim[0])
+        arr_np = np.asarray(arr, dtype=float)
+        finite = arr_np[np.isfinite(arr_np)]
+        return float(np.nanmin(finite)) if finite.size else None
+
+    def _scale_unit_for_display(self, unit, arr, file_key=None):
         arr_np = np.asarray(arr, dtype=float)
         unit_label = unit or ""
         factor = 1.0
         range_probe = arr_np
-        if getattr(self, 'display_units_relative', False):
-            finite = arr_np[np.isfinite(arr_np)]
-            if finite.size:
-                range_probe = arr_np - float(np.nanmin(finite))
+        zeroed = self._is_image_zeroed(file_key)
+        if zeroed:
+            ref = self._zero_reference(arr_np)
+            if ref is not None:
+                range_probe = arr_np - ref
         if unit_label:
             if getattr(self, 'display_units_si', False):
                 target = _SI_BASE_UNITS.get(unit_label, (unit_label, 1.0))
@@ -7419,10 +7598,9 @@ QLabel:hover {{
                 unit_label, factor = _auto_display_unit(unit_label, range_probe)
         arr_scaled = arr_np * float(factor)
         zero_offset = None
-        if getattr(self, 'display_units_relative', False):
-            finite = arr_scaled[np.isfinite(arr_scaled)]
-            if finite.size:
-                zero_offset = float(np.nanmin(finite))
+        if zeroed:
+            zero_offset = self._zero_reference(arr_scaled)
+            if zero_offset is not None:
                 arr_scaled = arr_scaled - zero_offset
         return unit_label or unit, arr_scaled, zero_offset
 
@@ -7764,6 +7942,10 @@ QLabel:hover {{
                 self._set_image_orientation(dict(entry[1]), push_undo=False)
                 log_status("[Orientation] Orientation restored")
                 return True
+            if entry[0] == "zero":
+                self._restore_zero_state(entry[1], entry[2])
+                log_status("[Zero] Zero state restored")
+                return True
             if entry[0] == "copy":
                 new_key = entry[1]
                 if new_key not in getattr(self, '_processed_views', {}):
@@ -7804,7 +7986,7 @@ QLabel:hover {{
                 continue
             label = fd.get('Caption', fd.get('FileName', f"chan{idx}"))
             cmap = config.get('cmaps', {}).get(key, self.preview_cmap_combo.currentText() or self.preview_cmap)
-            unit_display, arr_display, _ = self._scale_unit_for_display(unit_final, arr_conv)
+            unit_display, arr_display, _ = self._scale_unit_for_display(unit_final, arr_conv, str(header_path))
             turns = self._get_image_orientation(str(header_path))
             item_extent = extent
             if turns:
@@ -8229,8 +8411,30 @@ QLabel:hover {{
             vmin = vmax = None
         if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or float(vmax) <= float(vmin):
             fallback = self._auto_preview_clim(arr, relative_zero=relative_zero)
-            return fallback
-        return (float(vmin), float(vmax))
+            return self._zero_floor_clim(view, fallback)
+        return self._zero_floor_clim(view, (float(vmin), float(vmax)))
+
+    @staticmethod
+    def _zero_floor_clim(view, clim):
+        """On a zeroed view, 0 is the floor of every automatic range (Auto,
+        Reset, initial): Zero subtracts the robust minimum, so the few spike
+        pixels below it would otherwise drag Reset to e.g. -1.06 and Auto to
+        -1e-15 residue, which reads as "not zeroed". Spikes saturate at the
+        bottom colour instead; the data itself is untouched."""
+        if clim is None or not bool((view or {}).get("display_relative_zero", False)):
+            return clim
+        lo, hi = float(clim[0]), float(clim[1])
+        if hi > 0 and lo < 1e-9 * (hi - lo):
+            lo = 0.0
+        return (lo, hi)
+
+    def _reset_view_clim(self, view):
+        """Full data range for Reset buttons (histogram dialog, compact
+        histogram, canvas), floored at 0 on zeroed views."""
+        vmin, vmax, _finite = self._view_finite_values(view)
+        if vmin is None or vmax is None:
+            return None
+        return self._zero_floor_clim(view, (vmin, vmax))
 
     def _apply_clim_to_view(self, canvas, view, lo, hi):
         if canvas is None or view is None:
@@ -8271,9 +8475,10 @@ QLabel:hover {{
 
     def _reset_contrast(self, canvas):
         view = self._resolve_canvas_contrast_target(canvas)
-        vmin, vmax, _finite = self._view_finite_values(view)
-        if vmin is None or vmax is None:
+        reset = self._reset_view_clim(view)
+        if reset is None:
             return
+        vmin, vmax = reset
         try:
             canvas.push_undo_state("reset_contrast")
         except Exception:
@@ -9252,6 +9457,8 @@ QLabel:hover {{
             orient_reset.setEnabled(any(self._get_image_orientation(p) for p in orient_targets))
             orient_reset.triggered.connect(lambda _, paths=list(orient_targets): self.reset_image_orientation(paths))
             orient_menu.addAction(orient_reset)
+            zero_menu = menu.addMenu("Zero" + (f" ({len(orient_targets)} selected)" if len(orient_targets) > 1 else ""))
+            self._populate_zero_menu(zero_menu, orient_targets)
 
         # Per-image colormap for every selected thumbnail (real files and
         # virtual copies alike) — stored in per_file_channel_cmap, so the
@@ -10702,9 +10909,10 @@ QLabel:hover {{
         canvas, view = self._compact_histogram_current_view()
         if view is None:
             return
-        vmin, vmax, _finite = self._view_finite_values(view)
-        if vmin is None:
+        reset = self._reset_view_clim(view)
+        if reset is None:
             return
+        vmin, vmax = reset
         if widget is not None:
             widget.set_range(vmin, vmax)
         self._on_compact_histogram_clim_changed(vmin, vmax, True)

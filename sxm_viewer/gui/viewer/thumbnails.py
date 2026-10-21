@@ -67,7 +67,7 @@ def _thumbnail_display_signature(viewer, file_key, channel_idx):
         adjust_sig = repr(adjust_spec)
     return (
         bool(getattr(viewer, "display_units_si", False)),
-        bool(getattr(viewer, "display_units_relative", False)),
+        viewer._is_image_zeroed(file_key),
         adjust_sig,
         viewer._get_image_orientation(file_key),
     )
@@ -119,7 +119,7 @@ def _get_thumbnail_array(viewer, file_key, channel_idx, header, fd, thumb_w, thu
     except Exception:
         pass
     try:
-        _, arr_use, _ = viewer._scale_unit_for_display(unit_normalized, arr_use)
+        _, arr_use, _ = viewer._scale_unit_for_display(unit_normalized, arr_use, file_key)
     except Exception:
         arr_use = np.asarray(arr_use, dtype=float)
     crop_info = None
