@@ -12,6 +12,8 @@ from matplotlib import patches
 from matplotlib import patheffects as mpatheffects
 from matplotlib.backend_bases import MouseButton
 from matplotlib import colors as mcolors
+from matplotlib import cm as mcm
+from matplotlib import colormaps as mpl_colormaps
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, AutoMinorLocator, MultipleLocator, MaxNLocator
@@ -6977,6 +6979,17 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         # Optional [zmin, zmax] window (display units) the fit is restricted to;
         # None means "use the whole displayed curve".
         self._potential_fit_range = None
+        # Robust mode trims each curve's repulsive wall / CO-bending turnover
+        # automatically; wall_frac = how far up the wall (x well depth) to fit.
+        self._potential_robust = True
+        self._potential_wall_frac = potential_fits.DEFAULT_WALL_FRAC
+        # Fit-first styling while the potential overlay is on: fit drawn solid,
+        # raw data faded, the trimmed repulsive part grey, y fitted to the wells.
+        self._fit_emphasis = True
+        # Curve colouring: "cycle" (palette) or a sequential map over a
+        # per-curve quantity - "order" (acquisition time), "well_z", "well_depth".
+        self._curve_color_mode = "cycle"
+        self._color_by_cbar_ax = None
         # Set to force the next _update_plot through the full (clearing) redraw
         # path instead of the incremental one - needed when removing overlays.
         self._force_full_replot = False
@@ -7349,6 +7362,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             return False
         if getattr(self, "_potential_fit_overlay", False):
             return False
+        if getattr(self, "_curve_color_mode", "cycle") != "cycle":
+            return False
         if getattr(self, "_minima_meta", None):
             return False
         if getattr(self, "_point_labels", None):
@@ -7488,6 +7503,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _restyle_existing_lines(self):
         if not self._line_map or not self._plotted_spec_ids:
             return False
+        if self._potential_fit_overlay and self._fit_emphasis:
+            return False  # fit-first styling (raw/excluded/fit artists) needs a full redraw
         selected_ids = {item.data(0, QtCore.Qt.UserRole + 1) for item in self._selected_items()}
         base_width = self._plot_line_width
         show_points = self.show_points_cb.isChecked()
@@ -7519,6 +7536,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
     def _apply_palette_to_existing_lines(self):
         if not self._line_map or not self._plotted_spec_ids:
             return False
+        if self._curve_color_mode != "cycle":
+            return False  # colours come from the 'Colour by' map, not the palette
         cycle = list(self._color_cycle or [])
         if not cycle:
             cycle = get_color_cycle(DEFAULT_COLOR_CYCLE)
@@ -7987,6 +8006,24 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         palette_row.addWidget(self.palette_combo, 1)
         viz_layout.addLayout(palette_row)
 
+        color_by_row = QtWidgets.QHBoxLayout()
+        color_by_row.addWidget(QtWidgets.QLabel("Colour by:"))
+        self.color_by_combo = QtWidgets.QComboBox()
+        self.color_by_combo.addItem("Colour cycle", "cycle")
+        self.color_by_combo.addItem("Acquisition order", "order")
+        self.color_by_combo.addItem("Fitted well position", "well_z")
+        self.color_by_combo.addItem("Fitted well depth", "well_depth")
+        self.color_by_combo.setToolTip(
+            "Colour curves by a per-spectrum quantity on a sequential colormap "
+            "(with a colourbar) instead of the repeating colour cycle. The "
+            "'Fitted well' options use the potential model of step 2; curves "
+            "whose minimum lies outside the measured range use their closest-"
+            "approach value and are marked with an open ◁."
+        )
+        self.color_by_combo.currentIndexChanged.connect(self._on_color_by_changed)
+        color_by_row.addWidget(self.color_by_combo, 1)
+        viz_layout.addLayout(color_by_row)
+
         self.palette_swatches = QtWidgets.QWidget()
         swatch_layout = QtWidgets.QHBoxLayout(self.palette_swatches)
         swatch_layout.setSpacing(3)
@@ -8112,6 +8149,48 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.potential_overlay_cb.toggled.connect(self._on_potential_overlay_toggled)
         potential_layout.addWidget(self.potential_overlay_cb)
 
+        self.fit_emphasis_cb = QtWidgets.QCheckBox("Emphasise fits (fade raw data)")
+        self.fit_emphasis_cb.setChecked(self._fit_emphasis)
+        self.fit_emphasis_cb.setToolTip(
+            "While the fit is shown: draw each fit solid with a marker at its "
+            "minimum (open ◁ = minimum not reached in the data), fade the raw "
+            "curve, grey out the part excluded from the fit and scale y to the "
+            "fitted region. Untick for the full raw view."
+        )
+        self.fit_emphasis_cb.toggled.connect(self._on_fit_emphasis_toggled)
+        potential_layout.addWidget(self.fit_emphasis_cb)
+
+        # Robust fitting: auto-trim the repulsive wall / CO-bending turnover
+        # per curve, soft-L1 loss and multi-start (potential_fits.robust_window).
+        pot_robust_row = QtWidgets.QHBoxLayout()
+        self.potential_robust_cb = QtWidgets.QCheckBox("Robust (trim repulsive wall)")
+        self.potential_robust_cb.setChecked(self._potential_robust)
+        self.potential_robust_cb.setToolTip(
+            "Per curve, find the attractive well coming in from the far field and "
+            "fit only the long range, the minimum and the lower part of the "
+            "repulsive wall. Samples past the wall's turning point (CO bending) or "
+            "higher than 'wall × depth' above the minimum are ignored, and noise "
+            "spikes are down-weighted (soft-L1 loss). The dashed fit is drawn only "
+            "over the span actually fitted."
+        )
+        self.potential_robust_cb.toggled.connect(self._on_potential_robust_toggled)
+        pot_robust_row.addWidget(self.potential_robust_cb)
+        pot_robust_row.addWidget(QtWidgets.QLabel("wall ×"))
+        self.potential_wall_spin = QtWidgets.QDoubleSpinBox()
+        self.potential_wall_spin.setRange(0.0, 20.0)
+        self.potential_wall_spin.setSingleStep(0.25)
+        self.potential_wall_spin.setDecimals(2)
+        self.potential_wall_spin.setValue(self._potential_wall_frac)
+        self.potential_wall_spin.setToolTip(
+            "How far up the repulsive wall to fit, in units of the well depth "
+            "above the minimum (0 = stop at the minimum, 1 = up to the far-field "
+            "level). Lower it if the CO-bending shoulder still pulls the fit."
+        )
+        self.potential_wall_spin.valueChanged.connect(self._on_potential_wall_changed)
+        pot_robust_row.addWidget(self.potential_wall_spin)
+        pot_robust_row.addStretch(1)
+        potential_layout.addLayout(pot_robust_row)
+
         # Fit range: restrict which x (Z) samples feed the fit. Curves that run
         # too far into the repulsive wall - or where the CO tip bends and adds a
         # spurious minimum - break the fit; clipping the window fixes that
@@ -8188,6 +8267,12 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         if not scipy_ok:
             self.potential_overlay_cb.setEnabled(False)
             self.potential_model_combo.setEnabled(False)
+            self.potential_robust_cb.setEnabled(False)
+            self.potential_wall_spin.setEnabled(False)
+            self.fit_emphasis_cb.setEnabled(False)
+            for idx in range(self.color_by_combo.count()):
+                if str(self.color_by_combo.itemData(idx)).startswith("well_"):
+                    self.color_by_combo.model().item(idx).setEnabled(False)
             potential_group.setToolTip("SciPy is required for potential fitting and is not available.")
 
         right_layout.addWidget(analysis_group)
@@ -9095,6 +9180,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         # We are now committed to a full, clearing redraw; consume the flag.
         self._force_full_replot = False
         channel = self.channel_combo.currentText()
+        self._remove_color_by_colorbar()
         self.ax.clear()
         self._empty_plot_text = None
         self._grid_major = bool(self._plot_grid_enabled)
@@ -9127,14 +9213,55 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         # Precompute relative zero if needed
         rel_zero = self._relative_zero_shift()
 
-        # Plot both checked items AND selected items (even if unchecked) for quick preview
-        y_units_after_filters = []
+        # The potential model describes Δf, so neither the overlay nor fit-based
+        # colouring applies to the reconstructed Force channel.
+        fit_overlay = bool(self._potential_fit_overlay and channel != self._FORCE_LABEL)
+        emphasis = fit_overlay and self._fit_emphasis
+        color_mode = self._curve_color_mode
+        fit_colors = color_mode.startswith("well_") and channel != self._FORCE_LABEL
+
+        # Pass 1: payloads (and fits, when anything depends on them) for every
+        # curve, so the colour map can be normalised over the whole set.
+        entries = []
         for item in plot_items:
             spec = item.data(0, QtCore.Qt.UserRole)
             spec_id = item.data(0, QtCore.Qt.UserRole + 1)
             payload = self._curve_payload_for_plot(spec, spec_id, channel, axis_choice, bg_id, filter_sig)
             if payload is None:
                 continue
+            x_full = payload["x"]
+            if relative_nm and payload["axis_unit"] == "nm":
+                x_full = x_full - rel_zero
+            res = None
+            if fit_overlay or fit_colors:
+                res = self._potential_fit_for_curve(spec_id, x_full, payload["y"])
+            entries.append((spec_id, spec, payload, x_full, res))
+
+        mapped_colors = {}
+        if color_mode != "cycle" and (color_mode == "order" or fit_colors):
+            values = self._curve_color_values([(sid, sp, rs) for sid, sp, _p, _x, rs in entries])
+            if values:
+                vals = np.array([v for v, _ok in values.values()], dtype=float)
+                vmin, vmax = float(np.nanmin(vals)), float(np.nanmax(vals))
+                if vmax <= vmin:
+                    vmax = vmin + 1.0
+                norm = mcolors.Normalize(vmin, vmax)
+                # Drop viridis' pale-yellow end: it vanishes on a white plot.
+                cmap = mcolors.LinearSegmentedColormap.from_list(
+                    "_compare_color_by", mpl_colormaps["viridis"](np.linspace(0.0, 0.88, 256)))
+                for sid, (val, _reached) in values.items():
+                    mapped_colors[sid] = mcolors.to_hex(cmap(norm(val)))
+                label = {
+                    "order": "acquisition order",
+                    "well_z": "fitted well position",
+                    "well_depth": "fitted well depth",
+                }.get(color_mode, color_mode)
+                self._draw_color_by_colorbar(norm, cmap, label)
+        emphasis_ylims = []
+
+        # Plot both checked items AND selected items (even if unchecked) for quick preview
+        y_units_after_filters = []
+        for spec_id, spec, payload, x_disp_full, res in entries:
             x_vals = payload["x"]
             y_filtered = payload["y"]
             axis_label = payload["axis_label"]
@@ -9142,13 +9269,24 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             y_unit_raw = payload["y_unit_raw"]
             y_unit_final = payload["y_unit_final"]
             # Apply waterfall offset
-            y_data = y_filtered + (plotted * offset_val) if waterfall else y_filtered
+            curve_offset = plotted * offset_val if waterfall else 0.0
+            y_data = y_filtered + curve_offset
             x_plot = x_vals - rel_zero if (relative_nm and axis_unit == "nm") else x_vals
-            x_disp_full = x_plot  # pre-decimation display x, used for fitting
             x_plot, y_plot = self._decimate_curve_for_display(x_plot, y_data, visible_count)
             y_units_after_filters.append(y_unit_final or y_unit_raw)
-            color = self._auto_color_for_spec(spec_id)
+            if color_mode == "cycle":
+                color = self._auto_color_for_spec(spec_id)
+            else:
+                color = mapped_colors.get(spec_id, "#8c8c8c")
             highlight = spec_id in selected_ids or not selected_ids
+            fit_first = bool(emphasis and res)
+            if fit_first:
+                # Raw data only inside the fitted window (NaN elsewhere keeps the
+                # arrays aligned for snapping/labels); the excluded part goes on
+                # a separate grey line below.
+                in_win = np.isfinite(x_plot) & (x_plot >= res["x_min"]) & (x_plot <= res["x_max"])
+                y_excluded = np.where(in_win, np.nan, y_plot)
+                y_plot = np.where(in_win, y_plot, np.nan)
             label_txt = self._display_name(spec)
             if self._legend_filename_only:
                 try:
@@ -9162,6 +9300,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 "alpha": 1.0 if highlight else 0.4,
                 "label": label_txt,
             }
+            if fit_first:
+                line_kwargs["lw"] = base_width * 0.8
+                line_kwargs["alpha"] = 0.35 if highlight else 0.12
             line_kwargs["linestyle"] = "-" if show_lines else "None"
             if show_points:
                 line_kwargs.update({
@@ -9177,24 +9318,27 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                 try:
                     if style.get("color"):
                         line.set_color(style.get("color"))
-                    if style.get("lw"):
+                    if style.get("lw") and not fit_first:
                         line.set_linewidth(style.get("lw"))
                     if style.get("ls"):
                         line.set_linestyle(style.get("ls"))
                 except Exception:
                     pass
+            color = line.get_color()  # honour a per-curve colour override
             self._line_map[spec_id] = line
             plotted_spec_ids.append(spec_id)
             plotted += 1
             if spec_id in self._fit_results:
-                self._draw_fit_for_spec(spec_id, color, offset=(plotted - 1) * offset_val if waterfall else 0.0)
-            # The potential fit models Δf, so its overlay only makes sense on the
-            # Δf (or similar) channel - never on the reconstructed Force channel,
-            # where fitting a Morse/LJ shape to force data is meaningless.
-            if self._potential_fit_overlay and channel != self._FORCE_LABEL:
+                self._draw_fit_for_spec(spec_id, color, offset=curve_offset)
+            if fit_first:
+                emphasis_ylims.append(y_plot)
+                self.ax.plot(x_plot, y_excluded, color="#8c8c8c", lw=base_width * 0.7,
+                             alpha=0.3 if highlight else 0.1, label="_nolegend_")
+                emphasis_ylims.append(self._draw_emphasised_potential_fit(
+                    res, color, curve_offset, highlight, base_width))
+            elif fit_overlay:
                 self._draw_potential_fit_for_curve(
-                    spec_id, x_disp_full, y_filtered, color,
-                    offset=(plotted - 1) * offset_val if waterfall else 0.0,
+                    spec_id, x_disp_full, y_filtered, color, offset=curve_offset,
                 )
         if plotted == 0:
             self._set_empty_plot_text()
@@ -9213,6 +9357,10 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     pass
                 for leg_line, text in zip(legend.get_lines(), legend.get_texts()):
                     leg_line.set_picker(True)
+                    if emphasis:
+                        # Raw lines are faded; key the legend to the fit style.
+                        leg_line.set_alpha(1.0)
+                        leg_line.set_linewidth(self._plot_line_width * 1.6)
                     name = text.get_text()
                     for spec in self.specs:
                         if self._display_name(spec) == name:
@@ -9244,6 +9392,15 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self.ax.set_xscale("log" if self._plot_x_log else "linear")
         self.ax.set_yscale("log" if self._plot_y_log else "linear")
         self._apply_grid_and_ticks()
+        if emphasis and emphasis_ylims and not self._plot_y_log:
+            # Scale y to the fitted region (wells + long range); the faded
+            # excluded wall would otherwise set the range and squash the wells.
+            ys = np.concatenate([np.asarray(a, dtype=float).ravel() for a in emphasis_ylims])
+            ys = ys[np.isfinite(ys)]
+            if ys.size:
+                lo, hi = float(ys.min()), float(ys.max())
+                pad = 0.08 * (hi - lo) if hi > lo else max(abs(hi), 1.0) * 0.1
+                self.ax.set_ylim(lo - pad, hi + pad)
         self._update_position_inset_compare()
         _style_plot_chrome(self, self.fig)
         self._apply_font_scale()
@@ -9655,7 +9812,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         configuration (model/range) changed: the dashed overlay and/or the
         fitted-Δf force channel. The fit cache is dropped first so both refit."""
         self._potential_fit_cache.clear()
-        if self._potential_fit_overlay:
+        if self._fit_drives_plot():
             self._force_full_replot = True
             self._update_plot()
         if self._force_source_mode() == "fit":
@@ -9665,6 +9822,98 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._potential_model = name or potential_fits.MODELS[0]
         self._record_user_action(f"Potential model → {self._potential_model}")
         self._refresh_fit_consumers()
+
+    def _fit_drives_plot(self):
+        """True when the plotted curves depend on the potential fits (overlay
+        shown, or colours mapped from a fitted quantity)."""
+        return bool(self._potential_fit_overlay
+                    or str(self._curve_color_mode).startswith("well_"))
+
+    def _on_fit_emphasis_toggled(self, checked):
+        self._fit_emphasis = bool(checked)
+        self._record_user_action(f"Emphasise fits → {'on' if checked else 'off'}")
+        self._force_full_replot = True
+        self._update_plot()
+
+    def _on_color_by_changed(self, _idx=None):
+        mode = self.color_by_combo.currentData() or "cycle"
+        self._curve_color_mode = str(mode)
+        self._record_user_action(f"Colour by → {self.color_by_combo.currentText()}")
+        self._force_full_replot = True
+        self._update_plot()
+
+    def _curve_color_values(self, entries):
+        """Per-curve scalar for the 'Colour by' map: {spec_id: (value, reached)}.
+
+        ``entries`` are (spec_id, spec, fit_result) in plot order. ``reached`` is
+        False for a fitted well that lies outside the data (value is then the
+        closest-approach bound). Curves without a usable value are omitted and
+        fall back to grey."""
+        mode = self._curve_color_mode
+        out = {}
+        if mode == "order":
+            def _t(spec, idx):
+                for key in ("time", "file_mtime"):
+                    val = spec.get(key) if spec else None
+                    try:
+                        if val is not None:
+                            return float(val.timestamp()) if hasattr(val, "timestamp") else float(val)
+                    except Exception:
+                        continue
+                return float(idx)
+            ranked = sorted(range(len(entries)), key=lambda i: (_t(entries[i][1], i), i))
+            for rank, i in enumerate(ranked):
+                out[entries[i][0]] = (float(rank), True)
+        elif mode in ("well_z", "well_depth"):
+            key = "x_well" if mode == "well_z" else "depth"
+            for spec_id, _spec, res in entries:
+                if not res:
+                    continue
+                val = res.get(key)
+                if val is not None and np.isfinite(val):
+                    out[spec_id] = (float(val), bool(res.get("well_in_range", True)))
+        return out
+
+    def _draw_color_by_colorbar(self, norm, cmap, label):
+        """Small horizontal colourbar just above the plot frame (top left), clear
+        of the legend and the curves."""
+        try:
+            cax = self.ax.inset_axes([0.0, 1.035, 0.28, 0.022])
+            sm = mcm.ScalarMappable(norm=norm, cmap=cmap)
+            cb = self.fig.colorbar(sm, cax=cax, orientation="horizontal")
+            fs = 7 * getattr(self, "_font_scale", 1.0)
+            cb.ax.xaxis.set_ticks_position("top")
+            cb.ax.tick_params(labelsize=fs, length=2, pad=1)
+            cax.text(1.03, 0.5, label, transform=cax.transAxes, va="center", ha="left", fontsize=fs)
+            self._color_by_cbar_ax = cax
+        except Exception:
+            self._color_by_cbar_ax = None
+
+    def _remove_color_by_colorbar(self):
+        cax = getattr(self, "_color_by_cbar_ax", None)
+        self._color_by_cbar_ax = None
+        if cax is not None:
+            try:
+                cax.remove()
+            except Exception:
+                pass
+
+    def _on_potential_robust_toggled(self, checked):
+        self._potential_robust = bool(checked)
+        self.potential_wall_spin.setEnabled(self._potential_robust)
+        self._record_user_action(f"Robust potential fit → {'on' if checked else 'off'}")
+        self._refresh_fit_consumers()
+
+    def _on_potential_wall_changed(self, value):
+        self._potential_wall_frac = float(value)
+        if not self._potential_robust:
+            return
+        self._potential_fit_cache.clear()
+        if self._fit_drives_plot():
+            self._force_full_replot = True
+            self._request_plot_update(delay_ms=200)
+        if self._force_source_mode() == "fit":
+            self._refresh_force_if_active()
 
     def _on_potential_overlay_toggled(self, checked):
         self._potential_fit_overlay = bool(checked)
@@ -9708,7 +9957,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._potential_fit_range = self._current_potential_range()
         if self.potential_range_cb.isChecked():
             self._potential_fit_cache.clear()
-            if self._potential_fit_overlay:
+            if self._fit_drives_plot():
                 self._force_full_replot = True
                 self._request_plot_update(delay_ms=200)
             if self._force_source_mode() == "fit":
@@ -9752,6 +10001,8 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             spec_id,
             self._potential_model,
             fit_range,
+            self._potential_robust,
+            self._potential_wall_frac if self._potential_robust else None,
             int(xf.size),
             round(float(xf[0]), 9),
             round(float(xf[-1]), 9),
@@ -9760,7 +10011,9 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         )
         if sig in self._potential_fit_cache:
             return self._potential_fit_cache[sig]
-        res = potential_fits.fit_potential(xf, yf, self._potential_model)
+        res = potential_fits.fit_potential(xf, yf, self._potential_model,
+                                           robust=self._potential_robust,
+                                           wall_frac=self._potential_wall_frac)
         if len(self._potential_fit_cache) > 512:
             self._potential_fit_cache.clear()
         self._potential_fit_cache[sig] = res
@@ -9771,6 +10024,38 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         return res
+
+    def _draw_emphasised_potential_fit(self, res, color, offset, highlight, base_width):
+        """Fit-first rendering of one potential fit: a solid line over the fitted
+        span plus a marker on the fitted minimum - a filled-white circle when
+        the well lies in the data, an open ◁ at the closest approach when the
+        curve never reached it. Returns the drawn y values (for y-limits)."""
+        x_min, x_max = res["x_min"], res["x_max"]
+        if not (np.isfinite(x_min) and np.isfinite(x_max)) or x_max <= x_min:
+            return np.array([])
+        x_dense = np.linspace(x_min, x_max, 400)
+        try:
+            y_fit = np.asarray(res["func"](x_dense), dtype=float)
+        except Exception:
+            return np.array([])
+        finite = np.isfinite(y_fit)
+        if not finite.any():
+            return np.array([])
+        self.ax.plot(
+            x_dense[finite], y_fit[finite] + offset, color=color,
+            lw=base_width * (1.9 if highlight else 1.1), alpha=1.0 if highlight else 0.35,
+            solid_capstyle="round", zorder=3, label="_nolegend_",
+        )
+        x_well, y_well = res.get("x_well"), res.get("y_well")
+        if x_well is not None and y_well is not None and np.isfinite(x_well) and np.isfinite(y_well):
+            self.ax.plot(
+                [x_well], [y_well + offset],
+                marker="o" if res.get("well_in_range", True) else "<",
+                markersize=5.5, markerfacecolor="white", markeredgecolor=color,
+                markeredgewidth=1.4, alpha=1.0 if highlight else 0.4,
+                linestyle="None", zorder=4, label="_nolegend_",
+            )
+        return y_fit[finite] + offset
 
     def _draw_potential_fit_for_curve(self, spec_id, x, y, color, offset=0.0):
         """Overlay the fitted potential (and optionally its force) on one curve."""
@@ -11348,6 +11633,7 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         self._plotted_spec_ids = []
         self._clear_curve_data_cache()
         self._update_fit_trend_state()
+        self._remove_color_by_colorbar()
         self.ax.clear()
         _style_plot_chrome(self, self.fig)
         self.canvas.draw_idle()
@@ -11545,7 +11831,16 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         (filters) or switch to Fitted Δf.</li>
         <li><b>Potential fit:</b> Fit a Lennard-Jones or Morse potential to each
         displayed curve and overlay it (dashed). Only the currently plotted/selected
-        spectra are fitted. "Limit fit range (x)" restricts the fit to samples within
+        spectra are fitted. "Robust" (on by default) finds each curve's attractive
+        well from the far side and fits only the long range, the minimum and the
+        lower repulsive wall (up to "wall ×" the well depth), ignoring the steep
+        wall and CO-bending turnover and down-weighting noise spikes; the dashed
+        fit spans only what was fitted. "Emphasise fits" (on by default) draws
+        each fit solid with a marker at its minimum (open ◁ = minimum not reached
+        in the data), fades the raw curve, greys the excluded part and scales y
+        to the fitted region. Appearance → "Colour by" maps curve colours to
+        acquisition order or the fitted well position/depth (colourbar above the
+        plot) instead of the repeating colour cycle. "Limit fit range (x)" restricts the fit to samples within
         a chosen x (Z) window - use it to exclude the far repulsive wall or a
         CO-bending artefact; raw data is never altered. For a force curve, use
         "Convert to force" (Sader-Jarvis / Matrix inversion of the raw data).</li>
