@@ -1369,7 +1369,12 @@ def _thumbnail_pixmap_for_file(viewer, file_key, channel_idx, width, height, cma
             if clim is not None:
                 vmin, vmax = clim
             qimg = array_to_qimage(arr, cmap_name=cmap_name, vmin=vmin, vmax=vmax)
-            pix = QtGui.QPixmap.fromImage(qimg)
+            # Scale like _on_thumbnail_job_finished does: the array is only
+            # downsampled, so a small scan (e.g. 32x32 px) would otherwise come
+            # back at raw pixel size and the refreshed thumbnail would shrink.
+            pix = QtGui.QPixmap.fromImage(qimg).scaled(
+                int(width), int(height), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
+            )
             viewer._frame_real_pixmap_cache[cache_key] = pix
         except Exception:
             pix = None
