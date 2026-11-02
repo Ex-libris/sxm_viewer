@@ -58,7 +58,7 @@ import json
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.ticker import AutoMinorLocator, EngFormatter, ScalarFormatter
+from matplotlib.ticker import AutoMinorLocator, EngFormatter, MaxNLocator, ScalarFormatter
 from matplotlib.widgets import SpanSelector
 
 from ..._shared import QtCore, QtGui, QtWidgets, Path, matplotlib
@@ -167,58 +167,164 @@ class _ProfileCompositeDragButton(QtWidgets.QToolButton):
         super().mouseReleaseEvent(event)
 
 
+class _ElidedLabel(QtWidgets.QLabel):
+    """Single-line label that ends in "…" instead of being cut mid-word.
+
+    text() still returns the full string; the full text is also the
+    tooltip, so a long file name is never lost.
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setText(text)
+
+    def setText(self, text):
+        self._full_text = str(text or "")
+        self.setToolTip(self._full_text)
+        super().setText(self._full_text)
+        self.update()
+
+    def text(self):
+        return self._full_text
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QtCore.QSize(min(hint.width(), 80), hint.height())
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        rect = self.contentsRect()
+        elided = self.fontMetrics().elidedText(self._full_text, QtCore.Qt.ElideRight, rect.width())
+        painter.setPen(self.palette().color(QtGui.QPalette.WindowText))
+        painter.drawText(rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), elided)
+
+
 class _Readout(QtWidgets.QFrame):
-    """Permanent measurement strip: two rows of five fields below the plot.
+    """Permanent measurement strip below the plot (two lines when it fits).
 
     Replaces the old in-plot distance arrow - an annotation drawn over the
     data collides with the trace and ends up baked into exported figures.
-    Monospaced, selectable values so a number can be copied straight out.
+    Selectable values so a number can be copied straight out. Responsive:
+    5 columns when they fit, otherwise it reflows to 4/3/2 columns (more
+    lines) rather than cropping values - at large Ctrl+Wheel text sizes a
+    fixed 5-column grid cut "3.672 nm, 802.3 mHz" down to "3.672 nm, 80".
     """
 
-    ROW1 = [("cursor", "Cursor"), ("left", "Left edge"), ("right", "Right edge"),
-            ("dx", "Width Δd"), ("dy", "Height Δy")]
-    ROW2 = [("mean", "Mean"), ("rms", "RMS"), ("slope", "Slope"),
-            ("peaks", "Peaks in band"), ("px", "Pixel size")]
+    # (key, short caption, full name for the tooltip). Short captions keep
+    # the strip to as few lines as possible; hovering names the quantity.
+    ROW1 = [("cursor", "Cursor", "Cursor position"), ("left", "Left", "Left band edge"),
+            ("right", "Right", "Right band edge"), ("dx", "Δd", "Band width Δd"),
+            ("dy", "Δy", "Height difference Δy between the band edges")]
+    ROW2 = [("mean", "Mean", "Mean value in the band"), ("rms", "RMS", "RMS in the band"),
+            ("slope", "Slope", "Linear slope across the band"),
+            ("peaks", "Peaks", "Peaks detected in the band"),
+            ("px", "Pixel", "Pixel size (n = samples in the band)")]
+    MAX_COLS = 5
+    MIN_COLS = 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("profileReadout")
         self.value_labels = {}
-        grid = QtWidgets.QGridLayout(self)
-        grid.setContentsMargins(10, 6, 10, 6)
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(1)
-        mono = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
-        for row, fields in ((0, self.ROW1), (2, self.ROW2)):
-            for col, (key, title) in enumerate(fields):
-                cap = QtWidgets.QLabel(title.upper())
-                cap.setObjectName("profileReadoutCaption")
-                val = QtWidgets.QLabel("-")
-                val.setFont(mono)
-                val.setObjectName("profileReadoutValue")
-                val.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-                grid.addWidget(cap, row, col)
-                grid.addWidget(val, row + 1, col)
-                self.value_labels[key] = val
-        for c in range(5):
-            grid.setColumnStretch(c, 1)
+        self.caption_labels = []
+        # Each field is one line - small muted caption inline before its
+        # value - so the strip costs one text line per row, not two.
+        self._fields = []  # cell widgets in reading order
+        self._cols = None
+        self._grid = QtWidgets.QGridLayout(self)
+        self._grid.setContentsMargins(10, 5, 10, 5)
+        self._grid.setHorizontalSpacing(16)
+        self._grid.setVerticalSpacing(2)
+        for key, title, full_name in self.ROW1 + self.ROW2:
+            cell = QtWidgets.QWidget()
+            cell.setToolTip(full_name)
+            cell_layout = QtWidgets.QHBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(6)
+            cap = QtWidgets.QLabel(title.upper())
+            cap.setObjectName("profileReadoutCaption")
+            val = QtWidgets.QLabel("-")
+            val.setObjectName("profileReadoutValue")
+            val.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            cell_layout.addWidget(cap, 0, QtCore.Qt.AlignBaseline)
+            cell_layout.addWidget(val, 0, QtCore.Qt.AlignBaseline)
+            cell_layout.addStretch(1)
+            self.value_labels[key] = val
+            self.caption_labels.append(cap)
+            self._fields.append(cell)
+        self._place(self.MAX_COLS)
+
+    def _place(self, cols):
+        if cols == self._cols:
+            return
+        self._cols = cols
+        grid = self._grid
+        for cell in self._fields:
+            grid.removeWidget(cell)
+        for c in range(self.MAX_COLS):
+            grid.setColumnStretch(c, 1 if c < cols else 0)
+        for i, cell in enumerate(self._fields):
+            row, col = divmod(i, cols)
+            grid.addWidget(cell, row, col)
+        self.updateGeometry()
+
+    def _fit_columns(self):
+        """Most columns (<= 5) whose widest field still fits."""
+        m = self._grid.contentsMargins()
+        avail = self.width() - m.left() - m.right()
+        if avail <= 0:
+            return
+        spacing = self._grid.horizontalSpacing()
+        widths = [cell.sizeHint().width() for cell in self._fields]
+        cols = self.MAX_COLS
+        while cols > self.MIN_COLS:
+            # Each column only as wide as its own widest field (a uniform
+            # width set by the single longest field wasted a whole line).
+            col_w = [max(widths[c::cols]) for c in range(cols)]
+            if sum(col_w) + (cols - 1) * spacing <= avail:
+                break
+            cols -= 1
+        self._place(cols)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_columns()
+
+    def refit(self):
+        # The cursor value appears/changes on every hover; reserve a typical
+        # width up front so moving onto the plot doesn't reflow the strip.
+        cursor = self.value_labels.get("cursor")
+        if cursor is not None:
+            cursor.setMinimumWidth(cursor.fontMetrics().horizontalAdvance("-00.00 nm, -000.0 mHz"))
+        self._fit_columns()
 
     def set(self, key, text):
-        self.value_labels[key].setText(text)
+        label = self.value_labels[key]
+        if label.text() == text:
+            return
+        label.setText(text)
+        # Only re-check when this field outgrows its current column.
+        cell = label.parentWidget()
+        if cell is not None and cell.sizeHint().width() > cell.width():
+            self._fit_columns()
 
     def clear_all(self):
         for label in self.value_labels.values():
             label.setText("-")
 
     def apply_theme(self, *, text_color, muted_color, panel_color, border_color):
+        # No font-size here: sizes are set with setFont by the dialog's
+        # Ctrl+Wheel scaling (_apply_font_scale) - a stylesheet font-size
+        # would silently pin these labels while everything else scales.
         self.setStyleSheet(
             "QFrame#profileReadout {"
             f"background: {panel_color}; border: 1px solid {border_color};"
             "border-radius: 6px; }"
             "QLabel#profileReadoutCaption {"
-            f"color: {muted_color}; font-size: 7.5pt; letter-spacing: 0.5px; }}"
+            f"color: {muted_color}; letter-spacing: 0.5px; }}"
             "QLabel#profileReadoutValue {"
-            f"color: {text_color}; font-size: 9.5pt; }}"
+            f"color: {text_color}; }}"
         )
 
 
@@ -271,6 +377,10 @@ class _ColorChip(QtWidgets.QFrame):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setToolTip("Double-click to change color")
         self.set_color(color)
+
+    def set_scale(self, scale):
+        scale = max(0.6, min(1.8, float(scale or 1.0)))
+        self.setFixedSize(int(round(30 * scale)), int(round(14 * scale)))
 
     def set_color(self, color):
         color = color or "#888888"
@@ -412,24 +522,54 @@ class ProfileDialog(QtWidgets.QDialog):
         root.setContentsMargins(12, 10, 12, 10)
         root.setSpacing(8)
 
-        # -- header: identity on the left, export promoted to a visible
-        # split button on the right. Export/style used to live only behind
-        # an unadvertised right-click; no other dialog in this app has a
-        # shared top-strip convention to fold into (spectroscopy_dialogs.py
-        # exposes the same actions the same way - context-menu-only, plus
-        # unrelated QPushButton rows for data-copy actions), so this header
-        # is new to this window rather than reused from elsewhere.
+        # Layout philosophy: the plot is the reason this window exists, so
+        # it gets every spare pixel. Chrome is three thin strips:
+        #   header   - title | Measure / Snap / Crosshair | Copy plot | View
+        #   readout  - only while Measure is on
+        #   profiles - one collapsible line (table opens on demand)
+        # The seven *view* toggles (lines/points/grid/ticks/...) live as
+        # checkable items in the View menu (and keep their L/P/G/T keys);
+        # as a row of pills they used to eat ~70% of the window together
+        # with a fixed-height table and a bottom button bar.
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
-        self.header_title = QtWidgets.QLabel("Profile measurement")
+        header.setSpacing(6)
+        self.header_title = _ElidedLabel("Profile measurement")
         self.header_title.setObjectName("profileHeaderTitle")
-        header.addWidget(self.header_title)
-        header.addStretch(1)
+        # Long file names must not force the window wider than the screen.
+        self.header_title.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.header_title.setMinimumWidth(80)
+        header.addWidget(self.header_title, 1)
+
+        self.measure_toggle = self._make_toggle_button(
+            "Measure", checked=self._markers_enabled,
+            tooltip="Show/hide the draggable measurement band and readout strip (M)",
+        )
+        self.measure_toggle.toggled.connect(self._on_measure_toggle)
+        header.addWidget(self.measure_toggle)
+
+        self.snap_toggle = self._make_toggle_button(
+            "Snap", checked=self._snap_enabled,
+            tooltip="Snap to peaks: band edges jump to the nearest detected peak (S)",
+        )
+        self.snap_toggle.toggled.connect(self._on_snap_toggle)
+        header.addWidget(self.snap_toggle)
+
+        self.crosshair_toggle = self._make_toggle_button(
+            "Crosshair", checked=self._crosshair_enabled,
+            tooltip="Live cursor readout while hovering the plot (C)",
+        )
+        self.crosshair_toggle.toggled.connect(self._on_crosshair_toggle)
+        header.addWidget(self.crosshair_toggle)
+        header.addSpacing(10)
+
         self.export_btn = QtWidgets.QToolButton()
         self.export_btn.setObjectName("profileExportButton")
-        self.export_btn.setText("  Copy plot  ")
-        self.export_btn.setToolTip("Copy a 300 dpi PNG to the clipboard (Ctrl+C). Click the arrow for more options.")
+        self.export_btn.setText("Copy plot")
+        self.export_btn.setToolTip(
+            "Copy a 300 dpi PNG to the clipboard (Ctrl+C). "
+            "Click the arrow for data (XY/CSV), file export and style options."
+        )
         self.export_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
         self.export_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         self.export_btn.clicked.connect(lambda: self._copy_plot("png", dpi=300))
@@ -438,13 +578,12 @@ class ProfileDialog(QtWidgets.QDialog):
         self.export_btn.setMenu(self._export_menu)
         header.addWidget(self.export_btn)
 
-        # View menu replaces the old per-window "Dark" toggle button - SPM
-        # labs are dim and this app already has its own app-wide theme
-        # system (gui/theme.py), so a lone per-dialog toggle fighting that
-        # is the wrong control; Light/Dark/Follow-system here, persisted.
+        # View menu: plot display toggles + Light/Dark/Follow-system theme
+        # (the app has its own theme system, so no lone per-window toggle).
         self.view_btn = QtWidgets.QToolButton()
         self.view_btn.setObjectName("profileViewButton")
-        self.view_btn.setText("  View ▾  ")
+        self.view_btn.setText("View ▾")
+        self.view_btn.setToolTip("Lines, points, grid, ticks, multi-channel, theme")
         self.view_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.view_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         self._view_menu = QtWidgets.QMenu(self)
@@ -453,20 +592,46 @@ class ProfileDialog(QtWidgets.QDialog):
         header.addWidget(self.view_btn)
         root.addLayout(header)
 
-        # -- one-time hint bar: states the three non-obvious interactions
-        # once, dismissible, persisted so it doesn't reappear every open.
+        # View-menu-backed toggles: still real checkable buttons (state +
+        # keyboard shortcuts + existing handlers), just never shown.
+        self.show_lines_cb = self._make_toggle_button(
+            "Lines", checked=True, tooltip="Show connecting profile line (L)", hidden=True)
+        self.show_lines_cb.toggled.connect(self._on_plot_option_changed)
+        self.show_points_cb = self._make_toggle_button(
+            "Points", checked=False,
+            tooltip="Show individual sampled points - reveals the pixel grid (P)", hidden=True)
+        self.show_points_cb.toggled.connect(self._on_plot_option_changed)
+        self.grid_cb = self._make_toggle_button(
+            "Grid", checked=False, tooltip="Toggle background grid (G)", hidden=True)
+        self.grid_cb.toggled.connect(self._on_grid_toggled)
+        self.extra_ticks_cb = self._make_toggle_button(
+            "Ticks", checked=False, tooltip="Enable additional minor tick marks (T)", hidden=True)
+        self.extra_ticks_cb.toggled.connect(self._on_plot_option_changed)
+        self.precision_cb = self._make_toggle_button(
+            "Precision", checked=False, tooltip="Higher tick density for fine inspection", hidden=True)
+        self.precision_cb.toggled.connect(self._on_plot_option_changed)
+        self.multi_channel_cb = self._make_toggle_button(
+            "Multi-ch", checked=False,
+            tooltip="Plot extra channel profiles when the source image has more than one", hidden=True)
+        self.multi_channel_cb.toggled.connect(self._on_plot_option_changed)
+        self.preserve_profiles_cb = self._make_toggle_button(
+            "Preserve profiles", checked=True, tooltip="Keep overlays when changing channel", hidden=True)
+        self.preserve_profiles_cb.toggled.connect(self._on_preserve_toggle)
+
+        # -- one-time hint bar: states the non-obvious interactions once,
+        # dismissible, persisted so it doesn't reappear every open.
         self.hint_bar = QtWidgets.QFrame()
         self.hint_bar.setObjectName("profileHintBar")
         hint_layout = QtWidgets.QHBoxLayout(self.hint_bar)
-        hint_layout.setContentsMargins(10, 5, 6, 5)
+        hint_layout.setContentsMargins(10, 4, 6, 4)
         hint_label = QtWidgets.QLabel(
             "Drag the shaded band or its edges to measure · "
             "←/→ nudge the left edge, Shift+←/→ the right · "
-            "right-click the plot for export/style options"
+            "Ctrl+Wheel resizes text · right-click the plot for more"
         )
         hint_label.setObjectName("profileHintLabel")
-        hint_layout.addWidget(hint_label)
-        hint_layout.addStretch(1)
+        hint_label.setWordWrap(True)
+        hint_layout.addWidget(hint_label, 1)
         hint_close = QtWidgets.QToolButton()
         hint_close.setText("×")
         hint_close.setObjectName("profileHintClose")
@@ -476,11 +641,16 @@ class ProfileDialog(QtWidgets.QDialog):
         root.addWidget(self.hint_bar)
         self.hint_bar.setVisible(not self._hint_dismissed)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        self._splitter = splitter
-
-        fig = Figure(figsize=(6, 3))
+        # Constrained layout re-fits the axes to the tick/label text on every
+        # draw, so Ctrl+Wheel font scaling never pushes the x label off the
+        # bottom (or leaves huge fixed margins at small sizes).
+        fig = Figure(figsize=(6, 3), layout="constrained")
+        try:
+            fig.get_layout_engine().set(w_pad=0.06, h_pad=0.06, wspace=0.0, hspace=0.0)
+        except Exception:
+            pass
         self.canvas = SafeFigureCanvas(fig)
+        self.canvas.setMinimumHeight(160)
         self.canvas.installEventFilter(self)
         self.canvas.setToolTip(
             "Drag the plot margin onto another profile window to create a composite."
@@ -492,12 +662,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self.ax_right.set_visible(False)
         self.toast = _Toast(self.canvas)
 
-        # Measurement band (both edges + whole band draggable) - replaces
-        # the old pair of thin, hard-to-grab vertical lines. SpanSelector's
-        # onselect fires on mouse release (-> _on_span_select, matching the
-        # old pyqtgraph sigRegionChangeFinished); onmove_callback fires
-        # continuously during a drag (-> _on_span_move, matching
-        # sigRegionChanged).
+        # Measurement band (both edges + whole band draggable). onselect
+        # fires on mouse release, onmove_callback continuously during a drag.
         self._span = SpanSelector(
             self.ax, self._on_span_select, "horizontal",
             interactive=True, drag_from_anywhere=True, useblit=False,
@@ -511,29 +677,53 @@ class ProfileDialog(QtWidgets.QDialog):
         self._vline = self.ax.axvline(0, visible=False, zorder=5, lw=1, ls="--")
         self._hline = self.ax.axhline(0, visible=False, zorder=5, lw=1, ls="--")
         self._motion_cid = self.canvas.mpl_connect("motion_notify_event", self._on_mouse_moved)
+        self.canvas.mpl_connect("resize_event", lambda _evt: self._update_x_tick_density())
+        # Plot | bottom panel (readout + profile list) in a splitter. The
+        # plot has priority: the bottom panel is auto-capped to about a third
+        # of the height (the list scrolls beyond that) instead of taking its
+        # full natural height - which used to squeeze the plot to a strip as
+        # profiles were added or Ctrl+Wheel enlarged the text. Dragging the
+        # handle sets a user share, remembered across windows.
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        self._splitter = splitter
+        splitter.addWidget(self.canvas)
+        bottom = QtWidgets.QWidget()
+        bottom_layout = QtWidgets.QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(0, 2, 0, 0)
+        bottom_layout.setSpacing(6)
+        self._bottom_panel = bottom
+        splitter.addWidget(bottom)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        stored = QtCore.QSettings().value("profileDialog/bottomFraction", None)
+        try:
+            self._bottom_fraction = float(stored) if stored is not None else None
+        except (TypeError, ValueError):
+            self._bottom_fraction = None
+        self._split_applying = False
+        splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._split_timer = QtCore.QTimer(self)
+        self._split_timer.setSingleShot(True)
+        self._split_timer.setInterval(0)
+        self._split_timer.timeout.connect(self._apply_auto_split)
+        root.addWidget(splitter, 1)
 
         self.readout = _Readout()
-        plot_column = QtWidgets.QWidget()
-        plot_column_layout = QtWidgets.QVBoxLayout(plot_column)
-        plot_column_layout.setContentsMargins(0, 0, 0, 0)
-        plot_column_layout.setSpacing(6)
-        plot_column_layout.addWidget(self.canvas, 1)
-        plot_column_layout.addWidget(self.readout)
-        splitter.addWidget(plot_column)
-
-        info_widget = QtWidgets.QWidget()
-        info_layout = QtWidgets.QVBoxLayout(info_widget)
-        info_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.addWidget(self.readout)
         self.stats = QtWidgets.QLabel("")
         self.stats.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
         self.stats.setWordWrap(True)
         self.stats.setVisible(False)
+        bottom_layout.addWidget(self.stats)
         self.marker_info = QtWidgets.QLabel("")
         self.marker_info.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
-        # Initial visibility mirrors _on_measure_toggle's steady state, but
-        # that handler is wired up *after* the toggle button's initial
-        # setChecked() (see _make_toggle_button) so it never fires during
-        # construction - set both explicitly here instead.
+        self.marker_info.setWordWrap(True)
+        bottom_layout.addWidget(self.marker_info)
+        # Initial visibility mirrors _on_measure_toggle's steady state (the
+        # handler is connected after the initial setChecked, so it never
+        # fires during construction).
         self.readout.setVisible(self._markers_enabled)
         self.marker_info.setVisible(not self._markers_enabled)
         self.controls_hint = QtWidgets.QLabel(
@@ -544,95 +734,41 @@ class ProfileDialog(QtWidgets.QDialog):
         self.controls_hint.setObjectName("profileControlsHint")
         self.controls_hint.setWordWrap(True)
         self.controls_hint.setVisible(False)
+        bottom_layout.addWidget(self.controls_hint)
 
-        controls_panel = QtWidgets.QWidget()
-        controls_layout = QtWidgets.QVBoxLayout(controls_panel)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(6)
-
-        # One row, grouped with thin separators, instead of a loud primary
-        # row plus a hidden-behind-"Advanced" second row: the toggles are
-        # cheap view options and shouldn't out-compete the plot for
-        # attention every time the eye crosses the dialog.
-        toggle_row = QtWidgets.QHBoxLayout()
-        toggle_row.setContentsMargins(0, 0, 0, 0)
-        toggle_row.setSpacing(4)
-
-        self.measure_toggle = self._make_toggle_button(
-            "Measure", checked=self._markers_enabled,
-            tooltip="Show/hide the draggable measurement band and readout strip (M)",
-        )
-        self.measure_toggle.toggled.connect(self._on_measure_toggle)
-        toggle_row.addWidget(self.measure_toggle)
-
-        self.show_lines_cb = self._make_toggle_button(
-            "Lines", checked=True, tooltip="Show connecting profile line (L)"
-        )
-        self.show_lines_cb.toggled.connect(self._on_plot_option_changed)
-        toggle_row.addWidget(self.show_lines_cb)
-
-        self.show_points_cb = self._make_toggle_button(
-            "Points", checked=False,
-            tooltip="Show individual sampled points - reveals the pixel grid (P)",
-        )
-        self.show_points_cb.toggled.connect(self._on_plot_option_changed)
-        toggle_row.addWidget(self.show_points_cb)
-
-        self.grid_cb = self._make_toggle_button(
-            "Grid", checked=False, tooltip="Toggle background grid (G)"
-        )
-        self.grid_cb.toggled.connect(self._on_grid_toggled)
-        toggle_row.addWidget(self.grid_cb)
-
-        self._add_toggle_row_separator(toggle_row)
-
-        self.snap_toggle = self._make_toggle_button(
-            "Snap to peaks", checked=self._snap_enabled,
-            tooltip="Band edges jump to the nearest detected peak (S)",
-        )
-        self.snap_toggle.toggled.connect(self._on_snap_toggle)
-        toggle_row.addWidget(self.snap_toggle)
-
-        self.crosshair_toggle = self._make_toggle_button(
-            "Crosshair", checked=self._crosshair_enabled,
-            tooltip="Live cursor readout while hovering the plot (C)",
-        )
-        self.crosshair_toggle.toggled.connect(self._on_crosshair_toggle)
-        toggle_row.addWidget(self.crosshair_toggle)
-
-        self._add_toggle_row_separator(toggle_row)
-
-        self.extra_ticks_cb = self._make_toggle_button(
-            "Ticks", checked=False, tooltip="Enable additional minor tick marks (T)"
-        )
-        self.extra_ticks_cb.toggled.connect(self._on_plot_option_changed)
-        toggle_row.addWidget(self.extra_ticks_cb)
-
-        self.precision_cb = self._make_toggle_button(
-            "Precision", checked=False, tooltip="Higher tick density for fine inspection"
-        )
-        self.precision_cb.toggled.connect(self._on_plot_option_changed)
-        toggle_row.addWidget(self.precision_cb)
-
-        self.multi_channel_cb = self._make_toggle_button(
-            "Multi-ch", checked=False,
-            tooltip="Plot extra channel profiles when the source image has more than one",
-        )
-        self.multi_channel_cb.toggled.connect(self._on_plot_option_changed)
-        toggle_row.addWidget(self.multi_channel_cb)
-
-        self._add_toggle_row_separator(toggle_row)
-
-        self.preserve_profiles_cb = self._make_toggle_button(
-            "Preserve profiles", checked=True, tooltip="Keep overlays when changing channel"
-        )
-        self.preserve_profiles_cb.toggled.connect(self._on_preserve_toggle)
-        toggle_row.addWidget(self.preserve_profiles_cb)
-
-        toggle_row.addStretch(1)
-        controls_layout.addLayout(toggle_row)
-
-        info_layout.addWidget(controls_panel)
+        # -- profiles: one line, table on demand ---------------------------
+        profiles_header = QtWidgets.QHBoxLayout()
+        profiles_header.setContentsMargins(0, 0, 0, 0)
+        profiles_header.setSpacing(6)
+        self.profiles_toggle = QtWidgets.QToolButton()
+        self.profiles_toggle.setObjectName("profileSectionToggle")
+        self.profiles_toggle.setCheckable(True)
+        self.profiles_toggle.setAutoRaise(True)
+        self.profiles_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.profiles_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self.profiles_toggle.setToolTip("Show/hide the profile list (visibility, colour, length, points)")
+        self.profiles_toggle.toggled.connect(self._on_profiles_section_toggled)
+        self._profiles_section_user_set = False
+        self.profiles_label = self.profiles_toggle  # font scaling handle
+        profiles_header.addWidget(self.profiles_toggle)
+        profiles_header.addStretch(1)
+        self.add_btn = QtWidgets.QToolButton()
+        self.add_btn.setObjectName("profileSectionButton")
+        self.add_btn.setText("+ Add overlay")
+        self.add_btn.setToolTip("Keep the current profile as an overlay for comparison")
+        self.add_btn.clicked.connect(self._add_overlay_from_active)
+        profiles_header.addWidget(self.add_btn)
+        self.compose_drag_btn = _ProfileCompositeDragButton(self)
+        profiles_header.addWidget(self.compose_drag_btn)
+        # Destructive action: visually distinct, named and confirmed at the
+        # point of use (see _delete_selected_profile).
+        self.delete_btn = QtWidgets.QToolButton()
+        self.delete_btn.setObjectName("profileDeleteButton")
+        self.delete_btn.setText("Delete")
+        self.delete_btn.setToolTip("Delete the selected profile (Del)")
+        self.delete_btn.clicked.connect(self._delete_selected_profile)
+        profiles_header.addWidget(self.delete_btn)
+        bottom_layout.addLayout(profiles_header)
 
         # Real table, not a pipe-delimited string - overlays only earn
         # their keep if they're comparable at a glance. Colour is a cell
@@ -646,6 +782,8 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.profile_table.setShowGrid(False)
         self.profile_table.setAlternatingRowColors(True)
+        self.profile_table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        self.profile_table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         header_view = self.profile_table.horizontalHeader()
         header_view.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         for col in (0, 1, 3, 4, 5, 6):
@@ -654,43 +792,10 @@ class ProfileDialog(QtWidgets.QDialog):
         self.profile_table.itemSelectionChanged.connect(self._on_profile_row_selected)
         self.profile_table.itemChanged.connect(self._on_profile_visibility_changed)
         self.profile_table.customContextMenuRequested.connect(self._on_profile_list_context_menu)
-
-        profiles_header = QtWidgets.QHBoxLayout()
-        profiles_header.setContentsMargins(0, 0, 0, 0)
-        profiles_header.setSpacing(6)
-        profiles_header.addWidget(QtWidgets.QLabel("Profiles"))
-        profiles_header.addStretch(1)
-        self.compose_drag_btn = _ProfileCompositeDragButton(self)
-        profiles_header.addWidget(self.compose_drag_btn)
-        info_layout.addLayout(profiles_header)
-        info_layout.addWidget(self.profile_table)
-
-        btn_layout = QtWidgets.QHBoxLayout()
-        self.copy_btn = QtWidgets.QPushButton('Copy XY')
-        self.copy_btn.clicked.connect(self._copy_current_profile)
-        btn_layout.addWidget(self.copy_btn)
-        self.add_btn = QtWidgets.QPushButton('Add overlay')
-        self.add_btn.clicked.connect(self._add_overlay_from_active)
-        btn_layout.addWidget(self.add_btn)
-        btn_layout.addStretch(1)
-        # The destructive action lives apart from the harmless ones, named
-        # and confirmed at the point of use (see _delete_selected_profile).
-        self.delete_btn = QtWidgets.QPushButton('Delete')
-        self.delete_btn.setObjectName("profileDeleteButton")
-        self.delete_btn.clicked.connect(self._delete_selected_profile)
-        btn_layout.addWidget(self.delete_btn)
-        btn_layout.addSpacing(16)
-        self.close_btn = QtWidgets.QPushButton('Close')
-        self.close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(self.close_btn)
-        info_layout.addLayout(btn_layout)
-        splitter.addWidget(info_widget)
-        # Plot gets ~65% of the vertical space, not about half - it's the
-        # reason the window exists.
-        splitter.setStretchFactor(0, 65)
-        splitter.setStretchFactor(1, 35)
-        splitter.setSizes([340, 160])
-        root.addWidget(splitter)
+        self.profile_table.setVisible(False)
+        bottom_layout.addWidget(self.profile_table, 1)
+        bottom_layout.addStretch(0)
+        self._update_profiles_section_label()
 
     def _build_shortcuts(self):
         self._delete_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Delete"), self)
@@ -898,6 +1003,7 @@ class ProfileDialog(QtWidgets.QDialog):
         if self.ax_right.get_visible():
             self.ax_right.relim()
             self.ax_right.autoscale_view()
+        self._update_x_tick_density()
         if self.extra_ticks_cb.isChecked():
             self.ax.xaxis.set_minor_locator(AutoMinorLocator(4))
             self.ax.yaxis.set_minor_locator(AutoMinorLocator(4))
@@ -907,8 +1013,8 @@ class ProfileDialog(QtWidgets.QDialog):
 
         if len(legend_entries) > 1 and self._legend_visible:
             handles = [h for h, _n in legend_entries]
-            labels = [n for _h, n in legend_entries]
-            self._legend_item = self.ax.legend(handles, labels, loc='best')
+            labels, common = self._compact_legend_labels([n for _h, n in legend_entries])
+            self._legend_item = self.ax.legend(handles, labels, loc='best', title=common or None)
             self._apply_legend_style()
 
         self._apply_metadata_overlay(reference)
@@ -1062,8 +1168,12 @@ class ProfileDialog(QtWidgets.QDialog):
         )
 
     # ------------------------------------------------------------ toggles
-    def _make_toggle_button(self, text, *, checked=False, tooltip=None):
+    def _make_toggle_button(self, text, *, checked=False, tooltip=None, hidden=False):
         btn = QtWidgets.QToolButton(self)
+        if hidden:
+            # State holder for a View-menu item; never laid out or shown.
+            btn.setVisible(False)
+            btn.setProperty("menuBacked", True)
         btn.setObjectName("profileToggleButton")
         btn.setText(text)
         btn.setCheckable(True)
@@ -1077,34 +1187,31 @@ class ProfileDialog(QtWidgets.QDialog):
         self._toggle_buttons.append(btn)
         return btn
 
-    def _add_toggle_row_separator(self, layout):
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.VLine)
-        line.setObjectName("profileToggleSeparator")
-        layout.addSpacing(4)
-        layout.addWidget(line)
-        layout.addSpacing(4)
-
     def _apply_toggle_button_styles(self):
-        # Flat, ~26 px pills with a quiet checked state (tinted background,
-        # accent text), not saturated fills - nine identical loud pills
-        # used to out-compete the plot for attention on every glance.
+        # Flat pills with a quiet checked state (tinted background, accent
+        # text), not saturated fills - nine identical loud pills used to
+        # out-compete the plot for attention on every glance.
+        # Font *sizes* never go in these stylesheets: _apply_font_scale owns
+        # them via setFont so Ctrl+Wheel scales every widget together. The
+        # weight is identical checked/unchecked so toggling never changes a
+        # button's width (a bolder checked label used to get cropped).
         p = ui_theme.toggle_pill_palette(bool(self._dark_background))
+        scale = max(0.6, min(1.8, getattr(self, "_font_scale", 1.0)))
+        scale = 1.0 + (scale - 1.0) * 0.5  # chrome scale, see _apply_font_scale
+        pad_v = max(2, int(round(3 * scale)))
+        pad_h = max(6, int(round(8 * scale)))
         style = (
             "QToolButton#profileToggleButton {"
             f"background-color: {p['inactive_bg']};"
             f"color: {p['inactive_text']};"
             f"border: 1px solid {p['inactive_border']};"
             "border-radius: 5px;"
-            "padding: 3px 9px;"
-            "font-weight: 500;"
-            "min-height: 18px;"
+            f"padding: {pad_v}px {pad_h}px;"
             "}"
             "QToolButton#profileToggleButton:checked {"
             f"background-color: {p['active_bg']};"
             f"color: {p['active_text']};"
             f"border: 1px solid {p['active_border']};"
-            "font-weight: 600;"
             "}"
             "QToolButton#profileToggleButton:hover {"
             f"border: 1px solid {p['active_border']};"
@@ -1115,10 +1222,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 btn.setStyleSheet(style)
             except Exception:
                 pass
-        sep_style = f"QFrame#profileToggleSeparator {{ color: {p['inactive_border']}; }}"
-        for sep in self.findChildren(QtWidgets.QFrame, "profileToggleSeparator"):
-            sep.setStyleSheet(sep_style)
-        hint = self.findChild(QtWidgets.QLabel, "profileControlsHint")
+        hint =self.findChild(QtWidgets.QLabel, "profileControlsHint")
         if hint is not None:
             hint.setStyleSheet(f"color: {p['hint_color']};")
         compose_btn = getattr(self, "compose_drag_btn", None)
@@ -1131,9 +1235,8 @@ class ProfileDialog(QtWidgets.QDialog):
                 f"background-color: {button_bg};"
                 f"color: {p['compose_button_text']};"
                 f"border: 1px solid {button_border};"
-                "border-radius: 10px;"
-                "padding: 4px 10px;"
-                "font-weight: 600;"
+                "border-radius: 5px;"
+                f"padding: {pad_v}px {pad_h}px;"
                 "}"
                 "QToolButton#profileComposeButton:hover {"
                 f"border: 1px solid {p['compose_button_hover_border']};"
@@ -1156,12 +1259,37 @@ class ProfileDialog(QtWidgets.QDialog):
         delete_btn = getattr(self, "delete_btn", None)
         if delete_btn is not None:
             delete_btn.setStyleSheet(
-                "QPushButton#profileDeleteButton {"
+                "QToolButton#profileDeleteButton {"
                 f"color: {danger}; border: 1px solid {danger};"
-                "border-radius: 4px; padding: 4px 10px; background: transparent;"
+                f"border-radius: 5px; padding: {pad_v}px {pad_h}px; background: transparent;"
                 "}"
-                "QPushButton#profileDeleteButton:hover {"
+                "QToolButton#profileDeleteButton:hover {"
                 f"background: {danger}; color: #ffffff;"
+                "}"
+                "QToolButton#profileDeleteButton:disabled {"
+                f"color: {p['hint_color']}; border: 1px solid {p['inactive_border']};"
+                "}"
+            )
+        add_btn = getattr(self, "add_btn", None)
+        if add_btn is not None:
+            add_btn.setStyleSheet(
+                "QToolButton#profileSectionButton {"
+                f"background-color: {p['inactive_bg']}; color: {p['inactive_text']};"
+                f"border: 1px solid {p['inactive_border']}; border-radius: 5px;"
+                f"padding: {pad_v}px {pad_h}px;"
+                "}"
+                "QToolButton#profileSectionButton:hover {"
+                f"border: 1px solid {p['active_border']};"
+                "}"
+                "QToolButton#profileSectionButton:disabled {"
+                f"color: {p['hint_color']};"
+                "}"
+            )
+        section_toggle = getattr(self, "profiles_toggle", None)
+        if section_toggle is not None:
+            section_toggle.setStyleSheet(
+                "QToolButton#profileSectionToggle {"
+                f"color: {p['panel_text']}; border: none; padding: 2px 4px; background: transparent;"
                 "}"
             )
         table = getattr(self, "profile_table", None)
@@ -1173,7 +1301,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 "}"
                 "QHeaderView::section {"
                 f"background: {p['inactive_bg']}; color: {p['hint_color']};"
-                "border: none; padding: 3px 6px; font-size: 7.5pt;"
+                "border: none; padding: 3px 6px;"
                 "}"
                 "QTableWidget#profileTable::item:selected {"
                 f"background: {p['active_bg']}; color: {p['active_text']};"
@@ -1257,6 +1385,7 @@ class ProfileDialog(QtWidgets.QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._schedule_split()
 
     def _font_style_state(self):
         return {
@@ -1264,6 +1393,23 @@ class ProfileDialog(QtWidgets.QDialog):
             "italic": bool(getattr(self, "_plot_font_italic", False)),
             "underline": bool(getattr(self, "_plot_font_underline", False)),
         }
+
+    def _update_x_tick_density(self):
+        """Fewer x ticks when labels are big or the plot is narrow.
+
+        Matplotlib's default locator doesn't budget for long engineering
+        labels ("12.5 nm"), so at large Ctrl+Wheel sizes neighbouring
+        labels ran into each other ("10 nm12.5 nm").
+        """
+        try:
+            width_px = self.ax.get_window_extent().width
+            ticks = self.ax.xaxis.get_major_ticks()
+            size_pt = ticks[0].label1.get_fontsize() if ticks else 10.0 * self._font_scale
+            label_px = size_pt * self.canvas.figure.dpi / 72.0 * 0.6 * 8  # ~8 chars
+            nbins = max(2, min(10, int(width_px / (label_px * 1.4))))
+            self.ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins, steps=[1, 2, 5, 10]))
+        except Exception:
+            pass
 
     def _apply_font_scale(self):
         # Axis/tick text is deliberately the loudest type in the window -
@@ -1286,26 +1432,70 @@ class ProfileDialog(QtWidgets.QDialog):
             self._apply_legend_style()
         except Exception:
             pass
+        # Every widget in the window scales from the same factor, in one
+        # place. Data-bearing text (readout values, profile table) follows
+        # the user's plot typography; chrome (buttons, captions, headers)
+        # keeps the app font so a bold/italic plot style doesn't turn every
+        # button bold. Stylesheets in this dialog carry no font-size - one
+        # would silently pin its widget while the rest scales (the readout
+        # and table header used to stay tiny next to huge buttons).
+        style = self._font_style_state()
+        base_font = QtWidgets.QApplication.font()
+        # Everything outside the plot (buttons, readout, table) grows at half
+        # the rate of the plot text: it all still scales, but at 1.8x the
+        # panels don't swallow the plot (at full rate the readout values
+        # truncated and the table pushed the plot down to a strip).
+        chrome_scale = 1.0 + (scale - 1.0) * 0.5
+
+        def chrome_font(pt, *, bold=False):
+            font = QtGui.QFont(base_font)
+            font.setPointSizeF(max(6.0, pt * chrome_scale))
+            if bold:
+                font.setWeight(QtGui.QFont.DemiBold)
+            return font
+
+        def data_font(widget, pt):
+            # Proportional base font (a monospace face is ~40% wider) with
+            # the user's plot typography applied.
+            font = QtGui.QFont(base_font)
+            font.setPointSizeF(max(6.0, pt * chrome_scale))
+            return apply_qfont_style(font, family=self._plot_font_family, **style)
+
         for widget in (self.stats, self.marker_info):
-            font = widget.font()
-            font.setPointSizeF(max(6.5, 8.3 * scale))
-            font = apply_qfont_style(font, family=self._plot_font_family, **self._font_style_state())
-            widget.setFont(font)
-        font = self.profile_table.font()
-        font.setPointSizeF(max(7.0, 9.0 * scale))
-        font = apply_qfont_style(font, family=self._plot_font_family, **self._font_style_state())
-        self.profile_table.setFont(font)
-        self._resize_profile_table()
-        for btn in self._toggle_buttons:
-            font = btn.font()
-            font.setPointSizeF(max(6.5, 8.0 * scale))
-            font = apply_qfont_style(font, family=self._plot_font_family, **self._font_style_state())
-            btn.setFont(font)
+            widget.setFont(data_font(widget, 8.5))
         for label in self.readout.value_labels.values():
-            font = label.font()
-            font.setPointSizeF(max(7.0, 9.0 * scale))
-            font = apply_qfont_style(font, family=self._plot_font_family, **self._font_style_state())
-            label.setFont(font)
+            label.setFont(data_font(label, 9.0))
+        for cap in getattr(self.readout, "caption_labels", []):
+            cap.setFont(chrome_font(7.5))
+        self.readout.refit()
+
+        for btn in self._toggle_buttons:
+            btn.setFont(chrome_font(8.5, bold=True))
+        self._apply_toggle_button_styles()  # padding scales too
+
+        self.header_title.setFont(chrome_font(10.5, bold=True))
+        self.export_btn.setFont(chrome_font(9.0, bold=True))
+        self.view_btn.setFont(chrome_font(9.0))
+        for child in self.hint_bar.findChildren(QtWidgets.QLabel):
+            child.setFont(chrome_font(8.5))
+        self.controls_hint.setFont(chrome_font(8.0))
+        self.profiles_toggle.setFont(chrome_font(9.0, bold=True))
+        for btn in (self.add_btn, self.compose_drag_btn, self.delete_btn):
+            btn.setFont(chrome_font(8.5))
+
+        table = self.profile_table
+        table.setFont(data_font(table, 9.0))
+        table.horizontalHeader().setFont(chrome_font(7.5, bold=True))
+        row_h = QtGui.QFontMetrics(table.font()).height() + max(6, int(round(8 * scale)))
+        table.verticalHeader().setDefaultSectionSize(row_h)
+        for row in range(table.rowCount()):
+            table.setRowHeight(row, row_h)
+            chip = getattr(table.cellWidget(row, 1), "chip", None)
+            if isinstance(chip, _ColorChip):
+                chip.set_scale(scale)
+        self._resize_profile_table()
+        self._schedule_split()
+        self._update_x_tick_density()
         self.canvas.draw_idle()
         self._update_readout()
         if callable(self._label_scale_cb):
@@ -1449,6 +1639,7 @@ class ProfileDialog(QtWidgets.QDialog):
         QtCore.QSettings().setValue("profileDialog/measureEnabled", self._markers_enabled)
         self.readout.setVisible(self._markers_enabled)
         self.marker_info.setVisible(not self._markers_enabled)
+        self._schedule_split()
         if self._span is not None:
             self._span.set_active(self._markers_enabled)
         if not self._markers_enabled:
@@ -1581,7 +1772,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 self.readout.set(key, "-")
         n = stats.get("n", 0)
         px_text = self._fmt_x(self._px_size_plot) if self._px_size_plot > 0 else "-"
-        self.readout.set("px", f"{px_text}  (n = {n} in band)")
+        self.readout.set("px", f"{px_text}  (n = {n})")
 
     def _on_mouse_moved(self, event):
         inside = (
@@ -1731,7 +1922,30 @@ class ProfileDialog(QtWidgets.QDialog):
     def _populate_view_menu(self):
         menu = self._view_menu
         menu.clear()
-        group = QtWidgets.QActionGroup(self)
+        # Plot display toggles - each mirrors a (hidden) state button, so the
+        # existing handlers and single-key shortcuts keep working unchanged.
+        for btn, label, key in (
+            (self.show_lines_cb, "Lines", "L"),
+            (self.show_points_cb, "Sample points", "P"),
+            (self.grid_cb, "Grid", "G"),
+            (self.extra_ticks_cb, "Minor ticks", "T"),
+            (self.precision_cb, "Dense ticks (precision)", None),
+            (self.multi_channel_cb, "All channels (multi-channel)", None),
+        ):
+            act = menu.addAction(f"{label}\t{key}" if key else label)
+            act.setCheckable(True)
+            act.setChecked(btn.isChecked())
+            act.setToolTip(btn.toolTip())
+            act.toggled.connect(btn.setChecked)
+        menu.addSeparator()
+        act = menu.addAction("Keep overlays when changing channel")
+        act.setCheckable(True)
+        act.setChecked(self.preserve_profiles_cb.isChecked())
+        act.toggled.connect(self.preserve_profiles_cb.setChecked)
+        if self.hint_bar.isHidden():
+            menu.addAction("Show tips bar").triggered.connect(lambda: self.hint_bar.setVisible(True))
+        menu.addSection("Theme")
+        group = QtWidgets.QActionGroup(menu)
         group.setExclusive(True)
         for label, mode in (("Light", "light"), ("Dark", "dark"), ("Follow system", "system")):
             act = menu.addAction(label)
@@ -1822,18 +2036,30 @@ class ProfileDialog(QtWidgets.QDialog):
                 "QFrame#profileHintBar {"
                 f"background: {chrome['ax_face']}; border: 1px solid {chrome['grid']};"
                 "border-radius: 6px; }"
-                f"QLabel#profileHintLabel {{ color: {chrome['text']}; font-size: 8.5pt; }}"
+                f"QLabel#profileHintLabel {{ color: {chrome['text']}; }}"
                 f"QToolButton#profileHintClose {{ color: {chrome['text']}; font-size: 12pt; border: none; }}"
             )
         if hasattr(self, "header_title"):
-            self.header_title.setStyleSheet(f"color: {chrome['text']}; font-size: 10.5pt; font-weight: 600;")
+            self.header_title.setStyleSheet(f"color: {chrome['text']}; font-weight: 600;")
+        if hasattr(self, "view_btn"):
+            # The text already carries "▾"; hide Qt's own menu indicator,
+            # which otherwise draws a second, stray arrow in the corner.
+            self.view_btn.setStyleSheet(
+                "QToolButton#profileViewButton {"
+                f"color: {chrome['text']}; border: 1px solid {chrome['grid']};"
+                "border-radius: 5px; padding: 5px 10px; background: transparent;"
+                "}"
+                "QToolButton#profileViewButton::menu-indicator { image: none; width: 0px; }"
+            )
         if hasattr(self, "export_btn"):
             accent = QtGui.QColor(chrome["accent"])
             accent_text = "#111111" if accent.lightnessF() > 0.55 else "#ffffff"
             self.export_btn.setStyleSheet(
                 "QToolButton#profileExportButton {"
                 f"background-color: {chrome['accent']}; color: {accent_text};"
-                "border: none; border-radius: 5px; padding: 5px 12px; font-weight: 600;"
+                # padding-right reserves the 18 px menu-button strip so the
+                # label never runs under the arrow.
+                "border: none; border-radius: 5px; padding: 5px 30px 5px 12px; font-weight: 600;"
                 "}"
                 "QToolButton#profileExportButton::menu-button {"
                 "width: 18px; border-left: 1px solid rgba(255,255,255,90);"
@@ -1856,6 +2082,12 @@ class ProfileDialog(QtWidgets.QDialog):
                 txt.set_color(chrome["text"])
                 txt.set_fontsize(self._legend_fontsize * getattr(self, '_font_scale', 1.0))
                 apply_text_style(txt, family=self._plot_font_family, **self._font_style_state())
+            title = self._legend_item.get_title()
+            if title is not None and title.get_text():
+                title.set_color(chrome["text"])
+                title.set_fontsize(self._legend_fontsize * getattr(self, '_font_scale', 1.0))
+                apply_text_style(title, family=self._plot_font_family, **self._font_style_state())
+                title.set_fontweight("bold")
         except Exception:
             pass
 
@@ -2220,6 +2452,8 @@ class ProfileDialog(QtWidgets.QDialog):
         act.triggered.connect(lambda: self._save_plot("svg"))
         act = save_menu.addAction("PDF (vector)...")
         act.triggered.connect(lambda: self._save_plot("pdf"))
+        act = menu.addAction("Copy data (XY)\tCtrl+Shift+C")
+        act.triggered.connect(self._copy_current_profile)
         act = menu.addAction("Save data as CSV...")
         act.triggered.connect(self._save_csv)
         self._add_toggle_action(menu, "Include measurement band in exports", self._include_band_in_export,
@@ -2325,8 +2559,6 @@ class ProfileDialog(QtWidgets.QDialog):
                 total_w = max(720, int(w_px + 140))
                 total_h = max(520, int(h_px + 320))
                 self.resize(total_w, total_h)
-                if hasattr(self, "_splitter") and self._splitter is not None:
-                    self._splitter.setSizes([h_px + 80, 220])
             except Exception:
                 pass
         self.toast.show_message(f"Preset: {preset.label} — exports {self._export_px(300)} px at 300 dpi")
@@ -2458,7 +2690,15 @@ class ProfileDialog(QtWidgets.QDialog):
 
             color = data.get('color') or self._fallback_curve_color(entry["is_active"])
             chip = _ColorChip(color, on_double_click=lambda k=key: self._pick_row_color(k))
-            table.setCellWidget(row, 1, chip)
+            chip.set_scale(self._font_scale)
+            # Centre the chip in its cell (a bare cell widget hugs the
+            # top-left corner and looks misplaced once rows grow).
+            holder = QtWidgets.QWidget()
+            holder_layout = QtWidgets.QHBoxLayout(holder)
+            holder_layout.setContentsMargins(4, 0, 4, 0)
+            holder_layout.addWidget(chip, 0, QtCore.Qt.AlignCenter)
+            holder.chip = chip
+            table.setCellWidget(row, 1, holder)
 
             meta = data.get('meta') or {}
             file_name = data.get('source_file_name') or meta.get('file_name') or ''
@@ -2483,19 +2723,120 @@ class ProfileDialog(QtWidgets.QDialog):
                 target_row = row
         table.blockSignals(False)
         self._resize_profile_table()
+        self._update_profiles_section_label()
         if target_row is not None:
             table.selectRow(target_row)
             self._on_profile_row_selected()
 
-    def _resize_profile_table(self):
+    # ------------------------------------------------------- plot/panel split
+    _AUTO_BOTTOM_FRACTION = 0.34
+
+    def _schedule_split(self):
+        timer = getattr(self, "_split_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _bottom_natural_height(self):
+        """Height the readout + profile list want, list fully expanded."""
+        lay = self._bottom_panel.layout()
+        m = lay.contentsMargins()
+        total = m.top() + m.bottom()
+        visible = 0
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            w = item.widget()
+            if w is not None:
+                if w.isHidden():
+                    continue
+                h = w.maximumHeight() if w is self.profile_table else w.sizeHint().height()
+            elif item.layout() is not None:
+                h = item.layout().sizeHint().height()
+            else:
+                continue
+            total += h
+            visible += 1
+        return total + max(0, visible - 1) * lay.spacing()
+
+    def _apply_auto_split(self):
+        splitter = getattr(self, "_splitter", None)
+        if splitter is None or splitter.height() <= 0:
+            return
+        avail = splitter.height() - splitter.handleWidth()
+        floor = self._bottom_panel.minimumSizeHint().height()
+        natural = self._bottom_natural_height()
+        fraction = self._bottom_fraction if self._bottom_fraction is not None else self._AUTO_BOTTOM_FRACTION
+        want = int(round(avail * fraction))
+        # Never more than the content needs, never below its floor (readout
+        # + list header + one table row); the plot keeps the rest.
+        bottom_h = max(floor, min(natural, want))
+        bottom_h = min(bottom_h, max(floor, avail - self.canvas.minimumHeight()))
         table = self.profile_table
-        header_h = table.horizontalHeader().height()
-        total = header_h + table.frameWidth() * 2 + 6
-        for row in range(min(table.rowCount(), 4)):
-            total += table.rowHeight(row)
-        if table.rowCount() == 0:
-            total += 24
-        table.setFixedHeight(max(total, 70))
+        if table.isVisibleTo(self) and bottom_h < natural:
+            # Snap to whole table rows - a half-cut last row looks broken;
+            # the leftover pixels go to the plot.
+            row_h = max(1, table.verticalHeader().defaultSectionSize())
+            table_max = table.maximumHeight()
+            table_base = table_max - max(1, table.rowCount()) * row_h
+            fixed = natural - table_max
+            rows = max(1, (bottom_h - fixed - table_base) // row_h)
+            bottom_h = max(floor, fixed + table_base + rows * row_h)
+        self._split_applying = True
+        try:
+            splitter.setSizes([max(1, avail - bottom_h), bottom_h])
+        finally:
+            self._split_applying = False
+
+    def _on_splitter_moved(self, _pos, _index):
+        if self._split_applying:
+            return
+        sizes = self._splitter.sizes()
+        self._bottom_fraction = sizes[1] / max(1, sum(sizes))
+        QtCore.QSettings().setValue("profileDialog/bottomFraction", self._bottom_fraction)
+
+    def _on_profiles_section_toggled(self, expanded, *, user=True):
+        if user:
+            self._profiles_section_user_set = True
+        self.profiles_toggle.setArrowType(QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
+        self.profile_table.setVisible(bool(expanded))
+        self._resize_profile_table()
+        self._schedule_split()
+
+    def _set_profiles_section_expanded(self, expanded):
+        """Programmatic expand/collapse that doesn't count as a user choice."""
+        if self.profiles_toggle.isChecked() == bool(expanded):
+            return
+        self.profiles_toggle.blockSignals(True)
+        self.profiles_toggle.setChecked(bool(expanded))
+        self.profiles_toggle.blockSignals(False)
+        self._on_profiles_section_toggled(bool(expanded), user=False)
+
+    def _update_profiles_section_label(self):
+        n = self.profile_table.rowCount()
+        self.profiles_toggle.setText(f"Profiles ({n})" if n else "Profiles")
+        # A lone profile is already fully described by the title bar, so the
+        # list stays collapsed; as soon as overlays exist it opens - unless
+        # the user has explicitly opened/closed it themselves.
+        if not self._profiles_section_user_set:
+            self._set_profiles_section_expanded(n > 1)
+
+    def _resize_profile_table(self):
+        # Between one row and all rows: never blank space below the last
+        # row, and it scrolls once the splitter caps the bottom panel.
+        table = self.profile_table
+        header = table.horizontalHeader()
+        header_h = max(header.height(), header.sizeHint().height())
+        row_h = table.verticalHeader().defaultSectionSize()
+        base = header_h + table.frameWidth() * 2 + 2
+        table.setMinimumHeight(base + row_h)  # always room for one row
+        table.setMaximumHeight(base + max(1, table.rowCount()) * row_h)
+        self._schedule_split()
+        # Re-fit the auto-sized columns to the (possibly rescaled) font;
+        # otherwise they keep widths measured at the old size and elide.
+        for col in range(table.columnCount()):
+            if header.sectionResizeMode(col) == QtWidgets.QHeaderView.ResizeToContents:
+                header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
+                table.resizeColumnToContents(col)
+                header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
 
     def select_overlay(self, idx):
         table = self.profile_table
@@ -2698,6 +3039,29 @@ class ProfileDialog(QtWidgets.QDialog):
             digest.update(str(arr.shape).encode("utf-8", errors="ignore"))
             digest.update(arr.tobytes())
         return digest.hexdigest()
+
+    @staticmethod
+    def _compact_legend_labels(labels):
+        """Factor the " | "-separated parts every label shares into a title.
+
+        Seven overlays from one file used to repeat "file.txt | dfFwd |" on
+        every legend row, burying the plot; now that prefix is the legend
+        title (still in exports) and each row shows only what differs, e.g.
+        "L=8.61 nm". Labels without shared parts are returned unchanged.
+        """
+        split = [[p.strip() for p in str(label).split("|")] for label in labels]
+        if len(split) < 2:
+            return list(labels), ""
+        common = [part for part in split[0] if all(part in parts for parts in split[1:])]
+        if not common:
+            return list(labels), ""
+        compact = []
+        for parts, original in zip(split, labels):
+            rest = [p for p in parts if p not in common]
+            compact.append(" | ".join(rest) if rest else str(original))
+        if len(set(compact)) < len(compact):  # factoring made rows ambiguous
+            return list(labels), ""
+        return compact, " | ".join(common)
 
     def _dataset_display_name(self, dataset, fallback_label):
         if not isinstance(dataset, dict):

@@ -167,7 +167,7 @@ def main():
     peaks_text = dlg.readout.value_labels["peaks"].text()
     check("readout peaks-in-band field is a plain integer", peaks_text.isdigit())
     px_text = dlg.readout.value_labels["px"].text()
-    check("readout pixel-size field reports point count", "in band" in px_text)
+    check("readout pixel-size field reports point count", "(n = " in px_text)
 
     # --- crosshair / cursor readout ----------------------------------------
     x_center = freq_profile['x_nm'][20] * 1e-9
@@ -307,8 +307,8 @@ def main():
     check("dark_bg_cb per-window toggle no longer exists", not hasattr(dlg, "dark_bg_cb"))
     all_toggle_texts = {btn.text() for btn in dlg._toggle_buttons}
     check(
-        "all expected toggles present in the single row",
-        {"Measure", "Lines", "Points", "Grid", "Snap to peaks", "Crosshair", "Ticks", "Precision", "Multi-ch", "Preserve profiles"} <= all_toggle_texts,
+        "all expected toggles present (header pills + View-menu-backed)",
+        {"Measure", "Lines", "Points", "Grid", "Snap", "Crosshair", "Ticks", "Precision", "Multi-ch", "Preserve profiles"} <= all_toggle_texts,
     )
 
     # --- Priority 5: View menu (Light/Dark/Follow system) replaces the ------
@@ -357,10 +357,18 @@ def main():
     check("axis label text is larger than toggle-button text", axis_pt > button_pt)
     check("tick text is larger than toggle-button text", tick_pt > button_pt)
 
-    # --- Priority 5: plot gets ~60-70% of the dialog's vertical space -------
-    sizes = dlg._splitter.sizes()
-    plot_fraction = sizes[0] / max(1, sum(sizes))
-    check(f"plot pane is ~60-70% of the splitter height (got {plot_fraction:.0%})", 0.55 <= plot_fraction <= 0.75)
+    # --- the plot dominates the window (chrome is thin strips) --------------
+    dlg.resize(900, 600)
+    dlg.show()
+    app.processEvents()
+    plot_fraction = dlg.canvas.height() / max(1, dlg.height())
+    check(f"plot gets >= 60% of the window height (got {plot_fraction:.0%})", plot_fraction >= 0.6)
+    check("view toggles are menu-backed, not on-screen pills",
+          not dlg.show_points_cb.isVisibleTo(dlg) and dlg.measure_toggle.isVisibleTo(dlg))
+    dlg._populate_view_menu()
+    view_texts = " ".join(a.text() for a in dlg._view_menu.actions())
+    check("View menu carries the plot display toggles", "Grid" in view_texts and "Lines" in view_texts)
+    dlg.hide()
 
     # --- Priority 4: figure presets drive on-screen size to match export --
     dlg.update_profiles(current_profile, [])
@@ -472,7 +480,8 @@ def main():
     header_labels = [dlg.profile_table.horizontalHeaderItem(c).text() for c in range(dlg.profile_table.columnCount())]
     check("header labels match spec order", header_labels == ["", "Color", "File", "Channel", "Dir", "Length", "Points"])
 
-    chip = dlg.profile_table.cellWidget(0, 1)
+    holder = dlg.profile_table.cellWidget(0, 1)
+    chip = getattr(holder, "chip", holder)  # chip sits in a centring holder
     check("color chip is a real cell widget, not an item background/icon", isinstance(chip, _ColorChip))
     check("color-chip column's item has no icon (widget carries the color, not the item)", dlg.profile_table.item(0, 1) is None)
 
@@ -498,12 +507,13 @@ def main():
     vis_item2.setCheckState(QtCore.Qt.Checked)
     check("re-checking visibility redraws the curve", overlay_key in dlg._line_handles_by_key)
 
-    # size-to-content: table height reflects row count, not a fixed well
+    # The table is the stretch item of its pane (spare height becomes rows,
+    # not grey gaps); its *maximum* tracks row count so it never shows blank space.
     dlg.update_profiles(current_profile, [])
-    h_one_row = dlg.profile_table.height()
+    h_one_row = dlg.profile_table.maximumHeight()
     dlg.update_profiles(current_profile, [overlay_profile])
-    h_two_rows = dlg.profile_table.height()
-    check("table grows with row count instead of a fixed empty well", h_two_rows > h_one_row)
+    h_two_rows = dlg.profile_table.maximumHeight()
+    check("table max height grows with row count (no blank well)", h_two_rows > h_one_row)
 
     # destructive delete is confirmed and names its target
     orig_question = QtWidgets.QMessageBox.question
