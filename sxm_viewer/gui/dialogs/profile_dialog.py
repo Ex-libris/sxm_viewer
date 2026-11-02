@@ -627,7 +627,7 @@ class ProfileDialog(QtWidgets.QDialog):
         hint_label = QtWidgets.QLabel(
             "Drag the shaded band or its edges to measure · "
             "←/→ nudge the left edge, Shift+←/→ the right · "
-            "Ctrl+Wheel resizes text · right-click the plot for more"
+            "↑/↓ switch profile · Ctrl+Wheel resizes text · right-click the plot for more"
         )
         hint_label.setObjectName("profileHintLabel")
         hint_label.setWordWrap(True)
@@ -727,7 +727,7 @@ class ProfileDialog(QtWidgets.QDialog):
         self.readout.setVisible(self._markers_enabled)
         self.marker_info.setVisible(not self._markers_enabled)
         self.controls_hint = QtWidgets.QLabel(
-            "Shortcuts: M measure, S snap, C crosshair, G grid, L lines, P points, R reset zoom, "
+            "Shortcuts: ↑/↓ switch profile, M measure, S snap, C crosshair, G grid, L lines, P points, R reset zoom, "
             "←/→ nudge left edge (Shift=right edge, Ctrl=×10), "
             "Del remove overlay, Ctrl+Wheel font size"
         )
@@ -815,6 +815,12 @@ class ProfileDialog(QtWidgets.QDialog):
         self._copy_xy_shortcut.activated.connect(self._copy_current_profile)
         self._save_plot_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
         self._save_plot_shortcut.activated.connect(lambda: self._save_plot("png", dpi=300))
+        # Up/Down pick the previous/next profile from anywhere in the window
+        # (including over the plot), same as moving through the list.
+        self._prev_profile_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Up), self)
+        self._prev_profile_shortcut.activated.connect(lambda: self._step_selected_profile(-1))
+        self._next_profile_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Down), self)
+        self._next_profile_shortcut.activated.connect(lambda: self._step_selected_profile(1))
 
     def _dismiss_hint_bar(self):
         self._hint_dismissed = True
@@ -986,7 +992,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 )
                 self._right_curves.append(line)
             self._line_handles_by_key[profile_key] = line
-            legend_entries.append((line, plot_label))
+            legend_entries.append((line, plot_label, profile_key))
         if marker_dataset is not None:
             ref_points = marker_dataset.get('x_nm') if marker_dataset.get('x_nm') is not None else marker_dataset.get('x_px')
             ref_length = marker_dataset.get('length_nm')
@@ -1012,8 +1018,9 @@ class ProfileDialog(QtWidgets.QDialog):
             self.ax.yaxis.set_minor_locator(AutoMinorLocator(5))
 
         if len(legend_entries) > 1 and self._legend_visible:
-            handles = [h for h, _n in legend_entries]
-            labels, common = self._compact_legend_labels([n for _h, n in legend_entries])
+            handles = [h for h, _n, _k in legend_entries]
+            labels, common = self._compact_legend_labels([n for _h, n, _k in legend_entries])
+            self._legend_keys = [k for _h, _n, k in legend_entries]
             self._legend_item = self.ax.legend(handles, labels, loc='best', title=common or None)
             self._apply_legend_style()
 
@@ -2090,6 +2097,9 @@ class ProfileDialog(QtWidgets.QDialog):
                 title.set_fontweight("bold")
         except Exception:
             pass
+        # Restyling resets row weights; re-apply the selection emphasis.
+        if not getattr(self, "_exporting", False):
+            self._apply_selection_emphasis()
 
     # --------------------------------------------------------- metadata
     def _metadata_text(self, dataset):
@@ -2187,10 +2197,13 @@ class ProfileDialog(QtWidgets.QDialog):
 
         def __enter__(self):
             dlg = self.dlg
+            # Exports never carry the on-screen selected-profile emphasis.
+            dlg._exporting = True
             self.prev_dark = dlg._dark_background
             if self.prev_dark:
                 dlg._dark_background = False
                 dlg._apply_plot_theme()
+            dlg._apply_selection_emphasis(uniform=True)
             if not dlg._include_band_in_export:
                 if dlg._span is not None:
                     self.prev_band_visible = dlg._span.get_visible()
@@ -2212,6 +2225,8 @@ class ProfileDialog(QtWidgets.QDialog):
             if self.prev_dark:
                 dlg._dark_background = True
                 dlg._apply_plot_theme()
+            dlg._exporting = False
+            dlg._apply_selection_emphasis()
 
     def _copy_plot(self, fmt, *, dpi=300):
         # Same savefig-based logic as the shared figure_layout_presets.py
@@ -2876,13 +2891,7 @@ class ProfileDialog(QtWidgets.QDialog):
                 self._marker_key_cb(self._current_marker_key)
             except Exception:
                 pass
-        for profile_key, item in list(self._line_handles_by_key.items()):
-            try:
-                dataset = self._dataset_for_profile_key(profile_key) or {}
-                base_lw = float(dataset.get('lw') or _DEFAULT_CURVE_WIDTH)
-                item.set_linewidth(base_lw + (0.4 if profile_key == idx else 0.0))
-            except Exception:
-                pass
+        self._apply_selection_emphasis()
         self.canvas.draw_idle()
         if self._highlight_overlay_cb:
             try:
@@ -2902,6 +2911,66 @@ class ProfileDialog(QtWidgets.QDialog):
             else:
                 self._marker_positions_by_key[idx] = list(self._marker_positions)
                 self._marker_domain_by_key[idx] = tuple(self._marker_domain)
+
+    # Selected-profile emphasis (screen only; exports use uniform styling).
+    _SELECTED_WIDTH_FACTOR = 2.0
+    _UNSELECTED_ALPHA = 0.35
+
+    def _apply_selection_emphasis(self, *, uniform=False):
+        """Make the selected profile stand out from the other curves.
+
+        With several curves, the selected one is drawn ~2x as thick, fully
+        opaque and on top; the rest fade back. A +0.4 pt width bump used to
+        be the only cue, which was hard to see with overlapping traces. The
+        legend mirrors it (faded / bold rows). ``uniform=True`` restores
+        plain styling - used while exporting so a figure never carries the
+        on-screen selection.
+        """
+        selected = self._current_marker_key
+        lines = dict(self._line_handles_by_key)
+        emphasise = not uniform and len(lines) > 1 and selected in lines
+        for profile_key, line in lines.items():
+            try:
+                dataset = self._dataset_for_profile_key(profile_key) or {}
+                base_lw = float(dataset.get('lw') or _DEFAULT_CURVE_WIDTH)
+                if not emphasise:
+                    lw, alpha, z = base_lw, 1.0, 2.0
+                elif profile_key == selected:
+                    lw, alpha, z = base_lw * self._SELECTED_WIDTH_FACTOR, 1.0, 4.0
+                else:
+                    lw, alpha, z = base_lw * 0.85, self._UNSELECTED_ALPHA, 2.0
+                if self.show_lines_cb.isChecked():
+                    line.set_linewidth(lw)
+                line.set_alpha(alpha)
+                line.set_zorder(z)
+            except Exception:
+                pass
+        legend = self._legend_item
+        keys = getattr(self, "_legend_keys", [])
+        if legend is not None and len(keys) == len(legend.get_texts()):
+            handles = getattr(legend, "legend_handles", None) or getattr(legend, "legendHandles", [])
+            for i, key in enumerate(keys):
+                faded = emphasise and key != selected
+                text = legend.get_texts()[i]
+                text.set_alpha(self._UNSELECTED_ALPHA + 0.25 if faded else 1.0)
+                text.set_fontweight("bold" if emphasise and key == selected else "normal")
+                if i < len(handles):
+                    try:
+                        handles[i].set_alpha(self._UNSELECTED_ALPHA if faded else 1.0)
+                    except Exception:
+                        pass
+
+    def _step_selected_profile(self, step):
+        """Up/Down: select the previous/next profile row (no wrap-around)."""
+        table = self.profile_table
+        count = table.rowCount()
+        if count < 2:
+            return
+        row = table.currentRow()
+        new_row = min(count - 1, max(0, (row if row >= 0 else 0) + step))
+        if new_row != row:
+            table.setCurrentCell(new_row, 2)
+            table.scrollToItem(table.item(new_row, 2))
 
     def _add_overlay_from_active(self):
         if callable(self._add_overlay_cb):

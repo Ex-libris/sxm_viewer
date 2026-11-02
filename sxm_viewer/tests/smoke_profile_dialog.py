@@ -337,11 +337,8 @@ def main():
         return to_hex(mpl_color).lower()
 
     check("fallback active curve color is desaturated amber (light theme)", _hex_color(item.get_color()) == "#d9822b")
-    # The sole/active profile is also the selected one, which gets a
-    # pre-existing +0.4 pt "selected" highlight on top of the 1.3 px
-    # default (see _on_profile_row_selected) - not itself a Priority 5
-    # concern, just something this check has to account for.
-    check("fallback curve width is the 1.3 px default plus the selection highlight", abs(item.get_linewidth() - 1.7) < 1e-6)
+    # A lone curve gets no selection emphasis (nothing to stand out from).
+    check("fallback curve width is the 1.3 px default", abs(item.get_linewidth() - 1.3) < 1e-6)
     dlg._set_theme_mode("dark")
     dlg.update_profiles(bare_profile, [])
     item = dlg._line_handles_by_key.get(None)
@@ -514,6 +511,31 @@ def main():
     dlg.update_profiles(current_profile, [overlay_profile])
     h_two_rows = dlg.profile_table.maximumHeight()
     check("table max height grows with row count (no blank well)", h_two_rows > h_one_row)
+
+    # --- selected profile stands out; Up/Down step through profiles -------
+    dlg.profile_table.setCurrentCell(0, 2)
+    sel_key = dlg._current_marker_key
+    other_key = next(k for k in dlg._line_handles_by_key if k != sel_key)
+    sel_line = dlg._line_handles_by_key[sel_key]
+    other_line = dlg._line_handles_by_key[other_key]
+    check("selected curve is clearly thicker than the others",
+          sel_line.get_linewidth() >= 1.8 * other_line.get_linewidth())
+    check("unselected curves fade back", (other_line.get_alpha() or 1.0) < 0.5 and (sel_line.get_alpha() or 1.0) == 1.0)
+    check("selected curve is drawn on top", sel_line.get_zorder() > other_line.get_zorder())
+    dlg._step_selected_profile(1)
+    check("Down selects the next profile", dlg.profile_table.currentRow() == 1 and dlg._current_marker_key == other_key)
+    check("emphasis follows the new selection",
+          dlg._line_handles_by_key[other_key].get_linewidth() > dlg._line_handles_by_key[sel_key].get_linewidth())
+    dlg._step_selected_profile(1)
+    check("Down at the last profile stays put", dlg.profile_table.currentRow() == 1)
+    dlg._step_selected_profile(-1)
+    check("Up selects the previous profile", dlg.profile_table.currentRow() == 0)
+    with dlg._LightForExport(dlg):
+        widths = {round(l.get_linewidth(), 3) for l in dlg._line_handles_by_key.values()}
+        alphas = {l.get_alpha() or 1.0 for l in dlg._line_handles_by_key.values()}
+        check("exports use uniform styling (no on-screen emphasis)", len(widths) == 1 and alphas == {1.0})
+    check("emphasis returns after export",
+          (dlg._line_handles_by_key[other_key].get_alpha() or 1.0) < 0.5)
 
     # destructive delete is confirmed and names its target
     orig_question = QtWidgets.QMessageBox.question
