@@ -10348,11 +10348,11 @@ class MultiPreviewCanvas(FigureCanvas):
         save_profile_default_act = profile_properties_menu.addAction("Save current settings as default")
         restore_profile_default_act = profile_properties_menu.addAction("Restore default settings")
         show_crop_history_act = None
-        if callable(self._apply_popup_style_callback) and (self._fixed_crop_quick_mode or self._fixed_crop_history):
+        if self._fixed_crop_quick_mode or self._fixed_crop_history:
             show_crop_history_act = display_menu.addAction("Show Crop Overlays")
             show_crop_history_act.setCheckable(True)
             show_crop_history_act.setChecked(bool(self._fixed_crop_history_visible))
-            crop_tip = "Show or hide crop-template overlays in this pop-up only."
+            crop_tip = "Show or hide crop outlines, labels and the crop template in this view only."
             show_crop_history_act.setToolTip(crop_tip)
             show_crop_history_act.setStatusTip(crop_tip)
         acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
