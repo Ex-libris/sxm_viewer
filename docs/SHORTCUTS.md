@@ -131,6 +131,8 @@ Thumbnail actions:
   thumbnails 90° clockwise / anticlockwise (see "Image orientation" below).
 - `Z` while focus is in the thumbnail area - zero / un-zero the selected
   thumbnails (see "Zero" below).
+- `H` while focus is in the thumbnail area - hide / restore all overlays on
+  the main preview (see `H` under the preview shortcuts below).
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.
@@ -260,6 +262,12 @@ Overlay toggles:
   the CH line visible in the Publication preset, and "Label style..." edits
   its font, size, colours, outline, background box and corner.
 - `Ctrl+H` - show / hide the in-canvas shortcut hint.
+- `H` - hide / restore **all** overlays on the focused preview or popup
+  (scale bar, profiles, angles, molecules, crop outlines, HUD, labels,
+  spectra markers...), leaving only the image and colorbar. Each overlay's
+  own on/off setting is untouched, so `H` again brings back exactly what was
+  shown. `Ctrl+C` copies what you see. Also in right-click > Display >
+  Hide All Overlays.
 
 Contrast:
 - `A` - auto contrast using the 1st to 99th percentile of the active image.

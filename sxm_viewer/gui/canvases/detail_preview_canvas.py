@@ -1,6 +1,7 @@
 ﻿"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import io
 import itertools
@@ -343,6 +344,8 @@ class MultiPreviewCanvas(FigureCanvas):
         self._show_angle_overlays = True
         self._show_shortcut_hint = False
         self._show_filter_summary = True
+        # H: transient "clean image" mode, see set_overlays_hidden.
+        self._overlays_hidden = False
         self._publication_mode = False
         self._display_preset_transient = False
         self._display_preset_base_state = None
@@ -1065,11 +1068,56 @@ class MultiPreviewCanvas(FigureCanvas):
             self._render_pending = True
             return
         try:
-            super().draw()
+            with self._overlays_suppressed():
+                super().draw()
             self._render_pending = False
         except np.linalg.LinAlgError:
             # Ignore transient singular transforms during layout updates.
             return
+
+    # ------------------------------------------------------------------ #
+    # Hide all overlays (H)                                              #
+    # ------------------------------------------------------------------ #
+    def set_overlays_hidden(self, hidden: bool):
+        """Hide every overlay on the image axes, leaving only the data.
+
+        Purely display-time: overlay artists are hidden for the duration of
+        each render (and Ctrl+C copy) and restored right after, so every
+        overlay's own on/off state, and anything added later, is untouched.
+        """
+        hidden = bool(hidden)
+        if hidden == self._overlays_hidden:
+            return
+        self._overlays_hidden = hidden
+        self.draw_idle()
+
+    def toggle_overlays_hidden(self):
+        self.set_overlays_hidden(not self._overlays_hidden)
+        return True
+
+    def _overlay_artists(self):
+        """Visible artists drawn over the data on every image axes."""
+        found = []
+        for ax in list(self._ax_view_map.keys()):
+            if ax is None or not ax.images:
+                continue
+            children = [*ax.lines, *ax.patches, *ax.texts, *ax.collections, *ax.artists, *ax.child_axes]
+            legend = ax.get_legend()
+            if legend is not None:
+                children.append(legend)
+            found.extend(a for a in children if a.get_visible())
+        return found
+
+    @contextlib.contextmanager
+    def _overlays_suppressed(self):
+        hidden = self._overlay_artists() if getattr(self, "_overlays_hidden", False) else []
+        for artist in hidden:
+            artist.set_visible(False)
+        try:
+            yield
+        finally:
+            for artist in hidden:
+                artist.set_visible(True)
 
     def draw_idle(self):
         if getattr(self, "_render_suspended", False):
@@ -1087,7 +1135,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if previously and not suspended and getattr(self, "_render_pending", False):
             self._render_pending = False
             try:
-                super().draw()
+                with self._overlays_suppressed():
+                    super().draw()
             except np.linalg.LinAlgError:
                 return
 
@@ -1646,6 +1695,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 ("Ctrl+4", lambda: self.enable_scale_bar(not self.scale_bar_enabled)),
                 ("Ctrl+5", lambda: self.set_show_acquisition_overlay(not self._show_acquisition_overlay)),
                 ("Ctrl+H", lambda: self.set_show_shortcut_hint(not self._show_shortcut_hint)),
+                ("H", self.toggle_overlays_hidden),
                 ("Ctrl+E", lambda: self.enable_fixed_crop_transform_mode(not self._fixed_crop_transform_mode)),
                 (QtCore.Qt.Key_Return, self._on_apply_fixed_crop_shortcut),
                 (QtCore.Qt.Key_Enter, self._on_apply_fixed_crop_shortcut),
@@ -3406,7 +3456,7 @@ class MultiPreviewCanvas(FigureCanvas):
         try:
             self.restore_region(background)
             for art in self._svg_molecule_blit_artists(entry):
-                if art is not None and art.get_visible():
+                if art is not None and art.get_visible() and not self._overlays_hidden:
                     self.main_ax.draw_artist(art)
             self.blit(self.main_ax.bbox)
         except Exception:
@@ -5714,6 +5764,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     return
                 if key == QtCore.Qt.Key_M:
                     self._load_molecule_dialog()
+                    return
+                if key == QtCore.Qt.Key_H and not (mods & QtCore.Qt.ShiftModifier):
+                    self.toggle_overlays_hidden()
                     return
                 if key in (QtCore.Qt.Key_Left, QtCore.Qt.Key_Right, QtCore.Qt.Key_Up, QtCore.Qt.Key_Down):
                     if self._nudge_active_svg_molecule(key, fine=bool(mods & QtCore.Qt.ShiftModifier)):
@@ -8261,6 +8314,8 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _draw_profile_animated(self):
         """Draw only the active profile artists (for blitting)."""
+        if self._overlays_hidden:
+            return
         for art in self._profile_animation_artists():
             try:
                 visible = art.get_visible()
@@ -8328,7 +8383,7 @@ class MultiPreviewCanvas(FigureCanvas):
         self._angle_blit_active = False
 
     def _draw_angle_frame_fast(self, frame):
-        if not frame or not self.main_ax:
+        if not frame or not self.main_ax or self._overlays_hidden:
             return
         artists = []
         artists.extend(frame.get('lines', []))
@@ -10347,6 +10402,12 @@ class MultiPreviewCanvas(FigureCanvas):
         profile_properties_menu.addSeparator()
         save_profile_default_act = profile_properties_menu.addAction("Save current settings as default")
         restore_profile_default_act = profile_properties_menu.addAction("Restore default settings")
+        hide_overlays_act = display_menu.addAction("Hide All Overlays\tH")
+        hide_overlays_act.setCheckable(True)
+        hide_overlays_act.setChecked(bool(self._overlays_hidden))
+        hide_tip = "Show only the image: hide every overlay in this view (press H again to restore)."
+        hide_overlays_act.setToolTip(hide_tip)
+        hide_overlays_act.setStatusTip(hide_tip)
         show_crop_history_act = None
         if self._fixed_crop_quick_mode or self._fixed_crop_history:
             show_crop_history_act = display_menu.addAction("Show Crop Overlays")
@@ -10739,6 +10800,8 @@ class MultiPreviewCanvas(FigureCanvas):
             self._save_profile_display_favorite()
         elif chosen == restore_profile_default_act:
             self._restore_profile_display_favorite()
+        elif chosen == hide_overlays_act:
+            self.set_overlays_hidden(hide_overlays_act.isChecked())
         elif show_crop_history_act and chosen == show_crop_history_act:
             self.show_fixed_crop_history(show_crop_history_act.isChecked())
         elif chosen == acq_overlay_act:
@@ -11431,7 +11494,7 @@ class MultiPreviewCanvas(FigureCanvas):
         scale = max(0.6, min(2.5, getattr(self, "_view_font_scale", 1.0)))
         fontsize = max(6.5, 7.0 * scale)
         hint = (
-            "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | "
+            "Ctrl+Click profile | Ctrl+Alt+Click angle | A auto contrast | 0 rel-zero | H hide overlays | "
             "click molecule then X/Y/Z rotate, Shift+X/Y/Z reverse | Shift+drag mol = Z rotate | "
             "Ctrl+Shift+drag or middle-drag mol = 3D rotate | Ctrl+1/2/3 saved overlays | click to hide"
         )
@@ -11476,7 +11539,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if getattr(self, "_show_shortcut_hint", False):
             changed = self._set_shortcut_hint_artist_visibility(False)
         try:
-            save_fn()
+            with self._overlays_suppressed():
+                save_fn()
         finally:
             if changed:
                 self._set_shortcut_hint_artist_visibility(True)
