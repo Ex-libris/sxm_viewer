@@ -167,7 +167,7 @@ def main():
     peaks_text = dlg.readout.value_labels["peaks"].text()
     check("readout peaks-in-band field is a plain integer", peaks_text.isdigit())
     px_text = dlg.readout.value_labels["px"].text()
-    check("readout pixel-size field reports point count", "in band" in px_text)
+    check("readout pixel-size field reports point count", "(n = " in px_text)
 
     # --- crosshair / cursor readout ----------------------------------------
     x_center = freq_profile['x_nm'][20] * 1e-9
@@ -307,8 +307,8 @@ def main():
     check("dark_bg_cb per-window toggle no longer exists", not hasattr(dlg, "dark_bg_cb"))
     all_toggle_texts = {btn.text() for btn in dlg._toggle_buttons}
     check(
-        "all expected toggles present in the single row",
-        {"Measure", "Lines", "Points", "Grid", "Snap to peaks", "Crosshair", "Ticks", "Precision", "Multi-ch", "Preserve profiles"} <= all_toggle_texts,
+        "all expected toggles present (header pills + View-menu-backed)",
+        {"Measure", "Lines", "Points", "Grid", "Snap", "Crosshair", "Ticks", "Precision", "Multi-ch", "Preserve profiles"} <= all_toggle_texts,
     )
 
     # --- Priority 5: View menu (Light/Dark/Follow system) replaces the ------
@@ -337,11 +337,8 @@ def main():
         return to_hex(mpl_color).lower()
 
     check("fallback active curve color is desaturated amber (light theme)", _hex_color(item.get_color()) == "#d9822b")
-    # The sole/active profile is also the selected one, which gets a
-    # pre-existing +0.4 pt "selected" highlight on top of the 1.3 px
-    # default (see _on_profile_row_selected) - not itself a Priority 5
-    # concern, just something this check has to account for.
-    check("fallback curve width is the 1.3 px default plus the selection highlight", abs(item.get_linewidth() - 1.7) < 1e-6)
+    # A lone curve gets no selection emphasis (nothing to stand out from).
+    check("fallback curve width is the 1.3 px default", abs(item.get_linewidth() - 1.3) < 1e-6)
     dlg._set_theme_mode("dark")
     dlg.update_profiles(bare_profile, [])
     item = dlg._line_handles_by_key.get(None)
@@ -357,10 +354,18 @@ def main():
     check("axis label text is larger than toggle-button text", axis_pt > button_pt)
     check("tick text is larger than toggle-button text", tick_pt > button_pt)
 
-    # --- Priority 5: plot gets ~60-70% of the dialog's vertical space -------
-    sizes = dlg._splitter.sizes()
-    plot_fraction = sizes[0] / max(1, sum(sizes))
-    check(f"plot pane is ~60-70% of the splitter height (got {plot_fraction:.0%})", 0.55 <= plot_fraction <= 0.75)
+    # --- the plot dominates the window (chrome is thin strips) --------------
+    dlg.resize(900, 600)
+    dlg.show()
+    app.processEvents()
+    plot_fraction = dlg.canvas.height() / max(1, dlg.height())
+    check(f"plot gets >= 60% of the window height (got {plot_fraction:.0%})", plot_fraction >= 0.6)
+    check("view toggles are menu-backed, not on-screen pills",
+          not dlg.show_points_cb.isVisibleTo(dlg) and dlg.measure_toggle.isVisibleTo(dlg))
+    dlg._populate_view_menu()
+    view_texts = " ".join(a.text() for a in dlg._view_menu.actions())
+    check("View menu carries the plot display toggles", "Grid" in view_texts and "Lines" in view_texts)
+    dlg.hide()
 
     # --- Priority 4: figure presets drive on-screen size to match export --
     dlg.update_profiles(current_profile, [])
@@ -472,7 +477,8 @@ def main():
     header_labels = [dlg.profile_table.horizontalHeaderItem(c).text() for c in range(dlg.profile_table.columnCount())]
     check("header labels match spec order", header_labels == ["", "Color", "File", "Channel", "Dir", "Length", "Points"])
 
-    chip = dlg.profile_table.cellWidget(0, 1)
+    holder = dlg.profile_table.cellWidget(0, 1)
+    chip = getattr(holder, "chip", holder)  # chip sits in a centring holder
     check("color chip is a real cell widget, not an item background/icon", isinstance(chip, _ColorChip))
     check("color-chip column's item has no icon (widget carries the color, not the item)", dlg.profile_table.item(0, 1) is None)
 
@@ -498,12 +504,38 @@ def main():
     vis_item2.setCheckState(QtCore.Qt.Checked)
     check("re-checking visibility redraws the curve", overlay_key in dlg._line_handles_by_key)
 
-    # size-to-content: table height reflects row count, not a fixed well
+    # The table is the stretch item of its pane (spare height becomes rows,
+    # not grey gaps); its *maximum* tracks row count so it never shows blank space.
     dlg.update_profiles(current_profile, [])
-    h_one_row = dlg.profile_table.height()
+    h_one_row = dlg.profile_table.maximumHeight()
     dlg.update_profiles(current_profile, [overlay_profile])
-    h_two_rows = dlg.profile_table.height()
-    check("table grows with row count instead of a fixed empty well", h_two_rows > h_one_row)
+    h_two_rows = dlg.profile_table.maximumHeight()
+    check("table max height grows with row count (no blank well)", h_two_rows > h_one_row)
+
+    # --- selected profile stands out; Up/Down step through profiles -------
+    dlg.profile_table.setCurrentCell(0, 2)
+    sel_key = dlg._current_marker_key
+    other_key = next(k for k in dlg._line_handles_by_key if k != sel_key)
+    sel_line = dlg._line_handles_by_key[sel_key]
+    other_line = dlg._line_handles_by_key[other_key]
+    check("selected curve is clearly thicker than the others",
+          sel_line.get_linewidth() >= 1.8 * other_line.get_linewidth())
+    check("unselected curves fade back", (other_line.get_alpha() or 1.0) < 0.5 and (sel_line.get_alpha() or 1.0) == 1.0)
+    check("selected curve is drawn on top", sel_line.get_zorder() > other_line.get_zorder())
+    dlg._step_selected_profile(1)
+    check("Down selects the next profile", dlg.profile_table.currentRow() == 1 and dlg._current_marker_key == other_key)
+    check("emphasis follows the new selection",
+          dlg._line_handles_by_key[other_key].get_linewidth() > dlg._line_handles_by_key[sel_key].get_linewidth())
+    dlg._step_selected_profile(1)
+    check("Down at the last profile stays put", dlg.profile_table.currentRow() == 1)
+    dlg._step_selected_profile(-1)
+    check("Up selects the previous profile", dlg.profile_table.currentRow() == 0)
+    with dlg._LightForExport(dlg):
+        widths = {round(l.get_linewidth(), 3) for l in dlg._line_handles_by_key.values()}
+        alphas = {l.get_alpha() or 1.0 for l in dlg._line_handles_by_key.values()}
+        check("exports use uniform styling (no on-screen emphasis)", len(widths) == 1 and alphas == {1.0})
+    check("emphasis returns after export",
+          (dlg._line_handles_by_key[other_key].get_alpha() or 1.0) < 0.5)
 
     # destructive delete is confirmed and names its target
     orig_question = QtWidgets.QMessageBox.question

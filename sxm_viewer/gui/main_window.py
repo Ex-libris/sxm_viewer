@@ -3575,6 +3575,14 @@ QLabel:hover {{
                 if self.toggle_zero_images():
                     event.accept()
                     return
+        if key == QtCore.Qt.Key_H and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.ShiftModifier)):
+            # The preview handles H itself when focused; from the thumbnail
+            # grid, H hides/restores the main preview's overlays.
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                if self.preview_canvas.toggle_overlays_hidden():
+                    event.accept()
+                    return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,

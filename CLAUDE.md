@@ -210,7 +210,11 @@ re-grep the method name to confirm before relying on an exact line.
   histogram auto-contrast, `M` opens molecule load, `Home` resets zoom,
   `R`/`Shift+R` turn the image 90° CW/CCW (main preview only, via
   `_rotate_image_callback`), X/Y/Z rotate the selected molecule
-  (`Shift+Home` resets it), otherwise `Z` toggles per-image Zero
+  (`Shift+Home` resets it), `H` hides every overlay (`set_overlays_hidden`:
+  display-time only - overlay artists on image axes are hidden inside
+  `draw()`/copy and restored, so per-overlay state is untouched; blit
+  fast-paths check `_overlays_hidden` too; from the thumbnail grid the main
+  window forwards `H` to the preview), otherwise `Z` toggles per-image Zero
   (`_zero_image_callback` → `toggle_zero_images`; popups use their own
   `_popup_relative_zero_setter`), Enter/Esc apply/cancel crop-transform mode.
 - Per-image Zero: `viewer.image_zero` (`file_key -> bool`, only overrides of
