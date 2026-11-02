@@ -12377,6 +12377,13 @@ class MultiPreviewCanvas(FigureCanvas):
         if visible == self._fixed_crop_history_visible:
             return
         self._fixed_crop_history_visible = visible
+        if not visible:
+            # "Show Crop Overlays" off = a clean image: drop the persistent
+            # highlight artists and the (non-editing) template outline too.
+            self._cleanup_highlight_artists()
+            if not self._fixed_crop_transform_mode:
+                self._fixed_crop_template_visible = False
+                self._clear_fixed_crop_overlay_artists()
         self._redraw()
 
     def set_fixed_crop_history_highlight(self, seq):
@@ -12442,7 +12449,7 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def _update_highlight_artists(self):
         seq = self._fixed_crop_history_highlight_seq
-        if seq is None:
+        if seq is None or not self._fixed_crop_history_visible:
             self._cleanup_highlight_artists()
             return
         active_keys = set()
@@ -13042,6 +13049,8 @@ class MultiPreviewCanvas(FigureCanvas):
         )
 
     def _draw_fixed_crop_history(self, ax, view):
+        if not self._fixed_crop_history_visible:
+            return
         key = self._outline_key(view)
         if key is None:
             return
@@ -13922,7 +13931,7 @@ class MultiPreviewCanvas(FigureCanvas):
         )
         if ok:
             if self._fixed_crop_quick_mode:
-                self._fixed_crop_template_visible = True
+                self._fixed_crop_template_visible = bool(self._fixed_crop_history_visible)
                 self._fixed_crop_template_drag = None
                 self._fixed_crop_drag_last_ts = 0.0
                 self._notify_views_callback()
