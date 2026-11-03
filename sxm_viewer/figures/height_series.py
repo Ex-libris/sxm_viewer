@@ -48,6 +48,12 @@ _ROW_SYMBOL = {"current": "I", "freq": "Δf", "lockin": "LIA", "z": "z",
                "amplitude": "A", "phase": "φ", "excitation": "Drive"}
 
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
+BEST = "@best"   # pseudo channel: each frame's own best channel
+
+
+def channel_text(label):
+    """How a channel (or the pseudo channel) is named in menus."""
+    return "Best channel per frame" if label == BEST else str(label)
 
 _BACKWARD_RE = re.compile(r"(?i)(bwd|backward|\bbk\b|_bk|retrace|\(b\)|<-|←)")
 
@@ -73,7 +79,27 @@ STYLE_DEFAULTS = {
     "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
     "header_name": False,      # file name as an extra header line
     "font": 7.0,
-    "panel_w": 1.55,           # inches
+    "panel_w": 1.55,           # inches (solved from the page width if set)
+    "page": "free",            # free | 1col | 15col | 2col | custom
+    "page_mm": 85.0,           # custom page width
+    "letter_outline": True,    # contrasting outline around letters
+    "scale_outline": True,     # ... around the scale bar and its label
+    "scale_thick": 0.018,      # scale bar thickness, fraction of panel height
+    "cbar_w": 0.07,            # colourbar thickness (inches)
+    "cbar_style": "outside",   # outside (ticks) | inside (values in the bar) | minmax (text only)
+    "cbar_text": "rotated",    # rotated | horizontal (vertical colourbars)
+    "zoom_color": "color",     # zoom outlines: color (one per zoom) | white | black
+    "zoom_labels": True,       # letter of each zoom next to its outline
+    "zoom_lw": 1.0,            # outline width (pt)
+}
+
+# Keys whose sensible default depends on the recipe (a zoom figure shows
+# frames of different sizes: own ranges, a scale bar on every frame, no
+# colourbars). The user's last choice is remembered *per recipe* for these
+# and globally for everything else (letters, fonts, outlines, page ...).
+RECIPE_KEYS = ("range_mode", "colorbars", "scale_bar", "header", "transpose", "reverse")
+RECIPE_DEFAULTS = {
+    "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "one"},
 }
 
 # Which style keys are meaningful in each range mode (for the UI).
@@ -349,6 +375,29 @@ def collapse_repeats(members):
     return kept, hidden
 
 
+def _collapse_same_footprint(members):
+    """Zooms re-scanning the same footprint (any conditions) show once - the
+    latest; returns ``(kept, hidden_keys)``."""
+    from ..reporting.model import _same_footprint
+
+    groups = []
+    for m in members:
+        g = _frame_geometry(m)
+        geo = (g["cx"], g["cy"], g["w"], g["h"], g["angle"]) if g else None
+        for grp in groups:
+            if geo is not None and grp[0] is not None and _same_footprint(geo, grp[0]):
+                grp[1].append(m)
+                break
+        else:
+            groups.append((geo, [m]))
+    kept, hidden = [], []
+    for _geo, ms in groups:
+        latest = max(ms, key=lambda m: (_time_sort(m) != datetime.max, _time_sort(m)))
+        kept.append(latest)
+        hidden.extend(str(m["key"]) for m in ms if m is not latest)
+    return kept, hidden
+
+
 def _time_sort(img):
     t = img.get("time")
     return t if isinstance(t, datetime) else datetime.max
@@ -379,9 +428,12 @@ def _varies(values, rel=0.01, abs_tol=0.0):
 
 def resolve_header(header, mode, has_z, bias_varies):
     """``"auto"`` -> the recipe's natural header: Δz for a height series,
-    the bias for a bias series; a selection takes Δz, else bias, else name."""
+    the bias for a bias series, the frame size for overview + zooms; a
+    selection takes Δz, else bias, else name."""
     if header and header != "auto":
         return header
+    if mode == "zoom":
+        return "size"
     if mode == "bias":
         return "bias"
     if mode == "height" or has_z:
@@ -391,7 +443,7 @@ def resolve_header(header, mode, has_z, bias_varies):
 
 def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                rows=None, row_choices=None, header="auto", header_name=False,
-               row_cmaps=None, reverse=False, show_repeats=False):
+               row_cmaps=None, reverse=False, show_repeats=False, root_key=None):
     """Frames (``columns``) and channels (``rows``) for the figure.
 
     ``members``: dicts ``{key, name, time, z_nm, bias_v, setpoint,
@@ -415,7 +467,17 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     row_cmaps = dict(row_cmaps or {})
     cols_in = [m for m in members if str(m["key"]) not in dropped]
     hidden_repeats = []
-    if mode != "selection" and not show_repeats:
+    root = None
+    if mode == "zoom":
+        root = next((m for m in cols_in if str(m["key"]) == str(root_key)), None) or (cols_in[0] if cols_in else None)
+        zooms = [m for m in cols_in if m is not root]
+        if not show_repeats:
+            zooms, hidden_repeats = _collapse_same_footprint(zooms)
+        zooms.sort(key=lambda m: (_time_sort(m), str(m.get("name"))))
+        if reverse:
+            zooms.reverse()
+        cols_in = ([root] if root is not None else []) + zooms
+    elif mode != "selection" and not show_repeats:
         # Re-scans under identical conditions add columns, not information:
         # keep the latest of each (``show_repeats`` brings them back).
         cols_in, hidden_repeats = collapse_repeats(cols_in)
@@ -428,7 +490,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         return lambda m: (_finite(m.get(field)) if _finite(m.get(field)) is not None else math.inf,
                           _time_sort(m), str(m.get("name")))
 
-    if mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
+    if mode == "zoom":
+        axis = "zoom"
+    elif mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
         cols_in.sort(key=by_value("bias_v"))
         axis = "bias"
     elif mode == "height" or has_z:
@@ -437,7 +501,7 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     else:
         cols_in.sort(key=lambda m: (_time_sort(m), str(m.get("name"))))
         axis = "time"
-    if reverse:
+    if reverse and mode != "zoom":
         cols_in.reverse()
     header = resolve_header(header, mode, has_z, bias_varies)
 
@@ -460,7 +524,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         z = _finite(m.get("z_nm"))
         b = _finite(m.get("bias_v"))
         dz_pm = (z - ref_z) * 1e3 if (z is not None and ref_z is not None) else None
-        if header == "zabs" and z is not None:
+        if header == "size" and size_text(m):
+            text = size_text(m)
+        elif header == "zabs" and z is not None:
             text = f"z = {z:.3f} nm"
         elif header == "bias" and b is not None:
             text = bias_header(b)
@@ -478,12 +544,19 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         if header == "bias" and has_z and _varies([_finite(c.get("z_nm")) for c in cols_in], 0.0, 5e-3):
             # A bias series whose tip height also moved: say by how much.
             subs.append(dz_text(z, ref_z))
-        columns.append({
+        col = {
             "key": key, "name": name, "z_nm": z, "dz_pm": dz_pm, "bias_v": b,
             "is_ref": key == ref_key and header == "dz",
             "header": text,
             "subheader": "  ·  ".join(s for s in subs if s),
-        })
+        }
+        if mode == "zoom" and root is not None:
+            if m is root:
+                col["is_overview"] = True
+            else:
+                col["parent"] = str(root["key"])
+                col["box"] = zoom_box(m, root)
+        columns.append(col)
 
     # Every channel the frames have, in first-seen order (menus / Add row).
     channels, cls_of = [], {}
@@ -494,9 +567,39 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                 channels.append({"label": c["label"], "cls": c["cls"],
                                  "kind": row_kind_for(c["cls"])})
 
+    # "Best channel per frame": each frame's own first pick (topography of
+    # a CC overview next to current of its CH zooms) - a pseudo channel.
+    channels.insert(0, {"label": BEST, "cls": "mixed", "kind": "mixed"})
     labels = list(rows) if rows else _default_rows(cols_in, row_choices)
+    if not rows and mode == "zoom" and root is not None and labels:
+        # One band by default (a zoom figure is about *where*; a band per
+        # channel triples it): the overview's main channel, or each frame's
+        # own when the frames were taken in different modes.
+        kinds = {row_kind_for(m["picks"][0][1]) for m in cols_in if m.get("picks")}
+        if len(kinds) > 1:
+            labels = [BEST]
+        else:
+            by_idx = {int(c["idx"]): c for c in (root.get("channels") or [])}
+            first = next((by_idx[int(i)]["label"] for i, _cls in (root.get("picks") or [])
+                          if int(i) in by_idx), None)
+            labels = [first] if first else labels[:1]
     out_rows = []
     for label in labels:
+        if label == BEST:
+            cells, cell_kind, cell_cmap = {}, {}, {}
+            for m in cols_in:
+                if not m.get("picks"):
+                    continue
+                idx, cls = m["picks"][0]
+                key = str(m["key"])
+                cells[key] = int(idx)
+                cell_kind[key] = row_kind_for(cls)
+                cell_cmap[key] = _CLASS_CMAPS.get(cls) or ROW_CMAPS.get(row_kind_for(cls), "viridis")
+            if cells:
+                out_rows.append({"label": BEST, "kind": "mixed", "cls": "mixed", "symbol": "",
+                                 "cmap": "gray", "alternatives": [], "cells": cells,
+                                 "cell_kind": cell_kind, "cell_cmap": cell_cmap})
+            continue
         if label not in cls_of:
             continue
         cls = cls_of[label]
@@ -528,6 +631,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     for r in out_rows:
         counts[r["symbol"]] = counts.get(r["symbol"], 0) + 1
     for r in out_rows:
+        if r["label"] == BEST:
+            r["display"] = ""
+            continue
         r["display"] = r["symbol"] if counts[r["symbol"]] == 1 else _short(r["label"], 16)
 
     return {
@@ -699,9 +805,23 @@ def clim_key(row_label, frame_key=None):
 MAX_FRAMES_PER_BLOCK = 8   # longer series wrap into balanced blocks
 _GAP = 0.05
 _BLOCK_GAP = 0.12
-_CBAR_W = 0.07
-_PIMG_CBAR = 0.46          # extra width per panel for a per-image colourbar
 _BOTTOM = 0.10
+
+# Journal column widths (mm). Fonts stay in absolute points, so choosing a
+# page width shrinks/grows the *panels*, never the text - what you see is
+# what prints at 100 %.
+PAGE_WIDTHS_MM = {"1col": 85.0, "15col": 120.0, "2col": 178.0}
+PAGE_NAMES = {"free": "Free size", "1col": "Single column (85 mm)",
+              "15col": "1.5 column (120 mm)", "2col": "Double column (178 mm)",
+              "custom": "Custom width"}
+
+
+def page_width_in(st):
+    page = st.get("page") or "free"
+    if page == "free":
+        return None
+    mm = PAGE_WIDTHS_MM.get(page) if page != "custom" else _finite(st.get("page_mm"))
+    return (mm / 25.4) if mm else None
 
 
 def column_blocks(n, max_per=MAX_FRAMES_PER_BLOCK):
@@ -714,26 +834,86 @@ def column_blocks(n, max_per=MAX_FRAMES_PER_BLOCK):
     return [list(range(i, min(n, i + per))) for i in range(0, n, per)]
 
 
-def _panel_aspect(panels):
-    for p in panels.values():
-        w, h = _finite(p.get("width_nm")), _finite(p.get("height_nm"))
-        if w and h:
-            return min(max(h / w, 0.25), 4.0)
-        shp = np.shape(p.get("data"))
-        if len(shp) == 2 and shp[1]:
-            return min(max(shp[0] / shp[1], 0.25), 4.0)
+def _aspect_of(p):
+    if not p:
+        return None
+    w, h = _finite(p.get("width_nm")), _finite(p.get("height_nm"))
+    if p.get("turns", 0) % 2 and w and h:
+        w, h = h, w
+    if w and h:
+        return min(max(h / w, 0.25), 4.0)
+    shp = np.shape(p.get("data"))
+    if len(shp) == 2 and shp[1]:
+        return min(max(shp[0] / shp[1], 0.25), 4.0)
+    return None
+
+
+def _panel_aspect(panels, keys=None):
+    for (r, k), p in panels.items():
+        if keys is not None and k not in keys:
+            continue
+        a = _aspect_of(p)
+        if a:
+            return a
     return 1.0
+
+
+def cbar_dims(st, orient="v"):
+    """(bar thickness, extra room for its tick values + label) in inches -
+    shared by the layout and the renderer so they always agree."""
+    font = float(st["font"])
+    pt = font / 72.0
+    style = st.get("cbar_style") or "outside"
+    rotated = (st.get("cbar_text") or "rotated") == "rotated"
+    bar = float(st.get("cbar_w") or 0.07)
+    if style == "minmax":
+        return 0.0, (0.62 * font / 7.0 if orient == "v" else 1.6 * pt)
+    if style == "inside":
+        bar = max(bar, 1.7 * pt)
+        extra = 0.0
+    else:
+        extra = (1.3 * pt if rotated else 0.36 * font / 7.0) if orient == "v" else 1.5 * pt
+    if st.get("cbar_label"):
+        extra += (1.5 * pt if rotated else 0.0) if orient == "v" else 1.5 * pt
+    return bar, extra
 
 
 def figure_layout(spec, panels, style=None):
     """Element boxes in inches, ``(x0, y0, x1, y1)`` from the figure's
     *top-left*; deterministic so the GUI hit-tests without matplotlib.
 
-    Returns ``size``, ``cells`` {(row, frame): box}, ``frame_labels``
-    [(frame, box)], ``channel_labels`` [(row, box)], ``colorbars``
-    [{row, frame|None, box, orient}] and ``transpose``.
+    With a page width (``style["page"]``) the panel width is solved so the
+    whole figure is exactly that wide - every width in the layout is affine
+    in the panel width, so two trial layouts give the answer.
     """
     st = resolve_style(style)
+    target = page_width_in(st)
+    if target:
+        a = _layout(spec, panels, dict(st, panel_w=1.0))["size"][0]
+        b = _layout(spec, panels, dict(st, panel_w=2.0))["size"][0]
+        slope = b - a
+        if slope > 1e-6:
+            pw = max(0.25, (target - (a - slope)) / slope)
+            st = dict(st, panel_w=pw)
+    lay = _layout(spec, panels, st)
+    lay["panel_w"] = float(st["panel_w"])
+    lay["page_in"] = target
+    return lay
+
+
+def _layout(spec, panels, st):
+    if spec.get("mode") == "zoom":
+        return _layout_zoom(spec, panels, st)
+    return _layout_grid(spec, panels, st)
+
+
+def _header_height(spec, st):
+    line = float(st["font"]) / 72.0 * 1.45
+    has_sub = any(c.get("subheader") for c in spec["columns"])
+    return 0.12 + line * (2 if has_sub else 1)
+
+
+def _layout_grid(spec, panels, st):
     font = float(st["font"])
     n_f = max(1, len(spec["columns"]))
     n_ch = max(1, len(spec["rows"]))
@@ -741,18 +921,17 @@ def figure_layout(spec, panels, style=None):
     ph = pw * _panel_aspect(panels)
     per_img_cb = st["colorbars"] and st["range_mode"] == "image"
     shared_cb = st["colorbars"] and st["range_mode"] == "row"
-    slot = pw + (_PIMG_CBAR if per_img_cb else 0.0)
-    has_sub = any(c.get("subheader") for c in spec["columns"])
-    line = font / 72.0 * 1.45
     blocks = column_blocks(n_f)
     per = max(len(b) for b in blocks)
     cells, frame_labels, channel_labels, cbars = {}, [], [], []
 
     if not st["transpose"]:
-        top = 0.12 + line * (2 if has_sub else 1)
+        bar, extra = cbar_dims(st, "v")
+        slot = pw + ((0.05 + bar + extra) if per_img_cb else 0.0)
+        top = _header_height(spec, st)
         longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
         left = 0.42 if longest <= 4 else 0.30
-        right = (0.06 + _CBAR_W + 0.68) if shared_cb else 0.12
+        right = (0.06 + bar + extra + 0.06) if shared_cb else 0.12
         block_h = top + n_ch * ph + (n_ch - 1) * _GAP
         fig_w = left + per * slot + (per - 1) * _GAP + right
         fig_h = len(blocks) * block_h + (len(blocks) - 1) * _BLOCK_GAP + _BOTTOM
@@ -766,19 +945,22 @@ def figure_layout(spec, panels, style=None):
                     cells[(r, f)] = (x0, y0, x0 + pw, y0 + ph)
                     if per_img_cb:
                         cbars.append({"row": r, "frame": f, "orient": "v",
-                                      "box": (x0 + pw + 0.05, y0, x0 + pw + 0.05 + _CBAR_W, y0 + ph)})
+                                      "box": (x0 + pw + 0.05, y0, x0 + pw + 0.05 + max(bar, 0.01), y0 + ph)})
             x_end = left + len(frames) * slot + (len(frames) - 1) * _GAP
             for r in range(n_ch):
                 y0 = y_base + top + r * (ph + _GAP)
                 channel_labels.append((r, (0.0, y0, left, y0 + ph)))
                 if shared_cb:
                     cbars.append({"row": r, "frame": None, "orient": "v",
-                                  "box": (x_end + 0.06, y0, x_end + 0.06 + _CBAR_W, y0 + ph)})
+                                  "box": (x_end + 0.06, y0, x_end + 0.06 + max(bar, 0.01), y0 + ph)})
     else:
-        top = 0.10 + line
+        bar_v, extra_v = cbar_dims(st, "v")
+        bar_h, extra_h = cbar_dims(st, "h")
+        slot = pw + ((0.05 + bar_v + extra_v) if per_img_cb else 0.0)
+        top = 0.10 + font / 72.0 * 1.45
         left = 0.20 + max(0.75, font / 72.0 * 0.62 * max(
             (len(c.get("header") or "") for c in spec["columns"]), default=8))
-        bottom = (0.06 + _CBAR_W + 0.40) if shared_cb else _BOTTOM
+        bottom = (0.06 + bar_h + extra_h + 0.04) if shared_cb else _BOTTOM
         block_w = left + n_ch * slot + (n_ch - 1) * _GAP + 0.12
         fig_w = len(blocks) * block_w + (len(blocks) - 1) * _BLOCK_GAP
         fig_h = top + per * ph + (per - 1) * _GAP + bottom
@@ -790,7 +972,7 @@ def figure_layout(spec, panels, style=None):
                 channel_labels.append((r, (x0, 0.0, x0 + pw, top)))
                 if shared_cb:
                     cbars.append({"row": r, "frame": None, "orient": "h",
-                                  "box": (x0, y_end + 0.06, x0 + pw, y_end + 0.06 + _CBAR_W)})
+                                  "box": (x0, y_end + 0.06, x0 + pw, y_end + 0.06 + max(bar_h, 0.01))})
             for j, f in enumerate(frames):
                 y0 = top + j * (ph + _GAP)
                 frame_labels.append((f, (x_base, y0, x_base + left - 0.06, y0 + ph)))
@@ -799,10 +981,78 @@ def figure_layout(spec, panels, style=None):
                     cells[(r, f)] = (x0, y0, x0 + pw, y0 + ph)
                     if per_img_cb:
                         cbars.append({"row": r, "frame": f, "orient": "v",
-                                      "box": (x0 + pw + 0.05, y0, x0 + pw + 0.05 + _CBAR_W, y0 + ph)})
+                                      "box": (x0 + pw + 0.05, y0, x0 + pw + 0.05 + max(bar_v, 0.01), y0 + ph)})
     return {"size": (fig_w, fig_h), "cells": cells, "frame_labels": frame_labels,
             "channel_labels": channel_labels, "colorbars": cbars,
             "transpose": bool(st["transpose"]), "blocks": blocks, "panel": (pw, ph)}
+
+
+def zoom_grid_shape(n_zooms):
+    """(rows, cols) of the zoom panels next to the overview."""
+    if n_zooms <= 0:
+        return 0, 0
+    rows = 1 if n_zooms <= 3 else 2 if n_zooms <= 8 else 3
+    return rows, int(math.ceil(n_zooms / rows))
+
+
+def _layout_zoom(spec, panels, st):
+    """Overview on the left (as tall as the zoom grid), zooms in a grid on
+    the right; one such band per channel."""
+    n_f = len(spec["columns"])
+    n_ch = max(1, len(spec["rows"]))
+    pw = float(st["panel_w"])
+    keys = [c["key"] for c in spec["columns"]]
+    ov_aspect = _panel_aspect(panels, {keys[0]}) if keys else 1.0
+    z_aspect = _panel_aspect(panels, set(keys[1:])) if n_f > 1 else 1.0
+    ph = pw * z_aspect
+    per_img_cb = st["colorbars"] and st["range_mode"] == "image"
+    shared_cb = st["colorbars"] and st["range_mode"] == "row"
+    bar, extra = cbar_dims(st, "v")
+    pimg = (0.05 + bar + extra) if per_img_cb else 0.0
+    top = _header_height(spec, st)
+    n_z = max(0, n_f - 1)
+    z_rows, z_cols = zoom_grid_shape(n_z)
+    if n_z:
+        band_h = z_rows * (top + ph) + (z_rows - 1) * _GAP
+    else:
+        band_h = top + 2.0 * pw * ov_aspect
+    ov_h = band_h - top
+    ov_w = ov_h / ov_aspect
+    longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
+    left = 0.42 if longest <= 4 else 0.30
+    x_z = left + ov_w + pimg + 3 * _GAP
+    zoom_w = z_cols * (pw + pimg) + max(0, z_cols - 1) * _GAP
+    x_end = x_z + zoom_w if n_z else left + ov_w + pimg
+    right = (0.06 + bar + extra + 0.06) if shared_cb else 0.12
+    fig_w = x_end + right
+    fig_h = n_ch * band_h + (n_ch - 1) * _BLOCK_GAP + _BOTTOM
+    cells, frame_labels, channel_labels, cbars = {}, [], [], []
+    for r in range(n_ch):
+        yb = r * (band_h + _BLOCK_GAP)
+        if n_f:
+            frame_labels.append((0, (left, yb, left + ov_w, yb + top)))
+            cells[(r, 0)] = (left, yb + top, left + ov_w, yb + top + ov_h)
+            if per_img_cb:
+                cbars.append({"row": r, "frame": 0, "orient": "v",
+                              "box": (left + ov_w + 0.05, yb + top,
+                                      left + ov_w + 0.05 + max(bar, 0.01), yb + top + ov_h)})
+        for j in range(n_z):
+            f = j + 1
+            gr, gc = divmod(j, z_cols)
+            x0 = x_z + gc * (pw + pimg + _GAP)
+            y0 = yb + gr * (top + ph + _GAP)
+            frame_labels.append((f, (x0, y0, x0 + pw, y0 + top)))
+            cells[(r, f)] = (x0, y0 + top, x0 + pw, y0 + top + ph)
+            if per_img_cb:
+                cbars.append({"row": r, "frame": f, "orient": "v",
+                              "box": (x0 + pw + 0.05, y0 + top, x0 + pw + 0.05 + max(bar, 0.01), y0 + top + ph)})
+        channel_labels.append((r, (0.0, yb + top, left, yb + band_h)))
+        if shared_cb:
+            cbars.append({"row": r, "frame": None, "orient": "v",
+                          "box": (x_end + 0.06, yb + top, x_end + 0.06 + max(bar, 0.01), yb + band_h)})
+    return {"size": (fig_w, fig_h), "cells": cells, "frame_labels": frame_labels,
+            "channel_labels": channel_labels, "colorbars": cbars, "transpose": False,
+            "blocks": [list(range(n_f))], "panel": (pw, ph)}
 
 
 def _ax_rect(box, size):
@@ -812,27 +1062,176 @@ def _ax_rect(box, size):
 
 
 # ---------------------------------------------------------------------------
+# Zoom boxes (overview + zooms)
+# ---------------------------------------------------------------------------
+
+ZOOM_COLORS = ("#ffd23f", "#3bceac", "#ff5d73", "#5ab0ff", "#c792ea", "#ff9f1c",
+               "#a3e048", "#f78fb3")
+
+
+def _frame_geometry(m):
+    ext = m.get("extent")
+    if not ext or len(ext) != 4:
+        return None
+    try:
+        x0, x1, y1, y0 = (float(v) for v in ext)
+    except (TypeError, ValueError):
+        return None
+    xs, ys = x1 - x0, y1 - y0
+    if not (xs > 0 and ys > 0):
+        return None
+    return {"cx": 0.5 * (x0 + x1), "cy": 0.5 * (y0 + y1), "w": xs, "h": ys,
+            "angle": float(m.get("angle") or 0.0)}
+
+
+def _local_to_abs(g, fx, fy):
+    """Frame fraction (fx right, fy down from the top-left) -> absolute nm.
+    Same convention as ``geometry.spec_mapping.pixel_to_nm``."""
+    u = (fx - 0.5) * g["w"]
+    v = (0.5 - fy) * g["h"]
+    t = math.radians(g["angle"])
+    c, s = math.cos(t), math.sin(t)
+    return g["cx"] + u * c + v * s, g["cy"] - u * s + v * c
+
+
+def _abs_to_local(g, x, y):
+    """Absolute nm -> frame fraction; the rotate-then-normalise order of
+    ``geometry.spec_mapping.map_spec_to_pixels`` (what the preview draws)."""
+    dx, dy = x - g["cx"], y - g["cy"]
+    t = math.radians(g["angle"])
+    c, s = math.cos(t), math.sin(t)
+    u = dx * c - dy * s
+    v = dx * s + dy * c
+    return u / g["w"] + 0.5, 0.5 - v / g["h"]
+
+
+def zoom_box(child, parent):
+    """The child frame's four corners as fractions of the parent's raster
+    (fx, fy from the top-left), or None."""
+    gc, gp = _frame_geometry(child), _frame_geometry(parent)
+    if not gc or not gp:
+        return None
+    return [_abs_to_local(gp, *_local_to_abs(gc, fx, fy))
+            for fx, fy in ((0, 0), (1, 0), (1, 1), (0, 1))]
+
+
+def _turn_frac(fx, fy, turns):
+    """Fraction in the acquired raster -> after ``turns`` clockwise quarter
+    turns (the display orientation of ``geometry.orientation``)."""
+    for _ in range(int(turns or 0) % 4):
+        fx, fy = 1.0 - fy, fx
+    return fx, fy
+
+
+def size_text(m):
+    g = _frame_geometry(m)
+    if not g:
+        return ""
+    w, h = g["w"], g["h"]
+
+    def fmt(v):
+        return f"{v / 1000:.3g} µm" if v >= 1000 else f"{v:.3g} nm"
+
+    return fmt(w) if abs(w - h) <= 0.02 * max(w, h) else f"{fmt(w).split()[0]} × {fmt(h)}"
+
+
+def find_zoom_families(images, min_ratio=2.5, tol=0.04):
+    """Overview -> zooms: every frame that sits inside a larger one.
+
+    A frame's parent is the *smallest* frame with >= ``min_ratio`` times its
+    area that contains all four of its corners (rotation-aware, same
+    convention as the spectroscopy markers; ``tol`` = allowed overhang as a
+    fraction of the parent). Families are one level deep - an overview and
+    its direct zooms; a zoom with zooms of its own gets its own family.
+    Re-scans of the same zoom footprint count once (the latest is shown).
+
+    Returns ``[{id, keys, root, recipe:"zoom", levels, excluded}]``,
+    ``keys`` = root first, then the zooms by acquisition time.
+    """
+    from ..reporting.model import _same_footprint
+
+    geoms = {}
+    for img in images or []:
+        g = _frame_geometry(img)
+        if g:
+            geoms[str(img["key"])] = (img, g)
+    parent_of = {}
+    items = list(geoms.items())
+    for ck, (cimg, gc) in items:
+        area_c = gc["w"] * gc["h"]
+        best = None
+        for pk, (pimg, gp) in items:
+            if pk == ck:
+                continue
+            area_p = gp["w"] * gp["h"]
+            if area_p < min_ratio * area_c:
+                continue
+            corners = [_abs_to_local(gp, *_local_to_abs(gc, fx, fy))
+                       for fx, fy in ((0, 0), (1, 0), (1, 1), (0, 1))]
+            if all(-tol <= fx <= 1 + tol and -tol <= fy <= 1 + tol for fx, fy in corners):
+                if best is None or area_p < best[0]:
+                    best = (area_p, pk)
+        if best:
+            parent_of[ck] = best[1]
+    children = {}
+    for ck, pk in parent_of.items():
+        children.setdefault(pk, []).append(ck)
+    out = []
+    for pk, kids in children.items():
+        kids.sort(key=lambda k: (_time_sort(geoms[k][0]), k))
+        # distinct footprints among the zooms
+        groups = []
+        for k in kids:
+            g = geoms[k][1]
+            geo = (g["cx"], g["cy"], g["w"], g["h"], g["angle"])
+            for grp in groups:
+                if _same_footprint(geo, grp[0]):
+                    grp[1].append(k)
+                    break
+            else:
+                groups.append((geo, [k]))
+        keys = [pk] + kids
+        out.append({
+            "id": "zoom-" + series_id(keys),
+            "keys": keys,
+            "root": pk,
+            "recipe": "zoom",
+            "levels": len(groups),
+            "excluded": [],
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
+def _effects(enabled, color):
+    if not enabled:
+        return []
+    import matplotlib.patheffects as pe
+    other = "black" if color == "white" else "white"
+    return [pe.withStroke(linewidth=1.6, foreground=other)]
+
 
 def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
            text_color="black"):
     """Draw the figure into ``fig`` (cleared first).
 
-    ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm}}``
-    with ``data`` in the channel's *normalised* unit and row 0 = top of the
-    scan (as the preview shows it). ``clims``: user overrides keyed by
-    ``clim_key(row_label)`` (shared mode) or ``clim_key(row_label, key)``
-    (per image), values in the row's display unit.
+    ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
+    turns}}`` with ``data`` in the channel's *normalised* unit and row 0 =
+    top of the scan (as the preview shows it). ``clims``: user overrides
+    keyed by ``clim_key(row_label)`` (shared mode) or ``clim_key(row_label,
+    key)`` (per image), values in the row's display unit.
     Returns the layout dict plus ``ranges`` {row: (lo, hi)} (shared mode),
-    ``panel_ranges`` {(row, frame): (lo, hi)}, ``units``, ``own_scale``.
+    ``panel_ranges`` {(row, frame): (lo, hi)}, ``units``, ``own_scale`` and
+    hit boxes for letters / scale bars.
     """
-    import matplotlib.patheffects as pe
-
     st = resolve_style(style)
     font = float(st["font"])
     clims = dict(clims or {})
     layout = figure_layout(spec, panels, st)
+    st = dict(st, panel_w=layout["panel_w"])
     size = layout["size"]
     fig.clear()
     fig.set_size_inches(*size, forward=False)
@@ -842,13 +1241,10 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
         import matplotlib
         get_cmap = matplotlib.colormaps.get_cmap
 
-    def stroke(color):
-        other = "black" if color == "white" else "white"
-        return [pe.withStroke(linewidth=1.6, foreground=other)]
-
     shared = st["range_mode"] == "row"
     columns = spec["columns"]
     n_rows = len(spec["rows"])
+    is_zoom = spec.get("mode") == "zoom"
 
     # Letter / scale-bar placement in on-page reading order.
     order = sorted(layout["cells"], key=lambda rf: (layout["cells"][rf][1], layout["cells"][rf][0]))
@@ -860,61 +1256,86 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
         else:
             for f in range(len(columns)):
                 letter_of[(0, f)] = letter_text(f, st["letter_style"])
+    frame_letter = {f: letter_text(f, st["letter_style"]) for f in range(len(columns))}
     scale_cells = set()
     if st["scale_bar"] == "all":
         scale_cells = set(layout["cells"])
     elif st["scale_bar"] == "one" and layout["cells"]:
-        # bottom-left panel of the page (last block's first panel row)
-        scale_cells = {max(layout["cells"], key=lambda rf: (layout["cells"][rf][1], -layout["cells"][rf][0]))}
+        if is_zoom:
+            # every frame has its own size: one bar per frame (first channel)
+            scale_cells = {(0, f) for f in range(len(columns))}
+        else:
+            scale_cells = {max(layout["cells"], key=lambda rf: (layout["cells"][rf][1], -layout["cells"][rf][0]))}
 
     ranges, panel_ranges, units, images, panel_images = {}, {}, {}, {}, {}
-    own_scale = {}
-    cbar_artists = []
+    own_scale, axes_of, dims_of = {}, {}, {}
+    cbar_artists, letter_boxes, scale_boxes = [], [], []
     for r, row in enumerate(spec["rows"]):
+        mixed = row["kind"] == "mixed"
+        cell_kind = row.get("cell_kind") or {}
         relative = row["kind"] == "z"
-        row_data = {c["key"]: (_relative(panels[(r, c["key"])]["data"]) if relative
+
+        def is_rel(k):
+            return cell_kind.get(k) == "z" if mixed else relative
+
+        row_data = {c["key"]: (_relative(panels[(r, c["key"])]["data"]) if is_rel(c["key"])
                                else np.asarray(panels[(r, c["key"])]["data"], dtype=float))
                     for c in columns if (r, c["key"]) in panels}
         unit = next((panels[(r, c["key"])].get("unit") for c in columns
                      if (r, c["key"]) in panels), "")
         # A channel with no contrast anywhere (topography of CH frames: Z is
-        # held constant) gets "flat signal" tags with its actual level
-        # instead of an orange block and 1e-12 colourbar ticks.
+        # held constant) gets "flat signal" tags with its actual level.
         flat_level = _flat_row_level(
             {c["key"]: panels[(r, c["key"])]["data"] for c in columns if (r, c["key"]) in panels})
         if flat_level is not None:
             row_data = {k: np.asarray(panels[(r, k)]["data"], dtype=float) for k in row_data}
             outliers = {k: "flat" for k in row_data}
         else:
-            outliers = baseline_outliers(row_data) if shared else {}
+            outliers = baseline_outliers(row_data) if (shared and not mixed) else {}
+            # A single frame with no contrast of its own (CH topography in a
+            # zoom figure, a dead channel) is "flat signal" in any mode.
+            for k, a in row_data.items():
+                if k not in outliers and _flat_row_level({k: panels[(r, k)]["data"]}) is not None:
+                    outliers[k] = "flat"
+                    row_data[k] = np.asarray(panels[(r, k)]["data"], dtype=float)  # its real level
         for k, why in outliers.items():
             own_scale[(r, k)] = why
         inliers = [a for k, a in row_data.items() if k not in outliers] or list(row_data.values())
         if relative and flat_level is None:
-            # Topography: one height scale that fits the *typical* frame, so
-            # a tip crash or step in one frame saturates there instead of
-            # flattening every other frame (signal rows pool instead: a frame
-            # with more contrast - closer tip, other bias - is the point).
+            # Topography: one height scale fitted to the *typical* frame, so
+            # a tip crash in one frame saturates there instead of darkening
+            # every other frame (signal rows pool: more contrast is content).
             raw_lo, raw_hi = typical_range(inliers)
         else:
             raw_lo, raw_hi = pooled_range(inliers)
         d_unit, factor = row_display_unit(unit, [np.array([raw_lo, raw_hi])])
-        units[r] = d_unit
+        units[r] = d_unit if not mixed else ""
         user = clims.get(clim_key(row["label"]))
         ranges[r] = (float(user[0]), float(user[1])) if (shared and user) else (raw_lo * factor, raw_hi * factor)
         cmap = get_cmap(row["cmap"])
+        # Mixed rows (different channels per frame) have no common range or
+        # unit: every panel is scaled on its own, in its own unit.
+        row_shared = shared and not mixed
         last_im = None
         for f, col in enumerate(columns):
-            box = layout["cells"][(r, f)]
+            box = layout["cells"].get((r, f))
+            if box is None:
+                continue
             ax = fig.add_axes(_ax_rect(box, size))
             ax.set_axis_off()
+            ax.set_gid(f"panel_{r}_{f}")
+            axes_of[(r, f)] = ax
             if col["key"] not in row_data:
                 ax.add_patch(_placeholder(ax))
                 continue
             p = panels[(r, col["key"])]
-            data = row_data[col["key"]] * factor
+            c_unit, c_factor, c_cmap = d_unit, factor, cmap
+            if mixed:
+                c_unit, c_factor = row_display_unit(p.get("unit") or "", [row_data[col["key"]]])
+                c_cmap = get_cmap((row.get("cell_cmap") or {}).get(col["key"]) or "gray")
+            data = row_data[col["key"]] * c_factor
             own = (r, col["key"]) in own_scale
-            if shared and not own:
+            if row_shared and not own:
                 lo, hi = ranges[r]
             else:
                 user_p = clims.get(clim_key(row["label"], col["key"]))
@@ -922,62 +1343,70 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             panel_ranges[(r, f)] = (lo, hi)
             w = _finite(p.get("width_nm")) or float(data.shape[1])
             h = _finite(p.get("height_nm")) or float(data.shape[0])
-            im = ax.imshow(data, cmap=cmap, vmin=lo, vmax=hi, origin="upper",
+            if p.get("turns", 0) % 2 and _finite(p.get("width_nm")):
+                w, h = h, w
+            dims_of[(r, f)] = (w, h, p.get("turns", 0))
+            im = ax.imshow(data, cmap=c_cmap, vmin=lo, vmax=hi, origin="upper",
                            interpolation="nearest", extent=(0.0, w, 0.0, h), aspect="auto")
+            im.set_gid(f"image_{r}_{f}")
             panel_images[(r, f)] = im
             ax.set_xlim(0.0, w)
             ax.set_ylim(0.0, h)
-            # True aspect inside the cell (a selection can mix frame sizes).
             ax.set_aspect("equal", adjustable="box", anchor="C")
+            taken = set()
+            letter = letter_of.get((r, f))
+            if letter:
+                taken.add(st["letter_pos"])
+            if (r, f) in scale_cells:
+                taken.add(st["scale_pos"])
             if own:
                 tag = "own scale"
                 if own_scale[(r, col["key"])] == "flat":
-                    # No signal: dim it so amplified noise can't pass as
-                    # contrast, and say what the level actually is.
                     im.set_alpha(0.35)
                     v = _sample(data)
-                    tag = "flat signal" + (f" · {float(np.median(v)):.5g} {d_unit}" if v.size else "")
-                # First corner not taken by this panel's letter / scale bar.
-                taken = set()
-                if letter_of.get((r, f)):
-                    taken.add(st["letter_pos"])
-                if (r, f) in scale_cells:
-                    taken.add(st["scale_pos"])
+                    tag = "flat signal" + (f" · {float(np.median(v)):.5g} {c_unit}" if v.size else "")
                 corner = next((c for c in ("br", "bl", "tr", "tl") if c not in taken), "br")
+                taken.add(corner)
                 tx, ty, tha, tva = _corner(w, h, corner, inset=0.03)
                 ax.text(tx, ty, tag, color="white", fontsize=font - 1, ha=tha, va=tva,
-                        path_effects=stroke("white"), zorder=7)
+                        path_effects=_effects(True, "white"), zorder=7, gid=f"note_{r}_{f}")
             else:
                 images.setdefault(r, []).append(im)
                 last_im = im
-            letter = letter_of.get((r, f))
             if letter:
-                _draw_corner_text(ax, w, h, letter, st["letter_pos"], st["letter_color"],
-                                  float(st["letter_size"]), bool(st["letter_bold"]),
-                                  stroke(st["letter_color"]))
+                t = _draw_corner_text(ax, w, h, letter, st["letter_pos"], st["letter_color"],
+                                      float(st["letter_size"]), bool(st["letter_bold"]),
+                                      _effects(st["letter_outline"], st["letter_color"]))
+                t.set_gid(f"letter_{r}_{f}")
+                letter_boxes.append({"row": r, "frame": f, "box": _corner_box(
+                    box, st["letter_pos"], float(st["letter_size"]), len(letter))})
             if (r, f) in scale_cells and _finite(p.get("width_nm")):
-                _draw_scale_bar(ax, w, h, st, font, stroke(st["scale_color"]))
+                sb = _draw_scale_bar(ax, w, h, st, font, _effects(st["scale_outline"], st["scale_color"]),
+                                     gid=f"scalebar_{r}_{f}")
+                if sb:
+                    scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
             if st["colorbars"] and not shared and own_scale.get((r, col["key"])) != "flat":
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] == f:
-                        cb = _colorbar(fig, im, entry, size, lo, hi, st, font, text_color,
-                                       label=None)
+                        cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, None, c_unit)
                         cbar_artists.append((entry, cb))
-        if st["colorbars"] and shared:
-            ref_im = last_im
-            if ref_im is None and images.get(r):
-                ref_im = images[r][-1]
+        if st["colorbars"] and row_shared:
+            ref_im = last_im if last_im is not None else (images.get(r) or [None])[-1]
             if ref_im is not None:
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] is None:
                         label = None
                         if st["cbar_label"]:
                             label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
-                        cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, font, text_color, label)
+                        cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, text_color, label, d_unit)
                         cbar_artists.append((entry, cb))
+
+    if is_zoom:
+        _draw_zoom_boxes(spec, st, axes_of, dims_of, frame_letter, font)
 
     # Frame headers and channel labels as figure text.
     fig_w, fig_h = size
+    seen_headers = set()
     for f, (x0, y0, x1, y1) in layout["frame_labels"]:
         col = columns[f]
         weight = "bold" if col.get("is_ref") else "normal"
@@ -987,69 +1416,203 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             n_lines = 2 if col.get("subheader") else 1
             base = y1 - 0.05 - (line if n_lines == 2 else 0.0)
             fig.text(xc, 1.0 - base / fig_h, col["header"], ha="center", va="bottom",
-                     fontsize=font, color=text_color, fontweight=weight)
+                     fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
             if col.get("subheader"):
                 fig.text(xc, 1.0 - (y1 - 0.05) / fig_h, col["subheader"], ha="center",
-                         va="bottom", fontsize=font - 1, color=text_color)
+                         va="bottom", fontsize=font - 1, color=text_color, gid=f"header_{f}_sub")
         else:
             yc = 0.5 * (y0 + y1)
             dy = 0.5 * font / 72.0 * 1.4 if col.get("subheader") else 0.0
             fig.text(x1 / fig_w, 1.0 - (yc - dy) / fig_h, col["header"], ha="right",
-                     va="center", fontsize=font, color=text_color, fontweight=weight)
+                     va="center", fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
             if col.get("subheader"):
                 fig.text(x1 / fig_w, 1.0 - (yc + dy) / fig_h, col["subheader"], ha="right",
-                         va="center", fontsize=font - 1, color=text_color)
+                         va="center", fontsize=font - 1, color=text_color, gid=f"header_{f}_sub")
+        seen_headers.add(f)
     for r, (x0, y0, x1, y1) in layout["channel_labels"]:
+        if n_rows < 2 and is_zoom:
+            continue  # one channel: the colourbar / caption says what it is
         row = spec["rows"][r]
         text = row["display"]
         if not layout["transpose"]:
             fig.text((x1 - 0.08) / fig_w, 1.0 - 0.5 * (y0 + y1) / fig_h, text,
                      ha="right", va="center", rotation=90 if len(text) > 4 else 0,
-                     fontsize=font + 1, color=text_color)
+                     fontsize=font + 1, color=text_color, gid=f"channel_{r}")
         else:
             fig.text(0.5 * (x0 + x1) / fig_w, 1.0 - (y1 - 0.04) / fig_h, text,
-                     ha="center", va="bottom", fontsize=font + 1, color=text_color)
+                     ha="center", va="bottom", fontsize=font + 1, color=text_color, gid=f"channel_{r}")
 
     layout.update({"ranges": ranges, "panel_ranges": panel_ranges, "units": units,
                    "images": images, "panel_images": panel_images,
                    "colorbar_artists": cbar_artists, "own_scale": own_scale,
+                   "letter_boxes": letter_boxes, "scale_boxes": scale_boxes,
                    "style": st, "n_rows": n_rows})
     return layout
 
 
-def _colorbar(fig, im, entry, size, lo, hi, st, font, text_color, label):
-    cax = fig.add_axes(_ax_rect(entry["box"], size))
-    orient = "horizontal" if entry["orient"] == "h" else "vertical"
+def _draw_zoom_boxes(spec, st, axes_of, dims_of, frame_letter, font):
+    """Outline every zoom on its parent's panel, in the zoom's colour,
+    labelled with the zoom's letter; colour-frame the zoom panels."""
+    from matplotlib.patches import Polygon, Rectangle
+
+    columns = spec["columns"]
+    index = {c["key"]: f for f, c in enumerate(columns)}
+    mode = st.get("zoom_color") or "color"
+    lw = float(st.get("zoom_lw") or 1.0)
+    for f, col in enumerate(columns):
+        parent = col.get("parent")
+        corners = col.get("box")
+        if not parent or not corners or parent not in index:
+            continue
+        pf = index[parent]
+        color = (ZOOM_COLORS[(f - 1) % len(ZOOM_COLORS)] if mode == "color"
+                 else "white" if mode == "white" else "black")
+        for (r, ff), ax in axes_of.items():
+            if ff != pf or (r, ff) not in dims_of:
+                continue
+            w, h, turns = dims_of[(r, ff)]
+            pts = []
+            for fx, fy in corners:
+                tx, ty = _turn_frac(fx, fy, turns)
+                pts.append((tx * w, (1.0 - ty) * h))
+            ax.add_patch(Polygon(pts, closed=True, fill=False, edgecolor=color, linewidth=lw,
+                                 zorder=6, gid=f"zoombox_{r}_{f}"))
+            if st.get("zoom_labels", True) and frame_letter.get(f):
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                ax.text(min(xs) + 0.01 * w, max(ys) - 0.01 * h, frame_letter[f], color=color,
+                        fontsize=max(5.0, font), fontweight="bold", ha="left", va="top", zorder=7,
+                        path_effects=_effects(st.get("letter_outline", True),
+                                              "white" if mode != "black" else "black"),
+                        gid=f"zoomlabel_{r}_{f}")
+        if mode == "color":
+            for (r, ff), ax in axes_of.items():
+                if ff == f:
+                    ax.add_patch(Rectangle((0, 0), 1, 1, transform=ax.transAxes, fill=False,
+                                           edgecolor=color, linewidth=lw * 1.6, zorder=8,
+                                           clip_on=False, gid=f"zoomframe_{r}_{f}"))
+
+
+def _contrast_text_color(cmap, at):
+    try:
+        r, g, b, _a = cmap(at)
+    except Exception:
+        return "black"
+    return "black" if (0.299 * r + 0.587 * g + 0.114 * b) > 0.55 else "white"
+
+
+def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     import matplotlib.cm as mcm
+
+    font = float(st["font"])
+    style = st.get("cbar_style") or "outside"
+    rotated = (st.get("cbar_text") or "rotated") == "rotated"
+    horizontal = entry["orient"] == "h"
+    cax = fig.add_axes(_ax_rect(entry["box"], size))
+    cax.set_gid(f"colorbar_{entry['row']}_{entry['frame'] if entry['frame'] is not None else 'row'}")
+    if style == "minmax":
+        # No gradient: just "lo … hi unit" where the bar would be.
+        cax.set_axis_off()
+        cb = _MinMax(cax, lo, hi, unit, label, horizontal, font, text_color)
+        set_colorbar_range(cb, lo, hi)
+        return cb
     mappable = mcm.ScalarMappable(norm=im.norm, cmap=im.get_cmap())
-    cb = fig.colorbar(mappable, cax=cax, orientation=orient)
+    cb = fig.colorbar(mappable, cax=cax, orientation="horizontal" if horizontal else "vertical")
     cb._sxm_n_ticks = int(st["cbar_ticks"])
-    set_colorbar_range(cb, lo, hi)
-    cb.ax.tick_params(labelsize=font - 0.5, length=2, width=0.5, pad=1.5, colors=text_color)
+    cb._sxm_style = style
+    cb._sxm_rotated = rotated
+    cb._sxm_font = font
     cb.outline.set_linewidth(0.5)
+    cb.ax.tick_params(labelsize=font - 0.5, length=2, width=0.5, pad=1.5, colors=text_color)
+    if style == "inside":
+        cb._sxm_inside_colors = (_contrast_text_color(im.get_cmap(), 0.04),
+                                 _contrast_text_color(im.get_cmap(), 0.96))
+    set_colorbar_range(cb, lo, hi)
     if label:
-        cb.set_label(label, fontsize=font, labelpad=1.0, color=text_color)
+        if horizontal or rotated:
+            cb.set_label(label, fontsize=font, labelpad=1.0, color=text_color)
+        else:
+            cax.set_title(label, fontsize=font, color=text_color, loc="left", pad=2.0)
     return cb
+
+
+class _MinMax:
+    """Stand-in for a colourbar when only the range is printed."""
+
+    orientation = "minmax"
+
+    def __init__(self, cax, lo, hi, unit, label, horizontal, font, color):
+        self.ax = cax
+        self.unit = unit
+        self.label = label
+        self.horizontal = horizontal
+        self.font = font
+        self.color = color
+        self.mappable = None
 
 
 def set_colorbar_range(cb, lo, hi):
     """Few ticks only - a figure colourbar, not an axis."""
-    n = max(2, int(getattr(cb, "_sxm_n_ticks", 2) or 2))
     span = abs(hi - lo)
+    if isinstance(cb, _MinMax):
+        cax = cb.ax
+        for t in list(cax.texts):
+            t.remove()
+        if cb.horizontal:
+            txt = f"{_tick(lo, span)} … {_tick(hi, span)}" + (f" {cb.unit}" if cb.unit else "")
+        else:
+            txt = f"{_tick(hi, span)}\n{_tick(lo, span)}" + (f"\n{cb.unit}" if cb.unit else "")
+            if cb.label:
+                txt = f"{cb.label.split(' (')[0]}\n" + txt
+        cax.text(0.0, 0.5, txt, transform=cax.transAxes, fontsize=cb.font - 0.5, color=cb.color,
+                 ha="left", va="center", linespacing=1.15)
+        return
     cb.mappable.set_clim(lo, hi)
+    horizontal = cb.orientation == "horizontal"
+    if getattr(cb, "_sxm_style", "outside") == "inside":
+        # Values live *inside* the bar (Publication style), in a colour that
+        # reads on that end of the colormap.
+        cb.set_ticks([])
+        for t in getattr(cb, "_sxm_inside", []):
+            try:
+                t.remove()
+            except Exception:
+                pass
+        lo_c, hi_c = getattr(cb, "_sxm_inside_colors", ("white", "black"))
+        fs = getattr(cb, "_sxm_font", 7.0) - 0.5
+        if horizontal:
+            a = cb.ax.text(0.02, 0.5, _tick(lo, span), transform=cb.ax.transAxes, ha="left",
+                           va="center", fontsize=fs, color=lo_c)
+            b = cb.ax.text(0.98, 0.5, _tick(hi, span), transform=cb.ax.transAxes, ha="right",
+                           va="center", fontsize=fs, color=hi_c)
+        else:
+            rot = 90 if getattr(cb, "_sxm_rotated", True) else 0
+            a = cb.ax.text(0.5, 0.02, _tick(lo, span), transform=cb.ax.transAxes, ha="center",
+                           va="bottom", rotation=rot, fontsize=fs, color=lo_c)
+            b = cb.ax.text(0.5, 0.98, _tick(hi, span), transform=cb.ax.transAxes, ha="center",
+                           va="top", rotation=rot, fontsize=fs, color=hi_c)
+        cb._sxm_inside = [a, b]
+        return
+    n = max(2, int(getattr(cb, "_sxm_n_ticks", 2) or 2))
     ticks = list(np.linspace(lo, hi, n))
     cb.set_ticks(ticks)
     cb.set_ticklabels([_tick(t, span) for t in ticks])
     # End labels sit inside the bar's own span, so stacked / side-by-side
     # colourbars never print "0.08" on top of the neighbour's "10.9".
-    horizontal = cb.orientation == "horizontal"
     axis = cb.ax.xaxis if horizontal else cb.ax.yaxis
+    rotated = getattr(cb, "_sxm_rotated", True)
     major = axis.get_major_ticks()
     for i, tick in enumerate(major):
         for lab in (tick.label1, tick.label2):
             if horizontal:
                 lab.set_horizontalalignment("left" if i == 0 else "right" if i == len(major) - 1 else "center")
+            elif rotated:
+                lab.set_rotation(90)
+                lab.set_verticalalignment("center")
+                lab.set_horizontalalignment("left")
+                lab.set_verticalalignment("bottom" if i == 0 else "top" if i == len(major) - 1 else "center")
             else:
+                lab.set_rotation(0)
                 lab.set_verticalalignment("bottom" if i == 0 else "top" if i == len(major) - 1 else "center")
 
 
@@ -1078,14 +1641,16 @@ def _tick(v, span=None):
     a = abs(v)
     if a == 0 or (span and a < 5e-3 * span):
         return "0"
-    ref = max(a, span or 0.0)
-    if ref >= 100:
-        return f"{v:.0f}"
-    if ref >= 10:
-        return f"{v:.1f}"
-    if ref >= 0.01:
-        return f"{v:.2f}"
-    return f"{v:.1e}"
+    if a >= 1e5 or a < 1e-3:
+        return f"{v:.1e}"
+    # Precision follows the *range* (3 significant digits of the span) so a
+    # narrow range around a large value never prints one number twice.
+    ref = span if span else a
+    d = max(0, min(6, 2 - int(math.floor(math.log10(ref))))) if ref > 0 else 2
+    txt = f"{v:.{d}f}"
+    if "." in txt:
+        txt = txt.rstrip("0").rstrip(".")
+    return txt
 
 
 def _placeholder(ax):
@@ -1102,31 +1667,56 @@ def _corner(w, h, pos, inset=0.04):
     return x, y, ha, va
 
 
+def _corner_box(cell, pos, size_pt, n_chars, inset=0.04):
+    """Approximate inch box of a corner label (for hit-testing)."""
+    x0, y0, x1, y1 = cell
+    w_in = max(0.12, 0.62 * size_pt / 72.0 * max(1, n_chars))
+    h_in = 1.25 * size_pt / 72.0
+    cw, ch = x1 - x0, y1 - y0
+    left = x0 + inset * cw if pos in ("tl", "bl") else x1 - inset * cw - w_in
+    top = y0 + inset * ch if pos in ("tl", "tr") else y1 - inset * ch - h_in
+    return (left, top, left + w_in, top + h_in)
+
+
+def _frac_box(cell, frac):
+    """Data-fraction box (fx0, fy0, fx1, fy1 with fy up) -> inch box."""
+    x0, y0, x1, y1 = cell
+    fx0, fy0, fx1, fy1 = frac
+    cw, ch = x1 - x0, y1 - y0
+    return (x0 + fx0 * cw, y1 - fy1 * ch, x0 + fx1 * cw, y1 - fy0 * ch)
+
+
 def _draw_corner_text(ax, w, h, text, pos, color, size, bold, effects):
     x, y, ha, va = _corner(w, h, pos)
-    ax.text(x, y, text, color=color, fontsize=size, fontweight="bold" if bold else "normal",
-            va=va, ha=ha, path_effects=effects, zorder=7)
+    return ax.text(x, y, text, color=color, fontsize=size, fontweight="bold" if bold else "normal",
+                   va=va, ha=ha, path_effects=effects, zorder=7)
 
 
-def _draw_scale_bar(ax, w, h, st, font, effects):
+def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar"):
+    """Draw the bar; returns its (fx0, fy0, fx1, fy1) data fractions incl.
+    the label, for hit-testing (None if not drawn)."""
     length = _finite(st.get("scale_len_nm")) or nice_length(0.3 * w)
     if not length or length > w:
-        return
+        return None
     pos = st["scale_pos"]
     color = st["scale_color"]
     edge = "black" if color == "white" else "white"
-    bar_h = max(0.018 * h, 1e-9)
+    bar_h = max(float(st.get("scale_thick") or 0.018) * h, 1e-9)
     x0 = 0.06 * w if pos in ("tl", "bl") else 0.94 * w - length
-    label_h = 0.07 * h if st["scale_label"] else 0.0
+    label_h = 0.09 * h if st["scale_label"] else 0.0
     if pos in ("bl", "br"):
         y0 = 0.07 * h
         ty, tva = y0 + bar_h + 0.02 * h, "bottom"
+        box_y = (y0, y0 + bar_h + label_h)
     else:
         y0 = 0.93 * h - bar_h
         ty, tva = y0 - 0.02 * h, "top"
+        box_y = (y0 - label_h, y0 + bar_h)
     from matplotlib.patches import Rectangle
     ax.add_patch(Rectangle((x0, y0), length, bar_h, facecolor=color,
-                           edgecolor=edge, linewidth=0.4, zorder=5))
+                           edgecolor=edge if st.get("scale_outline", True) else color,
+                           linewidth=0.4, zorder=5, gid=gid))
     if label_h:
         ax.text(x0 + 0.5 * length, ty, length_text(length), color=color, fontsize=font,
-                ha="center", va=tva, zorder=6, path_effects=effects)
+                ha="center", va=tva, zorder=6, path_effects=effects, gid=gid + "_label")
+    return (x0 / w, box_y[0] / h, (x0 + length) / w, box_y[1] / h)

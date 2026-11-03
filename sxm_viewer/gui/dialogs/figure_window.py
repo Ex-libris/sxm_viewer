@@ -29,6 +29,7 @@ from pathlib import Path
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...cmap_registry import get_cmap as registry_get_cmap
 from ...figures import height_series as hs
+from ...figures import svg_layers
 
 _PAPER_MARGIN = 14       # px around the paper inside the view
 _CLOSE_SIZE = 14         # px, hover × on frame headers
@@ -38,12 +39,20 @@ _CLICK_SLOP_PX = 3
 
 _LETTER_STYLE_NAMES = {"a": "a, b, c", "A": "A, B, C", "(a)": "(a), (b)", "a)": "a), b)", "a.": "a., b."}
 _CORNER_NAMES = {"tl": "Top left", "tr": "Top right", "bl": "Bottom left", "br": "Bottom right"}
-_HEADER_NAMES = {"auto": "Automatic (Δz / bias)", "dz": "Δz to the reference",
-                 "zabs": "Absolute z", "bias": "Bias", "name": "File name"}
-_MODE_TITLES = {"height": "Height series", "bias": "Bias series", "selection": "Figure"}
+_HEADER_NAMES = {"auto": "Automatic (Δz / bias / size)", "dz": "Δz to the reference",
+                 "zabs": "Absolute z", "bias": "Bias", "size": "Frame size", "name": "File name"}
+_MODE_TITLES = {"height": "Height series", "bias": "Bias series", "zoom": "Overview + zooms",
+                "selection": "Figure"}
+_CBAR_STYLES = {"outside": "Values outside (ticks)", "inside": "Values inside the bar",
+                "minmax": "Min - max text only"}
+_CBAR_TEXT = {"rotated": "Rotated text", "horizontal": "Horizontal text"}
+_ZOOM_COLORS = {"color": "One colour per zoom", "white": "White", "black": "Black"}
+_DPI_CHOICES = (300, 600, 1200)
+_WHEEL_COALESCE_S = 1.0
 _MODE_HINTS = {
     "height": "Click a Δz header: reference  ·  ",
     "bias": "",
+    "zoom": "",
     "selection": "",
 }
 _SCALE_NAMES = {"one": "One panel", "all": "Every panel", "off": "Off"}
@@ -69,6 +78,7 @@ class _FigureView(QtWidgets.QWidget):
     released = QtCore.pyqtSignal(object)
     double_clicked = QtCore.pyqtSignal(object)
     context = QtCore.pyqtSignal(object, object)    # hit, global QPoint
+    wheel = QtCore.pyqtSignal(object, object)      # hit, QWheelEvent (Ctrl held)
     resized = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
@@ -83,6 +93,7 @@ class _FigureView(QtWidgets.QWidget):
         self._pressed = False
         self.hit_test = None       # callable(x_in, y_in) -> hit dict | None
         self.add_row_box = None    # inches box of the "+ channel" handle
+        self.ruler_text = ""       # page-width ruler under the paper (screen only)
 
     # geometry -----------------------------------------------------------
     def available_px(self):
@@ -151,6 +162,19 @@ class _FigureView(QtWidgets.QWidget):
         p.drawRoundedRect(paper, 3, 3)
         p.drawImage(rect, self._image)
         accent = QtGui.QColor(30, 110, 220)
+        if self.ruler_text:
+            # Page width ruler: the paper is exactly the column width.
+            y = paper.bottom() + 9
+            pen = QtGui.QPen(self.palette().color(QtGui.QPalette.Mid), 1.0)
+            p.setPen(pen)
+            p.drawLine(QtCore.QPointF(rect.left(), y), QtCore.QPointF(rect.right(), y))
+            for x in (rect.left(), rect.right()):
+                p.drawLine(QtCore.QPointF(x, y - 4), QtCore.QPointF(x, y + 4))
+            f = p.font()
+            f.setPointSizeF(8.0)
+            p.setFont(f)
+            p.drawText(QtCore.QRectF(rect.left(), y + 2, rect.width(), 16),
+                       QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop, self.ruler_text)
         hit = self._hover
         # "+ channel" handle: screen-only (never exported).
         ar = self.add_rect()
@@ -250,6 +274,15 @@ class _FigureView(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton:
             self.double_clicked.emit(self._hit(event.pos()))
 
+    def wheelEvent(self, event):
+        # Ctrl+wheel sizes things (text, bars, letters) like everywhere else
+        # in the app; a plain wheel scrolls (actual-size view).
+        if event.modifiers() & QtCore.Qt.ControlModifier:
+            self.wheel.emit(self._hit(event.pos()), event)
+            event.accept()
+            return
+        event.ignore()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.resized.emit()
@@ -305,6 +338,17 @@ class _FormatPanel(QtWidgets.QScrollArea):
             s.setSuffix(suffix)
             return s
 
+        g = section("Page")
+        w["page"] = combo(hs.PAGE_NAMES)
+        w["page"].setToolTip("Set the figure to a journal column width: panels shrink or grow to fit, "
+                             "text stays at its point size - what you see is what prints")
+        g.addRow(w["page"])
+        w["page_mm"] = spin(30.0, 400.0, 1.0, " mm")
+        g.addRow("Custom width", w["page_mm"])
+        w["_actual"] = QtWidgets.QCheckBox("Show at actual size (100 %)")
+        w["_actual"].setToolTip("Draw the figure at its real printed size on this screen")
+        g.addRow(w["_actual"])
+
         g = section("Layout")
         w["transpose"] = combo({False: "Frames across, channels down",
                                 True: "Frames down, channels across"})
@@ -338,6 +382,12 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow("Ticks", w["cbar_ticks"])
         w["cbar_label"] = QtWidgets.QCheckBox("Channel and unit label")
         g.addRow(w["cbar_label"])
+        w["cbar_style"] = combo(_CBAR_STYLES)
+        g.addRow("Values", w["cbar_style"])
+        w["cbar_text"] = combo(_CBAR_TEXT)
+        g.addRow("Vertical bars", w["cbar_text"])
+        w["cbar_w"] = spin(0.5, 8.0, 0.25, " mm")
+        g.addRow("Bar width", w["cbar_w"])
 
         g = section("Panel letters")
         w["letters"] = QtWidgets.QCheckBox("Show letters")
@@ -354,6 +404,8 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow("Size", w["letter_size"])
         w["letter_bold"] = QtWidgets.QCheckBox("Bold")
         g.addRow(w["letter_bold"])
+        w["letter_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
+        g.addRow(w["letter_outline"])
 
         g = section("Scale bar")
         w["scale_bar"] = combo(_SCALE_NAMES)
@@ -371,6 +423,28 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow("Colour", w["scale_color"])
         w["scale_label"] = QtWidgets.QCheckBox("Length label")
         g.addRow(w["scale_label"])
+        w["scale_thick"] = spin(0.5, 8.0, 0.25, " %")
+        w["scale_thick"].setToolTip("Bar thickness as a percentage of the panel height (Ctrl+wheel on the bar)")
+        g.addRow("Thickness", w["scale_thick"])
+        w["scale_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
+        g.addRow(w["scale_outline"])
+
+        self.zoom_title = QtWidgets.QLabel("Zoom outlines")
+        zf = self.zoom_title.font()
+        zf.setBold(True)
+        self.zoom_title.setFont(zf)
+        self.zoom_title.setContentsMargins(0, 8, 0, 0)
+        self.form.addWidget(self.zoom_title)
+        self.zoom_box = QtWidgets.QWidget()
+        g = QtWidgets.QFormLayout(self.zoom_box)
+        g.setContentsMargins(0, 0, 0, 0)
+        self.form.addWidget(self.zoom_box)
+        w["zoom_color"] = combo(_ZOOM_COLORS)
+        g.addRow("Colour", w["zoom_color"])
+        w["zoom_lw"] = spin(0.25, 4.0, 0.25, " pt")
+        g.addRow("Line width", w["zoom_lw"])
+        w["zoom_labels"] = QtWidgets.QCheckBox("Letter next to each outline")
+        g.addRow(w["zoom_labels"])
 
         self.form.addStretch(1)
         self.reset_btn = QtWidgets.QPushButton("Reset format")
@@ -386,6 +460,14 @@ class _FormatPanel(QtWidgets.QScrollArea):
                 widget.valueChanged.connect(lambda _v, k=key: self._emit(k))
         w["channels"].itemChanged.connect(lambda _i: self._emit("channels"))
         w["channels"].model().rowsMoved.connect(lambda *_a: self._emit("channels"))
+
+    # Widget value <-> style value for keys shown in friendlier units.
+    _TO_WIDGET = {"scale_thick": lambda v: float(v) * 100.0, "cbar_w": lambda v: float(v) * 25.4}
+    _FROM_WIDGET = {"scale_thick": lambda v: float(v) / 100.0, "cbar_w": lambda v: float(v) / 25.4}
+
+    def set_mode(self, mode):
+        for wdg in (self.zoom_title, self.zoom_box):
+            wdg.setVisible(mode == "zoom")
 
     def _emit(self, key):
         if self._syncing:
@@ -411,16 +493,21 @@ class _FormatPanel(QtWidgets.QScrollArea):
             value = widget.isChecked()
         else:
             value = float(widget.value())
+        if key in self._FROM_WIDGET:
+            value = self._FROM_WIDGET[key](value)
         self.changed.emit({key: value})
 
-    def sync(self, style, spec, auto_scale_nm=None):
+    def sync(self, style, spec, auto_scale_nm=None, actual=False):
         self._syncing = True
         try:
             w = self.w
+            w["_actual"].setChecked(bool(actual))
             for key, widget in w.items():
-                if key in ("channels", "scale_auto", "scale_len_nm"):
+                if key in ("channels", "scale_auto", "scale_len_nm", "_actual"):
                     continue
                 value = style.get(key)
+                if key in self._TO_WIDGET and value is not None:
+                    value = self._TO_WIDGET[key](value)
                 if isinstance(widget, QtWidgets.QComboBox):
                     idx = widget.findData(value)
                     if idx >= 0:
@@ -439,7 +526,7 @@ class _FormatPanel(QtWidgets.QScrollArea):
             shown = [r["label"] for r in (spec or {}).get("rows", [])]
             others = [c["label"] for c in (spec or {}).get("channels", []) if c["label"] not in shown]
             for label in shown + others:
-                it = QtWidgets.QListWidgetItem(label)
+                it = QtWidgets.QListWidgetItem(hs.channel_text(label))
                 it.setData(QtCore.Qt.UserRole, label)
                 it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsDragEnabled)
                 it.setCheckState(QtCore.Qt.Checked if label in shown else QtCore.Qt.Unchecked)
@@ -452,8 +539,16 @@ class _FormatPanel(QtWidgets.QScrollArea):
             for key in ("scale_auto", "scale_pos", "scale_color", "scale_label"):
                 w[key].setEnabled(scale_on)
             w["scale_len_nm"].setEnabled(scale_on and not auto)
-            for key in ("cbar_ticks", "cbar_label"):
-                w[key].setEnabled(bool(style.get("colorbars")))
+            bars_on = bool(style.get("colorbars"))
+            for key in ("cbar_ticks", "cbar_label", "cbar_style", "cbar_text", "cbar_w"):
+                w[key].setEnabled(bars_on)
+            if bars_on and style.get("cbar_style") == "minmax":
+                for key in ("cbar_ticks", "cbar_w", "cbar_text"):
+                    w[key].setEnabled(False)
+            w["page_mm"].setEnabled(style.get("page") == "custom")
+            w["panel_w"].setEnabled((style.get("page") or "free") == "free")
+            for key in ("scale_thick", "scale_outline"):
+                w[key].setEnabled(scale_on)
         finally:
             self._syncing = False
 
@@ -461,13 +556,16 @@ class _FormatPanel(QtWidgets.QScrollArea):
 class FigureWindow(QtWidgets.QWidget):
     """A live, data-aware figure (see module docstring)."""
 
-    def __init__(self, source, fid, keys, *, mode="height", excluded=None, parent=None):
+    def __init__(self, source, fid, keys, *, mode="height", excluded=None, root_key=None, parent=None):
         super().__init__(parent, QtCore.Qt.Window)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         self.source = source
         self.fid = fid
         self.mode = mode
+        self.root_key = str(root_key) if root_key else None
         self._keys = [str(k) for k in keys]
+        self._last_wheel = 0.0
+        self._actual = bool(source.export_settings().get("view_actual", False))
         self._excluded = list(excluded or [])
         self._aborted = []          # [{key, frac}] frames whose scan stopped early
         self.state = self._initial_state(source.get_state(fid))
@@ -500,7 +598,7 @@ class FigureWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     def _initial_state(self, saved):
         saved_style = saved.get("style") or {}
-        style = dict(self.source.default_style())
+        style = dict(self.source.default_style(self.mode))
         style.update(saved_style)
         # Figures saved before the style dict stored these at the top level.
         if "range_mode" in saved and "range_mode" not in saved_style:
@@ -541,7 +639,7 @@ class FigureWindow(QtWidgets.QWidget):
             self._redo.clear()
         self.state = new
         if style:
-            self.source.set_default_style(self.state["style"])
+            self.source.set_default_style(self.state["style"], self.mode)
         self._commit(reload_data=reload_data)
 
     def _commit(self, reload_data=False):
@@ -573,8 +671,8 @@ class FigureWindow(QtWidgets.QWidget):
     def reset_format(self):
         self._undo.append(self._snapshot())
         self._redo.clear()
-        self.state = dict(self._snapshot(), style=hs.resolve_style({}))
-        self.source.set_default_style({})
+        self.state = dict(self._snapshot(), style=hs.resolve_style(hs.RECIPE_DEFAULTS.get(self.mode, {})))
+        self.source.set_default_style({}, self.mode)
         self._commit()
         self._flash("Format reset")
 
@@ -603,11 +701,32 @@ class FigureWindow(QtWidgets.QWidget):
             strip.addWidget(b)
             return b
 
-        self.copy_btn = button("Copy", "Copy the figure (Ctrl+C) - paste into PowerPoint, Word, Inkscape...",
-                               self.copy_to_clipboard, primary=True)
-        self.ppt_btn = button("PowerPoint", "Send the figure to the open PowerPoint presentation as "
-                              "editable vector shapes (new slide)", self.send_to_powerpoint)
-        self.save_btn = button("Save PDF…", "Save as PDF, SVG or PNG (Ctrl+S)", self.save_as)
+        def split(text, tip, slot, menu_builder, primary=False):
+            """Click = the usual action, arrow = its options."""
+            b = button(text, tip, slot, primary=primary)
+            b.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+            m = QtWidgets.QMenu(b)
+            m.aboutToShow.connect(lambda m=m: (m.clear(), menu_builder(m)))
+            b.setMenu(m)
+            return b
+
+        self.copy_btn = split("Copy", "Copy the figure (Ctrl+C) - PNG and SVG on the clipboard; "
+                              "paste into PowerPoint, Word, Inkscape, Obsidian ...",
+                              lambda: self.copy_to_clipboard(), self._copy_menu, primary=True)
+        self.ppt_btn = split("PowerPoint", "Send the figure to the open PowerPoint presentation "
+                             "(arrow: current slide / as picture)", lambda: self.send_to_powerpoint(),
+                             self._ppt_menu)
+        self.obsidian_btn = button("Obsidian", "Add the figure to an Obsidian note", lambda: None)
+        self.obsidian_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        om = QtWidgets.QMenu(self.obsidian_btn)
+        om.aboutToShow.connect(lambda m=om: (m.clear(), self.source.obsidian_menu(
+            m, self._obsidian_render, parent=self)))
+        self.obsidian_btn.setMenu(om)
+        self.inkscape_btn = split("Inkscape", "Open the figure in Inkscape as a layered SVG "
+                                  "(images, letters, scale bars, colour bars, labels on their own layers)",
+                                  lambda: self.open_in_inkscape(), self._inkscape_menu)
+        self.save_btn = split("Save…", "Save as PDF, SVG, PNG, TIFF or EPS (Ctrl+S)",
+                              lambda: self.save_as(), self._save_menu)
         strip.addSpacing(12)
         self.format_btn = button("Format", "Channels, letters, scale bar, colour bars, layout "
                                  "(also on right-click)", self._toggle_format, checkable=True)
@@ -637,6 +756,9 @@ class FigureWindow(QtWidgets.QWidget):
 
         body = QtWidgets.QHBoxLayout()
         body.setSpacing(6)
+        self.scroll = QtWidgets.QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.view = _FigureView(self)
         self.view.hit_test = self._hit_test
         self.view.hovered.connect(self._on_hover)
@@ -645,12 +767,15 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.released.connect(self._on_release)
         self.view.double_clicked.connect(self._on_double_click)
         self.view.context.connect(self._on_context)
-        self.view.resized.connect(lambda: self._render_timer.start())
-        body.addWidget(self.view, 1)
+        self.view.wheel.connect(self._on_wheel)
+        self.view.resized.connect(lambda: self._render_timer.start() if not self._actual else None)
+        self.scroll.setWidget(self.view)
+        body.addWidget(self.scroll, 1)
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
         self.format_panel.setVisible(False)
+        self.format_panel.set_mode(self.mode)
         body.addWidget(self.format_panel)
         root.addLayout(body, 1)
 
@@ -687,7 +812,7 @@ class FigureWindow(QtWidgets.QWidget):
         widths = [p.get("width_nm") for p in self._panel_map().values() if p.get("width_nm")]
         if widths:
             auto_len = hs.nice_length(0.3 * widths[0])
-        self.format_panel.sync(self.style, self.spec, auto_len)
+        self.format_panel.sync(self.style, self.spec, auto_len, actual=self._actual)
 
     def _on_format_changed(self, change):
         # Spin boxes fire per step - coalesce into one edit.
@@ -698,6 +823,8 @@ class FigureWindow(QtWidgets.QWidget):
         change, self._pending = self._pending, {}
         if not change:
             return
+        if "_actual" in change:
+            self._set_actual(bool(change.pop("_actual")))
         rows = change.pop("rows", None)
         if rows is not None:
             self._apply_edit({"rows": rows or None})
@@ -725,6 +852,7 @@ class FigureWindow(QtWidgets.QWidget):
             reference_key=self.state["reference_key"],
             dropped=list(self.state["dropped"]) + auto_out,
             rows=self.state["rows"],
+            root_key=self.root_key,
             row_choices=self.state["row_choices"],
             header=st["header"], header_name=st["header_name"], reverse=st["reverse"],
             show_repeats=self.state["show_repeats"],
@@ -877,14 +1005,44 @@ class FigureWindow(QtWidgets.QWidget):
         first = boxes[0]
         return (0.0, first[1], max(first[0] - 0.04, 0.6), first[3])
 
+    def _screen_dpi(self):
+        try:
+            scr = self.windowHandle().screen() if self.windowHandle() else QtWidgets.QApplication.primaryScreen()
+            return float(scr.physicalDotsPerInch()) or 96.0
+        except Exception:
+            return 96.0
+
+    def _set_actual(self, on):
+        self._actual = bool(on)
+        self.source.set_export_settings(view_actual=self._actual)
+        if not self._actual:
+            self.view.setMinimumSize(320, 160)
+        self._render_screen()
+        self._flash("Actual size (100 %)" if self._actual else "Fit to window")
+
     def _blit(self):
         fig = self._fig
         fig_w, fig_h = self.layout_info["size"]
-        avail_w, avail_h = self.view.available_px()
-        avail_w -= 16
-        avail_h -= 16
         dpr = float(self.devicePixelRatioF() or 1.0)
-        dpi = max(30.0, min(avail_w / fig_w, avail_h / fig_h, 400.0))
+        if self._actual:
+            # Physical size: an 85 mm figure is 85 mm on this screen.
+            dpi = self._screen_dpi()
+            self.view.setMinimumSize(int(fig_w * dpi) + 2 * _PAPER_MARGIN + 16,
+                                     int(fig_h * dpi) + 2 * _PAPER_MARGIN + 40)
+        else:
+            avail_w = max(50, self.scroll.viewport().width() - 2 * _PAPER_MARGIN) - 16
+            avail_h = max(50, self.scroll.viewport().height() - 2 * _PAPER_MARGIN) - 16
+            if self.layout_info.get("page_in"):
+                avail_h -= 22   # room for the ruler
+            dpi = max(30.0, min(avail_w / fig_w, avail_h / fig_h, 400.0))
+        page = self.style.get("page") or "free"
+        if self.layout_info.get("page_in"):
+            mm = self.layout_info["page_in"] * 25.4
+            self.view.ruler_text = f"{mm:.0f} mm  ·  {hs.PAGE_NAMES.get(page, '').split(' (')[0]}" + \
+                ("  ·  100 %" if self._actual else "")
+        else:
+            self.view.ruler_text = (f"{fig_w * 25.4:.0f} × {fig_h * 25.4:.0f} mm  ·  100 %"
+                                    if self._actual else "")
         fig.set_dpi(dpi * dpr)
         fig.canvas.draw()
         buf = np.asarray(fig.canvas.buffer_rgba())
@@ -942,6 +1100,12 @@ class FigureWindow(QtWidgets.QWidget):
             if _inside(entry["box"], x, y, pad=0.05):
                 return {"kind": "colorbar", "row": entry["row"], "frame": entry["frame"],
                         "box": entry["box"], "orient": entry["orient"]}
+        for entry in lay.get("letter_boxes", []):
+            if _inside(entry["box"], x, y, pad=0.02):
+                return {"kind": "letter", "row": entry["row"], "frame": entry["frame"], "box": entry["box"]}
+        for entry in lay.get("scale_boxes", []):
+            if _inside(entry["box"], x, y, pad=0.03):
+                return {"kind": "scalebar", "row": entry["row"], "frame": entry["frame"], "box": entry["box"]}
         for (r, f), box in lay["cells"].items():
             if _inside(box, x, y):
                 return {"kind": "panel", "row": r, "frame": f, "box": box}
@@ -967,7 +1131,7 @@ class FigureWindow(QtWidgets.QWidget):
             elif kind == "channel":
                 cursor = QtCore.Qt.PointingHandCursor
                 row = self.spec["rows"][hit["row"]]
-                tip = f"Channel: {row['label']}\nClick: switch, recolour, move or remove"
+                tip = f"Channel: {hs.channel_text(row['label'])}\nClick: switch, recolour, move or remove"
             elif kind == "add_row":
                 cursor = QtCore.Qt.PointingHandCursor
                 tip = "Add another channel of these frames"
@@ -1123,6 +1287,12 @@ class FigureWindow(QtWidgets.QWidget):
             menu = self._add_channel_menu()
         elif kind == "colorbar":
             menu = self._colour_menu(hit["row"], hit["frame"])
+        elif kind == "letter":
+            menu = QtWidgets.QMenu(self)
+            self._letters_menu(menu)
+        elif kind == "scalebar":
+            menu = QtWidgets.QMenu(self)
+            self._scale_menu(menu)
         else:
             menu = QtWidgets.QMenu(self)
             if kind in ("frame", "close"):
@@ -1281,6 +1451,18 @@ class FigureWindow(QtWidgets.QWidget):
         group = QtWidgets.QActionGroup(menu)
         same_kind = [c for c in self.spec["channels"] if c["kind"] == row["kind"]]
         other = [c for c in self.spec["channels"] if c["kind"] != row["kind"]]
+        best = next((c for c in self.spec["channels"] if c["label"] == hs.BEST), None)
+        if best is not None:
+            act = menu.addAction(hs.channel_text(hs.BEST))
+            act.setCheckable(True)
+            act.setChecked(row["label"] == hs.BEST)
+            act.setToolTip("Each frame shows its own main channel (topography for constant current, "
+                           "current for constant height ...)")
+            act.setEnabled(row["label"] == hs.BEST or hs.BEST not in rows)
+            act.triggered.connect(lambda _=False: self._replace_row(r, hs.BEST))
+            menu.addSeparator()
+        same_kind = [c for c in same_kind if c["label"] != hs.BEST]
+        other = [c for c in other if c["label"] != hs.BEST]
         for c in same_kind:
             act = menu.addAction(c["label"])
             act.setCheckable(True)
@@ -1314,7 +1496,7 @@ class FigureWindow(QtWidgets.QWidget):
         for c in self.spec["channels"]:
             if c["label"] in rows:
                 continue
-            menu.addAction(c["label"]).triggered.connect(
+            menu.addAction(hs.channel_text(c["label"])).triggered.connect(
                 lambda _=False, lab=c["label"]: self._apply_edit({"rows": self._current_rows() + [lab]}))
         return menu
 
@@ -1324,7 +1506,7 @@ class FigureWindow(QtWidgets.QWidget):
             return
         rows[r] = label
         self._apply_edit({"rows": rows})
-        self._flash(f"Showing {label}")
+        self._flash(f"Showing {hs.channel_text(label)}")
 
     def _move_row(self, r, step):
         rows = self._current_rows()
@@ -1399,39 +1581,110 @@ class FigureWindow(QtWidgets.QWidget):
     def _default_name(self):
         cols = self.spec["columns"] if self.spec else []
         stem = cols[0]["name"] if cols else "figure"
-        suffix = {"height": "height_series", "bias": "bias_series"}.get(self.mode, "figure")
+        suffix = {"height": "height_series", "bias": "bias_series", "zoom": "zooms"}.get(self.mode, "figure")
         return f"{stem}_{suffix}"
 
-    def _svg_bytes(self, fig=None):
+    def _export_opts(self):
+        st = self.source.export_settings()
+        dpi = int(st.get("dpi") or 300)
+        transparent = bool(st.get("transparent", False))
+        return dpi, transparent
+
+    def _face(self):
+        return "none" if self._export_opts()[1] else "white"
+
+    def _svg_bytes(self, fig=None, layered=False):
         import matplotlib
         fig = fig or self._export_figure()
         buf = io.BytesIO()
         with matplotlib.rc_context({"svg.fonttype": "none"}):
-            fig.savefig(buf, format="svg", facecolor="white")
+            fig.savefig(buf, format="svg", facecolor=self._face())
+        data = buf.getvalue()
+        return svg_layers.layered_svg(data) if layered else data
+
+    def _png_bytes(self, fig=None, dpi=None):
+        fig = fig or self._export_figure()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi or self._export_opts()[0], facecolor=self._face())
         return buf.getvalue()
+
+    def _options_menu(self, menu):
+        """Resolution + background, shared by Copy / Save / Obsidian."""
+        dpi, transparent = self._export_opts()
+        sub = menu.addMenu(f"Resolution: {dpi} dpi")
+        group = QtWidgets.QActionGroup(sub)
+        for d in _DPI_CHOICES:
+            act = sub.addAction(f"{d} dpi")
+            act.setCheckable(True)
+            act.setChecked(d == dpi)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, v=d: self.source.set_export_settings(dpi=v))
+        act = menu.addAction("Transparent background")
+        act.setCheckable(True)
+        act.setChecked(transparent)
+        act.triggered.connect(lambda on: self.source.set_export_settings(transparent=bool(on)))
+
+    def _copy_menu(self, menu):
+        menu.addAction("PNG + SVG (paste anywhere)").triggered.connect(lambda: self.copy_to_clipboard("both"))
+        menu.addAction("PNG only").triggered.connect(lambda: self.copy_to_clipboard("png"))
+        menu.addAction("SVG only (vector)").triggered.connect(lambda: self.copy_to_clipboard("svg"))
+        menu.addSeparator()
+        self._options_menu(menu)
+
+    def _ppt_menu(self, menu):
+        last = self.source.export_settings().get("ppt_mode") or "new_vector"
+        for mode, text in (("new_vector", "New slide - editable shapes"),
+                           ("cur_vector", "Current slide - editable shapes"),
+                           ("new_picture", "New slide - picture"),
+                           ("cur_picture", "Current slide - picture")):
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(mode == last)
+            act.triggered.connect(lambda _=False, m=mode: self.send_to_powerpoint(m))
+        menu.addSeparator()
+        self._options_menu(menu)
+
+    def _inkscape_menu(self, menu):
+        exe = self._inkscape_exe()
+        act = menu.addAction("Open in Inkscape" + ("" if exe else " (not found)"))
+        act.setEnabled(bool(exe))
+        act.triggered.connect(self.open_in_inkscape)
+        menu.addAction("Save layered SVG…").triggered.connect(lambda: self.save_as(layered=True))
+
+    def _save_menu(self, menu):
+        for text, ext in (("PDF (vector)", ".pdf"), ("SVG (vector, layered)", ".svg"),
+                          ("PNG", ".png"), ("TIFF", ".tif"), ("EPS (vector)", ".eps")):
+            menu.addAction(text).triggered.connect(lambda _=False, e=ext: self.save_as(ext=e))
+        menu.addSeparator()
+        self._options_menu(menu)
 
     def _ready(self):
         return bool(self.spec and self.spec["columns"] and self.spec["rows"])
 
-    def copy_to_clipboard(self):
+    def copy_to_clipboard(self, mode="both"):
         if not self._ready():
             return
         fig = self._export_figure()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=300, facecolor="white")
-        img = QtGui.QImage.fromData(buf.getvalue(), "PNG")
         mime = QtCore.QMimeData()
-        mime.setImageData(img)
-        try:
-            mime.setData("image/svg+xml", QtCore.QByteArray(self._svg_bytes(fig)))
-        except Exception:
-            pass
+        if mode in ("both", "png"):
+            mime.setImageData(QtGui.QImage.fromData(self._png_bytes(fig), "PNG"))
+        if mode in ("both", "svg"):
+            try:
+                svg = self._svg_bytes(fig)
+                mime.setData("image/svg+xml", QtCore.QByteArray(svg))
+                if mode == "svg":
+                    mime.setText(svg.decode("utf-8", "replace"))
+            except Exception:
+                pass
         QtWidgets.QApplication.clipboard().setMimeData(mime)
-        self._flash("Copied - paste anywhere")
+        self._flash({"both": "Copied - paste anywhere", "png": "Copied as PNG",
+                     "svg": "Copied as SVG"}[mode])
 
-    def send_to_powerpoint(self):
+    def send_to_powerpoint(self, mode=None):
         if not self._ready():
             return
+        mode = mode or self.source.export_settings().get("ppt_mode") or "new_vector"
+        self.source.set_export_settings(ppt_mode=mode)
         try:
             from .. import ppt_bridge
         except Exception as exc:
@@ -1443,7 +1696,12 @@ class FigureWindow(QtWidgets.QWidget):
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            slide, _name = ppt_bridge.send_svg_to_ppt(self._svg_bytes(), label=None, new_slide=True)
+            new_slide = mode.startswith("new")
+            if mode.endswith("picture"):
+                pix = QtGui.QPixmap.fromImage(QtGui.QImage.fromData(self._png_bytes(), "PNG"))
+                slide, _name = ppt_bridge.send_pixmap_to_ppt(pix, label=None, new_slide=new_slide)
+            else:
+                slide, _name = ppt_bridge.send_svg_to_ppt(self._svg_bytes(), label=None, new_slide=new_slide)
         except Exception as exc:
             QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.warning(
@@ -1453,29 +1711,139 @@ class FigureWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.restoreOverrideCursor()
         self._flash(f"Sent to PowerPoint (slide {slide})")
 
-    def save_as(self):
+    _SAVE_FILTERS = {".pdf": "PDF (*.pdf)", ".svg": "SVG (*.svg)", ".png": "PNG image (*.png)",
+                     ".tif": "TIFF image (*.tif *.tiff)", ".eps": "EPS (*.eps)"}
+
+    def save_as(self, ext=None, layered=False):
         if not self._ready():
             return
-        start = str(Path(self.source.default_save_dir(self._keys)) / (self._default_name() + ".pdf"))
+        st = self.source.export_settings()
+        ext = ext or (".svg" if layered else st.get("save_ext") or ".pdf")
+        folder = st.get("save_dir") or self.source.default_save_dir(self._keys)
+        start = str(Path(folder) / (self._default_name() + ext))
+        order = [ext] + [e for e in self._SAVE_FILTERS if e != ext]
         path, _flt = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save figure", start, "PDF (*.pdf);;SVG (*.svg);;PNG image (*.png)")
+            self, "Save figure", start, ";;".join(self._SAVE_FILTERS[e] for e in order))
         if not path:
             return
-        fig = self._export_figure()
         ext = Path(path).suffix.lower()
+        if ext == ".tiff":
+            ext = ".tif"
+        if ext not in self._SAVE_FILTERS:
+            path, ext = path + ".pdf", ".pdf"
+        fig = self._export_figure()
+        dpi, _transparent = self._export_opts()
         try:
             if ext == ".svg":
-                Path(path).write_bytes(self._svg_bytes(fig))
+                # Always layered: a plain SVG viewer ignores the layers,
+                # Inkscape shows them.
+                Path(path).write_bytes(self._svg_bytes(fig, layered=True))
+            elif ext == ".tif":
+                fig.savefig(path, dpi=dpi, facecolor=self._face(),
+                            pil_kwargs={"compression": "tiff_lzw"})
             elif ext == ".png":
-                fig.savefig(path, dpi=300, facecolor="white")
+                fig.savefig(path, dpi=dpi, facecolor=self._face())
             else:
-                if ext != ".pdf":
-                    path = path + ".pdf"
-                fig.savefig(path, facecolor="white")
+                fig.savefig(path, facecolor=self._face())
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save figure", f"Could not save:\n{exc}")
             return
+        self.source.set_export_settings(save_ext=ext, save_dir=str(Path(path).parent))
         self._flash(f"Saved {Path(path).name}")
+
+    @staticmethod
+    def _inkscape_exe():
+        import shutil
+        exe = shutil.which("inkscape")
+        if exe:
+            return exe
+        for cand in (r"C:\Program Files\Inkscape\bin\inkscape.exe",
+                     r"C:\Program Files (x86)\Inkscape\bin\inkscape.exe",
+                     r"C:\Program Files\Inkscape\inkscape.exe",
+                     "/Applications/Inkscape.app/Contents/MacOS/inkscape"):
+            if Path(cand).exists():
+                return cand
+        return None
+
+    def open_in_inkscape(self):
+        if not self._ready():
+            return
+        exe = self._inkscape_exe()
+        if not exe:
+            QtWidgets.QMessageBox.information(
+                self, "Inkscape", "Inkscape was not found. Install it from inkscape.org, or use "
+                "Inkscape ▸ Save layered SVG… and open the file yourself.")
+            return
+        import subprocess
+        import tempfile
+        folder = Path(tempfile.gettempdir()) / "sxm_viewer_figures"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (self._default_name() + ".svg")
+        try:
+            path.write_bytes(self._svg_bytes(layered=True))
+            subprocess.Popen([exe, str(path)])
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Inkscape", f"Could not open Inkscape:\n{exc}")
+            return
+        self._flash(f"Opened in Inkscape ({path.name}) - save it from there")
+
+    def _obsidian_render(self, img_dir):
+        """render() callback for the Obsidian export: one PNG of the figure."""
+        img_dir = Path(img_dir)
+        img_dir.mkdir(parents=True, exist_ok=True)
+        stem = self._default_name()
+        path = img_dir / f"{stem}.png"
+        n = 1
+        while path.exists():
+            n += 1
+            path = img_dir / f"{stem}_{n}.png"
+        path.write_bytes(self._png_bytes())
+        cols = self.spec["columns"]
+        rows = ", ".join(r["display"] for r in self.spec["rows"])
+        caption = (f"*{_MODE_TITLES.get(self.mode, 'Figure')}* · {len(cols)} frames · {rows} · "
+                   + " / ".join(c["header"] for c in cols[:8]) + (" …" if len(cols) > 8 else ""))
+        key = cols[0]["key"] if cols else ""
+        idx = next(iter(self.spec["rows"][0]["cells"].values()), 0) if self.spec["rows"] else 0
+        return [{"path": path, "file_key": key, "channel_idx": idx, "caption": caption}], [], False
+
+    # ------------------------------------------------------------------
+    # Ctrl+wheel: size whatever is under the cursor
+    # ------------------------------------------------------------------
+    def _on_wheel(self, hit, event):
+        import time
+        steps = event.angleDelta().y() / 120.0
+        if not steps:
+            return
+        up = steps > 0
+        st = self.style
+        kind = (hit or {}).get("kind")
+        shift = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+        if shift:
+            if (st.get("page") or "free") != "free":
+                self._flash("Panel size follows the page width - set Page to Free size to change it")
+                return
+            change = {"panel_w": round(min(4.0, max(0.6, st["panel_w"] * (1.06 if up else 1 / 1.06))), 3)}
+            msg = f"Panels {change['panel_w'] * 25.4:.0f} mm"
+        elif kind == "colorbar":
+            change = {"cbar_w": round(min(0.32, max(0.02, st["cbar_w"] + (0.01 if up else -0.01))), 3)}
+            msg = f"Colour bar {change['cbar_w'] * 25.4:.1f} mm"
+        elif kind == "scalebar":
+            change = {"scale_thick": round(min(0.08, max(0.005, st["scale_thick"] * (1.15 if up else 1 / 1.15))), 4)}
+            msg = f"Scale bar {change['scale_thick'] * 100:.1f} %"
+        elif kind == "letter":
+            change = {"letter_size": min(24.0, max(5.0, st["letter_size"] + (0.5 if up else -0.5)))}
+            msg = f"Letters {change['letter_size']:g} pt"
+        else:
+            # Text size everywhere, letters keep their proportion.
+            font = min(14.0, max(5.0, st["font"] + (0.5 if up else -0.5)))
+            ratio = st["letter_size"] / st["font"] if st["font"] else 1.3
+            change = {"font": font, "letter_size": round(min(24.0, max(5.0, font * ratio)), 1)}
+            msg = f"Text {font:g} pt"
+        now = time.monotonic()
+        push = (now - self._last_wheel) > _WHEEL_COALESCE_S
+        self._last_wheel = now
+        self._apply_edit(style=change, push=push)
+        self._flash(msg)
 
     def open_in_canvas(self):
         if not self.spec:

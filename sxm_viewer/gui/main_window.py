@@ -5308,6 +5308,24 @@ QLabel:hover {{
             painter.drawText(chip, QtCore.Qt.AlignCenter,
                              f"{'V' if is_bias else 'z'}×{series.get('levels') or len(series['keys'])}")
             painter.end()
+        zoom = None
+        try:
+            zoom = self.figure_controller.zoom_for_key(str(file_key))
+        except Exception:
+            zoom = None
+        if zoom is not None:
+            # Blue "⊡N" chip: this frame is an overview with N zooms inside
+            # it - click it for the overview + zooms figure.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = viewer_thumb_ui.zoom_chip_rect(pix.width(), pix.height(), series is not None)
+            painter.setBrush(QtGui.QColor(40, 110, 220, 235))
+            painter.setPen(QtGui.QPen(QtGui.QColor(10, 40, 110), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, f"⊡{zoom.get('levels') or len(zoom['keys']) - 1}")
+            painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')

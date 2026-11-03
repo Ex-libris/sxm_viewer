@@ -1427,21 +1427,34 @@ def series_chip_rect(pix_w, pix_h):
     return QtCore.QRectF(pix_w - 52, pix_h - 24, 46, 18)
 
 
+def zoom_chip_rect(pix_w, pix_h, beside_series_chip=False):
+    """``⊡N`` chip of an overview with N zooms: bottom-right, or left of the
+    series chip when the frame also has one."""
+    x = pix_w - 52 - (52 if beside_series_chip else 0)
+    return QtCore.QRectF(x, pix_h - 24, 46, 18)
+
+
 def _handle_series_chip_click(viewer, label_widget, event):
     controller = getattr(viewer, "figure_controller", None)
     if controller is None or event.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier):
         return False
     fp = str(label_widget.property("file_path"))
-    if controller.series_for_key(fp) is None:
+    series = controller.series_for_key(fp)
+    zoom = controller.zoom_for_key(fp)
+    if series is None and zoom is None:
         return False
     pix = label_widget.pixmap()
     coords = viewer._label_pos_to_pix_coords(label_widget, event.pos())
     if pix is None or coords is None:
         return False
-    if not series_chip_rect(pix.width(), pix.height()).adjusted(-3, -3, 3, 3).contains(*coords):
-        return False
-    controller.open_series(fp)
-    return True
+    if series is not None and series_chip_rect(pix.width(), pix.height()).adjusted(-3, -3, 3, 3).contains(*coords):
+        controller.open_series(fp)
+        return True
+    if zoom is not None and zoom_chip_rect(pix.width(), pix.height(), series is not None).adjusted(
+            -3, -3, 3, 3).contains(*coords):
+        controller.open_zoom(fp)
+        return True
+    return False
 
 
 def _handle_thumb_click(viewer, label_widget, event):

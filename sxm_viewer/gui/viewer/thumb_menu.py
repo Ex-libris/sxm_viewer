@@ -203,6 +203,13 @@ def _add_figure_actions(viewer, menu, fp, targets):
                            "shared colour range per channel - ready to copy or send to PowerPoint "
                            "(same as clicking the z×N chip)")
         act.triggered.connect(lambda _, key=fp: fc.open_series(key))
+    zoom = fc.zoom_for_key(fp)
+    if zoom is not None:
+        n = zoom.get("levels") or len(zoom["keys"]) - 1
+        act = menu.addAction(f"Overview + zooms figure ({n} zoom{'s' if n != 1 else ''})")
+        act.setToolTip("This overview with every smaller frame scanned inside it: outlined and "
+                       "lettered on the overview, shown next to it (same as clicking the ⊡ chip)")
+        act.triggered.connect(lambda _, key=fp: fc.open_zoom(key))
     if len(real) >= 2 and (series is None or set(real) != set(series["keys"])):
         act = menu.addAction(f"Figure from selection ({len(real)} images)")
         act.setToolTip("The selected images side by side, one row per channel kind, ordered by "

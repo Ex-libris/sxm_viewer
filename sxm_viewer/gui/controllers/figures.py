@@ -88,7 +88,8 @@ class FigureController:
         self.viewer = viewer
         self._index_sig = None
         self._series = {}          # id -> series dict (keys ordered by z)
-        self._series_of_key = {}   # image key -> series id
+        self._series_of_key = {}   # image key -> series id (height / bias)
+        self._zoom_of_key = {}     # overview key -> zoom-family id
         self._windows = {}         # id -> window
         # Fraction of rows actually scanned, per series frame - checked in
         # idle time after a folder load (reading every frame up front would
@@ -128,29 +129,36 @@ class FigureController:
         if sig == self._index_sig:
             return False
         self._index_sig = sig
-        series, by_key = {}, {}
+        series, by_key, zoom_of = {}, {}, {}
         if len(sig) >= 2:
             try:
                 images = self.image_inputs([s[0] for s in sig])
+                img_by_key = {i["key"]: i for i in images}
                 found = hs.find_height_series(images) + hs.find_bias_series(images)
-                found = self._prune_stopped_scans(found, {i["key"]: i for i in images})
+                found = self._prune_stopped_scans(found, img_by_key)
                 for s in found:
                     if any(k in by_key for k in s["keys"]):
-                        continue  # never two chips on one frame
+                        continue  # never two series chips on one frame
                     series[s["id"]] = s
                     for k in s["keys"]:
                         by_key[k] = s["id"]
+                # Overview + zooms: its own chip on the overview, so a frame
+                # can be both part of a series and an overview.
+                for fam in self._prune_stopped_zooms(hs.find_zoom_families(images), img_by_key):
+                    series[fam["id"]] = fam
+                    zoom_of[fam["root"]] = fam["id"]
             except Exception as exc:
                 log_status(f"[Figures] series detection failed: {exc}")
-        changed = (by_key != self._series_of_key or
+        changed = (by_key != self._series_of_key or zoom_of != self._zoom_of_key or
                    {k: v.get("levels") for k, v in series.items()} !=
                    {k: v.get("levels") for k, v in self._series.items()})
-        self._series, self._series_of_key = series, by_key
+        self._series, self._series_of_key, self._zoom_of_key = series, by_key, zoom_of
         self._schedule_scan_checks()
         if series:
-            n_h = sum(1 for s in series.values() if s.get("recipe") == "height")
-            log_status(f"[Figures] {n_h} height / {len(series) - n_h} bias series detected "
-                       f"({sum(len(s['keys']) for s in series.values())} images)")
+            n = {r: sum(1 for s in series.values() if s.get("recipe") == r)
+                 for r in ("height", "bias", "zoom")}
+            log_status(f"[Figures] {n['height']} height / {n['bias']} bias series, "
+                       f"{n['zoom']} overviews with zooms detected")
         return changed
 
     def _prune_stopped_scans(self, found, by_key):
@@ -170,6 +178,24 @@ class FigureController:
                          excluded=list(s.get("excluded") or []) + [
                              {"key": k, "reason": "aborted", "frac": self._scan_frac[k]} for k in stopped])
             out.append(s)
+        return out
+
+    def _prune_stopped_zooms(self, families, by_key):
+        out = []
+        for fam in families:
+            stopped = [k for k in fam["keys"]
+                       if self._scan_frac.get(k) is not None and self._scan_frac[k] < _ABORTED_FRAC]
+            if fam["root"] in stopped:
+                continue
+            if stopped:
+                kids = [by_key[k] for k in fam["keys"][1:] if k not in stopped and k in by_key]
+                if not kids:
+                    continue
+                kept, _hidden = hs._collapse_same_footprint(kids)
+                fam = dict(fam, keys=[fam["root"]] + [str(m["key"]) for m in kids], levels=len(kept),
+                           excluded=[{"key": k, "reason": "aborted", "frac": self._scan_frac[k]}
+                                     for k in stopped])
+            out.append(fam)
         return out
 
     def _schedule_scan_checks(self):
@@ -207,6 +233,19 @@ class FigureController:
                 self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
             except Exception:
                 pass
+
+    def zoom_for_key(self, key):
+        """The overview + zooms family whose overview is ``key``, or None."""
+        fid = self._zoom_of_key.get(str(key))
+        return self._series.get(fid) if fid else None
+
+    def open_zoom(self, key):
+        self.ensure_series_index()
+        fam = self.zoom_for_key(key)
+        if fam is None:
+            return None
+        return self._open(fam["id"], list(fam["keys"]), mode="zoom",
+                          excluded=fam.get("excluded"), root_key=fam["root"])
 
     def series_for_key(self, key):
         sid = self._series_of_key.get(str(key))
@@ -310,7 +349,11 @@ class FigureController:
             height_nm = abs(float(extent[3]) - float(extent[2])) * scale
             if not (width_nm > 0 and height_nm > 0):
                 width_nm = height_nm = None
-        return {"data": arr, "unit": unit or "", "width_nm": width_nm,
+        try:
+            turns = int(viewer._get_image_orientation(key) or 0)
+        except Exception:
+            turns = 0
+        return {"turns": turns, "data": arr, "unit": unit or "", "width_nm": width_nm,
                 "height_nm": height_nm, "caption": str(fd.get("Caption") or "")}
 
     def valid_fraction(self, key, channel_idx):
@@ -403,7 +446,7 @@ class FigureController:
                                   excluded=series.get("excluded"))
         return self._open("sel-" + hs.series_id(keys), keys, mode="selection")
 
-    def _open(self, fid, keys, mode, excluded=None):
+    def _open(self, fid, keys, mode, excluded=None, root_key=None):
         from ..dialogs.figure_window import FigureWindow
 
         win = self._windows.get(fid)
@@ -416,7 +459,8 @@ class FigureController:
             except RuntimeError:
                 self._windows.pop(fid, None)
         try:
-            win = FigureWindow(self, fid, keys, mode=mode, excluded=excluded, parent=self.viewer)
+            win = FigureWindow(self, fid, keys, mode=mode, excluded=excluded, root_key=root_key,
+                               parent=self.viewer)
         except Exception as exc:
             # This runs from a thumbnail click: an exception escaping a Qt
             # event handler aborts the whole application (PyQt >= 5.5) and
@@ -430,21 +474,86 @@ class FigureController:
         win.show()
         return win
 
-    # The user's format (letters, scale bar, colour bars, layout ...) is
-    # remembered for new figures: the last style edited anywhere.
-    def default_style(self):
-        style = self.viewer.config.get("figure_style_default")
-        return dict(style) if isinstance(style, dict) else {}
+    # The user's format is remembered for new figures: letters, fonts,
+    # outlines, page ... globally; the recipe-dependent keys
+    # (hs.RECIPE_KEYS: ranges, colourbars, scale bar, header, layout) per
+    # recipe, on top of that recipe's own defaults (hs.RECIPE_DEFAULTS).
+    def default_style(self, recipe=None):
+        cfg = self.viewer.config
+        shared = cfg.get("figure_style_default")
+        style = dict(hs.RECIPE_DEFAULTS.get(recipe or "", {}))
+        if isinstance(shared, dict):
+            style.update({k: v for k, v in shared.items() if k not in hs.RECIPE_KEYS})
+        per = (cfg.get("figure_style_recipe") or {}).get(recipe or "")
+        if isinstance(per, dict):
+            style.update({k: v for k, v in per.items() if k in hs.RECIPE_KEYS and k != "header"})
+        return style
 
-    def set_default_style(self, style):
-        # The header is per recipe ("auto" = dz for height, V for bias), so
-        # it never carries over from one figure to the next.
-        style = {k: v for k, v in dict(style or {}).items() if k != "header"}
-        self.viewer.config["figure_style_default"] = style
+    def set_default_style(self, style, recipe=None):
+        style = dict(style or {})
+        cfg = self.viewer.config
+        if not style:
+            cfg["figure_style_default"] = {}
+            cfg["figure_style_recipe"] = {}
+        else:
+            cfg["figure_style_default"] = {k: v for k, v in style.items() if k not in hs.RECIPE_KEYS}
+            per = dict(cfg.get("figure_style_recipe") or {})
+            # The header is per recipe ("auto" = dz / V / size) and never
+            # carried over; the other recipe keys are remembered per recipe.
+            per[recipe or ""] = {k: v for k, v in style.items() if k in hs.RECIPE_KEYS and k != "header"}
+            cfg["figure_style_recipe"] = per
+        try:
+            save_config(cfg)
+        except Exception:
+            pass
+
+    # Export preferences (dpi, transparent background, PowerPoint mode, ...)
+    def export_settings(self):
+        st = self.viewer.config.get("figure_export")
+        return dict(st) if isinstance(st, dict) else {}
+
+    def set_export_settings(self, **values):
+        st = self.export_settings()
+        st.update(values)
+        self.viewer.config["figure_export"] = st
         try:
             save_config(self.viewer.config)
         except Exception:
             pass
+
+    def obsidian_menu(self, menu, render, parent=None):
+        """One-click "append to the active note" entries + "Choose note..."
+        for a figure. ``render(img_dir) -> (results, errors, cancelled)``."""
+        from ..viewer import export as viewer_export
+        try:
+            from ...integrations import obsidian
+        except Exception:
+            menu.addAction("Obsidian support unavailable").setEnabled(False)
+            return
+        settings = viewer_export._obsidian_settings(self.viewer)
+        vaults = obsidian.list_vaults()
+        shown = [v for v in vaults if v.is_open] or vaults[:1]
+        added = set()
+        for vault in shown:
+            note = obsidian.active_note(vault.path)
+            if note is None:
+                continue
+            rel = note.relative_to(vault.path).as_posix()
+            act = menu.addAction(f"Active note: {rel}  ({vault.name})")
+            act.triggered.connect(lambda _=False, n=note, v=vault.path: viewer_export.export_to_obsidian(
+                self.viewer, n, v, render=render, parent=parent))
+            added.add(str(note))
+        last = settings.get("note")
+        if last and last not in added and Path(last).is_file():
+            act = menu.addAction(f"Last used: {Path(last).name}")
+            act.triggered.connect(lambda _=False, n=Path(last), v=settings.get("vault"):
+                                  viewer_export.export_to_obsidian(self.viewer, n, v, render=render,
+                                                                   parent=parent))
+        if not menu.isEmpty():
+            menu.addSeparator()
+        menu.addAction("Choose note / options…").triggered.connect(
+            lambda _=False: viewer_export.export_to_obsidian(self.viewer, None, None, render=render,
+                                                             parent=parent))
 
     def featured_cmaps(self):
         try:
