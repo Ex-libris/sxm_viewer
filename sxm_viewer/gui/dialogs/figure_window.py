@@ -55,7 +55,11 @@ _MODE_HINTS = {
     "zoom": "",
     "selection": "",
 }
-_SCALE_NAMES = {"one": "One panel", "all": "Every panel", "off": "Off"}
+_SCALE_NAMES = {"all": "Every image", "one": "One image", "off": "Off"}
+_SCALE_LABELS = {"first": "First image only (once per length)", "all": "Every image", "none": "None"}
+_CBAR_LABEL_POS = {"inside": "Centred inside the bar", "outside": "Outside the bar"}
+_ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)",
+                "ccw": "Turn to landscape (counter-clockwise)"}
 
 
 def _figure_classes():
@@ -355,6 +359,10 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow(w["transpose"])
         w["reverse"] = QtWidgets.QCheckBox("Reverse the frame order")
         g.addRow(w["reverse"])
+        w["rotate_tall"] = combo(_ROTATE_TALL)
+        w["rotate_tall"].setToolTip("Tall (portrait) images are turned a quarter turn for this figure; "
+                                    "scale bars and zoom outlines follow")
+        g.addRow("Tall images", w["rotate_tall"])
         w["panel_w"] = spin(0.6, 4.0, 0.1, " in")
         g.addRow("Panel width", w["panel_w"])
         w["font"] = spin(5.0, 14.0, 0.5, " pt")
@@ -388,6 +396,10 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow("Vertical bars", w["cbar_text"])
         w["cbar_w"] = spin(0.5, 8.0, 0.25, " mm")
         g.addRow("Bar width", w["cbar_w"])
+        w["cbar_label_pos"] = combo(_CBAR_LABEL_POS)
+        g.addRow("Channel name", w["cbar_label_pos"])
+        w["cbar_outline"] = QtWidgets.QCheckBox("Frame around the bar")
+        g.addRow(w["cbar_outline"])
 
         g = section("Panel letters")
         w["letters"] = QtWidgets.QCheckBox("Show letters")
@@ -421,8 +433,12 @@ class _FormatPanel(QtWidgets.QScrollArea):
         g.addRow("Corner", w["scale_pos"])
         w["scale_color"] = combo({"white": "White", "black": "Black"})
         g.addRow("Colour", w["scale_color"])
-        w["scale_label"] = QtWidgets.QCheckBox("Length label")
-        g.addRow(w["scale_label"])
+        w["scale_label"] = combo(_SCALE_LABELS)
+        g.addRow("Length label", w["scale_label"])
+        w["scale_font"] = spin(4.5, 16.0, 0.5, " pt")
+        w["scale_font"].setSpecialValueText("Text size")
+        w["scale_font"].setToolTip("Size of the length label (Ctrl+wheel on a scale bar)")
+        g.addRow("Label size", w["scale_font"])
         w["scale_thick"] = spin(0.5, 8.0, 0.25, " %")
         w["scale_thick"].setToolTip("Bar thickness as a percentage of the panel height (Ctrl+wheel on the bar)")
         g.addRow("Thickness", w["scale_thick"])
@@ -495,6 +511,12 @@ class _FormatPanel(QtWidgets.QScrollArea):
             value = float(widget.value())
         if key in self._FROM_WIDGET:
             value = self._FROM_WIDGET[key](value)
+        if key == "scale_font" and value <= widget.minimum() + 1e-9:
+            value = None   # "Text size"
+        if key == "page" and value in hs.PAGE_PRESETS:
+            # A journal page sets the text sizes too - no hand-tuning.
+            self.changed.emit(dict(hs.page_text_style(value), page=value))
+            return
         self.changed.emit({key: value})
 
     def sync(self, style, spec, auto_scale_nm=None, actual=False):
@@ -514,8 +536,11 @@ class _FormatPanel(QtWidgets.QScrollArea):
                         widget.setCurrentIndex(idx)
                 elif isinstance(widget, QtWidgets.QCheckBox):
                     widget.setChecked(bool(value))
-                elif isinstance(widget, QtWidgets.QDoubleSpinBox) and value is not None:
-                    widget.setValue(float(value))
+                elif isinstance(widget, QtWidgets.QDoubleSpinBox):
+                    if value is not None:
+                        widget.setValue(float(value))
+                    elif key == "scale_font":
+                        widget.setValue(widget.minimum())
             auto = style.get("scale_len_nm") is None
             w["scale_auto"].setChecked(auto)
             length = style.get("scale_len_nm") or auto_scale_nm
@@ -536,11 +561,12 @@ class _FormatPanel(QtWidgets.QScrollArea):
                         "letter_size", "letter_bold"):
                 w[key].setEnabled(letters_on)
             scale_on = style.get("scale_bar") != "off"
-            for key in ("scale_auto", "scale_pos", "scale_color", "scale_label"):
+            for key in ("scale_auto", "scale_pos", "scale_color", "scale_label", "scale_font"):
                 w[key].setEnabled(scale_on)
             w["scale_len_nm"].setEnabled(scale_on and not auto)
             bars_on = bool(style.get("colorbars"))
-            for key in ("cbar_ticks", "cbar_label", "cbar_style", "cbar_text", "cbar_w"):
+            for key in ("cbar_ticks", "cbar_label", "cbar_style", "cbar_text", "cbar_w",
+                        "cbar_label_pos", "cbar_outline"):
                 w[key].setEnabled(bars_on)
             if bars_on and style.get("cbar_style") == "minmax":
                 for key in ("cbar_ticks", "cbar_w", "cbar_text"):
@@ -1353,6 +1379,18 @@ class FigureWindow(QtWidgets.QWidget):
                                                     True: "Frames down, channels across"})
         menu.addSeparator()
         self._toggle(menu, "Reverse the frame order", "reverse")
+        self._choice(menu, "Tall images", "rotate_tall", _ROTATE_TALL)
+        menu.addSection("Page")
+        group = QtWidgets.QActionGroup(menu)
+        for key, text in hs.PAGE_NAMES.items():
+            if key == "custom":
+                continue
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked((self.style.get("page") or "free") == key)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, k=key: self._apply_edit(
+                style=dict(hs.page_text_style(k), page=k)))
         menu.addAction("More format options…").triggered.connect(lambda: self.format_btn.setChecked(True))
 
     def _letters_menu(self, menu):
@@ -1371,6 +1409,7 @@ class FigureWindow(QtWidgets.QWidget):
             act.triggered.connect(lambda _=False, v=float(pt): self._apply_edit(style={"letter_size": v}))
         menu.addSeparator()
         self._toggle(menu, "Bold", "letter_bold")
+        self._toggle(menu, "Outline", "letter_outline")
 
     def _scale_menu(self, menu):
         self._choice(menu, "Show on", "scale_bar", _SCALE_NAMES)
@@ -1382,8 +1421,17 @@ class FigureWindow(QtWidgets.QWidget):
         menu.addAction("Set length…").triggered.connect(self._ask_scale_length)
         self._choice(menu, "Corner", "scale_pos", _CORNER_NAMES)
         self._choice(menu, "Colour", "scale_color", {"white": "White", "black": "Black"})
+        self._choice(menu, "Length label", "scale_label", _SCALE_LABELS)
+        menu.addSection("Label size")
+        group = QtWidgets.QActionGroup(menu)
+        for size in (None, 6.0, 7.0, 8.0, 10.0):
+            act = menu.addAction("Text size" if size is None else f"{size:g} pt")
+            act.setCheckable(True)
+            act.setChecked(self.style.get("scale_font") == size)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, v=size: self._apply_edit(style={"scale_font": v}))
         menu.addSeparator()
-        self._toggle(menu, "Length label", "scale_label")
+        self._toggle(menu, "Outline", "scale_outline")
 
     def _ask_scale_length(self):
         cur = self.style.get("scale_len_nm") or 1.0
@@ -1417,6 +1465,10 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Ticks", "cbar_ticks", {2: "2 (ends)", 3: "3", 5: "5"})
         menu.addSeparator()
         self._toggle(menu, "Channel and unit label", "cbar_label")
+        self._choice(menu, "Channel name", "cbar_label_pos", _CBAR_LABEL_POS)
+        self._choice(menu, "Values", "cbar_style", _CBAR_STYLES)
+        menu.addSeparator()
+        self._toggle(menu, "Frame around the bar", "cbar_outline")
         self._cmap_menu(menu.addMenu("Colormap"), r)
         return menu
 
@@ -1828,8 +1880,9 @@ class FigureWindow(QtWidgets.QWidget):
             change = {"cbar_w": round(min(0.32, max(0.02, st["cbar_w"] + (0.01 if up else -0.01))), 3)}
             msg = f"Colour bar {change['cbar_w'] * 25.4:.1f} mm"
         elif kind == "scalebar":
-            change = {"scale_thick": round(min(0.08, max(0.005, st["scale_thick"] * (1.15 if up else 1 / 1.15))), 4)}
-            msg = f"Scale bar {change['scale_thick'] * 100:.1f} %"
+            cur = float(st.get("scale_font") or st["font"])
+            change = {"scale_font": min(16.0, max(4.5, cur + (0.5 if up else -0.5)))}
+            msg = f"Scale bar label {change['scale_font']:g} pt"
         elif kind == "letter":
             change = {"letter_size": min(24.0, max(5.0, st["letter_size"] + (0.5 if up else -0.5)))}
             msg = f"Letters {change['letter_size']:g} pt"

@@ -71,11 +71,12 @@ STYLE_DEFAULTS = {
     "letter_color": "white",   # white | black
     "letter_size": 9.0,
     "letter_bold": True,
-    "scale_bar": "one",        # "one" | "all" | "off"
+    "scale_bar": "all",        # "all" (every image) | "one" | "off"
     "scale_len_nm": None,      # None = automatic
     "scale_pos": "bl",
     "scale_color": "white",
-    "scale_label": True,
+    "scale_label": "first",    # length label: "first" (once per length) | "all" | "none"
+    "scale_font": None,        # length label size (pt); None = text size
     "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
     "header_name": False,      # file name as an extra header line
     "font": 7.0,
@@ -91,6 +92,9 @@ STYLE_DEFAULTS = {
     "zoom_color": "color",     # zoom outlines: color (one per zoom) | white | black
     "zoom_labels": True,       # letter of each zoom next to its outline
     "zoom_lw": 1.0,            # outline width (pt)
+    "cbar_label_pos": "inside",  # channel name: centred inside the bar | outside
+    "cbar_outline": True,      # thin frame around colour bars
+    "rotate_tall": "off",      # turn tall images to landscape: off | cw | ccw
 }
 
 # Keys whose sensible default depends on the recipe (a zoom figure shows
@@ -99,7 +103,7 @@ STYLE_DEFAULTS = {
 # and globally for everything else (letters, fonts, outlines, page ...).
 RECIPE_KEYS = ("range_mode", "colorbars", "scale_bar", "header", "transpose", "reverse")
 RECIPE_DEFAULTS = {
-    "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "one"},
+    "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "all"},
 }
 
 # Which style keys are meaningful in each range mode (for the UI).
@@ -110,9 +114,19 @@ CORNERS = ("tl", "tr", "bl", "br")
 def resolve_style(style):
     out = dict(STYLE_DEFAULTS)
     for k, v in (style or {}).items():
-        if k in out and v is not None or k == "scale_len_nm":
+        if k in out and v is not None or k in ("scale_len_nm", "scale_font"):
             out[k] = v
+    # Figures saved before the label choice existed stored a bool.
+    if out.get("scale_label") is True:
+        out["scale_label"] = "all"
+    elif out.get("scale_label") is False:
+        out["scale_label"] = "none"
     return out
+
+
+def pt(size):
+    """Smallest legible size for any printed text (journals ask >= 5 pt)."""
+    return max(5.0, float(size))
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +817,7 @@ def clim_key(row_label, frame_key=None):
 # ---------------------------------------------------------------------------
 
 MAX_FRAMES_PER_BLOCK = 8   # longer series wrap into balanced blocks
+_MIN_PANEL_IN = 0.55       # ~14 mm: below this a page layout wraps instead
 _GAP = 0.05
 _BLOCK_GAP = 0.12
 _BOTTOM = 0.10
@@ -810,10 +825,40 @@ _BOTTOM = 0.10
 # Journal column widths (mm). Fonts stay in absolute points, so choosing a
 # page width shrinks/grows the *panels*, never the text - what you see is
 # what prints at 100 %.
-PAGE_WIDTHS_MM = {"1col": 85.0, "15col": 120.0, "2col": 178.0}
-PAGE_NAMES = {"free": "Free size", "1col": "Single column (85 mm)",
-              "15col": "1.5 column (120 mm)", "2col": "Double column (178 mm)",
-              "custom": "Custom width"}
+# key: (menu name, width mm, text pt, panel-letter pt, letter style or None)
+# Text sizes follow the journals' figure guides: Nature 5-7 pt text with
+# 8 pt bold lowercase panel letters; Science 6-8 pt with bold capitals;
+# ACS >= 4.5 pt (7-8 pt recommended) with (a)-style letters. Every printed
+# text size derives from the text size (headers = text, sub-headers and
+# colour-bar values a step smaller, channel names a step larger; never
+# below 5 pt), so choosing a page sets the whole figure.
+PAGE_PRESETS = {
+    "1col": ("Single column (85 mm)", 85.0, 7.0, 8.5, None),
+    "15col": ("1.5 column (120 mm)", 120.0, 7.0, 9.0, None),
+    "2col": ("Double column (178 mm)", 178.0, 8.0, 10.0, None),
+    "nature1": ("Nature - single column (89 mm)", 89.0, 7.0, 8.0, "a"),
+    "nature2": ("Nature - double column (183 mm)", 183.0, 7.0, 8.0, "a"),
+    "science1": ("Science - 1 column (55 mm)", 55.0, 6.0, 8.0, "A"),
+    "science2": ("Science - 2 columns (120 mm)", 120.0, 7.0, 9.0, "A"),
+    "science3": ("Science - 3 columns (183 mm)", 183.0, 7.0, 9.0, "A"),
+    "acs1": ("ACS - single column (3.25 in)", 82.55, 7.0, 8.0, "(a)"),
+    "acs2": ("ACS - double column (7 in)", 177.8, 8.0, 9.0, "(a)"),
+}
+PAGE_WIDTHS_MM = {k: v[1] for k, v in PAGE_PRESETS.items()}
+PAGE_NAMES = dict([("free", "Free size")] + [(k, v[0]) for k, v in PAGE_PRESETS.items()]
+                  + [("custom", "Custom width")])
+
+
+def page_text_style(page):
+    """Style keys a page preset sets (text sizes, letter style)."""
+    pre = PAGE_PRESETS.get(page)
+    if not pre:
+        return {}
+    out = {"font": pre[2], "letter_size": pre[3], "scale_font": None}
+    if pre[4]:
+        out["letter_style"] = pre[4]
+        out["letter_bold"] = True
+    return out
 
 
 def page_width_in(st):
@@ -837,9 +882,8 @@ def column_blocks(n, max_per=MAX_FRAMES_PER_BLOCK):
 def _aspect_of(p):
     if not p:
         return None
+    # width/height are already the displayed (turned) frame size.
     w, h = _finite(p.get("width_nm")), _finite(p.get("height_nm"))
-    if p.get("turns", 0) % 2 and w and h:
-        w, h = h, w
     if w and h:
         return min(max(h / w, 0.25), 4.0)
     shp = np.shape(p.get("data"))
@@ -874,7 +918,10 @@ def cbar_dims(st, orient="v"):
     else:
         extra = (1.3 * pt if rotated else 0.36 * font / 7.0) if orient == "v" else 1.5 * pt
     if st.get("cbar_label"):
-        extra += (1.5 * pt if rotated else 0.0) if orient == "v" else 1.5 * pt
+        if (st.get("cbar_label_pos") or "inside") == "inside":
+            bar = max(bar, 1.7 * pt)   # the name is centred in the bar
+        else:
+            extra += (1.5 * pt if rotated else 0.0) if orient == "v" else 1.5 * pt
     return bar, extra
 
 
@@ -889,12 +936,18 @@ def figure_layout(spec, panels, style=None):
     st = resolve_style(style)
     target = page_width_in(st)
     if target:
-        a = _layout(spec, panels, dict(st, panel_w=1.0))["size"][0]
-        b = _layout(spec, panels, dict(st, panel_w=2.0))["size"][0]
-        slope = b - a
-        if slope > 1e-6:
-            pw = max(0.25, (target - (a - slope)) / slope)
-            st = dict(st, panel_w=pw)
+        # Too many frames for the page at a legible panel size: wrap them
+        # into more rows (fewer frames per row) until the panels fit.
+        n_f = max(1, len(spec["columns"]))
+        for max_per in range(min(MAX_FRAMES_PER_BLOCK, n_f), 0, -1):
+            trial = dict(st, _max_per=max_per)
+            a = _layout(spec, panels, dict(trial, panel_w=1.0))["size"][0]
+            b = _layout(spec, panels, dict(trial, panel_w=2.0))["size"][0]
+            slope = b - a
+            pw = (target - (a - slope)) / slope if slope > 1e-6 else st["panel_w"]
+            if pw >= _MIN_PANEL_IN or max_per == 1 or spec.get("mode") == "zoom":
+                st = dict(trial, panel_w=max(0.25, pw))
+                break
     lay = _layout(spec, panels, st)
     lay["panel_w"] = float(st["panel_w"])
     lay["page_in"] = target
@@ -921,7 +974,7 @@ def _layout_grid(spec, panels, st):
     ph = pw * _panel_aspect(panels)
     per_img_cb = st["colorbars"] and st["range_mode"] == "image"
     shared_cb = st["colorbars"] and st["range_mode"] == "row"
-    blocks = column_blocks(n_f)
+    blocks = column_blocks(n_f, int(st.get("_max_per") or MAX_FRAMES_PER_BLOCK))
     per = max(len(b) for b in blocks)
     cells, frame_labels, channel_labels, cbars = {}, [], [], []
 
@@ -1206,6 +1259,27 @@ def find_zoom_families(images, min_ratio=2.5, tol=0.04):
 # Rendering
 # ---------------------------------------------------------------------------
 
+def rotate_tall_panels(panels, mode):
+    """Turn portrait panels (h > 1.15 w) a quarter turn to landscape, for
+    this figure only: data rotated, width/height swapped, ``turns`` bumped
+    so zoom outlines follow; scale bars follow from the swapped size."""
+    if mode not in ("cw", "ccw"):
+        return panels
+    out = {}
+    for k, p in panels.items():
+        a = _aspect_of(p)
+        if p is None or not a or a <= 1.15:
+            out[k] = p
+            continue
+        q = dict(p)
+        q["data"] = np.rot90(np.asarray(p["data"]), -1 if mode == "cw" else 1)
+        q["width_nm"], q["height_nm"] = p.get("height_nm"), p.get("width_nm")
+        q["turns"] = (int(p.get("turns") or 0) + (1 if mode == "cw" else 3)) % 4
+        q["rotated_tall"] = True
+        out[k] = q
+    return out
+
+
 def _effects(enabled, color):
     if not enabled:
         return []
@@ -1230,6 +1304,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     st = resolve_style(style)
     font = float(st["font"])
     clims = dict(clims or {})
+    panels = rotate_tall_panels(panels, st.get("rotate_tall"))
     layout = figure_layout(spec, panels, st)
     st = dict(st, panel_w=layout["panel_w"])
     size = layout["size"]
@@ -1266,6 +1341,23 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             scale_cells = {(0, f) for f in range(len(columns))}
         else:
             scale_cells = {max(layout["cells"], key=lambda rf: (layout["cells"][rf][1], -layout["cells"][rf][0]))}
+
+    # Length labels: on every bar, none, or once per distinct length (in
+    # reading order) - frames of one size share a single "2 nm".
+    label_cells = set()
+    where = st.get("scale_label") or "first"
+    seen_lengths = []
+    for rf in order:
+        if rf not in scale_cells or where == "none":
+            continue
+        pp = panels.get((rf[0], columns[rf[1]]["key"])) if rf[1] < len(columns) else None
+        wn = _finite((pp or {}).get("width_nm"))
+        if not wn:
+            continue
+        length = _finite(st.get("scale_len_nm")) or nice_length(0.3 * wn)
+        if where == "all" or not any(abs(length - L) <= 1e-9 * max(1.0, L) for L in seen_lengths):
+            label_cells.add(rf)
+            seen_lengths.append(length)
 
     ranges, panel_ranges, units, images, panel_images = {}, {}, {}, {}, {}
     own_scale, axes_of, dims_of = {}, {}, {}
@@ -1343,8 +1435,6 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             panel_ranges[(r, f)] = (lo, hi)
             w = _finite(p.get("width_nm")) or float(data.shape[1])
             h = _finite(p.get("height_nm")) or float(data.shape[0])
-            if p.get("turns", 0) % 2 and _finite(p.get("width_nm")):
-                w, h = h, w
             dims_of[(r, f)] = (w, h, p.get("turns", 0))
             im = ax.imshow(data, cmap=c_cmap, vmin=lo, vmax=hi, origin="upper",
                            interpolation="nearest", extent=(0.0, w, 0.0, h), aspect="auto")
@@ -1368,7 +1458,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 corner = next((c for c in ("br", "bl", "tr", "tl") if c not in taken), "br")
                 taken.add(corner)
                 tx, ty, tha, tva = _corner(w, h, corner, inset=0.03)
-                ax.text(tx, ty, tag, color="white", fontsize=font - 1, ha=tha, va=tva,
+                ax.text(tx, ty, tag, color="white", fontsize=pt(font - 1), ha=tha, va=tva,
                         path_effects=_effects(True, "white"), zorder=7, gid=f"note_{r}_{f}")
             else:
                 images.setdefault(r, []).append(im)
@@ -1382,7 +1472,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                     box, st["letter_pos"], float(st["letter_size"]), len(letter))})
             if (r, f) in scale_cells and _finite(p.get("width_nm")):
                 sb = _draw_scale_bar(ax, w, h, st, font, _effects(st["scale_outline"], st["scale_color"]),
-                                     gid=f"scalebar_{r}_{f}")
+                                     gid=f"scalebar_{r}_{f}", show_label=(r, f) in label_cells)
                 if sb:
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
             if st["colorbars"] and not shared and own_scale.get((r, col["key"])) != "flat":
@@ -1419,7 +1509,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                      fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
             if col.get("subheader"):
                 fig.text(xc, 1.0 - (y1 - 0.05) / fig_h, col["subheader"], ha="center",
-                         va="bottom", fontsize=font - 1, color=text_color, gid=f"header_{f}_sub")
+                         va="bottom", fontsize=pt(font - 1), color=text_color, gid=f"header_{f}_sub")
         else:
             yc = 0.5 * (y0 + y1)
             dy = 0.5 * font / 72.0 * 1.4 if col.get("subheader") else 0.0
@@ -1427,7 +1517,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                      va="center", fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
             if col.get("subheader"):
                 fig.text(x1 / fig_w, 1.0 - (yc + dy) / fig_h, col["subheader"], ha="right",
-                         va="center", fontsize=font - 1, color=text_color, gid=f"header_{f}_sub")
+                         va="center", fontsize=pt(font - 1), color=text_color, gid=f"header_{f}_sub")
         seen_headers.add(f)
     for r, (x0, y0, x1, y1) in layout["channel_labels"]:
         if n_rows < 2 and is_zoom:
@@ -1523,13 +1613,22 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     cb._sxm_rotated = rotated
     cb._sxm_font = font
     cb.outline.set_linewidth(0.5)
-    cb.ax.tick_params(labelsize=font - 0.5, length=2, width=0.5, pad=1.5, colors=text_color)
+    cb.outline.set_visible(bool(st.get("cbar_outline", True)))
+    cb.ax.tick_params(labelsize=pt(font - 0.5), length=2, width=0.5, pad=1.5, colors=text_color)
     if style == "inside":
         cb._sxm_inside_colors = (_contrast_text_color(im.get_cmap(), 0.04),
                                  _contrast_text_color(im.get_cmap(), 0.96))
     set_colorbar_range(cb, lo, hi)
     if label:
-        if horizontal or rotated:
+        if (st.get("cbar_label_pos") or "inside") == "inside":
+            # The channel name sits centred *in* the bar - along it for a
+            # vertical bar, flat for a horizontal one - in a colour that
+            # reads on the middle of the colormap.
+            cax.text(0.5, 0.5, label, transform=cax.transAxes, ha="center", va="center",
+                     rotation=0 if horizontal else 90, fontsize=pt(font - 0.5),
+                     color=_contrast_text_color(im.get_cmap(), 0.5), zorder=5,
+                     gid=f"cbarlabel_{entry['row']}")
+        elif horizontal or rotated:
             cb.set_label(label, fontsize=font, labelpad=1.0, color=text_color)
         else:
             cax.set_title(label, fontsize=font, color=text_color, loc="left", pad=2.0)
@@ -1692,7 +1791,7 @@ def _draw_corner_text(ax, w, h, text, pos, color, size, bold, effects):
                    va=va, ha=ha, path_effects=effects, zorder=7)
 
 
-def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar"):
+def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar", show_label=True):
     """Draw the bar; returns its (fx0, fy0, fx1, fy1) data fractions incl.
     the label, for hit-testing (None if not drawn)."""
     length = _finite(st.get("scale_len_nm")) or nice_length(0.3 * w)
@@ -1701,9 +1800,12 @@ def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar"):
     pos = st["scale_pos"]
     color = st["scale_color"]
     edge = "black" if color == "white" else "white"
-    bar_h = max(float(st.get("scale_thick") or 0.018) * h, 1e-9)
+    # Thickness from the panel's shorter side, so a tall frame doesn't get
+    # a slab (and the bar looks the same on every aspect ratio).
+    bar_h = max(min(float(st.get("scale_thick") or 0.018), 0.05) * min(w, h), 1e-9)
     x0 = 0.06 * w if pos in ("tl", "bl") else 0.94 * w - length
-    label_h = 0.09 * h if st["scale_label"] else 0.0
+    label_pt = pt(st.get("scale_font") or font)
+    label_h = (0.09 * h * label_pt / max(font, 1e-6)) if show_label else 0.0
     if pos in ("bl", "br"):
         y0 = 0.07 * h
         ty, tva = y0 + bar_h + 0.02 * h, "bottom"
@@ -1717,6 +1819,6 @@ def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar"):
                            edgecolor=edge if st.get("scale_outline", True) else color,
                            linewidth=0.4, zorder=5, gid=gid))
     if label_h:
-        ax.text(x0 + 0.5 * length, ty, length_text(length), color=color, fontsize=font,
+        ax.text(x0 + 0.5 * length, ty, length_text(length), color=color, fontsize=label_pt,
                 ha="center", va=tva, zorder=6, path_effects=effects, gid=gid + "_label")
     return (x0 / w, box_y[0] / h, (x0 + length) / w, box_y[1] / h)

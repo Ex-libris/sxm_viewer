@@ -8,6 +8,37 @@ First public release archived on Zenodo.
 
 ## Development history (pre-release)
 
+### 2026-11-03 (overview + zooms, publication formatting)
+
+- **Overview + zooms figure**: a frame with smaller frames scanned inside
+  it gets a blue ⊡N chip; the figure shows the overview next to its zooms,
+  each outlined and lettered on the overview in its own colour. Frames
+  taken in different modes show their own best channel (topography of a CC
+  overview, current of its CH zooms).
+- **Journal pages**: Nature, Science, ACS and generic 1 / 1.5 / 2 column
+  widths set the figure width *and* every text size (letters, headers,
+  channel names, colour-bar values and names, scale-bar labels; nothing
+  below 5 pt). Too many frames for the page wrap into more rows. *Show at
+  actual size* draws the figure at its printed size with a width ruler.
+- **Scale bars** on every image by default; the length label once per
+  distinct length (or on every bar / none); Ctrl+wheel on a bar changes the
+  label size (the bar stays put); thickness follows the shorter panel side.
+- **Colour bars**: channel name centred inside the bar (vertical or
+  horizontal), values outside / inside / min-max text, rotated or
+  horizontal text, optional frame.
+- **Outlines** on letters, scale bars and colour bars are each optional.
+- **Tall images** can be turned to landscape for the figure (clockwise or
+  counter-clockwise); scale bars and zoom outlines follow.
+- **Ctrl+wheel** sizes what is under the cursor (text, colour bar, scale-bar
+  label, letters; Ctrl+Shift = panels), one undo step per gesture.
+- **Exports**: Copy as PNG / SVG / both; PowerPoint to a new or the current
+  slide, editable or as a picture; Obsidian (active note / choose); Inkscape
+  (opens a layered SVG: images, outlines, scale bars, letters, colour bars,
+  labels); Save as PDF / layered SVG / PNG / TIFF / EPS at 300-1200 dpi,
+  optional transparent background.
+- Fix: images quarter-turned in the viewer had their width/height swapped
+  twice in figures.
+
 ### 2026-11-03 (bias-series figures)
 
 **The same one-click figure for bias series.** A frame re-scanned while the
