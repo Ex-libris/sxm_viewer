@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import io
+import math
 from pathlib import Path
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
@@ -39,13 +40,14 @@ _CLICK_SLOP_PX = 3
 
 _LETTER_STYLE_NAMES = {"a": "a, b, c", "A": "A, B, C", "(a)": "(a), (b)", "a)": "a), b)", "a.": "a., b."}
 _CORNER_NAMES = {"tl": "Top left", "tr": "Top right", "bl": "Bottom left", "br": "Bottom right"}
+_LETTER_PLACES = dict(_CORNER_NAMES, out_tl="Outside, above top left", out_tr="Outside, above top right")
 _HEADER_NAMES = {"auto": "Automatic (Δz / bias / size)", "dz": "Δz to the reference",
                  "zabs": "Absolute z", "bias": "Bias", "size": "Frame size", "name": "File name",
                  "none": "None (no header)"}
 _MODE_TITLES = {"height": "Height series", "bias": "Bias series", "zoom": "Overview + zooms",
                 "selection": "Figure"}
-_CBAR_STYLES = {"outside": "Values outside (ticks)", "inside": "Values inside the bar",
-                "minmax": "Min - max text only"}
+_CBAR_STYLES = {"outside": "Numbers outside (ticks)", "inside": "Numbers inside the bar",
+                "minmax": "Words: min / max"}
 _CBAR_TEXT = {"rotated": "Rotated text", "horizontal": "Horizontal text"}
 _ZOOM_COLORS = {"color": "One colour per zoom", "white": "White", "black": "Black"}
 _DPI_CHOICES = (300, 600, 1200)
@@ -351,205 +353,280 @@ def _tab_icon(kind, color):
 
 
 class _FormatPanel(QtWidgets.QWidget):
-    """Every figure option, in icon tabs (mirrors the right-click menus).
-    Emits ``changed(dict)`` with the style/state keys to update."""
+    """Every figure option at once: a row of cards under the figure, each
+    with an icon, a title and a one-line hint (mirrors the right-click
+    menus). Emits ``changed(dict)`` with the style/state keys to update."""
 
     changed = QtCore.pyqtSignal(dict)
 
-    TABS = (
-        ("page", "Page & layout", "Journal width, actual size, arrangement"),
-        ("channels", "Channels", "Which channels are shown, in which order"),
-        ("titles", "Titles", "Frame headers and channel names"),
+    CARDS = (
+        ("page", "Page & layout", "Journal width, arrangement"),
+        ("channels", "Channels", "Tick to show · drag to reorder"),
+        ("titles", "Text", "Font, size, headers, names"),
         ("colour", "Colour", "Ranges and colour bars"),
-        ("letters", "Panel letters", "a, b, c ... - style and placement"),
-        ("scale", "Scale bar", "Where, how long, label"),
-        ("zoom", "Zoom outlines", "Boxes of the zooms on the overview"),
+        ("letters", "Panel letters", "a, b, c … style and place"),
+        ("scale", "Scale bar", "Where, length, label"),
+        ("zoom", "Zoom outlines", "Boxes of the zooms"),
     )
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(290)
-        self.setMaximumWidth(340)
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(4)
-        self.tabs = QtWidgets.QTabWidget(self)
-        self.tabs.setDocumentMode(True)
-        self.tabs.setIconSize(QtCore.QSize(22, 22))
-        self.tabs.setUsesScrollButtons(False)
-        outer.addWidget(self.tabs, 1)
+        outer.setSpacing(0)
+        self.scroll = QtWidgets.QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        strip = QtWidgets.QWidget()
+        self.row = QtWidgets.QHBoxLayout(strip)
+        self.row.setContentsMargins(6, 4, 6, 4)
+        self.row.setSpacing(8)
+        self.scroll.setWidget(strip)
+        outer.addWidget(self.scroll)
         self._syncing = False
-        self._pages = {}
+        self._cards = {}
         icon_color = self.palette().color(QtGui.QPalette.WindowText)
         w = {}
 
-        def page(kind):
-            title, blurb = next((t, b) for k, t, b in self.TABS if k == kind)
-            scroll = QtWidgets.QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-            scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            body = QtWidgets.QWidget()
-            col = QtWidgets.QVBoxLayout(body)
+        def card(kind, columns=1):
+            """A titled card; returns add(label, widget) placing rows in
+            ``columns`` label/field column pairs, top to bottom."""
+            title, blurb = next((t, b) for k, t, b in self.CARDS if k == kind)
+            frame = QtWidgets.QFrame()
+            frame.setObjectName("figureCard")
+            frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+            frame.setStyleSheet("QFrame#figureCard { border: 1px solid palette(midlight); border-radius: 6px; }")
+            col = QtWidgets.QVBoxLayout(frame)
             col.setContentsMargins(8, 6, 8, 6)
-            col.setSpacing(6)
-            head = QtWidgets.QLabel(f"<b>{title}</b><br><span style='color:palette(mid)'>{blurb}</span>")
-            head.setWordWrap(True)
-            col.addWidget(head)
-            grid = QtWidgets.QFormLayout()
-            grid.setContentsMargins(0, 4, 0, 0)
-            grid.setLabelAlignment(QtCore.Qt.AlignLeft)
-            grid.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+            col.setSpacing(4)
+            head = QtWidgets.QHBoxLayout()
+            head.setSpacing(6)
+            ic = QtWidgets.QLabel()
+            ic.setPixmap(_tab_icon(kind, icon_color).pixmap(22, 22))
+            head.addWidget(ic)
+            tl = QtWidgets.QLabel(f"<b>{title}</b>")
+            head.addWidget(tl)
+            head.addStretch(1)
+            col.addLayout(head)
+            hint = QtWidgets.QLabel(blurb)
+            hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
+            col.addWidget(hint)
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(6)
+            grid.setVerticalSpacing(3)
             col.addLayout(grid)
             col.addStretch(1)
-            scroll.setWidget(body)
-            idx = self.tabs.addTab(scroll, _tab_icon(kind, icon_color), "")
-            self.tabs.setTabToolTip(idx, f"{title} - {blurb}")
-            self._pages[kind] = idx
-            return grid
+            self.row.addWidget(frame)
+            self._cards[kind] = frame
+            state = {"n": 0}
+            per_col = None
+
+            def add(label, widget, span=False):
+                nonlocal per_col
+                i = state["n"]
+                state["n"] += 1
+                c = (i // per_col) if per_col else 0
+                r = (i % per_col) if per_col else i
+                if span or label is None:
+                    if isinstance(widget, QtWidgets.QLayout):
+                        grid.addLayout(widget, r, 2 * c, 1, 2)
+                    else:
+                        grid.addWidget(widget, r, 2 * c, 1, 2)
+                    return
+                lab = QtWidgets.QLabel(label)
+                lab.setStyleSheet("color: palette(text);")
+                grid.addWidget(lab, r, 2 * c)
+                if isinstance(widget, QtWidgets.QLayout):
+                    grid.addLayout(widget, r, 2 * c + 1)
+                else:
+                    grid.addWidget(widget, r, 2 * c + 1)
+
+            def set_rows(n):
+                nonlocal per_col
+                per_col = int(math.ceil(n / columns))
+
+            add.set_rows = set_rows
+            return add
+
+        def fit(c):
+            # Readable fixed width in the card; the pop-up list shows the
+            # full names (no card grows to its longest entry).
+            c.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(15)
+            c.setMaximumWidth(190)
+            view = c.view()
+            view.setMinimumWidth(max(view.sizeHintForColumn(0) + 28, 190))
+            return c
 
         def combo(items):
             c = QtWidgets.QComboBox()
-            c.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
-            c.setMinimumContentsLength(8)
             for key, text in items.items():
                 c.addItem(text, key)
-            return c
+            return fit(c)
 
         def spin(lo, hi, step, suffix):
             s = QtWidgets.QDoubleSpinBox()
             s.setRange(lo, hi)
             s.setSingleStep(step)
             s.setSuffix(suffix)
+            s.setMinimumWidth(78)
             return s
 
+        def check(text, tip=None):
+            b = QtWidgets.QCheckBox(text)
+            if tip:
+                b.setToolTip(tip)
+            return b
+
         # -- Page & layout
-        g = page("page")
+        add = card("page")
+        add.set_rows(7)
         w["page"] = combo(hs.PAGE_NAMES)
         w["page"].setToolTip("Journal column width: sets the figure width and every text size")
-        g.addRow("Page", w["page"])
+        add("Page", w["page"])
         w["page_mm"] = spin(30.0, 400.0, 1.0, " mm")
-        g.addRow("Custom width", w["page_mm"])
-        w["_actual"] = QtWidgets.QCheckBox("Show at actual size (100 %)")
-        w["_actual"].setToolTip("Draw the figure at its real printed size on this screen")
-        g.addRow(w["_actual"])
-        w["transpose"] = combo({False: "Frames across, channels down",
-                                True: "Frames down, channels across"})
-        g.addRow("Arrange", w["transpose"])
-        w["reverse"] = QtWidgets.QCheckBox("Reverse the frame order")
-        g.addRow(w["reverse"])
+        add("Custom width", w["page_mm"])
+        w["_actual"] = check("Actual size (100 %)", "Draw the figure at its printed size on this screen")
+        add(None, w["_actual"])
+        w["transpose"] = combo({False: "Frames → across, channels ↓ down",
+                                True: "Frames ↓ down, channels → across"})
+        add("Arrange", w["transpose"])
+        w["reverse"] = check("Reverse order", "Reverse the frame order")
+        add(None, w["reverse"])
         w["rotate_tall"] = combo(_ROTATE_TALL)
-        w["rotate_tall"].setToolTip("Tall (portrait) images are turned a quarter turn for this figure; "
+        w["rotate_tall"].setToolTip("Tall (portrait) images turned a quarter turn for this figure; "
                                     "scale bars and zoom outlines follow")
-        g.addRow("Tall images", w["rotate_tall"])
+        add("Tall images", w["rotate_tall"])
         w["panel_w"] = spin(0.6, 4.0, 0.1, " in")
-        g.addRow("Panel width", w["panel_w"])
-        w["font"] = spin(5.0, 14.0, 0.5, " pt")
-        w["font"].setToolTip("Text size (Ctrl+wheel on the figure)")
-        g.addRow("Text size", w["font"])
+        w["panel_w"].setToolTip("Free size only - a page width sets it (Ctrl+Shift+wheel)")
+        add("Panel width", w["panel_w"])
 
         # -- Channels
-        g = page("channels")
+        add = card("channels")
         w["channels"] = QtWidgets.QListWidget()
         w["channels"].setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
-        w["channels"].setMinimumHeight(220)
+        w["channels"].setMinimumWidth(180)
+        w["channels"].setMaximumWidth(230)
         w["channels"].setToolTip("Tick the channels to show; drag to reorder")
-        g.addRow(w["channels"])
+        add(None, w["channels"])
 
-        # -- Titles
-        g = page("titles")
+        # -- Text
+        add = card("titles")
+        add.set_rows(6)
+        w["font_family"] = QtWidgets.QComboBox()
+        w["font_family"].setMaxVisibleItems(18)
+        for name in hs.available_fonts():
+            w["font_family"].addItem(name, name)
+        w["font_family"].setToolTip("Font of every text in the figure (journal-friendly fonts first)")
+        fit(w["font_family"])
+        add("Font", w["font_family"])
+        w["font"] = spin(5.0, 14.0, 0.5, " pt")
+        w["font"].setToolTip("Text size (Ctrl+wheel on the figure)")
+        add("Size", w["font"])
         w["header"] = combo(_HEADER_NAMES)
-        g.addRow("Frame header", w["header"])
-        w["header_name"] = QtWidgets.QCheckBox("Add the file name")
-        g.addRow(w["header_name"])
-        w["ref_bold"] = QtWidgets.QCheckBox("Bold the Δz = 0 reference")
-        g.addRow(w["ref_bold"])
-        w["channel_labels"] = QtWidgets.QCheckBox("Channel names beside the rows")
-        w["channel_labels"].setToolTip("I, Δf ... on the left (or above, when frames run down)")
-        g.addRow(w["channel_labels"])
+        add("Frame header", w["header"])
+        w["header_name"] = check("+ file name", "Add the file name under the header")
+        add(None, w["header_name"])
+        w["ref_bold"] = check("Bold Δz = 0", "Bold header for the Δz = 0 reference frame")
+        add(None, w["ref_bold"])
+        w["channel_labels"] = check("Channel names",
+                                    "I, Δf ... left of the rows (above them when frames run down)")
+        add(None, w["channel_labels"])
 
         # -- Colour
-        g = page("colour")
-        w["range_mode"] = combo({"row": "One range per channel", "image": "Each image its own range"})
-        g.addRow("Range", w["range_mode"])
-        w["colorbars"] = QtWidgets.QCheckBox("Colour bars")
-        g.addRow(w["colorbars"])
+        add = card("colour", columns=2)
+        add.set_rows(10)
+        w["range_mode"] = combo({"row": "Shared per channel", "image": "Each image its own"})
+        add("Range", w["range_mode"])
+        w["colorbars"] = check("Colour bars")
+        add(None, w["colorbars"])
+        w["cbar_scope"] = combo({"auto": "Follow the range", "row": "One per channel (min / max)"})
+        w["cbar_scope"].setToolTip("One bar per channel even when each image has its own range - "
+                                   "its ends then read min and max")
+        add("Bars", w["cbar_scope"])
         w["cbar_style"] = combo(_CBAR_STYLES)
-        g.addRow("Values", w["cbar_style"])
-        w["cbar_ticks"] = combo({2: "2 ticks (ends)", 3: "3 ticks", 5: "5 ticks"})
-        g.addRow("Ticks", w["cbar_ticks"])
-        w["cbar_label"] = QtWidgets.QCheckBox("Channel and unit")
-        g.addRow(w["cbar_label"])
+        add("Values", w["cbar_style"])
+        w["cbar_ticks"] = combo({2: "2 (ends)", 3: "3", 5: "5"})
+        add("Ticks", w["cbar_ticks"])
+        w["cbar_label"] = check("Channel and unit")
+        add(None, w["cbar_label"])
         w["cbar_label_pos"] = combo(_CBAR_LABEL_POS)
-        g.addRow("Name", w["cbar_label_pos"])
+        add("Name", w["cbar_label_pos"])
         w["cbar_text"] = combo(_CBAR_TEXT)
-        g.addRow("Vertical bars", w["cbar_text"])
+        add("Text", w["cbar_text"])
         w["cbar_w"] = spin(0.5, 8.0, 0.25, " mm")
-        g.addRow("Bar width", w["cbar_w"])
-        w["cbar_outline"] = QtWidgets.QCheckBox("Frame around the bar")
-        g.addRow(w["cbar_outline"])
+        add("Width", w["cbar_w"])
+        w["cbar_outline"] = check("Bar frame", "Thin frame around each colour bar")
+        add(None, w["cbar_outline"])
 
         # -- Panel letters
-        g = page("letters")
-        w["letters"] = QtWidgets.QCheckBox("Show letters")
-        g.addRow(w["letters"])
+        add = card("letters")
+        add.set_rows(8)
+        w["letters"] = check("Show letters")
+        add(None, w["letters"])
         w["letter_style"] = combo(_LETTER_STYLE_NAMES)
-        g.addRow("Style", w["letter_style"])
+        add("Style", w["letter_style"])
         w["letter_scope"] = combo({"frame": "One per frame", "panel": "Every panel"})
-        g.addRow("On", w["letter_scope"])
-        w["letter_pos"] = combo(_CORNER_NAMES)
-        g.addRow("Corner", w["letter_pos"])
+        add("On", w["letter_scope"])
+        w["letter_pos"] = combo(_LETTER_PLACES)
+        w["letter_pos"].setToolTip("Inside a corner, or outside the image above it (dark on the page)")
+        add("Place", w["letter_pos"])
         w["letter_color"] = combo({"white": "White", "black": "Black"})
-        g.addRow("Colour", w["letter_color"])
+        add("Colour", w["letter_color"])
         w["letter_size"] = spin(5.0, 24.0, 0.5, " pt")
-        g.addRow("Size", w["letter_size"])
-        w["letter_bold"] = QtWidgets.QCheckBox("Bold")
-        g.addRow(w["letter_bold"])
-        w["letter_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
-        g.addRow(w["letter_outline"])
+        add("Size", w["letter_size"])
+        w["letter_bold"] = check("Bold")
+        add(None, w["letter_bold"])
+        w["letter_outline"] = check("Outline")
+        add(None, w["letter_outline"])
 
         # -- Scale bar
-        g = page("scale")
+        add = card("scale")
+        add.set_rows(8)
         w["scale_bar"] = combo(_SCALE_NAMES)
-        g.addRow("Show on", w["scale_bar"])
+        add("Show on", w["scale_bar"])
         len_row = QtWidgets.QHBoxLayout()
-        w["scale_auto"] = QtWidgets.QCheckBox("Auto")
+        w["scale_auto"] = check("Auto")
         w["scale_len_nm"] = spin(0.01, 100000.0, 0.5, " nm")
         w["scale_len_nm"].setDecimals(2)
         len_row.addWidget(w["scale_auto"])
         len_row.addWidget(w["scale_len_nm"], 1)
-        g.addRow("Length", len_row)
+        add("Length", len_row)
         w["scale_label"] = combo(_SCALE_LABELS)
-        g.addRow("Label", w["scale_label"])
+        add("Label", w["scale_label"])
         w["scale_font"] = spin(4.5, 16.0, 0.5, " pt")
         w["scale_font"].setSpecialValueText("Text size")
         w["scale_font"].setToolTip("Size of the length label (Ctrl+wheel on a scale bar)")
-        g.addRow("Label size", w["scale_font"])
+        add("Label size", w["scale_font"])
         w["scale_pos"] = combo(_CORNER_NAMES)
-        g.addRow("Corner", w["scale_pos"])
+        add("Corner", w["scale_pos"])
         w["scale_color"] = combo({"white": "White", "black": "Black"})
-        g.addRow("Colour", w["scale_color"])
+        add("Colour", w["scale_color"])
         w["scale_thick"] = spin(0.5, 5.0, 0.25, " %")
         w["scale_thick"].setToolTip("Bar thickness, % of the panel's shorter side")
-        g.addRow("Thickness", w["scale_thick"])
-        w["scale_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
-        g.addRow(w["scale_outline"])
+        add("Thickness", w["scale_thick"])
+        w["scale_outline"] = check("Outline")
+        add(None, w["scale_outline"])
 
         # -- Zoom outlines (zoom figures only)
-        g = page("zoom")
+        add = card("zoom")
+        add.set_rows(3)
         w["zoom_color"] = combo(_ZOOM_COLORS)
-        g.addRow("Colour", w["zoom_color"])
+        add("Colour", w["zoom_color"])
         w["zoom_lw"] = spin(0.25, 4.0, 0.25, " pt")
-        g.addRow("Line width", w["zoom_lw"])
-        w["zoom_labels"] = QtWidgets.QCheckBox("Letter next to each outline")
-        g.addRow(w["zoom_labels"])
+        add("Line width", w["zoom_lw"])
+        w["zoom_labels"] = check("Letters", "Letter next to each zoom outline")
+        add(None, w["zoom_labels"])
 
-        self.title = QtWidgets.QLabel()
-        self.tabs.currentChanged.connect(self._show_title)
+        end = QtWidgets.QVBoxLayout()
+        end.addStretch(1)
         self.reset_btn = QtWidgets.QPushButton("Reset format")
-        outer.addWidget(self.reset_btn)
+        self.reset_btn.setToolTip("Back to the defaults (your figures keep their data choices)")
+        end.addWidget(self.reset_btn)
+        self.row.addLayout(end)
+        self.row.addStretch(1)
         self.w = w
-        self._show_title(0)
 
         for key, widget in w.items():
             if isinstance(widget, QtWidgets.QComboBox):
@@ -561,20 +638,13 @@ class _FormatPanel(QtWidgets.QWidget):
         w["channels"].itemChanged.connect(lambda _i: self._emit("channels"))
         w["channels"].model().rowsMoved.connect(lambda *_a: self._emit("channels"))
 
-    def _show_title(self, idx):
-        # the tab bar is icon-only; the page itself carries the title
-        pass
+    def sizeHint(self):
+        return QtCore.QSize(1200, 250)
 
     def set_mode(self, mode):
-        idx = self._pages.get("zoom")
-        if idx is None:
-            return
-        try:
-            self.tabs.setTabVisible(idx, mode == "zoom")
-        except AttributeError:   # Qt < 5.15
-            self.tabs.setTabEnabled(idx, mode == "zoom")
-        if mode != "zoom" and self.tabs.currentIndex() == idx:
-            self.tabs.setCurrentIndex(0)
+        frame = self._cards.get("zoom")
+        if frame is not None:
+            frame.setVisible(mode == "zoom")
 
     # Widget value <-> style value for keys shown in friendlier units.
     _TO_WIDGET = {"scale_thick": lambda v: float(v) * 100.0, "cbar_w": lambda v: float(v) * 25.4}
@@ -623,6 +693,8 @@ class _FormatPanel(QtWidgets.QWidget):
                 if key in ("channels", "scale_auto", "scale_len_nm", "_actual"):
                     continue
                 value = style.get(key)
+                if key == "font_family" and not value:
+                    value = hs.default_font()
                 if key in self._TO_WIDGET and value is not None:
                     value = self._TO_WIDGET[key](value)
                 if isinstance(widget, QtWidgets.QComboBox):
@@ -703,7 +775,7 @@ class FigureWindow(QtWidgets.QWidget):
 
         self._build_ui()
         self._init_shortcuts()
-        self.resize(1480, 640)
+        self.resize(1720, 900)
         self._render_timer = QtCore.QTimer(self, singleShot=True, interval=90)
         self._render_timer.timeout.connect(self._render_screen)
         self._drag_timer = QtCore.QTimer(self, singleShot=True, interval=_DRAG_THROTTLE_MS)
@@ -876,8 +948,8 @@ class FigureWindow(QtWidgets.QWidget):
         strip.addWidget(self.more_btn)
         root.addLayout(strip)
 
-        body = QtWidgets.QHBoxLayout()
-        body.setSpacing(6)
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self)
+        self.splitter.setChildrenCollapsible(False)
         self.scroll = QtWidgets.QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -892,18 +964,21 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.wheel.connect(self._on_wheel)
         self.view.resized.connect(lambda: self._render_timer.start() if not self._actual else None)
         self.scroll.setWidget(self.view)
-        body.addWidget(self.scroll, 1)
+        self.splitter.addWidget(self.scroll)
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
         self.format_panel.set_mode(self.mode)
-        body.addWidget(self.format_panel)
+        self.splitter.addWidget(self.format_panel)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([520, 260])
         open_fmt = bool(self.source.export_settings().get("format_open", True))
         self.format_panel.setVisible(open_fmt)
         self.format_btn.blockSignals(True)
         self.format_btn.setChecked(open_fmt)
         self.format_btn.blockSignals(False)
-        root.addLayout(body, 1)
+        root.addWidget(self.splitter, 1)
 
         self.hint = QtWidgets.QLabel(self)
         self.hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
@@ -1309,6 +1384,10 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _begin_cbar_drag(self, hit, event):
         r, f = hit["row"], hit["frame"]
+        if f is None and self.style["range_mode"] == "image":
+            self._flash("Each image has its own range - drag or click an image's own bar "
+                        "(Colour ▸ Bars: Follow the range)")
+            return
         lo, hi = self._cbar_range(r, f)
         inch = self.view.to_inches(event.pos())
         x0, y0, x1, y1 = hit["box"]
@@ -1499,7 +1578,7 @@ class FigureWindow(QtWidgets.QWidget):
         self._toggle(menu, "Show letters", "letters")
         self._choice(menu, "Style", "letter_style", _LETTER_STYLE_NAMES)
         self._choice(menu, "On", "letter_scope", {"frame": "One per frame", "panel": "Every panel"})
-        self._choice(menu, "Corner", "letter_pos", _CORNER_NAMES)
+        self._choice(menu, "Place", "letter_pos", _LETTER_PLACES)
         self._choice(menu, "Colour", "letter_color", {"white": "White", "black": "Black"})
         menu.addSection("Size")
         group = QtWidgets.QActionGroup(menu)

@@ -42,6 +42,17 @@ First public release archived on Zenodo.
   Channels, Titles, Colour, Panel letters, Scale bar, Zoom outlines) - no
   scrolling; closing it is remembered. Figures always open fitted to the
   window (actual size is a per-window view).
+- **Format bar under the figure**: every option at once, as cards with an
+  icon, a title and a one-line hint (Page & layout, Channels, Text,
+  Colour, Panel letters, Scale bar, Zoom outlines); drag the splitter to
+  give it more or less room. Drop-downs keep a fixed width and show full
+  names in their lists, so nothing is cut off.
+- **Font**: any installed font for the whole figure (Arial by default;
+  journal-friendly fonts listed first), carried into PDF/SVG/PowerPoint.
+- **Panel letters outside the image**: "Outside, above top left/right",
+  on their own line above the header, in dark text on the page.
+- **min / max colour bars**: the bar stays, its ends read "min" and "max";
+  and **one bar per channel** even when each image has its own range.
 - **Titles**: frame headers can be *None*; channel names beside the rows can
   be hidden (the layout reclaims the space); the Δz = 0 reference is bold
   only if you ask for it.

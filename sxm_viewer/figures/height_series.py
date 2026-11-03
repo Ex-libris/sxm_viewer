@@ -67,7 +67,7 @@ STYLE_DEFAULTS = {
     "letters": True,
     "letter_style": "a",       # "a" | "A" | "(a)" | "a)" | "a."
     "letter_scope": "frame",   # "frame": one per frame | "panel": every panel
-    "letter_pos": "tl",        # tl | tr | bl | br
+    "letter_pos": "tl",        # tl | tr | bl | br (inside) | out_tl | out_tr (outside, above)
     "letter_color": "white",   # white | black
     "letter_size": 9.0,
     "letter_bold": True,
@@ -82,6 +82,8 @@ STYLE_DEFAULTS = {
     "ref_bold": False,         # bold header for the Δz = 0 reference frame
     "channel_labels": True,    # channel names (I, Δf ...) beside the rows
     "font": 7.0,
+    "font_family": None,       # None = Arial when installed (journal standard), else DejaVu Sans
+    "cbar_scope": "auto",      # auto (follows the range) | row (one bar per channel, min/max)
     "panel_w": 1.55,           # inches (solved from the page width if set)
     "page": "free",            # free | 1col | 15col | 2col | custom
     "page_mm": 85.0,           # custom page width
@@ -124,6 +126,34 @@ def resolve_style(style):
     elif out.get("scale_label") is False:
         out["scale_label"] = "none"
     return out
+
+
+_JOURNAL_FONTS = ("Arial", "Helvetica", "Calibri", "Segoe UI", "Liberation Sans", "DejaVu Sans",
+                  "Times New Roman", "Cambria", "Georgia", "DejaVu Serif", "Courier New")
+
+
+def available_fonts():
+    """Font families matplotlib can render: journal-friendly ones first."""
+    try:
+        from matplotlib import font_manager
+        names = sorted({f.name for f in font_manager.fontManager.ttflist})
+    except Exception:
+        names = ["DejaVu Sans"]
+    first = [n for n in _JOURNAL_FONTS if n in names]
+    return first + [n for n in names if n not in first]
+
+
+def default_font():
+    fonts = available_fonts()
+    return "Arial" if "Arial" in fonts else ("DejaVu Sans" if "DejaVu Sans" in fonts else fonts[0])
+
+
+def font_rc(st):
+    """matplotlib rc for the figure's font (falls back glyph-wise to DejaVu
+    for anything the chosen font lacks, e.g. Δ in some families)."""
+    family = (st or {}).get("font_family") or default_font()
+    return {"font.family": [family, "DejaVu Sans"], "mathtext.fontset": "dejavusans",
+            "svg.fonttype": "none", "pdf.fonttype": 42, "ps.fonttype": 42}
 
 
 def pt(size):
@@ -917,8 +947,9 @@ def cbar_dims(st, orient="v"):
     rotated = (st.get("cbar_text") or "rotated") == "rotated"
     bar = float(st.get("cbar_w") or 0.07)
     if style == "minmax":
-        return 0.0, (0.62 * font / 7.0 if orient == "v" else 1.6 * pt)
-    if style == "inside":
+        # A real bar whose ends read "min" / "max" (no numbers).
+        extra = (1.3 * pt if rotated else 0.30 * font / 7.0) if orient == "v" else 1.5 * pt
+    elif style == "inside":
         bar = max(bar, 1.7 * pt)
         extra = 0.0
     else:
@@ -955,6 +986,7 @@ def figure_layout(spec, panels, style=None):
                 st = dict(trial, panel_w=max(0.25, pw))
                 break
     lay = _layout(spec, panels, st)
+    lay["_letter_h"] = _outside_letter_h(st)
     lay["panel_w"] = float(st["panel_w"])
     lay["page_in"] = target
     return lay
@@ -966,12 +998,30 @@ def _layout(spec, panels, st):
     return _layout_grid(spec, panels, st)
 
 
+def _letter_line_y(layout, f, cell):
+    """Baseline (inches from the top) of an outside letter: on the top line
+    of the frame's header band when the panel has one above it (so it never
+    collides with the header text), else just above the panel."""
+    for ff, hb in layout.get("frame_labels", []):
+        if ff == f and abs(hb[3] - cell[1]) < 1e-6 and not layout.get("transpose"):
+            return hb[1] + float(layout.get("_letter_h") or 0.0) - 0.02
+    return cell[1] - 0.015
+
+
+def _outside_letter_h(st):
+    """Room an outside panel letter needs above its panel (0 if inside)."""
+    if not st.get("letters") or not str(st.get("letter_pos") or "").startswith("out"):
+        return 0.0
+    return float(st.get("letter_size") or 9.0) * 1.2 / 72.0 + 0.04
+
+
 def _header_height(spec, st):
     line = float(st["font"]) / 72.0 * 1.45
     if not any(c.get("header") or c.get("subheader") for c in spec["columns"]):
-        return 0.04   # headers off: panels start at the top
+        return max(0.04, _outside_letter_h(st))   # headers off: panels start at the top
     has_sub = any(c.get("subheader") for c in spec["columns"])
-    return 0.12 + line * (2 if has_sub else 1)
+    # An outside letter sits on its own line above the header text.
+    return 0.12 + line * (2 if has_sub else 1) + _outside_letter_h(st)
 
 
 def _left_band(spec, st):
@@ -988,8 +1038,9 @@ def _layout_grid(spec, panels, st):
     n_ch = max(1, len(spec["rows"]))
     pw = float(st["panel_w"])
     ph = pw * _panel_aspect(panels)
-    per_img_cb = st["colorbars"] and st["range_mode"] == "image"
-    shared_cb = st["colorbars"] and st["range_mode"] == "row"
+    one_bar = st.get("cbar_scope") == "row"
+    per_img_cb = st["colorbars"] and st["range_mode"] == "image" and not one_bar
+    shared_cb = st["colorbars"] and (st["range_mode"] == "row" or one_bar)
     blocks = column_blocks(n_f, int(st.get("_max_per") or MAX_FRAMES_PER_BLOCK))
     per = max(len(b) for b in blocks)
     cells, frame_labels, channel_labels, cbars = {}, [], [], []
@@ -1000,7 +1051,8 @@ def _layout_grid(spec, panels, st):
         top = _header_height(spec, st)
         left = _left_band(spec, st)
         right = (0.06 + bar + extra + 0.06) if shared_cb else 0.12
-        block_h = top + n_ch * ph + (n_ch - 1) * _GAP
+        rgap = _GAP + (_outside_letter_h(st) if st.get("letter_scope") == "panel" else 0.0)
+        block_h = top + n_ch * ph + (n_ch - 1) * rgap
         fig_w = left + per * slot + (per - 1) * _GAP + right
         fig_h = len(blocks) * block_h + (len(blocks) - 1) * _BLOCK_GAP + _BOTTOM
         for b, frames in enumerate(blocks):
@@ -1009,14 +1061,14 @@ def _layout_grid(spec, panels, st):
                 x0 = left + j * (slot + _GAP)
                 frame_labels.append((f, (x0, y_base, x0 + pw, y_base + top)))
                 for r in range(n_ch):
-                    y0 = y_base + top + r * (ph + _GAP)
+                    y0 = y_base + top + r * (ph + rgap)
                     cells[(r, f)] = (x0, y0, x0 + pw, y0 + ph)
                     if per_img_cb:
                         cbars.append({"row": r, "frame": f, "orient": "v",
                                       "box": (x0 + pw + 0.05, y0, x0 + pw + 0.05 + max(bar, 0.01), y0 + ph)})
             x_end = left + len(frames) * slot + (len(frames) - 1) * _GAP
             for r in range(n_ch):
-                y0 = y_base + top + r * (ph + _GAP)
+                y0 = y_base + top + r * (ph + rgap)
                 channel_labels.append((r, (0.0, y0, left, y0 + ph)))
                 if shared_cb:
                     cbars.append({"row": r, "frame": None, "orient": "v",
@@ -1032,10 +1084,12 @@ def _layout_grid(spec, panels, st):
         bottom = (0.06 + bar_h + extra_h + 0.04) if shared_cb else _BOTTOM
         block_w = left + n_ch * slot + (n_ch - 1) * _GAP + 0.12
         fig_w = len(blocks) * block_w + (len(blocks) - 1) * _BLOCK_GAP
-        fig_h = top + per * ph + (per - 1) * _GAP + bottom
+        rgap = _GAP + _outside_letter_h(st)
+        top = max(top, _outside_letter_h(st))
+        fig_h = top + per * ph + (per - 1) * rgap + bottom
         for b, frames in enumerate(blocks):
             x_base = b * (block_w + _BLOCK_GAP)
-            y_end = top + len(frames) * ph + (len(frames) - 1) * _GAP
+            y_end = top + len(frames) * ph + (len(frames) - 1) * rgap
             for r in range(n_ch):
                 x0 = x_base + left + r * (slot + _GAP)
                 channel_labels.append((r, (x0, 0.0, x0 + pw, top)))
@@ -1043,7 +1097,7 @@ def _layout_grid(spec, panels, st):
                     cbars.append({"row": r, "frame": None, "orient": "h",
                                   "box": (x0, y_end + 0.06, x0 + pw, y_end + 0.06 + max(bar_h, 0.01))})
             for j, f in enumerate(frames):
-                y0 = top + j * (ph + _GAP)
+                y0 = top + j * (ph + rgap)
                 frame_labels.append((f, (x_base, y0, x_base + left - 0.06, y0 + ph)))
                 for r in range(n_ch):
                     x0 = x_base + left + r * (slot + _GAP)
@@ -1074,8 +1128,9 @@ def _layout_zoom(spec, panels, st):
     ov_aspect = _panel_aspect(panels, {keys[0]}) if keys else 1.0
     z_aspect = _panel_aspect(panels, set(keys[1:])) if n_f > 1 else 1.0
     ph = pw * z_aspect
-    per_img_cb = st["colorbars"] and st["range_mode"] == "image"
-    shared_cb = st["colorbars"] and st["range_mode"] == "row"
+    one_bar = st.get("cbar_scope") == "row"
+    per_img_cb = st["colorbars"] and st["range_mode"] == "image" and not one_bar
+    shared_cb = st["colorbars"] and (st["range_mode"] == "row" or one_bar)
     bar, extra = cbar_dims(st, "v")
     pimg = (0.05 + bar + extra) if per_img_cb else 0.0
     top = _header_height(spec, st)
@@ -1305,6 +1360,15 @@ def _effects(enabled, color):
 
 def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
            text_color="black"):
+    """Draw the figure (see ``_render``) in the style's font family."""
+    import matplotlib
+    with matplotlib.rc_context(font_rc(resolve_style(style))):
+        return _render(fig, spec, panels, style=style, clims=clims, get_cmap=get_cmap,
+                       text_color=text_color)
+
+
+def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
+            text_color="black"):
     """Draw the figure into ``fig`` (cleared first).
 
     ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
@@ -1460,7 +1524,7 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             ax.set_aspect("equal", adjustable="box", anchor="C")
             taken = set()
             letter = letter_of.get((r, f))
-            if letter:
+            if letter and not str(st["letter_pos"]).startswith("out"):
                 taken.add(st["letter_pos"])
             if (r, f) in scale_cells:
                 taken.add(st["scale_pos"])
@@ -1478,7 +1542,21 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             else:
                 images.setdefault(r, []).append(im)
                 last_im = im
-            if letter:
+            if letter and str(st["letter_pos"]).startswith("out"):
+                lx = box[0] if st["letter_pos"] == "out_tl" else box[2]
+                color = st["letter_color"] if st["letter_color"] != "white" else text_color
+                ly = _letter_line_y(layout, f, box)
+                t = fig.text(lx / size[0], 1.0 - ly / size[1], letter, color=color,
+                             fontsize=float(st["letter_size"]),
+                             fontweight="bold" if st["letter_bold"] else "normal",
+                             ha="left" if st["letter_pos"] == "out_tl" else "right", va="bottom",
+                             zorder=7, gid=f"letter_{r}_{f}")
+                lw_in = max(0.12, 0.62 * float(st["letter_size"]) / 72.0 * len(letter))
+                lh_in = float(st["letter_size"]) * 1.2 / 72.0
+                bx0 = lx if st["letter_pos"] == "out_tl" else lx - lw_in
+                letter_boxes.append({"row": r, "frame": f,
+                                     "box": (bx0, ly - lh_in, bx0 + lw_in, ly)})
+            elif letter:
                 t = _draw_corner_text(ax, w, h, letter, st["letter_pos"], st["letter_color"],
                                       float(st["letter_size"]), bool(st["letter_bold"]),
                                       _effects(st["letter_outline"], st["letter_color"]))
@@ -1490,20 +1568,32 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                                      gid=f"scalebar_{r}_{f}", show_label=(r, f) in label_cells)
                 if sb:
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
-            if st["colorbars"] and not shared and own_scale.get((r, col["key"])) != "flat":
+            if (st["colorbars"] and not shared and st.get("cbar_scope") != "row"
+                    and own_scale.get((r, col["key"])) != "flat"):
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] == f:
                         cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, None, c_unit)
                         cbar_artists.append((entry, cb))
-        if st["colorbars"] and row_shared:
+        generic_bar = st["colorbars"] and not row_shared and st.get("cbar_scope") == "row"
+        if st["colorbars"] and (row_shared or generic_bar):
             ref_im = last_im if last_im is not None else (images.get(r) or [None])[-1]
+            if ref_im is None:
+                ref_im = next((panel_images[(r, f)] for f in range(len(columns)) if (r, f) in panel_images), None)
             if ref_im is not None:
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] is None:
                         label = None
-                        if st["cbar_label"]:
-                            label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
-                        cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, text_color, label, d_unit)
+                        if generic_bar:
+                            # Each image has its own range: one bar for the
+                            # channel says only where min and max sit.
+                            if st["cbar_label"]:
+                                label = row["display"] or None
+                            cb = _colorbar(fig, ref_im, entry, size, 0.0, 1.0,
+                                           dict(st, cbar_style="minmax"), text_color, label, "")
+                        else:
+                            if st["cbar_label"]:
+                                label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
+                            cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, text_color, label, d_unit)
                         cbar_artists.append((entry, cb))
 
     if is_zoom:
@@ -1617,13 +1707,9 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     horizontal = entry["orient"] == "h"
     cax = fig.add_axes(_ax_rect(entry["box"], size))
     cax.set_gid(f"colorbar_{entry['row']}_{entry['frame'] if entry['frame'] is not None else 'row'}")
-    if style == "minmax":
-        # No gradient: just "lo … hi unit" where the bar would be.
-        cax.set_axis_off()
-        cb = _MinMax(cax, lo, hi, unit, label, horizontal, font, text_color)
-        set_colorbar_range(cb, lo, hi)
-        return cb
-    mappable = mcm.ScalarMappable(norm=im.norm, cmap=im.get_cmap())
+    import matplotlib.colors as mcolors
+    norm = mcolors.Normalize(lo, hi) if (st.get("cbar_style") == "minmax" and lo == 0.0 and hi == 1.0) else im.norm
+    mappable = mcm.ScalarMappable(norm=norm, cmap=im.get_cmap())
     cb = fig.colorbar(mappable, cax=cax, orientation="horizontal" if horizontal else "vertical")
     cb._sxm_n_ticks = int(st["cbar_ticks"])
     cb._sxm_style = style
@@ -1709,10 +1795,11 @@ def set_colorbar_range(cb, lo, hi):
                            va="top", rotation=rot, fontsize=fs, color=hi_c)
         cb._sxm_inside = [a, b]
         return
-    n = max(2, int(getattr(cb, "_sxm_n_ticks", 2) or 2))
+    minmax = getattr(cb, "_sxm_style", "outside") == "minmax"
+    n = 2 if minmax else max(2, int(getattr(cb, "_sxm_n_ticks", 2) or 2))
     ticks = list(np.linspace(lo, hi, n))
     cb.set_ticks(ticks)
-    cb.set_ticklabels([_tick(t, span) for t in ticks])
+    cb.set_ticklabels(["min", "max"] if minmax else [_tick(t, span) for t in ticks])
     # End labels sit inside the bar's own span, so stacked / side-by-side
     # colourbars never print "0.08" on top of the neighbour's "10.9".
     axis = cb.ax.xaxis if horizontal else cb.ax.yaxis
