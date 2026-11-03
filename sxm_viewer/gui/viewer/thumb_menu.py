@@ -179,6 +179,31 @@ def _add_collections_menu(viewer, menu, targets):
     collection_menu.addAction("Clear Current Collection Target").triggered.connect(viewer.on_clear_current_collection)
 
 
+def _add_figure_actions(viewer, menu, fp, targets):
+    """Height-series figure (when this frame is in one) and the generic
+    figure-from-selection fallback - both open the same figure window."""
+    fc = getattr(viewer, "figure_controller", None)
+    if fc is None:
+        return
+    try:
+        fc.ensure_series_index()
+    except Exception:
+        pass
+    series = fc.series_for_key(fp)
+    real = [str(p) for p in targets if str(p) in (getattr(viewer, "headers", {}) or {})]
+    if series is not None:
+        act = menu.addAction(f"Height-series figure ({len(series['keys'])} frames)")
+        act.setToolTip("Every frame of this constant-height series, ordered by tip height, with one "
+                       "shared colour range per channel - ready to copy or send to PowerPoint "
+                       "(same as clicking the z×N chip)")
+        act.triggered.connect(lambda _, key=fp: fc.open_height_series(key))
+    if len(real) >= 2 and (series is None or set(real) != set(series["keys"])):
+        act = menu.addAction(f"Figure from selection ({len(real)} images)")
+        act.setToolTip("The selected images side by side, one row per channel kind, ordered by "
+                       "tip height when every image has one (else by time)")
+        act.triggered.connect(lambda _, keys=list(real): fc.open_selection(keys))
+
+
 def _has_spectro_selection(viewer):
     return bool(getattr(viewer, "_multi_spec_selection", None)
                 or getattr(viewer, "_multi_spectro_popups", None))
@@ -220,6 +245,7 @@ def build_thumb_context_menu(viewer, label_widget):
 
     # ---- Analyse & create
     section(menu, "Analyse & create")
+    _add_figure_actions(viewer, menu, fp, targets)
     try:
         image_specs = viewer.spectro_compare_controller.all_specs_for_image(fp)
     except Exception:

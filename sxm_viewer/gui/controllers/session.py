@@ -391,6 +391,9 @@ class SessionController:
             "thumbnail_filters": getattr(viewer, "thumbnail_filters", {}),
             "image_orientation": dict(getattr(viewer, "image_orientation", {}) or {}),
             "image_zero": dict(getattr(viewer, "image_zero", {}) or {}),
+            # Figure-recipe edits (reference, dropped frames, row channels,
+            # ranges) keyed by series id - string keys/lists only.
+            "figure_states": dict(getattr(viewer, "figure_states", {}) or {}),
             "ch_z_label_mode": getattr(viewer, "ch_z_label_mode", "abs"),
             "ch_z_reference": getattr(viewer, "ch_z_reference", None),
             # (file_key, channel) tuple keys don't survive JSON (they were
@@ -1793,6 +1796,12 @@ class SessionController:
         viewer.image_zero = {
             str(k): bool(v) for k, v in (payload.get("image_zero") or {}).items()
         }
+        saved_figures = payload.get("figure_states")
+        if isinstance(saved_figures, dict):
+            states = getattr(viewer, "figure_states", None)
+            if not isinstance(states, dict):
+                states = viewer.figure_states = {}
+            states.update({str(k): v for k, v in saved_figures.items() if isinstance(v, dict)})
         if "ch_z_reference" in payload:
             viewer_ch_height.restore_state(
                 viewer, payload.get("ch_z_label_mode", "abs"), payload.get("ch_z_reference"),

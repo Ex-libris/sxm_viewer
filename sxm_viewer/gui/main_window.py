@@ -5283,6 +5283,24 @@ QLabel:hover {{
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
             painter.drawText(chip, QtCore.Qt.AlignCenter, "ZERO")
             painter.end()
+        series = None
+        try:
+            series = self.figure_controller.series_for_key(str(file_key))
+        except Exception:
+            series = None
+        if series is not None:
+            # Green "z×N" chip, bottom-right: this frame is part of a
+            # constant-height height series - click it for the figure.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = viewer_thumb_ui.series_chip_rect(pix.width(), pix.height())
+            painter.setBrush(QtGui.QColor(0, 150, 70, 230))
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 70, 30), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, f"z×{len(series['keys'])}")
+            painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')

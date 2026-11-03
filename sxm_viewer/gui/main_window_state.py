@@ -35,6 +35,7 @@ from .constants import UI_FONT_FAMILY, UI_FONT_SIZE
 from .controllers.collection import CollectionController
 from .controllers.filter_controller import FilterController
 from .controllers.recent_files_controller import RecentFilesController
+from .controllers.figures import FigureController
 from .controllers.report import ReportController
 from .controllers.session import SessionController
 from .viewer import ch_height as viewer_ch_height
@@ -188,6 +189,7 @@ def init_state(self):
     self.session_controller = SessionController(self)
     self.collection_controller = CollectionController(self)
     self.report_controller = ReportController(self)
+    self.figure_controller = FigureController(self)
     self.frame_map_entries = []
     self.show_shortcuts_panel = bool(self.config.get("show_shortcuts_panel", False))
     self.hidden_frame_keys = set()

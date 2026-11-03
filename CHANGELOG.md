@@ -8,6 +8,37 @@ First public release archived on Zenodo.
 
 ## Development history (pre-release)
 
+### 2026-11-03 (height-series figures)
+
+**One click from a constant-height height series to a finished figure.**
+Every thumbnail that belongs to a height series (same frame re-scanned at a
+ladder of tip heights) now carries a green **z×N** chip. Click it (or
+right-click → *Height-series figure*) and a figure opens with no dialog:
+- columns = the frames, ordered by tip height, captioned **Δz** (closest
+  approach = 0 pm unless your CH reference is in the series); rows = current
+  (Blues_r) and frequency shift (gray); panel letters; one scale bar;
+- **one colour range per row**, pooled with every frame weighted equally, in
+  one display unit per row (no more 4 pA next to 0.4 nA);
+- frames whose Z changes within the scan are left out (no single Δz) and
+  listed in the strip with *Include anyway*; frames on a different Δf
+  baseline (PLL lost lock, reference changed) are drawn on their own scale
+  and tagged, dead frames dimmed as *flat signal* - they never wreck the
+  shared range;
+- long series wrap into balanced blocks of at most 8 columns;
+- edits happen on the figure: click a Δz header to make it the reference,
+  hover a header and click × to drop a frame, click the row label to cycle
+  the channel (fwd/bwd, Δf/lock-in), drag a colourbar for contrast
+  (double-click resets), double-click a panel to show it in the viewer,
+  Ctrl+Z/Ctrl+Y;
+- **Copy** (PNG + SVG on the clipboard), **PowerPoint** (editable vector
+  shapes on a new slide) and **Save PDF/SVG/PNG** all come from the same
+  renderer as the window;
+- live: changing a filter, Zero, turn or display adjustment of a member
+  updates the figure; edits are remembered per series (config + sessions).
+Multi-selections that aren't a series get the same window via *Figure from
+selection*. Fix: report/figure bias values honor the header unit (Anfatec
+`Bias: -2000` with `BiasPhysUnit: mV` used to read as -2000 V).
+
 ### 2026-07-18 (folder-report data-sets & colormap gallery fixes)
 
 **Folder reports now recognize "data-sets" (image sequences).** If a folder

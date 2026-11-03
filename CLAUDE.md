@@ -942,6 +942,44 @@ entirely off-thread. Never let the worker touch the viewer.
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
 
+### Figure recipes: height-series figure (`figures/`, `gui/controllers/figures.py`, `gui/dialogs/figure_window.py`)
+The successor job to the publication canvas for data-aware multi-panel
+figures. Three layers, same split as the folder report:
+- `sxm_viewer/figures/height_series.py` (Qt-free): `find_height_series`
+  reuses `reporting.model.build_image_sequences` (so report and figure agree
+  on what a series is) fed with **only CH-tagged frames**, `z_level_nm` =
+  the HUD height (`ch_height.ch_abs_z_nm`, so captions can't contradict the
+  preview) and `z_spread_nm` = the tag's `rng_nm` (topo max-min). A CH tag
+  alone is not flatness: real frames step Z mid-scan (rng = the step) or
+  carry a z=0 region (rng ~ 190 nm) - the report's 20 pm flat gate drops
+  their z and they come back as `excluded`. `build_spec` (columns by z,
+  Δz headers, rows by `pick_image_channels` kinds, row channel
+  alternatives) and `render` (one matplotlib renderer for screen and every
+  export; deterministic inch layout so the window hit-tests without asking
+  matplotlib).
+- Row ranges: never pool across baselines. `baseline_outliers` flags frames
+  whose *median* is > 3 typical spans (75th pct of frame spans) from the
+  row median ("offset") or that have no signal ("flat", dimmed); the shared
+  range is `pooled_range` over the rest with **equal weight per frame**;
+  one display unit per row (the viewer's `_scale_unit_for_display` picks a
+  unit per image, so panels are gathered in the normalised unit and scaled
+  here). Topography rows are relative (each frame minus its own p1).
+- `FigureController` (GUI thread): `ensure_series_index()` runs at the top
+  of every `populate_thumbnails_for_channel`, cached on a signature of the
+  CH tags (key, abs_z_pm, rng_nm) - it drives the `z×N` chip
+  (`thumbnail_ui.series_chip_rect` is the one rect for drawing in
+  `_decorate_thumbnail_pixmap` and hit-testing in `_handle_thumb_click`).
+  `panel()` goes through the preview pipeline (filters, adjustments, turns,
+  Zero) and `data_signature()` is what the window polls for the live link.
+  Per-figure edits live in `viewer.figure_states` (config key
+  `figure_states`, capped, and session key `figure_states`).
+- `FigureWindow` is pure UI against that source; all edits are direct
+  manipulation on the figure (header = reference, hover × = drop, row label
+  = cycle channel, colourbar drag = contrast) with its own undo stack.
+- Arrays drawn with `origin="upper"`: the preview's two paths
+  (`flipud`+lower / as-is+upper) both put row 0 at the top. The publication
+  canvas's own `flipud` is for its QImage painter, not a matplotlib rule.
+
 ### CH height label: z_abs or Δz to a reference (`gui/viewer/ch_height.py`)
 The acquisition HUD's CH line is resolved at *draw* time, not baked into the
 view: `MultiPreviewCanvas._ch_height_overlay_text` reads the view's
