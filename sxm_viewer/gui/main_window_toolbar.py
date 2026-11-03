@@ -146,7 +146,23 @@ def create_main_toolbar(viewer):
     toolbar.addSeparator()
 
     viewer.toolbar_export_png_act = toolbar.addAction(_icon("image-x-generic"), "Export PNGs")
-    viewer.toolbar_export_png_act.triggered.connect(viewer.on_export_pngs)
+    viewer.toolbar_export_png_act.setToolTip(
+        "Export the selected thumbnails (or the previewed image) as PNGs, "
+        "rendered as displayed - current display preset included")
+    viewer.toolbar_export_png_act.triggered.connect(lambda _=False: viewer.on_export_pngs())
+
+    viewer.toolbar_obsidian_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_obsidian_btn.setText("Obsidian")
+    viewer.toolbar_obsidian_btn.setToolTip(
+        "Append the selected images (as displayed) to an Obsidian note - "
+        "the active note of the open vault, or one you choose")
+    viewer.toolbar_obsidian_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+    viewer.toolbar_obsidian_menu = QtWidgets.QMenu(viewer.toolbar_obsidian_btn)
+    viewer.toolbar_obsidian_menu.setToolTipsVisible(True)
+    viewer.toolbar_obsidian_menu.aboutToShow.connect(
+        lambda: viewer.populate_obsidian_menu(viewer.toolbar_obsidian_menu))
+    viewer.toolbar_obsidian_btn.setMenu(viewer.toolbar_obsidian_menu)
+    toolbar.addWidget(viewer.toolbar_obsidian_btn)
 
     viewer.toolbar_export_xyz_act = toolbar.addAction(_icon("document-save"), "Export XYZ")
     viewer.toolbar_export_xyz_act.triggered.connect(viewer.on_export_xyz_files)

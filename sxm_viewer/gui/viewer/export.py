@@ -146,69 +146,145 @@ def _collect_channel_exports(viewer, header_path_str, main_channel_idx=None):
     return header, exports
 
 
-def on_export_pngs(viewer):
-    # Export high-quality PNGs for the currently selected file's visible channels (main + extras)
-    if not viewer.last_preview:
-        QtWidgets.QMessageBox.information(viewer, "No selection", "Select a file/channel first.")
-        return
-    header_path_str, channel_idx = viewer.last_preview
-    header_path = Path(header_path_str)
-    header, exports = viewer._collect_channel_exports(header_path_str, channel_idx)
-    if header is None or not exports:
-        QtWidgets.QMessageBox.information(viewer, "Export", "No channels to export.")
-        return
+def export_targets(viewer, paths=None):
+    """``paths`` (or the thumbnail selection) in thumbnail-grid order, else
+    the previewed image."""
+    if paths:
+        order = {str(fp): i for i, fp in enumerate(getattr(viewer, "current_thumb_files", []) or [])}
+        uniq = list(dict.fromkeys(str(p) for p in paths if p))
+        return sorted(uniq, key=lambda k: (order.get(k, len(order)), k))
+    targets = []
+    try:
+        targets = list(viewer._ordered_thumbnail_selection() or [])
+    except Exception:
+        targets = []
+    if not targets and viewer.last_preview:
+        targets = [str(viewer.last_preview[0])]
+    return [str(t) for t in targets if t]
 
-    default_dir = str(getattr(viewer, 'last_dir', header_path.parent))
+
+def _unique_path(path):
+    path = Path(path)
+    if not path.exists():
+        return path
+    for n in itertools.count(2):
+        cand = path.with_name(f"{path.stem}_{n}{path.suffix}")
+        if not cand.exists():
+            return cand
+
+
+def png_name_for(viewer, file_key, channel_idx=None):
+    """``<file>__<channel>__<date>__<time>.png`` for one displayed image."""
+    header, fds = (getattr(viewer, "headers", {}) or {}).get(str(file_key), (None, None))
+    header = header or {}
+    chan = ""
+    try:
+        if fds and channel_idx is not None and 0 <= int(channel_idx) < len(fds):
+            fd = fds[int(channel_idx)]
+            chan = fd.get("Caption", fd.get("FileName", "")) or ""
+    except Exception:
+        chan = ""
+    clean = viewer._sanitize_filename_component
+    parts = [clean(Path(str(file_key)).stem)]
+    if chan:
+        parts.append(clean(chan))
+    for key in ("Date", "Time"):
+        val = str(header.get(key, "") or "").strip()
+        if val:
+            parts.append(clean(val))
+    return "__".join(parts) + ".png"
+
+
+def render_targets_as_displayed(viewer, targets, out_dir, *, dpi=300, title="Export"):
+    """Save each target as a PNG exactly as the main preview shows it.
+
+    Every target is loaded into the preview canvas in turn (same route as
+    "Send selected to PowerPoint"), so the active display preset, overlays,
+    per-file colormap / contrast / Zero / quarter-turn and extra channel
+    views all apply; the hidden-overlay (H) state and the shortcut hint are
+    honoured by ``_save_current_figure_without_shortcut_hint``. The
+    previously shown image is restored afterwards.
+
+    Returns ``(results, errors, cancelled)``; ``results`` holds dicts with
+    ``path``, ``file_key``, ``channel_idx``.
+    """
+    canvas = getattr(viewer, "preview_canvas", None)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results, errors = [], []
+    if canvas is None:
+        return results, ["Preview canvas is unavailable."], False
+    original_last = getattr(viewer, "last_preview", None)
+    progress = None
+    if len(targets) > 1:
+        progress = QtWidgets.QProgressDialog(f"{title}...", "Cancel", 0, len(targets), viewer)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setMinimumDuration(300)
+    cancelled = False
+    try:
+        for i, file_key in enumerate(targets):
+            if progress is not None:
+                progress.setValue(i)
+                progress.setLabelText(f"{title}: {Path(file_key).name} ({i + 1}/{len(targets)})")
+                QtWidgets.QApplication.processEvents()
+                if progress.wasCanceled():
+                    cancelled = True
+                    break
+            try:
+                channel_idx = viewer._thumbnail_channel_idx_for_file(file_key)
+                viewer.show_file_channel(file_key, channel_idx, use_local_cmap=True)
+                QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+                if not list(getattr(canvas, "views", None) or []):
+                    errors.append(f"{Path(file_key).name}: nothing to render")
+                    continue
+                out_path = _unique_path(out_dir / png_name_for(viewer, file_key, channel_idx))
+
+                def _save(path=out_path):
+                    canvas.fig.savefig(str(path), format="png", dpi=dpi, bbox_inches="tight")
+
+                canvas._save_current_figure_without_shortcut_hint(_save)
+                results.append({"path": out_path, "file_key": str(file_key), "channel_idx": channel_idx})
+            except Exception as exc:
+                errors.append(f"{Path(file_key).name}: {exc}")
+    finally:
+        if progress is not None:
+            progress.setValue(len(targets))
+            progress.close()
+        try:
+            if original_last:
+                viewer.show_file_channel(original_last[0], original_last[1], use_local_cmap=True)
+        except Exception:
+            pass
+    return results, errors, cancelled
+
+
+def on_export_pngs(viewer, paths=None):
+    """Export ``paths`` / the selected thumbnails (or the previewed image) as
+    PNGs, rendered as displayed in the main preview (display preset included)."""
+    targets = export_targets(viewer, paths)
+    if not targets:
+        QtWidgets.QMessageBox.information(viewer, "Export", "Select one or more images first.")
+        return
+    default_dir = str(getattr(viewer, 'last_export_dir', None) or getattr(viewer, 'last_dir', Path(targets[0]).parent))
     out_dir = QtWidgets.QFileDialog.getExistingDirectory(viewer, "Select export folder", default_dir)
     if not out_dir:
         return
-
-    # Metadata for naming
-    date = viewer._sanitize_filename_component(header.get('Date', ''))
-    time = viewer._sanitize_filename_component(header.get('Time', ''))
-    file_base = viewer._sanitize_filename_component(Path(header_path_str).stem)
-
-    # Save each channel as a separate high-DPI PNG
-    from matplotlib.figure import Figure
-    for item in exports:
-        try:
-            fig = Figure(figsize=(6, 5), dpi=300)
-            ax = fig.add_subplot(1,1,1)
-            arr = np.asarray(item['arr'])
-            flip = bool(item.get('relative_axes'))
-            if flip:
-                arr_plot = np.flipud(arr)
-            else:
-                arr_plot = arr
-            origin = 'lower' if flip else 'upper'
-            cmapname = item.get('cmap', 'viridis')
-            extent = item.get('extent')
-            if extent is None:
-                im = ax.imshow(arr_plot, origin=origin, interpolation='nearest', cmap=cmapname)
-            else:
-                im = ax.imshow(arr_plot, extent=extent, origin=origin, interpolation='nearest', aspect='equal', cmap=cmapname)
-            if item.get('relative_axes') and extent is not None:
-                pass
-            cbar_label = item.get('colorbar_label') or item.get('unit') or ''
-            if cbar_label:
-                cbar = fig.colorbar(im, ax=ax, fraction=0.08, pad=0.02)
-                cbar.set_label(cbar_label)
-            ax.set_title(item.get('title') or item.get('caption') or '')
-            try:
-                fig.tight_layout()
-            except Exception:
-                pass
-
-            chan_name = viewer._sanitize_filename_component(item.get('caption') or f"chan{item.get('idx',0)}")
-            parts = [p for p in (chan_name, file_base, date, time) if p]
-            fname = "__".join(parts) + ".png"
-            out_path = str(Path(out_dir) / fname)
-            fig.savefig(out_path, dpi=300, bbox_inches='tight')
-        except Exception as e:
-            # keep going for other channels
-            print('Export failed for a channel:', e)
-
-    QtWidgets.QMessageBox.information(viewer, "Export", f"Exported {len(exports)} PNG(s) to\n{out_dir}")
+    viewer.last_export_dir = out_dir
+    try:
+        results, errors, cancelled = render_targets_as_displayed(viewer, targets, out_dir, title="Export PNGs")
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, "Export", f"Export failed: {exc}")
+        return
+    preset = getattr(getattr(viewer, "preview_canvas", None), "_active_display_preset", None)
+    lines = [f"Exported {len(results)} of {len(targets)} PNG(s) to\n{out_dir}"]
+    if preset:
+        lines.append(f"Display preset: {str(preset).capitalize()}")
+    if cancelled:
+        lines.append("Cancelled.")
+    if errors:
+        lines.append("Errors:\n" + "\n".join(errors[:8]))
+    QtWidgets.QMessageBox.information(viewer, "Export", "\n".join(lines))
 
 
 def on_export_xyz_files(viewer):
@@ -587,7 +663,179 @@ __all__ = [
     "export_view_as_stp",
     "_on_batch_export_progress",
     "_on_batch_export_finished",
+    "export_targets",
+    "render_targets_as_displayed",
+    "export_to_obsidian",
+    "populate_obsidian_menu",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Obsidian export: PNGs rendered as displayed, embedded at the end of a note
+# ---------------------------------------------------------------------------
+def _obsidian_settings(viewer):
+    cfg = getattr(viewer, "config", None)
+    return dict((cfg or {}).get("obsidian_export") or {}) if isinstance(cfg, dict) else {}
+
+
+def _store_obsidian_settings(viewer, values):
+    from ...config import save_config
+    settings = _obsidian_settings(viewer)
+    vault = str(values["vault"])
+    attachments = dict(settings.get("attachments") or {})
+    attachments[vault] = str(values.get("attachment") or "")
+    settings.update({
+        "vault": vault,
+        "note": str(values["note"]),
+        "attachments": attachments,
+        "width": int(values.get("width") or 0),
+        "heading": bool(values.get("heading", True)),
+        "captions": bool(values.get("captions", True)),
+    })
+    try:
+        viewer.config["obsidian_export"] = settings
+        save_config(viewer.config)
+    except Exception:
+        pass
+
+
+def _obsidian_caption(viewer, file_key, channel_idx):
+    from .preview import _fmt_overlay_number
+    header, fds = (getattr(viewer, "headers", {}) or {}).get(str(file_key), (None, None))
+    header = header or {}
+    parts = [f"`{Path(str(file_key)).name}`"]
+    try:
+        fd = fds[int(channel_idx)] if fds and channel_idx is not None else None
+        chan = (fd or {}).get("Caption") or ""
+    except Exception:
+        chan = ""
+    if chan:
+        parts.append(str(chan))
+    try:
+        bias = _fmt_overlay_number(header.get("Bias"), header.get("BiasPhysUnit") or "V")
+        setp = _fmt_overlay_number(header.get("SetPoint"), header.get("SetPointPhysUnit") or "")
+    except Exception:
+        bias = setp = ""
+    if bias:
+        parts.append(bias)
+    if setp:
+        parts.append(setp)
+    when = " ".join(t for t in (str(header.get("Date", "") or "").strip(),
+                                 str(header.get("Time", "") or "").strip()) if t)
+    if when:
+        parts.append(when)
+    return " · ".join(parts)
+
+
+def export_to_obsidian(viewer, note=None, vault=None, targets=None):
+    """Render ``targets`` (default: thumbnail selection / previewed image) as
+    displayed and append them to an Obsidian note. With no ``note`` a dialog
+    asks for vault/note/options; otherwise the remembered options are used."""
+    from ...integrations import obsidian
+    from ..dialogs.obsidian_export import ObsidianExportDialog, suggested_attachment_setting
+
+    title = "Export to Obsidian"
+    targets = export_targets(viewer, targets)
+    if not targets:
+        QtWidgets.QMessageBox.information(viewer, title, "Select one or more images first.")
+        return
+    settings = _obsidian_settings(viewer)
+    if note is None:
+        dlg = ObsidianExportDialog(viewer, n_images=len(targets), settings=settings)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        try:
+            values = dlg.values()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(viewer, title, str(exc))
+            return
+    else:
+        vault = Path(vault) if vault else obsidian.vault_for_path(Path(note), obsidian.list_vaults())
+        if vault is None:
+            QtWidgets.QMessageBox.warning(viewer, title, f"{note} is not inside an Obsidian vault.")
+            return
+        attach = (settings.get("attachments") or {}).get(str(vault))
+        values = {
+            "vault": Path(vault),
+            "note": Path(note),
+            "attachment": attach if attach is not None else suggested_attachment_setting(vault),
+            "width": int(settings.get("width", 500) or 0),
+            "heading": bool(settings.get("heading", True)),
+            "captions": bool(settings.get("captions", True)),
+        }
+    vault, note_path = Path(values["vault"]), Path(values["note"])
+    img_dir = obsidian.attachment_dir(vault, note_path, values.get("attachment") or None)
+    for path, what in ((note_path, "note"), (img_dir, "image folder")):
+        try:
+            Path(path).resolve().relative_to(vault.resolve())
+        except ValueError:
+            QtWidgets.QMessageBox.warning(viewer, title, f"The {what} must be inside the vault.")
+            return
+    try:
+        results, errors, cancelled = render_targets_as_displayed(viewer, targets, img_dir, title=title)
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, title, f"Rendering failed: {exc}")
+        return
+    if not results:
+        detail = ("\n" + "\n".join(errors[:8])) if errors else ""
+        QtWidgets.QMessageBox.warning(viewer, title, "Nothing was exported." + detail)
+        return
+    lines = []
+    if values.get("heading"):
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        folders = sorted({Path(r["file_key"]).parent.name for r in results})
+        src = f" · `{folders[0]}`" if len(folders) == 1 else ""
+        lines += [f"#### SXM Viewer export · {stamp}{src}", ""]
+    for res in results:
+        lines.append(obsidian.embed_line(vault, note_path, res["path"], width=values.get("width") or 0))
+        if values.get("captions"):
+            lines.append(_obsidian_caption(viewer, res["file_key"], res["channel_idx"]))
+        lines.append("")
+    try:
+        obsidian.append_to_note(note_path, "\n".join(lines))
+    except Exception as exc:
+        QtWidgets.QMessageBox.warning(viewer, title, f"Could not write the note: {exc}")
+        return
+    _store_obsidian_settings(viewer, values)
+    msg = f"Added {len(results)} image(s) to {note_path.relative_to(vault).as_posix()} ({vault.name})"
+    if cancelled:
+        msg += "\nCancelled before all images were rendered."
+    if errors:
+        msg += "\nErrors:\n" + "\n".join(errors[:8])
+    log_status(f"[Obsidian] {msg}")
+    QtWidgets.QMessageBox.information(viewer, title, msg)
+
+
+def populate_obsidian_menu(viewer, menu, targets=None):
+    """Fill ``menu`` with one-click "append to the active note" entries for
+    the open vault(s), the last-used note, and "Choose note..." (dialog)."""
+    from ...integrations import obsidian
+
+    menu.clear()
+    targets = list(targets) if targets else None
+    vaults = obsidian.list_vaults()
+    shown = [v for v in vaults if v.is_open] or vaults[:1]
+    settings = _obsidian_settings(viewer)
+    added = set()
+    for vault in shown:
+        note = obsidian.active_note(vault.path)
+        if note is None:
+            continue
+        rel = note.relative_to(vault.path).as_posix()
+        act = menu.addAction(f"Active note: {rel}  ({vault.name})")
+        act.setToolTip(str(note))
+        act.triggered.connect(lambda _=False, n=note, v=vault.path: export_to_obsidian(viewer, n, v, targets))
+        added.add(str(note))
+    last = settings.get("note")
+    if last and last not in added and Path(last).is_file():
+        last_vault = settings.get("vault")
+        act = menu.addAction(f"Last used: {Path(last).name}  ({Path(last_vault).name if last_vault else ''})")
+        act.setToolTip(str(last))
+        act.triggered.connect(lambda _=False, n=Path(last), v=last_vault: export_to_obsidian(viewer, n, v, targets))
+    if not menu.isEmpty():
+        menu.addSeparator()
+    choose = menu.addAction("Choose note / options...")
+    choose.triggered.connect(lambda _=False: export_to_obsidian(viewer, None, None, targets))
 
 
 

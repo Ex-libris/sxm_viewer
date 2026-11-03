@@ -7699,8 +7699,14 @@ QLabel:hover {{
                 for ix, x in enumerate(x_vals):
                     f.write(f"{x:.9g}\t{y:.9g}\t{z_vals[iy, ix]:.9g}\n")
 
-    def on_export_pngs(self):
-        return viewer_export.on_export_pngs(self)
+    def on_export_pngs(self, paths=None):
+        return viewer_export.on_export_pngs(self, paths)
+
+    def export_to_obsidian(self, note=None, vault=None, paths=None):
+        return viewer_export.export_to_obsidian(self, note, vault, paths)
+
+    def populate_obsidian_menu(self, menu, paths=None):
+        return viewer_export.populate_obsidian_menu(self, menu, paths)
 
     def on_export_xyz_files(self):
         return viewer_export.on_export_xyz_files(self)
@@ -9484,9 +9490,19 @@ QLabel:hover {{
         copy_svg_act.triggered.connect(lambda: self.copy_selected_as_svg(targets))
         menu.addAction(copy_svg_act)
 
-        export_png_act = QtWidgets.QAction("Export PNGs...", menu)
-        export_png_act.triggered.connect(self.on_export_pngs)
+        n_targets = len(targets)
+        export_png_act = QtWidgets.QAction(
+            "Export PNGs (as displayed)..." + (f"  ({n_targets} images)" if n_targets > 1 else ""), menu)
+        export_png_act.setToolTip("One PNG per image, rendered as the preview shows it "
+                                  "(current display preset, overlays, colormap)")
+        export_png_act.triggered.connect(lambda _=False, paths=list(targets): self.on_export_pngs(paths))
         menu.addAction(export_png_act)
+        obsidian_menu = menu.addMenu("Export to Obsidian" + (f"  ({n_targets} images)" if n_targets > 1 else ""))
+        obsidian_menu.setToolTipsVisible(True)
+        try:
+            self.populate_obsidian_menu(obsidian_menu, list(targets))
+        except Exception as exc:
+            log_status(f"[Obsidian] menu failed: {exc}")
         ppt_supported, ppt_reason = powerpoint_support_status()
         send_ppt_act = QtWidgets.QAction("Send selected to PowerPoint", menu)
         send_ppt_act.triggered.connect(lambda _, paths=list(targets): self._send_thumbnail_targets_to_powerpoint(paths, new_slide=True))

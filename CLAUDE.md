@@ -1098,6 +1098,20 @@ the user's default. Stored in config as `favorite_cmaps` (dict:
 at startup; Display → "Reset colormap defaults" clears them; the folder
 report reads the same favourites via `payload["prefs"]`.
 
+### PNG / Obsidian export (as displayed)
+"Export PNGs" (toolbar + thumbnail menu) and "Export to Obsidian" share
+`gui/viewer/export.py:render_targets_as_displayed`: each target (thumbnail
+selection in grid order, else the previewed image) is loaded into the main
+preview and `preview_canvas.fig` is saved, so the active display preset,
+overlays (and the H-hidden state), per-file cmap/contrast/Zero/turn apply;
+the previous preview is restored afterwards. One PNG per image (the whole
+displayed figure, extra channel views included). Obsidian support is
+file-based and Qt-free (`sxm_viewer/integrations/obsidian.py`): vaults from
+`%APPDATA%/obsidian/obsidian.json`, the active note from
+`<vault>/.obsidian/workspace.json`, link style/attachment folder from
+`app.json`; embeds are appended to the end of the note. Options are
+remembered in config `obsidian_export` (image folder per vault).
+
 ### Cross-cutting conventions
 
 - Keep GUI code free of provider internals; providers (`providers/`) must not
