@@ -2,23 +2,21 @@
 
 Module-function convention (see ``gui/viewer/*.py``): ``SXMGridViewer.
 _on_thumb_context_menu`` is a one-line shim into ``show_thumb_context_menu``.
-
-Layout - flat sections, at most one submenu level:
+Built from the shared ``gui/menu_kit.py`` pieces, like the preview/pop-up
+image menu, so both look and behave alike:
 
 - greyed header (the file name, or "N images selected") + Star;
 - **Display**: Colormap / Orientation / Zero / Filters / CH height label,
   Adjust image, Reset display adjustments (only when there are any);
-- **Export**: "Again: ..." (repeats the last export to the same
-  destination) + the user's pinned export routes + "More export" (every
-  route, and "Customise pinned...");
+- **Export**: menu_kit export section over ``export_routes.thumbnail_routes``
+  (Again / pinned / More export), scope ``"thumbnails"``;
 - **Analyse & create**: compare spectra, virtual copy, drift correction,
   animation, molecules (only when something applies);
 - **Organise**: collections, source file, clear spectroscopy selection
   (only when there is one).
 
-Pinned routes and the last export live in config ``thumb_menu``
-(``{"pinned": [route ids], "last_export": {...}}``). The folder report is
-not here - it covers the whole folder and lives on the toolbar.
+The folder report is not here - it covers the whole folder and lives on
+the toolbar.
 """
 from __future__ import annotations
 
@@ -26,212 +24,13 @@ from pathlib import Path
 
 from ..._shared import QtWidgets, log_status
 from ... import cmap_registry
-from ...config import save_config
 from ...processing.filters import FILTER_DEFINITIONS, _gaussian_available
 from .. import drift_animation
-from ..ppt_bridge import powerpoint_support_status
+from ..menu_kit import add_export_section, section
 from ..system_open import add_source_file_menu
 from ..thumbnail_render import _colormap_icon
 from . import ch_height as viewer_ch_height
-
-DEFAULT_PINNED = ("png", "ppt_new")
-
-# route id -> (menu label, tooltip, needs a destination remembered for "Again")
-ROUTES = {
-    "png": ("Export PNGs (as displayed)...",
-            "One PNG per image, rendered as the preview shows it (display preset, overlays, colormap)"),
-    "svg": ("Copy as SVG", "All selected images in one SVG on the clipboard"),
-    "ppt_new": ("Send to PowerPoint", "One new slide per image"),
-    "ppt_current": ("Send to current PowerPoint slide", "All images onto the slide open in PowerPoint"),
-    "obsidian_active": ("Obsidian: active note", "Append the images to the note open in Obsidian"),
-    "obsidian": ("Obsidian: choose note...", "Pick a vault and note (or create one)"),
-    "xyz": ("Export XYZ...", "Plain-text x y z files, one per channel"),
-    "stp": ("Export WSxM STP...", "WSxM .stp files, one per channel"),
-}
-
-
-# ---------------------------------------------------------------------------
-# settings
-# ---------------------------------------------------------------------------
-def _menu_settings(viewer):
-    cfg = getattr(viewer, "config", None)
-    return dict((cfg or {}).get("thumb_menu") or {}) if isinstance(cfg, dict) else {}
-
-
-def _save_menu_settings(viewer, settings):
-    try:
-        viewer.config["thumb_menu"] = settings
-        save_config(viewer.config)
-    except Exception:
-        pass
-
-
-def pinned_routes(viewer):
-    pinned = _menu_settings(viewer).get("pinned")
-    if not isinstance(pinned, list):
-        pinned = list(DEFAULT_PINNED)
-    return [r for r in pinned if r in ROUTES]
-
-
-def set_pinned_routes(viewer, routes):
-    settings = _menu_settings(viewer)
-    settings["pinned"] = [r for r in ROUTES if r in set(routes)]
-    _save_menu_settings(viewer, settings)
-
-
-def _record_last_export(viewer, record):
-    settings = _menu_settings(viewer)
-    settings["last_export"] = record
-    _save_menu_settings(viewer, settings)
-
-
-# ---------------------------------------------------------------------------
-# export routes
-# ---------------------------------------------------------------------------
-def _active_obsidian_note():
-    """(note, vault) of the first open vault's active note, or (None, None)."""
-    try:
-        from ...integrations import obsidian
-        vaults = obsidian.list_vaults()
-        for vault in [v for v in vaults if v.is_open] or vaults[:1]:
-            note = obsidian.active_note(vault.path)
-            if note is not None:
-                return note, vault.path
-    except Exception:
-        pass
-    return None, None
-
-
-def run_route(viewer, route, paths, *, out_dir=None, note=None, vault=None):
-    """Run one export route on ``paths`` and remember destination-bearing
-    routes for "Again". ``out_dir``/``note`` skip the destination dialog."""
-    paths = list(paths)
-    record = None
-    if route == "png":
-        dest = viewer.on_export_pngs(paths, out_dir)
-        record = {"route": route, "out_dir": dest} if dest else None
-    elif route == "xyz":
-        dest = viewer.on_export_xyz_files(paths, out_dir)
-        record = {"route": route, "out_dir": dest} if dest else None
-    elif route == "stp":
-        dest = viewer.on_export_stp_files(paths, out_dir)
-        record = {"route": route, "out_dir": dest} if dest else None
-    elif route == "svg":
-        viewer.copy_selected_as_svg(paths)
-    elif route in ("ppt_new", "ppt_current"):
-        viewer._send_thumbnail_targets_to_powerpoint(paths, new_slide=(route == "ppt_new"))
-    elif route == "obsidian_active":
-        if note is None:
-            note, vault = _active_obsidian_note()
-        if note is None:
-            QtWidgets.QMessageBox.information(viewer, "Export to Obsidian",
-                                              "No note is open in Obsidian - choose one instead.")
-            route, note, vault = "obsidian", None, None
-        dest = viewer.export_to_obsidian(note, vault, paths)
-        record = {"route": "obsidian", **dest} if dest else None
-    elif route == "obsidian":
-        dest = viewer.export_to_obsidian(note, vault, paths)
-        record = {"route": "obsidian", **dest} if dest else None
-    if record:
-        _record_last_export(viewer, record)
-
-
-def _again_action(viewer, menu, paths):
-    """ "Again: <route> -> <destination>" for the remembered export, if its
-    destination still exists."""
-    last = _menu_settings(viewer).get("last_export") or {}
-    route = last.get("route")
-    if route in ("png", "xyz", "stp"):
-        dest = last.get("out_dir")
-        if not dest or not Path(dest).is_dir():
-            return None
-        kind = {"png": "PNGs", "xyz": "XYZ", "stp": "WSxM STP"}[route]
-        text = f"Again: {kind} → {Path(dest).name}"
-        kwargs = {"out_dir": dest}
-    elif route == "obsidian":
-        note, vault = last.get("note"), last.get("vault")
-        if not note or not vault or not Path(vault).is_dir():
-            return None
-        if "obsidian_active" in pinned_routes(viewer) and _active_obsidian_note()[0] == Path(note):
-            return None  # the pinned "active note" entry already does this
-        text = f"Again: Obsidian → {Path(note).stem}"
-        kwargs = {"note": Path(note), "vault": Path(vault)}
-        dest = note
-    else:
-        return None
-    act = menu.addAction("↻ " + text)
-    act.setToolTip(f"Repeat your last export to {dest}")
-    act.triggered.connect(lambda _=False, r=route, kw=kwargs: run_route(viewer, r, paths, **kw))
-    return act
-
-
-def _add_route_action(viewer, menu, route, paths, *, ppt_status):
-    label, tip = ROUTES[route]
-    if route == "obsidian_active":
-        note, _vault = _active_obsidian_note()
-        if note is not None:
-            label = f"Obsidian → {note.stem}"
-            tip = f"Append to the note open in Obsidian:\n{note}"
-        else:
-            tip = "No note is open in Obsidian"
-    act = menu.addAction(label)
-    act.setToolTip(tip)
-    if route in ("ppt_new", "ppt_current") and not ppt_status[0]:
-        act.setEnabled(False)
-        act.setToolTip(ppt_status[1] or "PowerPoint is unavailable")
-    if route == "obsidian_active" and _active_obsidian_note()[0] is None:
-        act.setEnabled(False)
-    act.triggered.connect(lambda _=False, r=route: run_route(viewer, r, paths))
-    return act
-
-
-def customise_pinned(viewer):
-    dlg = QtWidgets.QDialog(viewer)
-    dlg.setWindowTitle("Pinned export actions")
-    layout = QtWidgets.QVBoxLayout(dlg)
-    info = QtWidgets.QLabel("Exports shown directly in the thumbnail right-click menu.\n"
-                            "Everything else stays under \"More export\".")
-    layout.addWidget(info)
-    lst = QtWidgets.QListWidget()
-    pinned = set(pinned_routes(viewer))
-    for route, (label, tip) in ROUTES.items():
-        item = QtWidgets.QListWidgetItem(label.rstrip("."))
-        item.setToolTip(tip)
-        item.setData(256, route)
-        item.setFlags(item.flags() | 0x10)  # ItemIsUserCheckable
-        item.setCheckState(2 if route in pinned else 0)
-        lst.addItem(item)
-    layout.addWidget(lst)
-    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-    buttons.accepted.connect(dlg.accept)
-    buttons.rejected.connect(dlg.reject)
-    layout.addWidget(buttons)
-    if dlg.exec_() != QtWidgets.QDialog.Accepted:
-        return
-    chosen = [lst.item(i).data(256) for i in range(lst.count()) if lst.item(i).checkState() == 2]
-    set_pinned_routes(viewer, chosen)
-
-
-# ---------------------------------------------------------------------------
-# menu building
-# ---------------------------------------------------------------------------
-def _header(menu, text, *, first=False):
-    """A greyed, non-clickable section title (QMenu.addSection text is not
-    drawn by the native Windows style, so use a label)."""
-    if not first:
-        menu.addSeparator()
-    label = QtWidgets.QLabel(text)
-    label.setEnabled(False)
-    font = label.font()
-    font.setBold(True)
-    font.setPointSizeF(max(7.0, font.pointSizeF() * 0.9))
-    label.setFont(font)
-    label.setContentsMargins(10, 2, 10, 1)
-    act = QtWidgets.QWidgetAction(menu)
-    act.setDefaultWidget(label)
-    act.setEnabled(False)
-    menu.addAction(act)
-    return act
+from . import export_routes
 
 
 def _ordered(viewer, paths):
@@ -337,23 +136,6 @@ def _add_reset_adjustments(viewer, menu, targets):
     act.triggered.connect(_reset)
 
 
-def _add_export_section(viewer, menu, targets):
-    _header(menu, "Export")
-    ppt_status = powerpoint_support_status()
-    _again_action(viewer, menu, targets)
-    pinned = pinned_routes(viewer)
-    for route in pinned:
-        _add_route_action(viewer, menu, route, targets, ppt_status=ppt_status)
-    more = menu.addMenu("More export" if pinned else "Export")
-    more.setToolTipsVisible(True)
-    for route in ROUTES:
-        _add_route_action(viewer, more, route, targets, ppt_status=ppt_status)
-    more.addSeparator()
-    custom = more.addAction("Customise pinned...")
-    custom.setToolTip("Choose which exports appear directly in this menu")
-    custom.triggered.connect(lambda _=False: customise_pinned(viewer))
-
-
 def _add_molecules_menu(viewer, menu, targets):
     overlays = getattr(viewer, "molecule_overlays", {}) or {}
     has_mol = any(overlays.get(str(Path(p))) for p in targets)
@@ -410,7 +192,7 @@ def build_thumb_context_menu(viewer, label_widget):
     menu = QtWidgets.QMenu(viewer)
     menu.setToolTipsVisible(True)
 
-    _header(menu, Path(fp).name if len(targets) == 1 else f"{len(targets)} images selected", first=True)
+    section(menu, Path(fp).name if len(targets) == 1 else f"{len(targets)} images selected", first=True)
     all_starred = all(str(p) in viewer.starred for p in targets)
     star = menu.addAction(("Remove star" if all_starred else "★ Star") + "  (S)")
     star.setToolTip("Mark as favourite - view only starred images with Ctrl+Alt+F or "
@@ -418,7 +200,7 @@ def build_thumb_context_menu(viewer, label_widget):
     star.triggered.connect(lambda _, paths=list(targets): viewer.toggle_star_for_paths(paths))
 
     # ---- Display
-    _header(menu, "Display")
+    section(menu, "Display")
     if known:
         _add_cmap_menu(viewer, menu, label_widget, known)
         _add_orientation_menu(viewer, menu, known)
@@ -431,12 +213,13 @@ def build_thumb_context_menu(viewer, label_widget):
 
     # ---- Export
     try:
-        _add_export_section(viewer, menu, targets)
+        add_export_section(menu, export_routes.thumbnail_routes(viewer),
+                           export_routes.menu_prefs(viewer, "thumbnails"), list(targets), parent=viewer)
     except Exception as exc:
         log_status(f"[Thumb menu] export section failed: {exc}")
 
     # ---- Analyse & create
-    _header(menu, "Analyse & create")
+    section(menu, "Analyse & create")
     try:
         image_specs = viewer.spectro_compare_controller.all_specs_for_image(fp)
     except Exception:
@@ -461,7 +244,7 @@ def build_thumb_context_menu(viewer, label_widget):
     _add_molecules_menu(viewer, menu, targets)
 
     # ---- Organise
-    _header(menu, "Organise")
+    section(menu, "Organise")
     _add_collections_menu(viewer, menu, targets)
     add_source_file_menu(menu, fp, viewer)
     if _has_spectro_selection(viewer):

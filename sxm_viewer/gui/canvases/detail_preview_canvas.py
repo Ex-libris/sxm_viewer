@@ -59,6 +59,9 @@ from ..ppt_bridge import powerpoint_support_status, send_rendered_to_ppt
 from .. import vector_export
 from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
 from ..system_open import add_source_file_menu
+from ..menu_kit import (
+    MenuPrefs, Route, add_export_section, again_folder, checkable, choice_group, section,
+)
 
 try:
     from scipy import ndimage
@@ -106,6 +109,18 @@ def _default_export_filename(view, ext):
         file_path=str(meta.get("file_path") or view.get("path") or ""),
         fallback_title=str(view.get("title") or "view"),
     )
+
+
+def _unique_export_path(path):
+    path = Path(path)
+    if not path.exists():
+        return path
+    n = 2
+    while True:
+        cand = path.with_name(f"{path.stem}_{n}{path.suffix}")
+        if not cand.exists():
+            return cand
+        n += 1
 
 
 _FIXED_CROP_HISTORY_LIMIT = 96
@@ -10255,6 +10270,123 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
         return result
 
+    # ------------------------------------------------------------------ #
+    # Right-click image menu (main preview and every pop-up)             #
+    # ------------------------------------------------------------------ #
+    # Built from the shared gui/menu_kit.py pieces, like the thumbnail
+    # menu: greyed section headers (Display / Tools / Export / Analyse &
+    # create / Organise), at most one submenu level, items hidden when they
+    # don't apply, and an export section with pinned routes + "Again"
+    # (scope "view", shared by the preview and all pop-ups via the owner's
+    # set_context_menu_support; in-memory defaults otherwise).
+    _VIEW_DEFAULT_PINNED = ("copy_png", "ppt_new")
+
+    def set_context_menu_support(self, prefs_factory=None, extra_routes=None):
+        """Owner-provided menu prefs factory (-> menu_kit.MenuPrefs) and extra
+        export routes (menu_kit.Route, ctx = {"canvas", "view"})."""
+        self._menu_prefs_factory = prefs_factory
+        self._extra_export_routes = list(extra_routes or [])
+
+    def _context_menu_prefs(self):
+        factory = getattr(self, "_menu_prefs_factory", None)
+        if callable(factory):
+            try:
+                return factory()
+            except Exception:
+                pass
+        prefs = getattr(self, "_fallback_menu_prefs", None)
+        if prefs is None:
+            prefs = self._fallback_menu_prefs = MenuPrefs("view", self._VIEW_DEFAULT_PINNED)
+        return prefs
+
+    def default_export_filename(self, view, ext):
+        return _default_export_filename(view or (self.views[0] if self.views else {}), ext)
+
+    def save_displayed_png(self, path, dpi=300):
+        """Save the figure exactly as displayed (preset, overlays) to ``path``."""
+        def _save():
+            self.fig.savefig(str(path), format="png", dpi=dpi, bbox_inches="tight")
+        self._save_current_figure_without_shortcut_hint(_save)
+        return Path(path)
+
+    def _save_displayed_png_route(self, view, dest=None):
+        folder = (dest or {}).get("out_dir")
+        name = self.default_export_filename(view, "png")
+        if folder and Path(folder).is_dir():
+            path = _unique_export_path(Path(folder) / name)
+        else:
+            last = getattr(self, "_last_png_export_dir", None)
+            start = str(Path(last) / name) if last else name
+            chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Save displayed view as PNG", start, "PNG Files (*.png)")
+            if not chosen:
+                return None
+            path = Path(chosen)
+        try:
+            self.save_displayed_png(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Save view", f"Unable to save image:\n{exc}")
+            return None
+        self._last_png_export_dir = str(path.parent)
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved {path.name}", self)
+        return {"out_dir": str(path.parent)}
+
+    def _view_export_routes(self, view):
+        def ppt(_ctx):
+            ok, reason = powerpoint_support_status()
+            return ok, reason or "PowerPoint is unavailable"
+
+        routes = [
+            Route("copy_png", "Copy displayed as PNG  (Ctrl+C)", lambda c, d: self._copy_displayed("png"),
+                  tip="Copy the image as shown, overlays included"),
+            Route("copy_svg", "Copy displayed as SVG", lambda c, d: self._copy_displayed("svg")),
+            Route("copy_data_png", "Copy data image only (PNG)", lambda c, d: self._copy_view_to_clipboard(view)),
+            Route("copy_data_svg", "Copy data view as SVG (vector)", lambda c, d: self._copy_view_as_svg(view)),
+            Route("save_png", "Save displayed as PNG...", lambda c, d: self._save_displayed_png_route(view, d),
+                  tip="Save the image as shown (display preset, overlays) at 300 dpi",
+                  again=again_folder("PNG")),
+            Route("save_data_png", "Save data image as PNG...", lambda c, d: self._save_view_to_file(view)),
+            Route("save_svg", "Save displayed view as SVG...", lambda c, d: self._save_view_vector(view, "svg")),
+            Route("save_pdf", "Save displayed view as PDF...", lambda c, d: self._save_view_vector(view, "pdf")),
+            Route("ppt_new", "Send to PowerPoint",
+                  lambda c, d: self._send_displayed_to_powerpoint(view, new_slide=True), available=ppt),
+            Route("ppt_current", "Send to current PowerPoint slide",
+                  lambda c, d: self._send_displayed_to_powerpoint(view, new_slide=False), available=ppt),
+            Route("inkscape", "Open in Inkscape (layered SVG)", lambda c, d: self._send_displayed_to_inkscape(view),
+                  tip="Open the displayed figure in Inkscape with the image and each molecule "
+                      "(bonds/atoms/labels) on separate layers."),
+        ]
+        if callable(self._stp_export_callback):
+            routes.append(Route("stp", "Export as WSxM STP...", lambda c, d: self._stp_export_callback(view)))
+        routes.extend(getattr(self, "_extra_export_routes", None) or [])
+        return routes
+
+    def _any_view_zoomed(self):
+        for ax, lims in list((getattr(self, "_zoom_reset_limits", None) or {}).items()):
+            try:
+                xlim, ylim = lims
+                if not (np.allclose(ax.get_xlim(), xlim) and np.allclose(ax.get_ylim(), ylim)):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _context_menu_title(self, view):
+        meta = dict((view or {}).get("meta") or {})
+        name = str(meta.get("file_name") or "") or Path(str((view or {}).get("path") or "")).name
+        chan = str(meta.get("channel") or "")
+        title = " — ".join(t for t in (name, chan) if t) or str((view or {}).get("title") or "Image")
+        return title if len(title) <= 64 else title[:61] + "..."
+
+    def _safe(self, fn, *args):
+        """A slot calling an owner callback without letting errors escape."""
+        def _slot(*_):
+            try:
+                fn(*args)
+            except Exception:
+                pass
+        return _slot
+
     def _show_context_menu(self, event, view, global_pos=None):
         if view is None:
             return
@@ -10262,686 +10394,344 @@ class MultiPreviewCanvas(FigureCanvas):
             self._set_active_view_ax(event.inaxes)
         self._scale_bar_edit_view_key = self._scale_bar_view_key(view)
         menu = QtWidgets.QMenu(self)
-        # theme-aware styling
+        menu.setToolTipsVisible(True)
         try:
             if self._detail_dark:
                 menu.setStyleSheet("QMenu { background: #1e1e24; color: #f5f5f5; } QMenu::item:selected { background: #2c2c34; }")
-            else:
-                menu.setStyleSheet("")
         except Exception:
             pass
-        # Quick tools (no top toolbar required)
-        quick_menu = menu.addMenu("Quick tools")
-        profile_tool_act = quick_menu.addAction("Profile tool  (Ctrl+Click)")
-        profile_tool_act.setCheckable(True)
-        profile_tool_act.setChecked(bool(self.profile_enabled))
-        angle_tool_act = quick_menu.addAction("Angle tool  (Ctrl+Alt+Click)")
-        angle_tool_act.setCheckable(True)
-        angle_tool_act.setChecked(bool(self.angle_enabled))
-        if not bool(getattr(self, "_measurement_shortcuts_enabled", True)):
-            profile_tool_act.setEnabled(False)
-            angle_tool_act.setEnabled(False)
-        quick_menu.addSeparator()
-        edit_crop_frame_act = quick_menu.addAction("Edit crop template")
-        edit_crop_frame_act.setCheckable(True)
-        edit_crop_frame_act.setChecked(bool(self._fixed_crop_transform_mode))
-        apply_crop_frame_act = quick_menu.addAction("Apply crop template  (Enter)")
-        apply_crop_frame_act.setEnabled(bool(self._fixed_crop_template_visible and self._fixed_crop_template))
-        remove_crop_frame_act = quick_menu.addAction("Remove crop template  (Delete)")
-        remove_crop_frame_act.setEnabled(bool(self._fixed_crop_template or self._fixed_crop_template_bounds or self._fixed_crop_template_manual_dims))
-        exit_crop_frame_act = quick_menu.addAction("Exit template editor  (Esc)")
-        exit_crop_frame_act.setEnabled(bool(self._fixed_crop_transform_mode))
-        quick_menu.addSeparator()
-        clear_overlays_act = quick_menu.addAction("Clear profile/angle overlays")
-        auto_hist_act = quick_menu.addAction("Auto contrast (1-99%)  (A)")
-        auto_hist_act.setEnabled(callable(self._histogram_auto_callback))
-        reset_hist_act = quick_menu.addAction("Reset range to data min/max")
-        reset_hist_act.setEnabled(callable(self._histogram_reset_callback))
-        histogram_act = quick_menu.addAction("Histogram...")
-        histogram_act.setEnabled(callable(self._histogram_dialog_callback))
+        ctx = {"canvas": self, "view": view}
+        section(menu, self._context_menu_title(view), first=True)
 
-        _active_preset = self.active_display_preset()
-        presets_menu = menu.addMenu(
-            f"Display preset: {_active_preset.title() if _active_preset else 'Custom'}"
-        )
-        self.populate_display_preset_menu(presets_menu)
-        # Zero / relative axes are frequent per-image toggles, so they sit
-        # at the top level rather than inside the long Display submenu.
-        rel_zero_act = None
+        # ---------------- Display
+        section(menu, "Display")
+        active_preset = self.active_display_preset()
+        self.populate_display_preset_menu(
+            menu.addMenu(f"Display preset: {active_preset.title() if active_preset else 'Custom'}"))
+        self._add_context_cmap_menu(menu, view)
+        contrast = menu.addMenu("Contrast")
+        if callable(self._histogram_auto_callback):
+            contrast.addAction("Auto contrast (1-99%)  (A)").triggered.connect(
+                self._safe(self._histogram_auto_callback, self))
+        if callable(self._histogram_reset_callback):
+            contrast.addAction("Reset range to data min/max").triggered.connect(
+                self._safe(self._histogram_reset_callback, self))
+        if callable(self._histogram_dialog_callback):
+            contrast.addAction("Histogram...").triggered.connect(self._safe(self._histogram_dialog_callback, self))
+        contrast.setEnabled(not contrast.isEmpty())
         if callable(self._display_relative_zero_menu_callback):
-            rel_zero_act = menu.addAction("Zero (values relative to reference)")
-            rel_zero_act.setCheckable(True)
             try:
-                rel_zero_act.setChecked(bool(self._display_relative_zero_menu_state_callback()))
+                zero_state = bool(self._display_relative_zero_menu_state_callback())
             except Exception:
-                rel_zero_act.setChecked(False)
-            rel_zero_tip = self._display_relative_zero_menu_tooltip or "Display values relative to the current zero/reference"
-            rel_zero_act.setToolTip(rel_zero_tip)
-            rel_zero_act.setStatusTip(rel_zero_tip)
-        rel_axes_act = menu.addAction("Relative axes")
-        rel_axes_act.setCheckable(True)
-        rel_axes_act.setChecked(bool(self._use_relative_axes(view)) if view else bool(self._relative_axes_override))
-        rel_axes_act.setToolTip("Show axes relative to the image origin instead of absolute positions")
-        display_menu = menu.addMenu("Display")
-        show_scale_act = display_menu.addAction("Show Scale bar")
-        show_scale_act.setCheckable(True)
-        show_scale_act.setChecked(bool(self.scale_bar_enabled))
-        scale_settings_act = display_menu.addAction("Scale bar settings...")
-        scale_settings_act.setToolTip("Set the scale-bar length, label size, and label weight")
-        show_ticks_act = display_menu.addAction("Show Ticks")
-        show_ticks_act.setCheckable(True)
-        show_ticks_act.setChecked(bool(self._show_ticks))
-        show_cbar_act = display_menu.addAction("Show Colorbar")
-        show_cbar_act.setCheckable(True)
-        show_cbar_act.setChecked(bool(self._show_colorbar))
-        cbar_orient_menu = display_menu.addMenu("Colorbar orientation")
-        cbar_orient_group = QtWidgets.QActionGroup(self)
-        cbar_orient_group.setExclusive(True)
-        cbar_vert_act = cbar_orient_menu.addAction("Vertical")
-        cbar_vert_act.setCheckable(True)
-        cbar_vert_act.setChecked(self._colorbar_orientation == 'vertical')
-        cbar_orient_group.addAction(cbar_vert_act)
-        cbar_horiz_act = cbar_orient_menu.addAction("Horizontal")
-        cbar_horiz_act.setCheckable(True)
-        cbar_horiz_act.setChecked(self._colorbar_orientation == 'horizontal')
-        cbar_orient_group.addAction(cbar_horiz_act)
-        show_title_act = display_menu.addAction("Show Title")
-        show_title_act.setCheckable(True)
-        show_title_act.setChecked(bool(self._show_title))
-        show_filter_summary_act = display_menu.addAction("Show Filter Label on Image")
-        show_filter_summary_act.setCheckable(True)
-        show_filter_summary_act.setChecked(bool(self._show_filter_summary_overlay))
-        show_filter_summary_act.setToolTip("Show the applied filter over the image; it is shown in the title area by default")
-        show_profiles_act = display_menu.addAction("Show Profiles")
-        show_profiles_act.setCheckable(True)
-        show_profiles_act.setChecked(bool(self._show_profile_overlays))
-        profile_properties_menu = display_menu.addMenu("Profile properties")
-        profile_label_mode_actions = {}
-        for label, mode in (("Length only", "length"), ("Full (L, dx, dy)", "full"), ("Hidden", "hidden")):
-            act = profile_properties_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_mode == mode)
-            profile_label_mode_actions[act] = mode
-        profile_size_menu = profile_properties_menu.addMenu("Label size")
-        profile_size_actions = {}
-        for px in (8, 10, 12, 14, 16, 20, 24):
-            act = profile_size_menu.addAction(f"{px} px")
-            act.setCheckable(True)
-            act.setChecked(abs(12.0 * self._profile_label_scale - px) < 0.5)
-            profile_size_actions[act] = px
-        profile_placement_menu = profile_properties_menu.addMenu("Label placement")
-        profile_placement_actions = {}
-        for label, key in (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")):
-            act = profile_placement_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_placement == key)
-            profile_placement_actions[act] = key
-        profile_orientation_menu = profile_properties_menu.addMenu("Label orientation")
-        profile_orientation_actions = {}
-        for label, key in (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")):
-            act = profile_orientation_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_orientation == key)
-            profile_orientation_actions[act] = key
-        profile_bg_menu = profile_properties_menu.addMenu("Label background")
-        profile_bg_actions = {}
-        for label, alpha in (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)):
-            act = profile_bg_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(abs(self._profile_label_bg_alpha - alpha) < 0.02)
-            profile_bg_actions[act] = alpha
-        profile_ruler_act = profile_properties_menu.addAction("Show measurement ruler")
-        profile_ruler_act.setCheckable(True)
-        profile_ruler_act.setChecked(bool(self._profile_ruler_visible))
-        profile_all_labels_act = profile_properties_menu.addAction("Show all profile labels")
-        profile_all_labels_act.setCheckable(True)
-        profile_all_labels_act.setChecked(bool(self._profile_show_all_labels))
-        profile_outline_act = profile_properties_menu.addAction("High-contrast outline")
-        profile_outline_act.setCheckable(True)
-        profile_outline_act.setChecked(bool(self._profile_overlay_outline))
-        profile_properties_menu.addSeparator()
-        save_profile_default_act = profile_properties_menu.addAction("Save current settings as default")
-        restore_profile_default_act = profile_properties_menu.addAction("Restore default settings")
-        hide_overlays_act = display_menu.addAction("Hide All Overlays\tH")
-        hide_overlays_act.setCheckable(True)
-        hide_overlays_act.setChecked(bool(self._overlays_hidden))
-        hide_tip = "Show only the image: hide every overlay in this view (press H again to restore)."
-        hide_overlays_act.setToolTip(hide_tip)
-        hide_overlays_act.setStatusTip(hide_tip)
-        show_crop_history_act = None
-        if self._fixed_crop_quick_mode or self._fixed_crop_history:
-            show_crop_history_act = display_menu.addAction("Show Crop Overlays")
-            show_crop_history_act.setCheckable(True)
-            show_crop_history_act.setChecked(bool(self._fixed_crop_history_visible))
-            crop_tip = "Show or hide crop outlines, labels and the crop template in this view only."
-            show_crop_history_act.setToolTip(crop_tip)
-            show_crop_history_act.setStatusTip(crop_tip)
-        acq_overlay_act = display_menu.addAction("Show Acquisition HUD")
-        acq_overlay_act.setCheckable(True)
-        acq_overlay_act.setChecked(bool(self._show_acquisition_overlay))
+                zero_state = False
+            checkable(menu, "Zero (values relative to reference)", zero_state,
+                      self._safe_bool(self._display_relative_zero_menu_callback),
+                      tip=self._display_relative_zero_menu_tooltip
+                      or "Display values relative to the current zero/reference")
+        rel_state = bool(self._use_relative_axes(view)) if view else bool(self._relative_axes_override)
+        if callable(self._relative_axes_menu_callback):
+            rel_slot = self._safe_bool(self._relative_axes_menu_callback)
+        else:
+            rel_slot = self.set_relative_axes_override
+        checkable(menu, "Relative axes", rel_state, rel_slot,
+                  tip="Show axes relative to the image origin instead of absolute positions")
+        self._add_context_show_menu(menu.addMenu("Show"), view)
+        self._add_context_style_menu(menu.addMenu("Style"))
         if callable(self._ch_height_menu_callback) and self._ch_height_overlay_text(view):
-            ch_height_menu = display_menu.addMenu("CH Height Label")
             try:
-                self._ch_height_menu_callback(ch_height_menu, view.get("path"))
+                self._ch_height_menu_callback(menu.addMenu("CH height label"), view.get("path"))
             except Exception:
                 pass
-        filter_summary_act = display_menu.addAction("Show Filter Label")
-        filter_summary_act.setCheckable(True)
-        filter_summary_act.setChecked(bool(getattr(self, "_show_filter_summary", True)))
-        filter_tip = "Show or hide the applied-filter label in the top-left corner."
-        filter_summary_act.setToolTip(filter_tip)
-        filter_summary_act.setStatusTip(filter_tip)
-        hint_act = display_menu.addAction("Show Shortcut Hint")
-        hint_act.setCheckable(True)
-        hint_act.setChecked(bool(self._show_shortcut_hint))
-        gizmo_act = display_menu.addAction("Show Molecule Gizmo")
-        gizmo_act.setCheckable(True)
-        gizmo_act.setChecked(bool(getattr(self, "_show_molecule_gizmo", False)))
-        frame_fill_act = display_menu.addAction("Frame fill")
-        frame_fill_act.setCheckable(True)
-        frame_fill_act.setChecked(bool(self._frame_fill_mode))
-        apply_popup_style_act = None
-        if callable(self._apply_popup_style_callback):
-            display_menu.addSeparator()
-            apply_popup_style_act = display_menu.addAction(self._apply_popup_style_label or "Apply this style to all pop-ups")
-            popup_style_tip = self._apply_popup_style_tooltip or "Copy font size, typography and display layout from this popup to the other open pop-ups"
-            apply_popup_style_act.setToolTip(popup_style_tip)
-            apply_popup_style_act.setStatusTip(popup_style_tip)
+        if self._any_view_zoomed():
+            menu.addAction("Reset zoom  (Home)").triggered.connect(lambda _=False: self._reset_view_zoom())
 
-        layout_menu = display_menu.addMenu("Layout")
-        layout_grid_act = layout_menu.addAction("Grid")
-        layout_grid_act.setCheckable(True)
-        layout_grid_act.setChecked(self._view_layout == "grid")
-        layout_stack_act = layout_menu.addAction("Stacked")
-        layout_stack_act.setCheckable(True)
-        layout_stack_act.setChecked(self._view_layout == "stacked")
-
-        overlays_menu = menu.addMenu("Overlays")
-        show_profile_overlay_act = overlays_menu.addAction("Show Saved Profiles  (Ctrl+1)")
-        show_profile_overlay_act.setCheckable(True)
-        show_profile_overlay_act.setChecked(bool(self._show_profile_overlays))
-        show_angle_overlay_act = overlays_menu.addAction("Show Saved Angles  (Ctrl+2)")
-        show_angle_overlay_act.setCheckable(True)
-        show_angle_overlay_act.setChecked(bool(self._show_angle_overlays))
-        show_molecule_overlay_act = overlays_menu.addAction("Show Molecules  (Ctrl+3)")
-        show_molecule_overlay_act.setCheckable(True)
-        show_molecule_overlay_act.setChecked(bool(self.show_molecules))
-        show_spectra_overlay_act = overlays_menu.addAction("Display Spectroscopy Positions")
-        show_spectra_overlay_act.setCheckable(True)
-        show_spectra_overlay_act.setChecked(bool(self._show_spectra_overlays))
-        analysis_menu = menu.addMenu("Analysis")
-        # "Compare all spectra on this image" opens a comparison *window*, so it
-        # belongs under Analysis (an action) rather than Overlays (which are
-        # paint-on-image toggles); it's the first, most prominent Analysis item.
-        compare_all_specs_act = None
-        compare_all_file_key = view.get("path") if isinstance(view, dict) else None
-        if callable(self._spectra_compare_all_callback) and compare_all_file_key:
-            compare_all_count = len([
-                s for s in (view.get("spectra") or [])
-                if not (isinstance(s, dict) and s.get("matrix_index") is not None)
-            ])
-            compare_all_specs_act = analysis_menu.addAction(
-                f"Compare All Spectra on This Image ({compare_all_count})..."
-            )
-            compare_all_specs_act.setEnabled(compare_all_count >= 2)
-            analysis_menu.addSeparator()
-        # Filters (provided by parent viewer)
+        # ---------------- Tools
+        section(menu, "Tools")
+        self._add_context_measure_menu(menu.addMenu("Measure"))
+        self._add_context_profile_labels_menu(menu.addMenu("Profile labels"))
+        self._add_context_crop_menu(menu.addMenu("Crop template"))
         if callable(self._filter_menu_callback):
             try:
-                self._filter_menu_callback(analysis_menu, view, self)
+                self._filter_menu_callback(menu, view, self)
             except Exception:
                 pass
-        angle_style_act = None
-        if self.angle_enabled and self._angle_frames:
-            angle_style_act = analysis_menu.addAction("Use arrowheads for active angle")
-            angle_style_act.setCheckable(True)
-            active = self._get_active_angle_frame()
-            angle_style_act.setChecked(active and active.get('style', 'dots') == 'arrows')
 
-        copy_menu = menu.addMenu("Copy")
-        copy_disp_png = copy_menu.addAction("Copy displayed as PNG  (Ctrl+C)")
-        copy_disp_svg = copy_menu.addAction("Copy displayed as SVG")
-        copy_menu.addSeparator()
-        copy_act = copy_menu.addAction("Copy data image only (PNG)")
-        copy_svg_act = copy_menu.addAction("Copy data view as SVG (vector)")
+        # ---------------- Export
+        try:
+            add_export_section(menu, self._view_export_routes(view), self._context_menu_prefs(), ctx, parent=self)
+        except Exception as exc:
+            log_status(f"[Image menu] export section failed: {exc}")
 
-        send_ppt_act = menu.addAction("Send to PowerPoint")
-        send_ppt_current_act = menu.addAction("Send to Current Slide")
-        ppt_supported, ppt_reason = powerpoint_support_status()
-        if not ppt_supported:
-            send_ppt_act.setEnabled(False)
-            send_ppt_current_act.setEnabled(False)
-            send_ppt_act.setToolTip(ppt_reason or "")
-            send_ppt_current_act.setToolTip(ppt_reason or "")
-        send_inkscape_act = menu.addAction("Open in Inkscape (layered SVG)")
-        send_inkscape_act.setToolTip(
-            "Open the displayed figure in Inkscape with the image and each "
-            "molecule (bonds/atoms/labels) on separate layers."
-        )
+        # ---------------- Analyse & create
+        section(menu, "Analyse & create")
+        compare_key = view.get("path") if isinstance(view, dict) else None
+        if callable(self._spectra_compare_all_callback) and compare_key:
+            n_specs = len([s for s in (view.get("spectra") or [])
+                           if not (isinstance(s, dict) and s.get("matrix_index") is not None)])
+            if n_specs >= 2:
+                act = menu.addAction(f"Compare all spectra on this image ({n_specs})...")
+                act.setToolTip("Open every point spectrum on this image together in a comparison window")
+                act.triggered.connect(self._safe(self._spectra_compare_all_callback, compare_key))
+        if callable(self._virtual_copy_callback) and view.get("arr") is not None:
+            menu.addAction("Create virtual copy in thumbnails").triggered.connect(
+                self._safe(self._virtual_copy_callback, view))
+        self._add_context_molecules_menu(menu.addMenu("Molecules"))
+        if callable(self._compare_menu_callback):
+            self._add_context_compare_menu(menu.addMenu("Compare A/B"), view)
 
-        export_menu = menu.addMenu("Save / Export")
-        save_act = export_menu.addAction("Save data image as PNG...")
-        save_svg_act = export_menu.addAction("Save displayed view as SVG...")
-        save_pdf_act = export_menu.addAction("Save displayed view as PDF...")
-        export_menu.addSeparator()
-        export_stp_act = export_menu.addAction("Export as WSxM STP...")
-
-        virtual_copy_act = menu.addAction("Create virtual copy in thumbnails")
-        virtual_copy_act.setEnabled(bool(callable(self._virtual_copy_callback) and view.get("arr") is not None))
-
-        molecules_menu = menu.addMenu("Molecules")
-        load_mol_act = molecules_menu.addAction("Load Molecule (XYZ/PDB)...")
-        recent_menu = None
-        recent_actions = {}
-        recent_all = []
-        for lst in (self._recent_molecule_paths, MultiPreviewCanvas._RECENT_MOLECULES):
-            for p in lst:
-                if p not in recent_all:
-                    recent_all.append(p)
-        if recent_all:
-            recent_menu = molecules_menu.addMenu("Load Recent")
-            for p in recent_all[:8]:
-                act = recent_menu.addAction(Path(p).name)
-                act.setToolTip(p)
-                recent_actions[act] = p
-        clear_mols_act = molecules_menu.addAction("Clear Molecules")
-        molecules_menu.addSeparator()
-        load_svg_mol_act = molecules_menu.addAction("Load 2D Structure...")
-        recent_svg_menu = None
-        recent_svg_actions = {}
-        recent_svg_all = []
-        for lst in (self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES):
-            for p in lst:
-                if p not in recent_svg_all:
-                    recent_svg_all.append(p)
-        if recent_svg_all:
-            recent_svg_menu = molecules_menu.addMenu("Load Recent 2D Structure")
-            for p in recent_svg_all[:8]:
-                act = recent_svg_menu.addAction(Path(p).name)
-                act.setToolTip(p)
-                recent_svg_actions[act] = p
-        clear_svg_mols_act = molecules_menu.addAction("Clear 2D Structures")
-
-        cmap_menu = menu.addMenu("Colormap")
-        popup_cmap_apply_all_act = None
-        cmap_actions = {}
-        cmap_group = QtWidgets.QActionGroup(self)
-        cmap_group.setExclusive(True)
-        # Only a short featured list goes inline; the full catalogue (which
-        # can be ~1000 maps with the extras package) is browsed in the
-        # gallery instead of a screen-filling "More..." submenu.
-        current_cmap = str((view or {}).get("cmap") or "viridis")
-        shown_cmaps = []
-        for cmap_name in cmap_registry.featured_cmap_names("general"):
-            if cmap_name not in shown_cmaps:
-                shown_cmaps.append(cmap_name)
-        shown_cmaps = shown_cmaps[:12]
-        if current_cmap not in shown_cmaps:
-            shown_cmaps.append(current_cmap)
-        for cmap_name in shown_cmaps:
-            act = cmap_menu.addAction(cmap_name)
-            act.setCheckable(True)
-            act.setChecked(cmap_name == current_cmap)
-            try:
-                act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
-            except Exception:
-                pass
-            cmap_group.addAction(act)
-            cmap_actions[act] = cmap_name
-        cmap_menu.addSeparator()
-        cmap_gallery_act = cmap_menu.addAction("\U0001F3A8 Colormap gallery...")
-        cmap_gallery_act.setEnabled(view is not None)
-        if callable(self._apply_popup_style_callback):
-            cmap_menu.addSeparator()
-            popup_cmap_apply_all_act = cmap_menu.addAction("Apply this colormap to all pop-ups")
-
-        collection_add_act = None
-        collection_remove_act = None
-        collection_help_act = None
-        if callable(self._collection_menu_callback) and view is not None:
-            collection_menu = menu.addMenu("Collection")
-            collection_add_act = collection_menu.addAction("Add This View to Collection...")
-            collection_add_act.setToolTip("Save this view into a curated cross-folder collection.")
-            collection_remove_act = collection_menu.addAction("Remove This View from Collection")
-            collection_remove_act.setToolTip("Remove the matching item from the current collection file.")
+        # ---------------- Organise
+        section(menu, "Organise")
+        if callable(self._collection_menu_callback):
+            coll = menu.addMenu("Collection")
+            act = coll.addAction("Add This View to Collection...")
+            act.setToolTip("Save this view into a curated cross-folder collection.")
+            act.triggered.connect(self._safe(self._collection_menu_callback, "collection_add", view, self))
+            act = coll.addAction("Remove This View from Collection")
+            act.setToolTip("Remove the matching item from the current collection file.")
+            act.triggered.connect(self._safe(self._collection_menu_callback, "collection_remove", view, self))
             if callable(self._collection_help_callback):
-                collection_menu.addSeparator()
-                collection_help_act = collection_menu.addAction("How Collections Work")
-
+                coll.addSeparator()
+                coll.addAction("How Collections Work").triggered.connect(self._safe(self._collection_help_callback))
         source_meta = dict((view or {}).get("meta") or {})
         source_path = str((view or {}).get("path") or source_meta.get("path") or source_meta.get("file_path") or "").strip()
         add_source_file_menu(menu, source_path, self)
+        window_items = [(label, cb) for label, cb in (
+            ("Arrange pop-outs", self._arrange_windows_callback),
+            ("Minimize pop-outs", self._minimize_windows_callback),
+            ("Bring pop-outs to front", self._restore_windows_callback),
+            ("Close all pop-outs", self._close_windows_callback),
+        ) if callable(cb)]
+        if window_items:
+            windows = menu.addMenu("Pop-outs")
+            for label, cb in window_items:
+                windows.addAction(label).triggered.connect(self._safe(cb))
 
-        compare_set_a_act = None
-        compare_set_b_act = None
-        compare_with_a_act = None
-        compare_with_b_act = None
-        compare_open_act = None
-        compare_swap_act = None
-        compare_clear_act = None
-        if callable(self._compare_menu_callback) and view is not None:
-            compare_state = {}
-            if callable(self._compare_menu_state_callback):
-                try:
-                    compare_state = dict(self._compare_menu_state_callback() or {})
-                except Exception:
-                    compare_state = {}
-            compare_menu = menu.addMenu("Compare")
-            label_a = str(compare_state.get("label_a") or "Empty")
-            label_b = str(compare_state.get("label_b") or "Empty")
-            compare_menu.setToolTip(f"A: {label_a}\nB: {label_b}")
-            compare_set_a_act = compare_menu.addAction("Set This View as Compare A")
-            compare_set_a_act.setToolTip(f"Current A: {label_a}")
-            compare_set_b_act = compare_menu.addAction("Set This View as Compare B")
-            compare_set_b_act.setToolTip(f"Current B: {label_b}")
-            compare_menu.addSeparator()
-            compare_with_a_act = compare_menu.addAction("Compare A with This")
-            compare_with_a_act.setEnabled(bool(compare_state.get("has_a")))
-            compare_with_b_act = compare_menu.addAction("Compare B with This")
-            compare_with_b_act.setEnabled(bool(compare_state.get("has_b")))
-            compare_open_act = compare_menu.addAction("Open A/B Comparison")
-            compare_open_act.setEnabled(bool(compare_state.get("has_a")) and bool(compare_state.get("has_b")))
-            compare_swap_act = compare_menu.addAction("Swap A and B")
-            compare_swap_act.setEnabled(bool(compare_state.get("has_a")) and bool(compare_state.get("has_b")))
-            compare_clear_act = compare_menu.addAction("Clear Compare Selection")
-            compare_clear_act.setEnabled(bool(compare_state.get("has_a")) or bool(compare_state.get("has_b")))
-
-        view_menu = menu.addMenu("View")
-        reset_zoom_act = view_menu.addAction("Reset Zoom")
-        arrange_act = None
-        minimize_act = None
-        restore_act = None
-        close_all_act = None
-        window_actions_added = False
-        if callable(self._arrange_windows_callback):
-            view_menu.addSeparator()
-            window_actions_added = True
-            arrange_act = view_menu.addAction("Arrange pop-outs")
-        if callable(self._minimize_windows_callback):
-            if not window_actions_added:
-                view_menu.addSeparator()
-                window_actions_added = True
-            minimize_act = view_menu.addAction("Minimize pop-outs")
-        if callable(self._restore_windows_callback):
-            if not window_actions_added:
-                view_menu.addSeparator()
-                window_actions_added = True
-            restore_act = view_menu.addAction("Bring pop-outs to front")
-        if callable(self._close_windows_callback):
-            if not window_actions_added:
-                view_menu.addSeparator()
-                window_actions_added = True
-            close_all_act = view_menu.addAction("Close all pop-outs")
-
-        add_font_menu_action(
-            menu,
-            self,
-            self._font_family,
-            self._apply_plot_font_family_choice,
-            current_style=self._plot_style_state(),
-            apply_style_callback=self.set_plot_typography,
-        )
-
-        if global_pos is None:
-            global_pos = None
         if event is not None:
             gui_event = getattr(event, "guiEvent", None)
             if gui_event is not None:
                 try:
                     global_pos = gui_event.globalPos()
                 except Exception:
-                    global_pos = None
+                    pass
         if global_pos is None:
             global_pos = QtGui.QCursor.pos()
+        menu.exec_(global_pos)
 
-        chosen = menu.exec_(global_pos)
-        if chosen == copy_act:
-            self._copy_view_to_clipboard(view)
-        elif chosen == copy_svg_act:
-            self._copy_view_as_svg(view)
-        elif chosen == copy_disp_png:
-            self._copy_displayed("png")
-        elif chosen == copy_disp_svg:
-            self._copy_displayed("svg")
-        elif chosen == send_ppt_act:
-            self._send_displayed_to_powerpoint(view, new_slide=True)
-        elif chosen == send_ppt_current_act:
-            self._send_displayed_to_powerpoint(view, new_slide=False)
-        elif chosen == send_inkscape_act:
-            self._send_displayed_to_inkscape(view)
-        elif chosen == save_act:
-            self._save_view_to_file(view)
-        elif chosen == save_svg_act:
-            self._save_view_vector(view, "svg")
-        elif chosen == save_pdf_act:
-            self._save_view_vector(view, "pdf")
-        elif chosen == export_stp_act:
-            if callable(self._stp_export_callback):
-                try:
-                    self._stp_export_callback(view)
-                except Exception:
-                    pass
-        elif chosen == virtual_copy_act:
-            if callable(self._virtual_copy_callback):
-                try:
-                    self._virtual_copy_callback(view)
-                except Exception:
-                    pass
-        elif chosen == reset_zoom_act:
-            self._reset_view_zoom()
-        elif chosen in (cbar_vert_act, cbar_horiz_act):
-            self._set_colorbar_orientation('vertical' if chosen == cbar_vert_act else 'horizontal')
-        elif chosen == profile_tool_act:
-            self.set_profile_tool_enabled(profile_tool_act.isChecked())
-        elif chosen == angle_tool_act:
-            self.set_angle_tool_enabled(angle_tool_act.isChecked())
-        elif chosen == edit_crop_frame_act:
-            self.enable_fixed_crop_transform_mode(edit_crop_frame_act.isChecked())
-        elif chosen == apply_crop_frame_act:
-            self._on_apply_fixed_crop_shortcut()
-        elif chosen == remove_crop_frame_act:
-            self.clear_fixed_crop_template(hide=True, clear_history=False)
-        elif chosen == exit_crop_frame_act:
-            self.enable_fixed_crop_transform_mode(False)
-        elif chosen == clear_overlays_act:
-            self.clear_measurement_overlays()
-        elif chosen == auto_hist_act and callable(self._histogram_auto_callback):
+    def _safe_bool(self, fn):
+        def _slot(checked):
             try:
-                self._histogram_auto_callback(self)
+                fn(bool(checked))
             except Exception:
                 pass
-        elif chosen == reset_hist_act and callable(self._histogram_reset_callback):
+        return _slot
+
+    # ----- context-menu submenus ---------------------------------------
+    def _add_context_cmap_menu(self, menu, view):
+        cmap_menu = menu.addMenu("Colormap")
+        group = QtWidgets.QActionGroup(cmap_menu)
+        group.setExclusive(True)
+        # A short featured list inline; the full catalogue (~1000 maps with
+        # the extras package) is browsed in the gallery.
+        current = str((view or {}).get("cmap") or "viridis")
+        shown = []
+        for name in cmap_registry.featured_cmap_names("general"):
+            if name not in shown:
+                shown.append(name)
+        shown = shown[:12]
+        if current not in shown:
+            shown.append(current)
+        for name in shown:
+            act = cmap_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == current)
             try:
-                self._histogram_reset_callback(self)
+                act.setIcon(_colormap_icon(name, width=96, height=14))
             except Exception:
                 pass
-        elif chosen == histogram_act and callable(self._histogram_dialog_callback):
-            try:
-                self._histogram_dialog_callback(self)
-            except Exception:
-                pass
-        elif chosen == show_scale_act:
-            self.enable_scale_bar(show_scale_act.isChecked())
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, n=name: self._apply_context_cmap(n, view))
+        cmap_menu.addSeparator()
+        cmap_menu.addAction("\U0001F3A8 Colormap gallery...").triggered.connect(
+            lambda _=False: self.open_view_colormap_gallery(view))
+        if callable(self._apply_popup_style_callback):
+            cmap_menu.addSeparator()
+            cmap_menu.addAction("Apply this colormap to all pop-ups").triggered.connect(
+                self._safe(self._apply_popup_style_callback))
+
+    def _apply_context_cmap(self, name, view):
+        try:
+            self.apply_view_colormap(name, target_view=view, notify=True)
+        except Exception:
+            pass
+
+    def _add_context_show_menu(self, menu, view):
+        hide_tip = "Show only the image: hide every overlay in this view (press H again to restore)."
+        checkable(menu, "Hide all overlays\tH", self._overlays_hidden, self.set_overlays_hidden, tip=hide_tip)
+        section(menu, "Elements")
+
+        def _scale_bar(checked):
+            self.enable_scale_bar(checked)
             self._notify_views_callback()
-        elif chosen == scale_settings_act:
-            self._show_sb_context_menu(None)
-        elif chosen == show_ticks_act:
-            self._toggle_ticks()
-        elif chosen == show_cbar_act:
-            self._toggle_colorbar()
-        elif rel_zero_act and chosen == rel_zero_act:
-            try:
-                self._display_relative_zero_menu_callback(rel_zero_act.isChecked())
-            except Exception:
-                pass
-        elif chosen == show_title_act:
-            self.set_show_title(show_title_act.isChecked())
-        elif chosen == show_filter_summary_act:
-            self.set_show_filter_summary_overlay(show_filter_summary_act.isChecked())
-        elif chosen == show_profiles_act:
-            self.set_show_profile_overlays(show_profiles_act.isChecked())
-        elif chosen in profile_label_mode_actions:
-            self.set_profile_label_mode(profile_label_mode_actions[chosen])
-        elif chosen in profile_size_actions:
-            self.set_profile_label_scale(profile_size_actions[chosen] / 12.0)
-        elif chosen in profile_placement_actions:
-            self.set_profile_label_placement(profile_placement_actions[chosen])
-        elif chosen in profile_orientation_actions:
-            self.set_profile_label_orientation(profile_orientation_actions[chosen])
-        elif chosen in profile_bg_actions:
-            self.set_profile_label_bg_alpha(profile_bg_actions[chosen])
-        elif chosen == profile_ruler_act:
-            self.set_profile_ruler_visible(profile_ruler_act.isChecked())
-        elif chosen == profile_all_labels_act:
-            self.set_profile_show_all_labels(profile_all_labels_act.isChecked())
-        elif chosen == profile_outline_act:
-            self.set_profile_overlay_outline(profile_outline_act.isChecked())
-        elif chosen == save_profile_default_act:
-            self._save_profile_display_favorite()
-        elif chosen == restore_profile_default_act:
-            self._restore_profile_display_favorite()
-        elif chosen == hide_overlays_act:
-            self.set_overlays_hidden(hide_overlays_act.isChecked())
-        elif show_crop_history_act and chosen == show_crop_history_act:
-            self.show_fixed_crop_history(show_crop_history_act.isChecked())
-        elif chosen == acq_overlay_act:
-            self.set_show_acquisition_overlay(acq_overlay_act.isChecked())
-        elif chosen == filter_summary_act:
-            self.set_show_filter_summary(filter_summary_act.isChecked())
-        elif chosen == hint_act:
-            self.set_show_shortcut_hint(hint_act.isChecked())
-        elif chosen == gizmo_act:
-            self.set_show_molecule_gizmo(gizmo_act.isChecked())
-        elif chosen == frame_fill_act:
-            self.set_frame_fill_mode(frame_fill_act.isChecked())
+
+        checkable(menu, "Scale bar", self.scale_bar_enabled, _scale_bar)
+        checkable(menu, "Ticks", self._show_ticks, lambda _c: self._toggle_ticks())
+        checkable(menu, "Colorbar", self._show_colorbar, lambda _c: self._toggle_colorbar())
+        checkable(menu, "Title", self._show_title, self.set_show_title)
+        checkable(menu, "Acquisition HUD", self._show_acquisition_overlay, self.set_show_acquisition_overlay)
+        checkable(menu, "Filter label (corner)", getattr(self, "_show_filter_summary", True),
+                  self.set_show_filter_summary, tip="Show or hide the applied-filter label in the top-left corner.")
+        checkable(menu, "Filter label over image", self._show_filter_summary_overlay,
+                  self.set_show_filter_summary_overlay,
+                  tip="Show the applied filter over the image; it is shown in the title area by default")
+        checkable(menu, "Shortcut hint", self._show_shortcut_hint, self.set_show_shortcut_hint)
+        checkable(menu, "Molecule gizmo", getattr(self, "_show_molecule_gizmo", False), self.set_show_molecule_gizmo)
+        section(menu, "Overlays")
+        checkable(menu, "Saved profiles  (Ctrl+1)", self._show_profile_overlays, self.set_show_profile_overlays)
+        checkable(menu, "Saved angles  (Ctrl+2)", self._show_angle_overlays, self.set_show_angle_overlays)
+        checkable(menu, "Molecules  (Ctrl+3)", self.show_molecules, self.set_show_molecules)
+        checkable(menu, "Spectroscopy positions", self._show_spectra_overlays, self.set_show_spectra_overlays)
+        if self._fixed_crop_quick_mode or self._fixed_crop_history:
+            checkable(menu, "Crop overlays", self._fixed_crop_history_visible, self.show_fixed_crop_history,
+                      tip="Show or hide crop outlines, labels and the crop template in this view only.")
+
+    def _add_context_style_menu(self, menu):
+        section(menu, "Colorbar", first=True)
+        choice_group(menu, menu, (("Vertical", "vertical"), ("Horizontal", "horizontal")),
+                     self._colorbar_orientation, self._set_colorbar_orientation)
+        section(menu, "Layout")
+        choice_group(menu, menu, (("Grid", "grid"), ("Stacked", "stacked")), self._view_layout, self.set_view_layout)
+
+        def _frame_fill(checked):
+            self.set_frame_fill_mode(checked)
             self._notify_views_callback()
-        elif chosen == rel_axes_act:
-            if callable(self._relative_axes_menu_callback):
-                try:
-                    self._relative_axes_menu_callback(rel_axes_act.isChecked())
-                except Exception:
-                    pass
-            else:
-                self.set_relative_axes_override(rel_axes_act.isChecked())
-        elif apply_popup_style_act and chosen == apply_popup_style_act:
+
+        checkable(menu, "Frame fill", self._frame_fill_mode, _frame_fill)
+        menu.addAction("Scale bar settings...").triggered.connect(lambda _=False: self._show_sb_context_menu(None))
+        section(menu, "Typography")
+        add_font_menu_action(
+            menu, self, self._font_family, self._apply_plot_font_family_choice,
+            current_style=self._plot_style_state(), apply_style_callback=self.set_plot_typography,
+            inline=True,
+        )
+        if callable(self._apply_popup_style_callback):
+            menu.addSeparator()
+            act = menu.addAction(self._apply_popup_style_label or "Apply this style to all pop-ups")
+            tip = self._apply_popup_style_tooltip or "Copy font size, typography and display layout from this popup to the other open pop-ups"
+            act.setToolTip(tip)
+            act.triggered.connect(self._safe(self._apply_popup_style_callback))
+
+    def _add_context_measure_menu(self, menu):
+        tools_ok = bool(getattr(self, "_measurement_shortcuts_enabled", True))
+        checkable(menu, "Profile tool  (Ctrl+Click)", self.profile_enabled, self.set_profile_tool_enabled,
+                  enabled=tools_ok)
+        checkable(menu, "Angle tool  (Ctrl+Alt+Click)", self.angle_enabled, self.set_angle_tool_enabled,
+                  enabled=tools_ok)
+        if self.angle_enabled and self._angle_frames:
+            active = self._get_active_angle_frame()
+            checkable(menu, "Use arrowheads for active angle",
+                      bool(active and active.get('style', 'dots') == 'arrows'),
+                      lambda c: self._update_active_angle_style('arrows' if c else 'dots'))
+        menu.addSeparator()
+        menu.addAction("Clear profile/angle overlays").triggered.connect(
+            lambda _=False: self.clear_measurement_overlays())
+
+    def _add_context_profile_labels_menu(self, menu):
+        section(menu, "Content", first=True)
+        choice_group(menu, menu, (("Length only", "length"), ("Full (L, dx, dy)", "full"), ("Hidden", "hidden")),
+                     self._profile_label_mode, self.set_profile_label_mode)
+        section(menu, "Size")
+        current_px = next((px for px in (8, 10, 12, 14, 16, 20, 24)
+                           if abs(12.0 * self._profile_label_scale - px) < 0.5), None)
+        choice_group(menu, menu, [(f"{px} px", px) for px in (8, 10, 12, 14, 16, 20, 24)], current_px,
+                     lambda px: self.set_profile_label_scale(px / 12.0))
+        section(menu, "Placement")
+        choice_group(menu, menu, (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")),
+                     self._profile_label_placement, self.set_profile_label_placement)
+        section(menu, "Orientation")
+        choice_group(menu, menu, (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")),
+                     self._profile_label_orientation, self.set_profile_label_orientation)
+        section(menu, "Background")
+        current_bg = next((a for a in (0.0, 0.15, 0.28, 0.45) if abs(self._profile_label_bg_alpha - a) < 0.02), None)
+        choice_group(menu, menu, (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)),
+                     current_bg, self.set_profile_label_bg_alpha)
+        section(menu, "Options")
+        checkable(menu, "Measurement ruler", self._profile_ruler_visible, self.set_profile_ruler_visible)
+        checkable(menu, "All profile labels", self._profile_show_all_labels, self.set_profile_show_all_labels)
+        checkable(menu, "High-contrast outline", self._profile_overlay_outline, self.set_profile_overlay_outline)
+        menu.addSeparator()
+        menu.addAction("Save current settings as default").triggered.connect(
+            lambda _=False: self._save_profile_display_favorite())
+        menu.addAction("Restore default settings").triggered.connect(
+            lambda _=False: self._restore_profile_display_favorite())
+
+    def _add_context_crop_menu(self, menu):
+        checkable(menu, "Edit crop template", self._fixed_crop_transform_mode, self.enable_fixed_crop_transform_mode)
+        act = menu.addAction("Apply crop template  (Enter)")
+        act.setEnabled(bool(self._fixed_crop_template_visible and self._fixed_crop_template))
+        act.triggered.connect(lambda _=False: self._on_apply_fixed_crop_shortcut())
+        act = menu.addAction("Remove crop template  (Delete)")
+        act.setEnabled(bool(self._fixed_crop_template or self._fixed_crop_template_bounds
+                            or self._fixed_crop_template_manual_dims))
+        act.triggered.connect(lambda _=False: self.clear_fixed_crop_template(hide=True, clear_history=False))
+        act = menu.addAction("Exit template editor  (Esc)")
+        act.setEnabled(bool(self._fixed_crop_transform_mode))
+        act.triggered.connect(lambda _=False: self.enable_fixed_crop_transform_mode(False))
+
+    def _add_context_molecules_menu(self, menu):
+        def _recent(lists):
+            out = []
+            for lst in lists:
+                for p in lst:
+                    if p not in out:
+                        out.append(p)
+            return out[:5]
+
+        menu.addAction("Load molecule (XYZ/PDB)...").triggered.connect(lambda _=False: self._load_molecule_dialog())
+        recent = _recent((self._recent_molecule_paths, MultiPreviewCanvas._RECENT_MOLECULES))
+        for p in recent:
+            act = menu.addAction(f"    {Path(p).name}")
+            act.setToolTip(p)
+            act.triggered.connect(lambda _=False, path=p: self.add_molecule(path))
+        menu.addAction("Clear molecules").triggered.connect(lambda _=False: self._clear_molecules())
+        menu.addSeparator()
+        menu.addAction("Load 2D structure...").triggered.connect(lambda _=False: self._load_svg_molecule_dialog())
+        recent_svg = _recent((self._recent_svg_molecule_paths, MultiPreviewCanvas._RECENT_SVG_MOLECULES))
+        for p in recent_svg:
+            act = menu.addAction(f"    {Path(p).name}")
+            act.setToolTip(p)
+            act.triggered.connect(lambda _=False, path=p: self.add_svg_molecule(path))
+        menu.addAction("Clear 2D structures").triggered.connect(lambda _=False: self._clear_svg_molecules())
+
+    def _add_context_compare_menu(self, menu, view):
+        state = {}
+        if callable(self._compare_menu_state_callback):
             try:
-                self._apply_popup_style_callback()
+                state = dict(self._compare_menu_state_callback() or {})
             except Exception:
-                pass
-        elif chosen == layout_grid_act:
-            self.set_view_layout("grid")
-        elif chosen == layout_stack_act:
-            self.set_view_layout("stacked")
-        elif chosen == show_profile_overlay_act:
-            self.set_show_profile_overlays(show_profile_overlay_act.isChecked())
-        elif chosen == show_angle_overlay_act:
-            self.set_show_angle_overlays(show_angle_overlay_act.isChecked())
-        elif chosen == show_molecule_overlay_act:
-            self.set_show_molecules(show_molecule_overlay_act.isChecked())
-        elif chosen == show_spectra_overlay_act:
-            self.set_show_spectra_overlays(show_spectra_overlay_act.isChecked())
-        elif compare_all_specs_act and chosen == compare_all_specs_act:
-            try:
-                self._spectra_compare_all_callback(compare_all_file_key)
-            except Exception:
-                pass
-        elif chosen == load_mol_act:
-            self._load_molecule_dialog()
-        elif recent_menu and chosen in recent_actions:
-            self.add_molecule(recent_actions[chosen])
-        elif chosen == clear_mols_act:
-            self._clear_molecules()
-        elif chosen == load_svg_mol_act:
-            self._load_svg_molecule_dialog()
-        elif recent_svg_menu and chosen in recent_svg_actions:
-            self.add_svg_molecule(recent_svg_actions[chosen])
-        elif chosen == clear_svg_mols_act:
-            self._clear_svg_molecules()
-        elif chosen in cmap_actions:
-            try:
-                self.apply_view_colormap(cmap_actions[chosen], target_view=view, notify=True)
-            except Exception:
-                pass
-        elif chosen == cmap_gallery_act:
-            self.open_view_colormap_gallery(view)
-        elif popup_cmap_apply_all_act and chosen == popup_cmap_apply_all_act:
-            try:
-                self._apply_popup_style_callback()
-            except Exception:
-                pass
-        elif collection_add_act and chosen == collection_add_act:
-            try:
-                self._collection_menu_callback("collection_add", view, self)
-            except Exception:
-                pass
-        elif collection_remove_act and chosen == collection_remove_act:
-            try:
-                self._collection_menu_callback("collection_remove", view, self)
-            except Exception:
-                pass
-        elif collection_help_act and chosen == collection_help_act:
-            try:
-                self._collection_help_callback()
-            except Exception:
-                pass
-        elif compare_set_a_act and chosen == compare_set_a_act:
-            try:
-                self._compare_menu_callback("set_a", view, self)
-            except Exception:
-                pass
-        elif compare_set_b_act and chosen == compare_set_b_act:
-            try:
-                self._compare_menu_callback("set_b", view, self)
-            except Exception:
-                pass
-        elif compare_with_a_act and chosen == compare_with_a_act:
-            try:
-                self._compare_menu_callback("compare_with_a", view, self)
-            except Exception:
-                pass
-        elif compare_with_b_act and chosen == compare_with_b_act:
-            try:
-                self._compare_menu_callback("compare_with_b", view, self)
-            except Exception:
-                pass
-        elif compare_open_act and chosen == compare_open_act:
-            try:
-                self._compare_menu_callback("open_compare", view, self)
-            except Exception:
-                pass
-        elif compare_swap_act and chosen == compare_swap_act:
-            try:
-                self._compare_menu_callback("swap_compare", view, self)
-            except Exception:
-                pass
-        elif compare_clear_act and chosen == compare_clear_act:
-            try:
-                self._compare_menu_callback("clear_compare", view, self)
-            except Exception:
-                pass
-        elif arrange_act and chosen == arrange_act:
-            try:
-                self._arrange_windows_callback()
-            except Exception:
-                pass
-        elif minimize_act and chosen == minimize_act:
-            try:
-                self._minimize_windows_callback()
-            except Exception:
-                pass
-        elif restore_act and chosen == restore_act:
-            try:
-                self._restore_windows_callback()
-            except Exception:
-                pass
-        elif close_all_act and chosen == close_all_act:
-            try:
-                self._close_windows_callback()
-            except Exception:
-                pass
-        elif angle_style_act and chosen == angle_style_act:
-            checked = angle_style_act.isChecked()
-            self._update_active_angle_style('arrows' if checked else 'dots')
+                state = {}
+        label_a = str(state.get("label_a") or "Empty")
+        label_b = str(state.get("label_b") or "Empty")
+        has_a, has_b = bool(state.get("has_a")), bool(state.get("has_b"))
+        menu.setToolTip(f"A: {label_a}\nB: {label_b}")
+        menu.setToolTipsVisible(True)
+        for label, key, enabled, tip in (
+            ("Set this view as A", "set_a", True, f"Current A: {label_a}"),
+            ("Set this view as B", "set_b", True, f"Current B: {label_b}"),
+            (None, None, None, None),
+            ("Compare A with this", "compare_with_a", has_a, ""),
+            ("Compare B with this", "compare_with_b", has_b, ""),
+            ("Open A/B comparison", "open_compare", has_a and has_b, ""),
+            ("Swap A and B", "swap_compare", has_a and has_b, ""),
+            ("Clear compare selection", "clear_compare", has_a or has_b, ""),
+        ):
+            if label is None:
+                menu.addSeparator()
+                continue
+            act = menu.addAction(label)
+            act.setEnabled(bool(enabled))
+            if tip:
+                act.setToolTip(tip)
+            act.triggered.connect(self._safe(self._compare_menu_callback, key, view, self))
 
     def _save_view_to_file(self, view):
         try:

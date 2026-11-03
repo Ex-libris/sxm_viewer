@@ -101,6 +101,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer import ch_height as viewer_ch_height
 from .viewer import thumb_menu as viewer_thumb_menu
+from .viewer import export_routes as viewer_export_routes
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
 from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
@@ -1276,6 +1277,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda file_key: self.spectro_compare_controller.open_all_specs_popup(file_key)
         )
         viewer_ch_height.install_canvas_callbacks(self, self.preview_canvas)
+        viewer_export_routes.install_canvas_menu_support(self, self.preview_canvas)
         # R / Shift+R on the main preview turn the image (popups don't get
         # this: orientation is per-file viewer state, not per-canvas).
         self.preview_canvas._rotate_image_callback = lambda turns: self.rotate_images(turns)
@@ -7703,8 +7705,8 @@ QLabel:hover {{
     def on_export_pngs(self, paths=None, out_dir=None):
         return viewer_export.on_export_pngs(self, paths, out_dir)
 
-    def export_to_obsidian(self, note=None, vault=None, paths=None):
-        return viewer_export.export_to_obsidian(self, note, vault, paths)
+    def export_to_obsidian(self, note=None, vault=None, paths=None, **kwargs):
+        return viewer_export.export_to_obsidian(self, note, vault, paths, **kwargs)
 
     def populate_obsidian_menu(self, menu, paths=None):
         return viewer_export.populate_obsidian_menu(self, menu, paths)

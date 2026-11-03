@@ -733,21 +733,32 @@ def _obsidian_caption(viewer, file_key, channel_idx):
     return " · ".join(parts)
 
 
-def export_to_obsidian(viewer, note=None, vault=None, targets=None):
+def export_to_obsidian(viewer, note=None, vault=None, targets=None, *, render=None, parent=None):
     """Render ``targets`` (default: thumbnail selection / previewed image) as
     displayed and append them to an Obsidian note. With no ``note`` a dialog
-    asks for vault/note/options; otherwise the remembered options are used."""
+    asks for vault/note/options; otherwise the remembered options are used.
+
+    ``render(img_dir) -> (results, errors, cancelled)`` replaces the
+    per-target preview rendering (e.g. a pop-up saving its own figure);
+    ``results`` are dicts with ``path``, ``file_key``, ``channel_idx``.
+    Returns ``{"note", "vault"}`` on success, else None."""
     from ...integrations import obsidian
     from ..dialogs.obsidian_export import ObsidianExportDialog, suggested_attachment_setting
 
     title = "Export to Obsidian"
-    targets = export_targets(viewer, targets)
-    if not targets:
-        QtWidgets.QMessageBox.information(viewer, title, "Select one or more images first.")
-        return
+    parent = parent or viewer
+    if render is None:
+        targets = export_targets(viewer, targets)
+        if not targets:
+            QtWidgets.QMessageBox.information(parent, title, "Select one or more images first.")
+            return None
+        n_images = len(targets)
+        render = lambda img_dir: render_targets_as_displayed(viewer, targets, img_dir, title=title)
+    else:
+        n_images = 1
     settings = _obsidian_settings(viewer)
     if note is None:
-        dlg = ObsidianExportDialog(viewer, n_images=len(targets), settings=settings)
+        dlg = ObsidianExportDialog(parent, n_images=n_images, settings=settings)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
         try:
@@ -778,7 +789,7 @@ def export_to_obsidian(viewer, note=None, vault=None, targets=None):
             QtWidgets.QMessageBox.warning(viewer, title, f"The {what} must be inside the vault.")
             return
     try:
-        results, errors, cancelled = render_targets_as_displayed(viewer, targets, img_dir, title=title)
+        results, errors, cancelled = render(img_dir)
     except Exception as exc:
         QtWidgets.QMessageBox.warning(viewer, title, f"Rendering failed: {exc}")
         return

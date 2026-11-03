@@ -188,17 +188,29 @@ re-grep the method name to confirm before relying on an exact line.
 - Right-click/context menus (not the toolbar) are separate methods:
   `_on_thumb_context_menu`, `_on_spectro_thumb_context_menu`,
   `_populate_marker_style_menu` in `main_window.py`.
-- The thumbnail right-click menu is built in `gui/viewer/thumb_menu.py`
-  (`_on_thumb_context_menu` is a shim): greyed section headers (QLabel
-  `QWidgetAction`s - `addSection` text isn't drawn by the native Windows
-  style), Display / Export / Analyse & create / Organise, max one submenu
-  level, items hidden when they don't apply. Exports are a route registry
-  (`ROUTES`, `run_route`): user-pinned routes show inline (config
-  `thumb_menu.pinned`, "More export > Customise pinned..."), and
-  "Again: ..." replays `thumb_menu.last_export` (folder/note) without a
-  dialog - export functions take `paths`/`out_dir` and return the
-  destination on success for this. New per-selection actions go here, in
-  the right section, not as new top-level items.
+- **Image right-click menus share one mechanism, `gui/menu_kit.py`**
+  (viewer-agnostic): `section()` greyed headers (QLabel `QWidgetAction`s -
+  `addSection` text isn't drawn by the native Windows style),
+  `checkable`/`choice_group`, and the export section (`Route` registry +
+  `add_export_section`: "Again: ..." / user-pinned routes / "More export"
+  with "Customise pinned..."). `MenuPrefs` stores pinned routes and the last
+  export per *scope* in config `context_menus.<scope>`. Rules for every
+  such menu: sections Display / (Tools) / Export / Analyse & create /
+  Organise, at most one submenu level, hide items that don't apply.
+  - Thumbnails: `gui/viewer/thumb_menu.py` (`_on_thumb_context_menu` is a
+    shim), routes in `gui/viewer/export_routes.py:thumbnail_routes`, scope
+    `thumbnails` (migrates the old `thumb_menu` config key once).
+  - Main preview + every pop-up: `MultiPreviewCanvas._show_context_menu`
+    (one builder for both), built-in routes in `_view_export_routes`;
+    the owner calls `export_routes.install_canvas_menu_support` (main
+    window init + `preview_popup.spawn_preview_popup`) to pass the scope
+    `view` prefs and viewer-backed routes (Obsidian). Other canvases (e.g.
+    the matrix-fit dialog) fall back to in-memory prefs.
+  - Route `run(ctx, dest)` returns a destination record (`{"out_dir"}` /
+    `{"note","vault"}`) to make "Again" possible; export functions take
+    `paths`/`out_dir` and return the destination on success for this.
+  New per-image actions go into the right section of these builders, not
+  as new top-level items.
 - The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
   and its tabbed side panel are built independently of the main window's.
 - Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
