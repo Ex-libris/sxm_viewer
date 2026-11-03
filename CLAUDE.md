@@ -973,9 +973,26 @@ figures. Three layers, same split as the folder report:
   Zero) and `data_signature()` is what the window polls for the live link.
   Per-figure edits live in `viewer.figure_states` (config key
   `figure_states`, capped, and session key `figure_states`).
+- Naming: `spec["columns"]` are always the *frames* and `spec["rows"]` the
+  *channels*; `style["transpose"]` only changes where `figure_layout` puts
+  them (frames down / channels across). Channels are identified by their
+  **caption** (`row["label"]`), so state stores `rows` (ordered captions,
+  None = defaults from `pick_image_channels`), `row_cmaps` and `clims`
+  keyed by `clim_key(label[, frame_key])` (per-channel, or per panel in
+  "each image its own range" mode). Unknown vendor captions fall back to
+  the unit for the class (`gui/controllers/figures.py` `_CLASS_OF_UNIT`: A → current, Hz → freq,
+  m → z); Anfatec current is `It_to_PC`/`It_ext` (`channel_preference`
+  picks It_to_PC, forward before backward).
+- All format options are one `style` dict (`STYLE_DEFAULTS` /
+  `resolve_style`); the last edited style is the default for new figures
+  (config `figure_style_default`). Add an option there + in `render` + in
+  the window's `_FormatPanel` and matching right-click menu.
 - `FigureWindow` is pure UI against that source; all edits are direct
-  manipulation on the figure (header = reference, hover × = drop, row label
-  = cycle channel, colourbar drag = contrast) with its own undo stack.
+  manipulation on the figure (header = reference, hover × = drop, channel
+  label = switch/move/remove menu, "+ channel" handle, colourbar drag =
+  contrast / click = Min/Max popover, right-click = element options) or the
+  Format panel, with its own undo stack. Colourbar end labels are aligned
+  inside their bar (`set_colorbar_range`) so stacked bars never overlap.
 - Arrays drawn with `origin="upper"`: the preview's two paths
   (`flipud`+lower / as-is+upper) both put row 0 at the top. The publication
   canvas's own `flipud` is for its QImage painter, not a matplotlib rule.

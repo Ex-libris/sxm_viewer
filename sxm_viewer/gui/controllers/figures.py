@@ -28,6 +28,10 @@ from ..viewer import ch_height as viewer_ch_height
 from ..viewer import thumbnail_ui as viewer_thumb_ui
 
 _STATE_LIMIT = 200          # remembered figure states kept in the config
+_CLASS_OF_UNIT = {"A": "current", "mA": "current", "uA": "current", "µA": "current",
+                  "nA": "current", "pA": "current", "fA": "current",
+                  "Hz": "freq", "kHz": "freq", "mHz": "freq",
+                  "m": "z", "nm": "z", "pm": "z", "Å": "z"}
 _LENGTH_TO_NM = {"nm": 1.0, "Å": 0.1, "A": 0.1, "ang": 0.1, "pm": 1e-3,
                  "um": 1e3, "µm": 1e3, "m": 1e9}
 
@@ -142,6 +146,10 @@ class FigureController:
             for idx, fd in enumerate(fds):
                 label = str(fd.get("Caption") or fd.get("FileName") or f"Channel {idx}")
                 cls = classify_channel(f"{fd.get('Caption', '')} {fd.get('FileName', '')}")
+                if cls == "other":
+                    # Vendor naming we don't know yet: the unit still says
+                    # what the channel is (A = current, Hz = Δf, m = height).
+                    cls = _CLASS_OF_UNIT.get(str(fd.get("PhysUnit") or "").strip(), "other")
                 channels.append({"idx": idx, "label": label, "cls": cls})
             tag = img.get("tag")
             try:
@@ -264,6 +272,32 @@ class FigureController:
         win.destroyed.connect(lambda *_a, f=fid: self._windows.pop(f, None))
         win.show()
         return win
+
+    # The user's format (letters, scale bar, colour bars, layout ...) is
+    # remembered for new figures: the last style edited anywhere.
+    def default_style(self):
+        style = self.viewer.config.get("figure_style_default")
+        return dict(style) if isinstance(style, dict) else {}
+
+    def set_default_style(self, style):
+        self.viewer.config["figure_style_default"] = dict(style or {})
+        try:
+            save_config(self.viewer.config)
+        except Exception:
+            pass
+
+    def featured_cmaps(self):
+        try:
+            from ...cmap_registry import featured_cmap_names
+            names = list(featured_cmap_names("preview"))
+        except Exception:
+            names = []
+        base = ["Blues_r", "gray", "afmhot", "viridis", "inferno", "RdBu_r", "bwr",
+                "cividis", "magma", "twilight"]
+        for n in base:
+            if n not in names:
+                names.append(n)
+        return names[:24]
 
     def forget_window(self, fid, win):
         if self._windows.get(fid) is win:

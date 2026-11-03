@@ -25,19 +25,35 @@ right-click → *Height-series figure*) and a figure opens with no dialog:
   and tagged, dead frames dimmed as *flat signal* - they never wreck the
   shared range;
 - long series wrap into balanced blocks of at most 8 columns;
+- **any simultaneously acquired channel**: click a channel label to switch
+  it (fwd/bwd, It_to_PC/It_ext, Δf/lock-in, ...), move or remove it, or
+  add another one ("+ channel", Format → Channels); a channel with no
+  contrast (Z of CH frames) shows its level instead of a blank block;
+- **Transpose**: frames down and channels across, or the other way round;
+- **Format** panel (and right-click on any element): panel letters (a / A /
+  (a) / a) / a., one per frame or every panel, corner, colour, size, bold),
+  scale bar (one panel / every panel / off, automatic or fixed length,
+  corner, colour, label), colour bars (one range per channel or each image
+  its own range with its own colourbar, 2/3/5 ticks, label), headers (Δz /
+  absolute z / file name, plus the file name line), per-channel colormap,
+  panel width and text size. Your format is remembered for new figures;
+- colour ranges: drag a colourbar (either end, Shift = both), **click it to
+  type exact Min/Max**, double-click for automatic - per channel, or per
+  image when each image has its own range;
 - edits happen on the figure: click a Δz header to make it the reference,
-  hover a header and click × to drop a frame, click the row label to cycle
-  the channel (fwd/bwd, Δf/lock-in), drag a colourbar for contrast
-  (double-click resets), double-click a panel to show it in the viewer,
-  Ctrl+Z/Ctrl+Y;
+  hover a header and click × to drop a frame, double-click a panel to show
+  it in the viewer, Ctrl+Z/Ctrl+Y;
 - **Copy** (PNG + SVG on the clipboard), **PowerPoint** (editable vector
   shapes on a new slide) and **Save PDF/SVG/PNG** all come from the same
   renderer as the window;
 - live: changing a filter, Zero, turn or display adjustment of a member
   updates the figure; edits are remembered per series (config + sessions).
 Multi-selections that aren't a series get the same window via *Figure from
-selection*. Fix: report/figure bias values honor the header unit (Anfatec
-`Bias: -2000` with `BiasPhysUnit: mV` used to read as -2000 V).
+selection*. Fixes (also in the folder report): bias values honor the header
+unit (Anfatec `Bias: -2000` with `BiasPhysUnit: mV` used to read as
+-2000 V); Anfatec's tunnel current `It_to_PC` / `It_ext` is now recognised
+as current (it was "other", so constant-height pages showed Δf only), with
+`It_to_PC` preferred; `QPlusAmpl` / `Zeit` classify as amplitude / time.
 
 ### 2026-07-18 (folder-report data-sets & colormap gallery fixes)
 
