@@ -165,7 +165,7 @@ def create_main_toolbar(viewer):
     toolbar.addWidget(viewer.toolbar_obsidian_btn)
 
     viewer.toolbar_export_xyz_act = toolbar.addAction(_icon("document-save"), "Export XYZ")
-    viewer.toolbar_export_xyz_act.triggered.connect(viewer.on_export_xyz_files)
+    viewer.toolbar_export_xyz_act.triggered.connect(lambda _=False: viewer.on_export_xyz_files())
 
     viewer.toolbar_report_act = toolbar.addAction(_icon("x-office-document"), "Report")
     viewer.toolbar_report_act.setToolTip(

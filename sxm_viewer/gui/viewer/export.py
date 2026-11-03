@@ -259,23 +259,24 @@ def render_targets_as_displayed(viewer, targets, out_dir, *, dpi=300, title="Exp
     return results, errors, cancelled
 
 
-def on_export_pngs(viewer, paths=None):
+def on_export_pngs(viewer, paths=None, out_dir=None):
     """Export ``paths`` / the selected thumbnails (or the previewed image) as
     PNGs, rendered as displayed in the main preview (display preset included)."""
     targets = export_targets(viewer, paths)
     if not targets:
         QtWidgets.QMessageBox.information(viewer, "Export", "Select one or more images first.")
         return
-    default_dir = str(getattr(viewer, 'last_export_dir', None) or getattr(viewer, 'last_dir', Path(targets[0]).parent))
-    out_dir = QtWidgets.QFileDialog.getExistingDirectory(viewer, "Select export folder", default_dir)
-    if not out_dir:
-        return
+    if not out_dir or not Path(out_dir).is_dir():
+        default_dir = str(getattr(viewer, 'last_export_dir', None) or getattr(viewer, 'last_dir', Path(targets[0]).parent))
+        out_dir = QtWidgets.QFileDialog.getExistingDirectory(viewer, "Select export folder", default_dir)
+        if not out_dir:
+            return None
     viewer.last_export_dir = out_dir
     try:
         results, errors, cancelled = render_targets_as_displayed(viewer, targets, out_dir, title="Export PNGs")
     except Exception as exc:
         QtWidgets.QMessageBox.warning(viewer, "Export", f"Export failed: {exc}")
-        return
+        return None
     preset = getattr(getattr(viewer, "preview_canvas", None), "_active_display_preset", None)
     lines = [f"Exported {len(results)} of {len(targets)} PNG(s) to\n{out_dir}"]
     if preset:
@@ -285,10 +286,11 @@ def on_export_pngs(viewer, paths=None):
     if errors:
         lines.append("Errors:\n" + "\n".join(errors[:8]))
     QtWidgets.QMessageBox.information(viewer, "Export", "\n".join(lines))
+    return str(out_dir) if results else None
 
 
-def on_export_xyz_files(viewer):
-    targets = list(getattr(viewer, 'thumb_multi_select', set()))
+def on_export_xyz_files(viewer, paths=None, out_dir=None):
+    targets = export_targets(viewer, paths) if paths else list(getattr(viewer, 'thumb_multi_select', set()))
     if not targets:
         if getattr(viewer, 'selected_file_for_thumbs', None):
             targets = [viewer.selected_file_for_thumbs]
@@ -297,9 +299,10 @@ def on_export_xyz_files(viewer):
     if not targets:
         QtWidgets.QMessageBox.information(viewer, "Export", "No thumbnails selected.")
         return
-    out_dir = QtWidgets.QFileDialog.getExistingDirectory(viewer, "Select folder for XYZ export", str(viewer.last_dir))
-    if not out_dir:
-        return
+    if not out_dir or not Path(out_dir).is_dir():
+        out_dir = QtWidgets.QFileDialog.getExistingDirectory(viewer, "Select folder for XYZ export", str(viewer.last_dir))
+        if not out_dir:
+            return None
     out_dir = Path(out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,9 +352,10 @@ def on_export_xyz_files(viewer):
         if len(exported) > 5:
             preview += "\n..."
         QtWidgets.QMessageBox.information(viewer, "Export", f"Exported {len(exported)} XYZ file(s) to {out_dir}:\n{preview}")
+    return str(out_dir) if exported else None
 
-def on_export_wsxm_stp_files(viewer):
-    targets = list(getattr(viewer, 'thumb_multi_select', set()))
+def on_export_wsxm_stp_files(viewer, paths=None, out_dir=None):
+    targets = export_targets(viewer, paths) if paths else list(getattr(viewer, 'thumb_multi_select', set()))
     if not targets:
         focus = getattr(viewer, 'selected_file_for_thumbs', None)
         if focus:
@@ -361,11 +365,12 @@ def on_export_wsxm_stp_files(viewer):
     if not targets:
         QtWidgets.QMessageBox.information(viewer, "Export", "No thumbnails selected.")
         return
-    out_dir = QtWidgets.QFileDialog.getExistingDirectory(
-        viewer, "Select folder for WSxM STP export", str(viewer.last_dir)
-    )
-    if not out_dir:
-        return
+    if not out_dir or not Path(out_dir).is_dir():
+        out_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            viewer, "Select folder for WSxM STP export", str(viewer.last_dir)
+        )
+        if not out_dir:
+            return None
     out_path = Path(out_dir)
     try:
         out_path.mkdir(parents=True, exist_ok=True)
@@ -395,6 +400,7 @@ def on_export_wsxm_stp_files(viewer):
     if errors:
         summary += f"\nErrors ({len(errors)}):\n" + "\n".join(errors[:5])
     QtWidgets.QMessageBox.information(viewer, "Export", summary)
+    return str(out_path) if exported else None
 
 def export_view_as_stp(viewer, view: dict | None):
     if not view:
@@ -804,6 +810,7 @@ def export_to_obsidian(viewer, note=None, vault=None, targets=None):
         msg += "\nErrors:\n" + "\n".join(errors[:8])
     log_status(f"[Obsidian] {msg}")
     QtWidgets.QMessageBox.information(viewer, title, msg)
+    return {"note": str(note_path), "vault": str(vault)}
 
 
 def populate_obsidian_menu(viewer, menu, targets=None):

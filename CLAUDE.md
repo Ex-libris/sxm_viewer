@@ -188,6 +188,17 @@ re-grep the method name to confirm before relying on an exact line.
 - Right-click/context menus (not the toolbar) are separate methods:
   `_on_thumb_context_menu`, `_on_spectro_thumb_context_menu`,
   `_populate_marker_style_menu` in `main_window.py`.
+- The thumbnail right-click menu is built in `gui/viewer/thumb_menu.py`
+  (`_on_thumb_context_menu` is a shim): greyed section headers (QLabel
+  `QWidgetAction`s - `addSection` text isn't drawn by the native Windows
+  style), Display / Export / Analyse & create / Organise, max one submenu
+  level, items hidden when they don't apply. Exports are a route registry
+  (`ROUTES`, `run_route`): user-pinned routes show inline (config
+  `thumb_menu.pinned`, "More export > Customise pinned..."), and
+  "Again: ..." replays `thumb_menu.last_export` (folder/note) without a
+  dialog - export functions take `paths`/`out_dir` and return the
+  destination on success for this. New per-selection actions go here, in
+  the right section, not as new top-level items.
 - The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
   and its tabbed side panel are built independently of the main window's.
 - Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
@@ -855,7 +866,7 @@ pass look like it did nothing:
   flipped correctly, the partial one silently bailed.
 
 ### Folder reports (PDF)
-"Generate folder report (PDF)..." (thumbnail context menu + toolbar
+"Generate folder report (PDF)..." (toolbar
 "Report" action) renders a multi-page PDF overview of the loaded folder.
 Two-phase design: `ReportController.collect_payload`
 (`gui/controllers/report.py`) snapshots viewer state on the GUI thread —
