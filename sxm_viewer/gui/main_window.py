@@ -101,6 +101,7 @@ from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer import ch_height as viewer_ch_height
 from .viewer import thumb_menu as viewer_thumb_menu
+from .viewer import spectro_menu as viewer_spectro_menu
 from .viewer import export_routes as viewer_export_routes
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
@@ -9403,62 +9404,7 @@ QLabel:hover {{
         return viewer_thumb_menu.show_thumb_context_menu(self, label_widget, pos)
 
     def _on_spectro_thumb_context_menu(self, label_widget, pos):
-        spec = label_widget.property("spectro_entry")
-        if not spec:
-            return
-        key = str(spec.get("path", "") or "")
-        selected = sorted(set(getattr(self, "spectro_thumb_multi_select", set()) or []))
-        targets = selected if selected else [key]
-        menu = QtWidgets.QMenu(self)
-        open_act = QtWidgets.QAction("Open spectroscopy", menu)
-        open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
-        menu.addAction(open_act)
-        site_act = QtWidgets.QAction("Open position summary", menu)
-        site_act.triggered.connect(lambda: self._open_spectro_summary_for_site(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or ""), quiet=True))
-        menu.addAction(site_act)
-        compare_site_act = QtWidgets.QAction("Compare spectra at this position", menu)
-        compare_site_act.triggered.connect(lambda: self.spectro_compare_controller.open_site_popup(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or "")))
-        menu.addAction(compare_site_act)
-        details_act = QtWidgets.QAction("Show metadata in Details", menu)
-        details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
-        menu.addAction(details_act)
-        current_image_key = self._current_spectro_assignment_target_image_key()
-        if current_image_key:
-            assign_act = QtWidgets.QAction(f"Assign to current image ({Path(current_image_key).name})", menu)
-            assign_act.triggered.connect(lambda: self._apply_spectro_assignment_override([spec], current_image_key))
-            menu.addAction(assign_act)
-        clear_assign_act = QtWidgets.QAction("Clear manual assignment", menu)
-        clear_assign_act.setEnabled(bool(str(spec.get("assignment_override_image_key") or "").strip()))
-        clear_assign_act.triggered.connect(lambda: self._clear_spectro_assignment_override([spec]))
-        menu.addAction(clear_assign_act)
-        add_source_file_menu(menu, spec.get("path"), self)
-
-        channels = list((spec.get("channels") or {}).keys())
-        common = set(channels)
-        if selected:
-            for path in selected:
-                entry = None
-                for s in getattr(self, "spectros", []) or []:
-                    if str(s.get("path", "") or "") == path:
-                        entry = s
-                        break
-                if entry is None:
-                    continue
-                common &= set((entry.get("channels") or {}).keys())
-        channel_menu = menu.addMenu("Miniature channel")
-        channel_list = sorted(common) if common else channels
-        if not channel_list:
-            channel_list = channels
-        if channel_list:
-            current = self.spectro_thumb_channel_by_path.get(key) or self.spectro_miniature_default_channel or channel_list[0]
-            for ch_name in channel_list:
-                act = QtWidgets.QAction(ch_name, channel_menu)
-                act.setCheckable(True)
-                act.setChecked(ch_name == current)
-                act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
-                channel_menu.addAction(act)
-
-        menu.exec_(label_widget.mapToGlobal(pos))
+        return viewer_spectro_menu.show_spectro_thumb_context_menu(self, label_widget, pos)
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
         return self.filter_controller._apply_filter_to_paths(paths, filter_key=filter_key, pipeline=pipeline, label=label, focus_path=focus_path)

@@ -206,6 +206,13 @@ re-grep the method name to confirm before relying on an exact line.
     window init + `preview_popup.spawn_preview_popup`) to pass the scope
     `view` prefs and viewer-backed routes (Obsidian). Other canvases (e.g.
     the matrix-fit dialog) fall back to in-memory prefs.
+  - Spectroscopy thumbnails: `gui/viewer/spectro_menu.py`
+    (`_on_spectro_thumb_context_menu` is a shim), scope `spectra`, ctx
+    `{"specs", "channel"}`. Exports render the plot off-screen from the spec
+    data (miniature channel + axis, SI-prefixed y unit via
+    `_auto_display_unit`; several selected spectra overlaid) so no Spectrum
+    window is needed; specs are hydrated lazily inside each route, not at
+    menu open. Obsidian results may carry their own `caption`.
   - Route `run(ctx, dest)` returns a destination record (`{"out_dir"}` /
     `{"note","vault"}`) to make "Again" possible; export functions take
     `paths`/`out_dir` and return the destination on success for this.

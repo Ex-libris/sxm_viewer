@@ -806,7 +806,7 @@ def export_to_obsidian(viewer, note=None, vault=None, targets=None, *, render=No
     for res in results:
         lines.append(obsidian.embed_line(vault, note_path, res["path"], width=values.get("width") or 0))
         if values.get("captions"):
-            lines.append(_obsidian_caption(viewer, res["file_key"], res["channel_idx"]))
+            lines.append(res.get("caption") or _obsidian_caption(viewer, res["file_key"], res["channel_idx"]))
         lines.append("")
     try:
         obsidian.append_to_note(note_path, "\n".join(lines))
