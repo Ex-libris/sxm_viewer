@@ -38,6 +38,13 @@ First public release archived on Zenodo.
   optional transparent background.
 - Fix: images quarter-turned in the viewer had their width/height swapped
   twice in figures.
+- **Format panel** opens with the figure, in icon tabs (Page & layout,
+  Channels, Titles, Colour, Panel letters, Scale bar, Zoom outlines) - no
+  scrolling; closing it is remembered. Figures always open fitted to the
+  window (actual size is a per-window view).
+- **Titles**: frame headers can be *None*; channel names beside the rows can
+  be hidden (the layout reclaims the space); the Δz = 0 reference is bold
+  only if you ask for it.
 
 ### 2026-11-03 (bias-series figures)
 

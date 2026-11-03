@@ -79,6 +79,8 @@ STYLE_DEFAULTS = {
     "scale_font": None,        # length label size (pt); None = text size
     "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
     "header_name": False,      # file name as an extra header line
+    "ref_bold": False,         # bold header for the Δz = 0 reference frame
+    "channel_labels": True,    # channel names (I, Δf ...) beside the rows
     "font": 7.0,
     "panel_w": 1.55,           # inches (solved from the page width if set)
     "page": "free",            # free | 1col | 15col | 2col | custom
@@ -538,7 +540,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         z = _finite(m.get("z_nm"))
         b = _finite(m.get("bias_v"))
         dz_pm = (z - ref_z) * 1e3 if (z is not None and ref_z is not None) else None
-        if header == "size" and size_text(m):
+        if header == "none":
+            text = ""
+        elif header == "size" and size_text(m):
             text = size_text(m)
         elif header == "zabs" and z is not None:
             text = f"z = {z:.3f} nm"
@@ -549,13 +553,15 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         else:
             text = _short(name)
         subs = []
-        if header_name and text != _short(name):
+        if header == "none":
+            pass
+        elif header_name and text != _short(name):
             subs.append(_short(name, 28))
-        if bias_varies and header != "bias":
+        if header != "none" and bias_varies and header != "bias":
             subs.append(bias_text(b))
-        if setpoint_varies:
+        if header != "none" and setpoint_varies:
             subs.append(si_text(m.get("setpoint"), m.get("setpoint_unit") or ""))
-        if header == "bias" and has_z and _varies([_finite(c.get("z_nm")) for c in cols_in], 0.0, 5e-3):
+        if header != "none" and header == "bias" and has_z and _varies([_finite(c.get("z_nm")) for c in cols_in], 0.0, 5e-3):
             # A bias series whose tip height also moved: say by how much.
             subs.append(dz_text(z, ref_z))
         col = {
@@ -962,8 +968,18 @@ def _layout(spec, panels, st):
 
 def _header_height(spec, st):
     line = float(st["font"]) / 72.0 * 1.45
+    if not any(c.get("header") or c.get("subheader") for c in spec["columns"]):
+        return 0.04   # headers off: panels start at the top
     has_sub = any(c.get("subheader") for c in spec["columns"])
     return 0.12 + line * (2 if has_sub else 1)
+
+
+def _left_band(spec, st):
+    """Width of the channel-name band left of the rows (0 when hidden)."""
+    if not st.get("channel_labels", True):
+        return 0.06
+    longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
+    return 0.42 if longest <= 4 else 0.30
 
 
 def _layout_grid(spec, panels, st):
@@ -982,8 +998,7 @@ def _layout_grid(spec, panels, st):
         bar, extra = cbar_dims(st, "v")
         slot = pw + ((0.05 + bar + extra) if per_img_cb else 0.0)
         top = _header_height(spec, st)
-        longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
-        left = 0.42 if longest <= 4 else 0.30
+        left = _left_band(spec, st)
         right = (0.06 + bar + extra + 0.06) if shared_cb else 0.12
         block_h = top + n_ch * ph + (n_ch - 1) * _GAP
         fig_w = left + per * slot + (per - 1) * _GAP + right
@@ -1010,9 +1025,10 @@ def _layout_grid(spec, panels, st):
         bar_v, extra_v = cbar_dims(st, "v")
         bar_h, extra_h = cbar_dims(st, "h")
         slot = pw + ((0.05 + bar_v + extra_v) if per_img_cb else 0.0)
-        top = 0.10 + font / 72.0 * 1.45
-        left = 0.20 + max(0.75, font / 72.0 * 0.62 * max(
-            (len(c.get("header") or "") for c in spec["columns"]), default=8))
+        top = (0.10 + font / 72.0 * 1.45) if st.get("channel_labels", True) else 0.04
+        longest_h = max((max(len(c.get("header") or ""), len(c.get("subheader") or ""))
+                         for c in spec["columns"]), default=0)
+        left = (0.20 + max(0.75, font / 72.0 * 0.62 * longest_h)) if longest_h else 0.06
         bottom = (0.06 + bar_h + extra_h + 0.04) if shared_cb else _BOTTOM
         block_w = left + n_ch * slot + (n_ch - 1) * _GAP + 0.12
         fig_w = len(blocks) * block_w + (len(blocks) - 1) * _BLOCK_GAP
@@ -1071,8 +1087,7 @@ def _layout_zoom(spec, panels, st):
         band_h = top + 2.0 * pw * ov_aspect
     ov_h = band_h - top
     ov_w = ov_h / ov_aspect
-    longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
-    left = 0.42 if longest <= 4 else 0.30
+    left = _left_band(spec, st) if n_ch > 1 else 0.06
     x_z = left + ov_w + pimg + 3 * _GAP
     zoom_w = z_cols * (pw + pimg) + max(0, z_cols - 1) * _GAP
     x_end = x_z + zoom_w if n_z else left + ov_w + pimg
@@ -1499,7 +1514,9 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     seen_headers = set()
     for f, (x0, y0, x1, y1) in layout["frame_labels"]:
         col = columns[f]
-        weight = "bold" if col.get("is_ref") else "normal"
+        weight = "bold" if (col.get("is_ref") and st.get("ref_bold")) else "normal"
+        if not col.get("header") and not col.get("subheader"):
+            continue
         if not layout["transpose"]:
             xc = 0.5 * (x0 + x1) / fig_w
             line = font / 72.0 * 1.45
@@ -1520,8 +1537,8 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                          va="center", fontsize=pt(font - 1), color=text_color, gid=f"header_{f}_sub")
         seen_headers.add(f)
     for r, (x0, y0, x1, y1) in layout["channel_labels"]:
-        if n_rows < 2 and is_zoom:
-            continue  # one channel: the colourbar / caption says what it is
+        if (n_rows < 2 and is_zoom) or not st.get("channel_labels", True):
+            continue  # hidden (or one zoom band: the colourbar says what it is)
         row = spec["rows"][r]
         text = row["display"]
         if not layout["transpose"]:

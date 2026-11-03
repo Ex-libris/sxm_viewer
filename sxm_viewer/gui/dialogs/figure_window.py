@@ -40,7 +40,8 @@ _CLICK_SLOP_PX = 3
 _LETTER_STYLE_NAMES = {"a": "a, b, c", "A": "A, B, C", "(a)": "(a), (b)", "a)": "a), b)", "a.": "a., b."}
 _CORNER_NAMES = {"tl": "Top left", "tr": "Top right", "bl": "Bottom left", "br": "Bottom right"}
 _HEADER_NAMES = {"auto": "Automatic (Δz / bias / size)", "dz": "Δz to the reference",
-                 "zabs": "Absolute z", "bias": "Bias", "size": "Frame size", "name": "File name"}
+                 "zabs": "Absolute z", "bias": "Bias", "size": "Frame size", "name": "File name",
+                 "none": "None (no header)"}
 _MODE_TITLES = {"height": "Height series", "bias": "Bias series", "zoom": "Overview + zooms",
                 "selection": "Figure"}
 _CBAR_STYLES = {"outside": "Values outside (ticks)", "inside": "Values inside the bar",
@@ -292,39 +293,119 @@ class _FigureView(QtWidgets.QWidget):
         self.resized.emit()
 
 
-class _FormatPanel(QtWidgets.QScrollArea):
-    """Every figure option in one place (mirrors the right-click menus).
+def _tab_icon(kind, color):
+    """Small line-art icon for a Format tab (drawn, so it follows the theme)."""
+    size = 22
+    pix = QtGui.QPixmap(size, size)
+    pix.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pix)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(color, 1.5)
+    p.setPen(pen)
+    p.setBrush(QtCore.Qt.NoBrush)
+    if kind == "page":
+        p.drawRect(QtCore.QRectF(5, 3, 12, 15))
+        p.drawLine(QtCore.QPointF(3, 20), QtCore.QPointF(19, 20))
+        p.drawLine(QtCore.QPointF(3, 18.5), QtCore.QPointF(3, 21.5))
+        p.drawLine(QtCore.QPointF(19, 18.5), QtCore.QPointF(19, 21.5))
+        for x in (7.5, 11.0, 14.5):
+            p.drawRect(QtCore.QRectF(x - 1.2, 6, 2.4, 4))
+    elif kind == "channels":
+        for i, y in enumerate((4, 9.5, 15)):
+            p.setBrush(QtGui.QColor(color.red(), color.green(), color.blue(), 70 + 60 * i))
+            p.drawRoundedRect(QtCore.QRectF(3, y, 16, 4), 1.5, 1.5)
+    elif kind == "titles":
+        f = p.font()
+        f.setBold(True)
+        f.setPixelSize(15)
+        p.setFont(f)
+        p.drawText(QtCore.QRectF(0, 0, size, 17), QtCore.Qt.AlignCenter, "T")
+        p.drawLine(QtCore.QPointF(4, 19), QtCore.QPointF(18, 19))
+    elif kind == "colour":
+        grad = QtGui.QLinearGradient(0, 19, 0, 3)
+        for t, c in ((0.0, "#30123b"), (0.35, "#28bceb"), (0.65, "#a4fc3b"), (1.0, "#fb8022")):
+            grad.setColorAt(t, QtGui.QColor(c))
+        p.setBrush(QtGui.QBrush(grad))
+        p.drawRoundedRect(QtCore.QRectF(7, 3, 8, 16), 2, 2)
+    elif kind == "letters":
+        p.drawRoundedRect(QtCore.QRectF(3, 3, 16, 16), 3, 3)
+        f = p.font()
+        f.setBold(True)
+        f.setPixelSize(12)
+        p.setFont(f)
+        p.drawText(QtCore.QRectF(3, 2, 16, 16), QtCore.Qt.AlignCenter, "a")
+    elif kind == "scale":
+        p.setBrush(color)
+        p.drawRect(QtCore.QRectF(3, 13, 16, 3))
+        p.setBrush(QtCore.Qt.NoBrush)
+        f = p.font()
+        f.setPixelSize(8)
+        p.setFont(f)
+        p.drawText(QtCore.QRectF(0, 2, size, 10), QtCore.Qt.AlignCenter, "nm")
+    elif kind == "zoom":
+        p.drawRect(QtCore.QRectF(3, 3, 16, 16))
+        p.setPen(QtGui.QPen(QtGui.QColor("#ff9f1c"), 1.6))
+        p.drawRect(QtCore.QRectF(10, 5, 7, 7))
+    p.end()
+    return QtGui.QIcon(pix)
+
+
+class _FormatPanel(QtWidgets.QWidget):
+    """Every figure option, in icon tabs (mirrors the right-click menus).
     Emits ``changed(dict)`` with the style/state keys to update."""
 
     changed = QtCore.pyqtSignal(dict)
 
+    TABS = (
+        ("page", "Page & layout", "Journal width, actual size, arrangement"),
+        ("channels", "Channels", "Which channels are shown, in which order"),
+        ("titles", "Titles", "Frame headers and channel names"),
+        ("colour", "Colour", "Ranges and colour bars"),
+        ("letters", "Panel letters", "a, b, c ... - style and placement"),
+        ("scale", "Scale bar", "Where, how long, label"),
+        ("zoom", "Zoom outlines", "Boxes of the zooms on the overview"),
+    )
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.setMinimumWidth(270)
-        self.setMaximumWidth(320)
-        body = QtWidgets.QWidget()
-        self.form = QtWidgets.QVBoxLayout(body)
-        self.form.setContentsMargins(6, 0, 6, 6)
-        self.form.setSpacing(4)
-        self.setWidget(body)
+        self.setMinimumWidth(290)
+        self.setMaximumWidth(340)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        self.tabs = QtWidgets.QTabWidget(self)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setIconSize(QtCore.QSize(22, 22))
+        self.tabs.setUsesScrollButtons(False)
+        outer.addWidget(self.tabs, 1)
         self._syncing = False
+        self._pages = {}
+        icon_color = self.palette().color(QtGui.QPalette.WindowText)
         w = {}
 
-        def section(title):
-            lab = QtWidgets.QLabel(title)
-            f = lab.font()
-            f.setBold(True)
-            lab.setFont(f)
-            lab.setContentsMargins(0, 8, 0, 0)
-            self.form.addWidget(lab)
+        def page(kind):
+            title, blurb = next((t, b) for k, t, b in self.TABS if k == kind)
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            body = QtWidgets.QWidget()
+            col = QtWidgets.QVBoxLayout(body)
+            col.setContentsMargins(8, 6, 8, 6)
+            col.setSpacing(6)
+            head = QtWidgets.QLabel(f"<b>{title}</b><br><span style='color:palette(mid)'>{blurb}</span>")
+            head.setWordWrap(True)
+            col.addWidget(head)
             grid = QtWidgets.QFormLayout()
-            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setContentsMargins(0, 4, 0, 0)
             grid.setLabelAlignment(QtCore.Qt.AlignLeft)
             grid.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
-            self.form.addLayout(grid)
+            col.addLayout(grid)
+            col.addStretch(1)
+            scroll.setWidget(body)
+            idx = self.tabs.addTab(scroll, _tab_icon(kind, icon_color), "")
+            self.tabs.setTabToolTip(idx, f"{title} - {blurb}")
+            self._pages[kind] = idx
             return grid
 
         def combo(items):
@@ -342,21 +423,19 @@ class _FormatPanel(QtWidgets.QScrollArea):
             s.setSuffix(suffix)
             return s
 
-        g = section("Page")
+        # -- Page & layout
+        g = page("page")
         w["page"] = combo(hs.PAGE_NAMES)
-        w["page"].setToolTip("Set the figure to a journal column width: panels shrink or grow to fit, "
-                             "text stays at its point size - what you see is what prints")
-        g.addRow(w["page"])
+        w["page"].setToolTip("Journal column width: sets the figure width and every text size")
+        g.addRow("Page", w["page"])
         w["page_mm"] = spin(30.0, 400.0, 1.0, " mm")
         g.addRow("Custom width", w["page_mm"])
         w["_actual"] = QtWidgets.QCheckBox("Show at actual size (100 %)")
         w["_actual"].setToolTip("Draw the figure at its real printed size on this screen")
         g.addRow(w["_actual"])
-
-        g = section("Layout")
         w["transpose"] = combo({False: "Frames across, channels down",
                                 True: "Frames down, channels across"})
-        g.addRow(w["transpose"])
+        g.addRow("Arrange", w["transpose"])
         w["reverse"] = QtWidgets.QCheckBox("Reverse the frame order")
         g.addRow(w["reverse"])
         w["rotate_tall"] = combo(_ROTATE_TALL)
@@ -366,42 +445,52 @@ class _FormatPanel(QtWidgets.QScrollArea):
         w["panel_w"] = spin(0.6, 4.0, 0.1, " in")
         g.addRow("Panel width", w["panel_w"])
         w["font"] = spin(5.0, 14.0, 0.5, " pt")
+        w["font"].setToolTip("Text size (Ctrl+wheel on the figure)")
         g.addRow("Text size", w["font"])
 
-        g = section("Channels")
+        # -- Channels
+        g = page("channels")
         w["channels"] = QtWidgets.QListWidget()
         w["channels"].setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
-        w["channels"].setMaximumHeight(150)
+        w["channels"].setMinimumHeight(220)
         w["channels"].setToolTip("Tick the channels to show; drag to reorder")
         g.addRow(w["channels"])
 
-        g = section("Frame headers")
+        # -- Titles
+        g = page("titles")
         w["header"] = combo(_HEADER_NAMES)
-        g.addRow(w["header"])
+        g.addRow("Frame header", w["header"])
         w["header_name"] = QtWidgets.QCheckBox("Add the file name")
         g.addRow(w["header_name"])
+        w["ref_bold"] = QtWidgets.QCheckBox("Bold the Δz = 0 reference")
+        g.addRow(w["ref_bold"])
+        w["channel_labels"] = QtWidgets.QCheckBox("Channel names beside the rows")
+        w["channel_labels"].setToolTip("I, Δf ... on the left (or above, when frames run down)")
+        g.addRow(w["channel_labels"])
 
-        g = section("Colour")
+        # -- Colour
+        g = page("colour")
         w["range_mode"] = combo({"row": "One range per channel", "image": "Each image its own range"})
-        g.addRow(w["range_mode"])
+        g.addRow("Range", w["range_mode"])
         w["colorbars"] = QtWidgets.QCheckBox("Colour bars")
         g.addRow(w["colorbars"])
-        w["cbar_ticks"] = combo({2: "2 ticks (ends)", 3: "3 ticks", 5: "5 ticks"})
-        g.addRow("Ticks", w["cbar_ticks"])
-        w["cbar_label"] = QtWidgets.QCheckBox("Channel and unit label")
-        g.addRow(w["cbar_label"])
         w["cbar_style"] = combo(_CBAR_STYLES)
         g.addRow("Values", w["cbar_style"])
+        w["cbar_ticks"] = combo({2: "2 ticks (ends)", 3: "3 ticks", 5: "5 ticks"})
+        g.addRow("Ticks", w["cbar_ticks"])
+        w["cbar_label"] = QtWidgets.QCheckBox("Channel and unit")
+        g.addRow(w["cbar_label"])
+        w["cbar_label_pos"] = combo(_CBAR_LABEL_POS)
+        g.addRow("Name", w["cbar_label_pos"])
         w["cbar_text"] = combo(_CBAR_TEXT)
         g.addRow("Vertical bars", w["cbar_text"])
         w["cbar_w"] = spin(0.5, 8.0, 0.25, " mm")
         g.addRow("Bar width", w["cbar_w"])
-        w["cbar_label_pos"] = combo(_CBAR_LABEL_POS)
-        g.addRow("Channel name", w["cbar_label_pos"])
         w["cbar_outline"] = QtWidgets.QCheckBox("Frame around the bar")
         g.addRow(w["cbar_outline"])
 
-        g = section("Panel letters")
+        # -- Panel letters
+        g = page("letters")
         w["letters"] = QtWidgets.QCheckBox("Show letters")
         g.addRow(w["letters"])
         w["letter_style"] = combo(_LETTER_STYLE_NAMES)
@@ -419,7 +508,8 @@ class _FormatPanel(QtWidgets.QScrollArea):
         w["letter_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
         g.addRow(w["letter_outline"])
 
-        g = section("Scale bar")
+        # -- Scale bar
+        g = page("scale")
         w["scale_bar"] = combo(_SCALE_NAMES)
         g.addRow("Show on", w["scale_bar"])
         len_row = QtWidgets.QHBoxLayout()
@@ -429,32 +519,24 @@ class _FormatPanel(QtWidgets.QScrollArea):
         len_row.addWidget(w["scale_auto"])
         len_row.addWidget(w["scale_len_nm"], 1)
         g.addRow("Length", len_row)
-        w["scale_pos"] = combo(_CORNER_NAMES)
-        g.addRow("Corner", w["scale_pos"])
-        w["scale_color"] = combo({"white": "White", "black": "Black"})
-        g.addRow("Colour", w["scale_color"])
         w["scale_label"] = combo(_SCALE_LABELS)
-        g.addRow("Length label", w["scale_label"])
+        g.addRow("Label", w["scale_label"])
         w["scale_font"] = spin(4.5, 16.0, 0.5, " pt")
         w["scale_font"].setSpecialValueText("Text size")
         w["scale_font"].setToolTip("Size of the length label (Ctrl+wheel on a scale bar)")
         g.addRow("Label size", w["scale_font"])
-        w["scale_thick"] = spin(0.5, 8.0, 0.25, " %")
-        w["scale_thick"].setToolTip("Bar thickness as a percentage of the panel height (Ctrl+wheel on the bar)")
+        w["scale_pos"] = combo(_CORNER_NAMES)
+        g.addRow("Corner", w["scale_pos"])
+        w["scale_color"] = combo({"white": "White", "black": "Black"})
+        g.addRow("Colour", w["scale_color"])
+        w["scale_thick"] = spin(0.5, 5.0, 0.25, " %")
+        w["scale_thick"].setToolTip("Bar thickness, % of the panel's shorter side")
         g.addRow("Thickness", w["scale_thick"])
         w["scale_outline"] = QtWidgets.QCheckBox("Outline (contrasting edge)")
         g.addRow(w["scale_outline"])
 
-        self.zoom_title = QtWidgets.QLabel("Zoom outlines")
-        zf = self.zoom_title.font()
-        zf.setBold(True)
-        self.zoom_title.setFont(zf)
-        self.zoom_title.setContentsMargins(0, 8, 0, 0)
-        self.form.addWidget(self.zoom_title)
-        self.zoom_box = QtWidgets.QWidget()
-        g = QtWidgets.QFormLayout(self.zoom_box)
-        g.setContentsMargins(0, 0, 0, 0)
-        self.form.addWidget(self.zoom_box)
+        # -- Zoom outlines (zoom figures only)
+        g = page("zoom")
         w["zoom_color"] = combo(_ZOOM_COLORS)
         g.addRow("Colour", w["zoom_color"])
         w["zoom_lw"] = spin(0.25, 4.0, 0.25, " pt")
@@ -462,10 +544,12 @@ class _FormatPanel(QtWidgets.QScrollArea):
         w["zoom_labels"] = QtWidgets.QCheckBox("Letter next to each outline")
         g.addRow(w["zoom_labels"])
 
-        self.form.addStretch(1)
+        self.title = QtWidgets.QLabel()
+        self.tabs.currentChanged.connect(self._show_title)
         self.reset_btn = QtWidgets.QPushButton("Reset format")
-        self.form.addWidget(self.reset_btn)
+        outer.addWidget(self.reset_btn)
         self.w = w
+        self._show_title(0)
 
         for key, widget in w.items():
             if isinstance(widget, QtWidgets.QComboBox):
@@ -477,13 +561,24 @@ class _FormatPanel(QtWidgets.QScrollArea):
         w["channels"].itemChanged.connect(lambda _i: self._emit("channels"))
         w["channels"].model().rowsMoved.connect(lambda *_a: self._emit("channels"))
 
+    def _show_title(self, idx):
+        # the tab bar is icon-only; the page itself carries the title
+        pass
+
+    def set_mode(self, mode):
+        idx = self._pages.get("zoom")
+        if idx is None:
+            return
+        try:
+            self.tabs.setTabVisible(idx, mode == "zoom")
+        except AttributeError:   # Qt < 5.15
+            self.tabs.setTabEnabled(idx, mode == "zoom")
+        if mode != "zoom" and self.tabs.currentIndex() == idx:
+            self.tabs.setCurrentIndex(0)
+
     # Widget value <-> style value for keys shown in friendlier units.
     _TO_WIDGET = {"scale_thick": lambda v: float(v) * 100.0, "cbar_w": lambda v: float(v) * 25.4}
     _FROM_WIDGET = {"scale_thick": lambda v: float(v) / 100.0, "cbar_w": lambda v: float(v) / 25.4}
-
-    def set_mode(self, mode):
-        for wdg in (self.zoom_title, self.zoom_box):
-            wdg.setVisible(mode == "zoom")
 
     def _emit(self, key):
         if self._syncing:
@@ -591,7 +686,8 @@ class FigureWindow(QtWidgets.QWidget):
         self.root_key = str(root_key) if root_key else None
         self._keys = [str(k) for k in keys]
         self._last_wheel = 0.0
-        self._actual = bool(source.export_settings().get("view_actual", False))
+        # Always open fitted to the window; "actual size" is a per-window view.
+        self._actual = False
         self._excluded = list(excluded or [])
         self._aborted = []          # [{key, frac}] frames whose scan stopped early
         self.state = self._initial_state(source.get_state(fid))
@@ -607,7 +703,7 @@ class FigureWindow(QtWidgets.QWidget):
 
         self._build_ui()
         self._init_shortcuts()
-        self.resize(1200, 560)
+        self.resize(1480, 640)
         self._render_timer = QtCore.QTimer(self, singleShot=True, interval=90)
         self._render_timer.timeout.connect(self._render_screen)
         self._drag_timer = QtCore.QTimer(self, singleShot=True, interval=_DRAG_THROTTLE_MS)
@@ -800,9 +896,13 @@ class FigureWindow(QtWidgets.QWidget):
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
-        self.format_panel.setVisible(False)
         self.format_panel.set_mode(self.mode)
         body.addWidget(self.format_panel)
+        open_fmt = bool(self.source.export_settings().get("format_open", True))
+        self.format_panel.setVisible(open_fmt)
+        self.format_btn.blockSignals(True)
+        self.format_btn.setChecked(open_fmt)
+        self.format_btn.blockSignals(False)
         root.addLayout(body, 1)
 
         self.hint = QtWidgets.QLabel(self)
@@ -827,6 +927,7 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _toggle_format(self, on):
         self.format_panel.setVisible(bool(on))
+        self.source.set_export_settings(format_open=bool(on))
         if on:
             self._sync_format_panel()
         self._render_timer.start()
@@ -1024,6 +1125,8 @@ class FigureWindow(QtWidgets.QWidget):
         shown = {r["label"] for r in self.spec["rows"]}
         if all(c["label"] in shown for c in self.spec["channels"]):
             return None
+        if not self.style.get("channel_labels", True) or self.style.get("header") == "none":
+            return None   # no free margin for it - the Channels tab adds channels
         if not lay["transpose"]:
             first = min((b for _f, b in lay["frame_labels"]), key=lambda b: (b[1], b[0]))
             return (0.0, first[1], max(first[0], 0.6), first[3])
@@ -1040,7 +1143,6 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _set_actual(self, on):
         self._actual = bool(on)
-        self.source.set_export_settings(view_actual=self._actual)
         if not self._actual:
             self.view.setMinimumSize(320, 160)
         self._render_screen()
@@ -1445,6 +1547,8 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Show", "header", _HEADER_NAMES)
         menu.addSeparator()
         self._toggle(menu, "Add the file name", "header_name")
+        self._toggle(menu, "Bold the Δz = 0 reference", "ref_bold")
+        self._toggle(menu, "Channel names beside the rows", "channel_labels")
 
     def _colour_menu(self, r, f, menu=None):
         menu = menu or QtWidgets.QMenu(self)
