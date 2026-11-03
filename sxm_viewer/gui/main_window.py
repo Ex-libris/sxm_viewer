@@ -5289,17 +5289,24 @@ QLabel:hover {{
         except Exception:
             series = None
         if series is not None:
-            # Green "z×N" chip, bottom-right: this frame is part of a
-            # constant-height height series - click it for the figure.
+            # Series chip, bottom-right - click it for the figure: green
+            # "z×N" = height series (CH frames at a ladder of tip heights),
+            # amber "V×N" = bias series (same frame at a ladder of biases).
+            is_bias = series.get("recipe") == "bias"
             painter = QtGui.QPainter(pix)
             painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
             chip = viewer_thumb_ui.series_chip_rect(pix.width(), pix.height())
-            painter.setBrush(QtGui.QColor(0, 150, 70, 230))
-            painter.setPen(QtGui.QPen(QtGui.QColor(0, 70, 30), 1.2))
+            if is_bias:
+                painter.setBrush(QtGui.QColor(225, 140, 0, 235))
+                painter.setPen(QtGui.QPen(QtGui.QColor(110, 60, 0), 1.2))
+            else:
+                painter.setBrush(QtGui.QColor(0, 150, 70, 230))
+                painter.setPen(QtGui.QPen(QtGui.QColor(0, 70, 30), 1.2))
             painter.drawRoundedRect(chip, 5, 5)
             painter.setPen(QtGui.QColor(255, 255, 255))
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
-            painter.drawText(chip, QtCore.Qt.AlignCenter, f"z×{len(series['keys'])}")
+            painter.drawText(chip, QtCore.Qt.AlignCenter,
+                             f"{'V' if is_bias else 'z'}×{series.get('levels') or len(series['keys'])}")
             painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):

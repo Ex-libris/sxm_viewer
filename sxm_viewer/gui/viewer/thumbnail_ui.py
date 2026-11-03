@@ -1422,7 +1422,7 @@ def _clear_spectro_thumb_multi_selection(viewer, update_styles=True):
 
 
 def series_chip_rect(pix_w, pix_h):
-    """Bottom-right ``z×N`` chip of a thumbnail in a height series (drawn by
+    """Bottom-right ``z×N`` / ``V×N`` chip of a thumbnail in a height / bias series (drawn by
     ``_decorate_thumbnail_pixmap``; one rect for drawing and hit-testing)."""
     return QtCore.QRectF(pix_w - 52, pix_h - 24, 46, 18)
 
@@ -1440,7 +1440,7 @@ def _handle_series_chip_click(viewer, label_widget, event):
         return False
     if not series_chip_rect(pix.width(), pix.height()).adjusted(-3, -3, 3, 3).contains(*coords):
         return False
-    controller.open_height_series(fp)
+    controller.open_series(fp)
     return True
 
 

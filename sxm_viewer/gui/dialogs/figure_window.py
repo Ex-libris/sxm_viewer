@@ -38,7 +38,14 @@ _CLICK_SLOP_PX = 3
 
 _LETTER_STYLE_NAMES = {"a": "a, b, c", "A": "A, B, C", "(a)": "(a), (b)", "a)": "a), b)", "a.": "a., b."}
 _CORNER_NAMES = {"tl": "Top left", "tr": "Top right", "bl": "Bottom left", "br": "Bottom right"}
-_HEADER_NAMES = {"dz": "Δz to the reference", "zabs": "Absolute z", "name": "File name"}
+_HEADER_NAMES = {"auto": "Automatic (Δz / bias)", "dz": "Δz to the reference",
+                 "zabs": "Absolute z", "bias": "Bias", "name": "File name"}
+_MODE_TITLES = {"height": "Height series", "bias": "Bias series", "selection": "Figure"}
+_MODE_HINTS = {
+    "height": "Click a Δz header: reference  ·  ",
+    "bias": "",
+    "selection": "",
+}
 _SCALE_NAMES = {"one": "One panel", "all": "Every panel", "off": "Off"}
 
 
@@ -302,6 +309,8 @@ class _FormatPanel(QtWidgets.QScrollArea):
         w["transpose"] = combo({False: "Frames across, channels down",
                                 True: "Frames down, channels across"})
         g.addRow(w["transpose"])
+        w["reverse"] = QtWidgets.QCheckBox("Reverse the frame order")
+        g.addRow(w["reverse"])
         w["panel_w"] = spin(0.6, 4.0, 0.1, " in")
         g.addRow("Panel width", w["panel_w"])
         w["font"] = spin(5.0, 14.0, 0.5, " pt")
@@ -460,6 +469,7 @@ class FigureWindow(QtWidgets.QWidget):
         self.mode = mode
         self._keys = [str(k) for k in keys]
         self._excluded = list(excluded or [])
+        self._aborted = []          # [{key, frac}] frames whose scan stopped early
         self.state = self._initial_state(source.get_state(fid))
         self._undo, self._redo = [], []
         self._panels = {}           # (key, idx) -> panel dict
@@ -506,6 +516,7 @@ class FigureWindow(QtWidgets.QWidget):
             "rows": list(saved["rows"]) if saved.get("rows") else None,
             "row_choices": dict(saved.get("row_choices") or {}),
             "row_cmaps": dict(saved.get("row_cmaps") or {}),
+            "show_repeats": bool(saved.get("show_repeats", False)),
             "clims": {k: v for k, v in (saved.get("clims") or {}).items() if isinstance(v, (list, tuple))},
             "style": hs.resolve_style(style),
         }
@@ -556,7 +567,7 @@ class FigureWindow(QtWidgets.QWidget):
         self._apply_edit({
             "reference_key": self.source.default_reference(self._keys),
             "dropped": [], "forced": [], "rows": None, "row_choices": {},
-            "row_cmaps": {}, "clims": {},
+            "row_cmaps": {}, "clims": {}, "show_repeats": False,
         })
 
     def reset_format(self):
@@ -646,7 +657,7 @@ class FigureWindow(QtWidgets.QWidget):
         self.hint = QtWidgets.QLabel(self)
         self.hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
         self.hint.setWordWrap(True)
-        self.hint.setText("Click a Δz header: reference  ·  hover a header, ×: drop  ·  click a channel "
+        self.hint.setText(_MODE_HINTS.get(self.mode, "") + "hover a header, ×: drop  ·  click a channel "
                           "label: switch / remove  ·  drag a colourbar: contrast, click it: exact values  ·  "
                           "right-click anything: its options  ·  Ctrl+Z undo")
         root.addWidget(self.hint)
@@ -706,19 +717,38 @@ class FigureWindow(QtWidgets.QWidget):
             self._members = self.source.member_inputs(keys)
             self._data_sig = self.source.data_signature(keys)
             self._panels.clear()
+            self._aborted = self._find_aborted(self._members)
         st = self.style
+        auto_out = [a["key"] for a in self._aborted if a["key"] not in self.state["forced"]]
         self.spec = hs.build_spec(
             self._members, mode=self.mode,
             reference_key=self.state["reference_key"],
-            dropped=self.state["dropped"],
+            dropped=list(self.state["dropped"]) + auto_out,
             rows=self.state["rows"],
             row_choices=self.state["row_choices"],
-            header=st["header"], header_name=st["header_name"],
+            header=st["header"], header_name=st["header_name"], reverse=st["reverse"],
+            show_repeats=self.state["show_repeats"],
             row_cmaps=self.state["row_cmaps"])
         self._update_title()
         self._render_screen()
         self._update_note()
         self._sync_format_panel()
+
+    def _find_aborted(self, members):
+        """Frames with under a quarter of their rows scanned are no column
+        of a series figure (they'd be a white panel with a strip of data).
+        A user selection keeps everything it was given."""
+        if self.mode == "selection":
+            return []
+        out = []
+        for m in members:
+            picks = m.get("picks") or []
+            if not picks:
+                continue
+            frac = self.source.valid_fraction(m["key"], picks[0][0])
+            if frac < 0.25:
+                out.append({"key": str(m["key"]), "frac": float(frac)})
+        return out
 
     def _panel_map(self):
         panels = {}
@@ -737,16 +767,28 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _update_title(self):
         cols = self.spec["columns"] if self.spec else []
-        what = "Height series" if self.mode == "height" else "Figure"
+        what = _MODE_TITLES.get(self.mode, "Figure")
         names = [c["name"] for c in cols]
         span = f"{names[0]} … {names[-1]}" if len(names) > 1 else (names[0] if names else "")
         self.setWindowTitle(f"{what} - {span} ({len(cols)} frame{'s' if len(cols) != 1 else ''})")
 
     def _update_note(self):
-        left_out = [e for e in self._excluded if e["key"] not in self.state["forced"]]
+        left_out = [e for e in self._excluded if e["key"] not in self.state["forced"]
+                    and e.get("reason") != "aborted"]
         dropped = [k for k in self.state["dropped"] if k in self._all_keys()]
+        aborted = [a for a in self._aborted if a["key"] not in self.state["forced"]]
+        aborted += [e for e in self._excluded if e.get("reason") == "aborted"
+                    and e["key"] not in self.state["forced"]
+                    and e["key"] not in {a["key"] for a in aborted}]
         menu = QtWidgets.QMenu(self.note_btn)
         parts = []
+        if aborted:
+            parts.append(f"{len(aborted)} left out (scan stopped early)")
+            menu.addSection("Scan stopped early - mostly empty frame")
+            for a in aborted:
+                act = menu.addAction(f"Include {Path(a['key']).stem} anyway  ({a['frac'] * 100:.0f} % scanned)")
+                act.triggered.connect(lambda _=False, k=a["key"]: self._apply_edit(
+                    {"forced": self.state["forced"] + [k]}))
         if left_out:
             parts.append(f"{len(left_out)} left out (Z not flat)")
             menu.addSection("Z changes within the frame - no single Δz")
@@ -771,6 +813,17 @@ class FigureWindow(QtWidgets.QWidget):
             for k in own:
                 act = menu.addAction(f"{Path(k).stem}: show in viewer")
                 act.triggered.connect(lambda _=False, key=k: self._show_key(key))
+        repeats = list((self.spec or {}).get("hidden_repeats") or [])
+        if repeats:
+            parts.append(f"{len(repeats)} repeat{'s' if len(repeats) != 1 else ''} hidden")
+            menu.addSection("Re-scans under identical conditions - the latest is shown")
+            menu.addAction("Show the repeats too").triggered.connect(
+                lambda: self._apply_edit({"show_repeats": True}))
+        elif self.state["show_repeats"] and self.mode != "selection":
+            parts.append("repeats shown")
+            menu.addSection("Repeats")
+            menu.addAction("Hide repeats (keep the latest)").triggered.connect(
+                lambda: self._apply_edit({"show_repeats": False}))
         forced = list(self.state["forced"])
         if forced:
             menu.addSection("Included anyway")
@@ -904,7 +957,7 @@ class FigureWindow(QtWidgets.QWidget):
                 tip = "Remove this frame from the figure (Ctrl+Z restores)"
             elif kind == "frame":
                 col = self.spec["columns"][hit["frame"]]
-                if self.spec["has_z"] and self.style["header"] == "dz":
+                if self.spec["has_z"] and self.spec["header"] == "dz":
                     cursor = QtCore.Qt.PointingHandCursor
                     tip = (f"{col['name']}\nThis frame is the Δz reference" if col["is_ref"]
                            else f"{col['name']}\nClick: make this the Δz = 0 reference")
@@ -943,7 +996,7 @@ class FigureWindow(QtWidgets.QWidget):
             col = self.spec["columns"][hit["frame"]]
             self._apply_edit({"dropped": self.state["dropped"] + [col["key"]]})
             self._flash(f"Removed {col['name']} - Ctrl+Z to restore")
-        elif kind == "frame" and self.spec["has_z"] and self.style["header"] == "dz":
+        elif kind == "frame" and self.spec["has_z"] and self.spec["header"] == "dz":
             col = self.spec["columns"][hit["frame"]]
             if not col["is_ref"]:
                 self._apply_edit({"reference_key": col["key"]})
@@ -1128,6 +1181,8 @@ class FigureWindow(QtWidgets.QWidget):
     def _layout_menu(self, menu):
         self._choice(menu, "Layout", "transpose", {False: "Frames across, channels down",
                                                     True: "Frames down, channels across"})
+        menu.addSeparator()
+        self._toggle(menu, "Reverse the frame order", "reverse")
         menu.addAction("More format options…").triggered.connect(lambda: self.format_btn.setChecked(True))
 
     def _letters_menu(self, menu):
@@ -1344,7 +1399,7 @@ class FigureWindow(QtWidgets.QWidget):
     def _default_name(self):
         cols = self.spec["columns"] if self.spec else []
         stem = cols[0]["name"] if cols else "figure"
-        suffix = "height_series" if self.mode == "height" else "figure"
+        suffix = {"height": "height_series", "bias": "bias_series"}.get(self.mode, "figure")
         return f"{stem}_{suffix}"
 
     def _svg_bytes(self, fig=None):

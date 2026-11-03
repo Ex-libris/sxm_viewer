@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..._shared import QtWidgets, log_status, np
+from ..._shared import QtCore, QtWidgets, log_status, np
 from ...config import save_config
 from ...figures import height_series as hs
 from ...processing.detection import _find_topography_channel
@@ -28,6 +28,8 @@ from ..viewer import ch_height as viewer_ch_height
 from ..viewer import thumbnail_ui as viewer_thumb_ui
 
 _STATE_LIMIT = 200          # remembered figure states kept in the config
+_ABORTED_FRAC = 0.25        # < this fraction of rows scanned = stopped scan
+_IDLE_BATCH = 4             # frames checked per idle tick
 _CLASS_OF_UNIT = {"A": "current", "mA": "current", "uA": "current", "µA": "current",
                   "nA": "current", "pA": "current", "fA": "current",
                   "Hz": "freq", "kHz": "freq", "mHz": "freq",
@@ -36,9 +38,47 @@ _LENGTH_TO_NM = {"nm": 1.0, "Å": 0.1, "A": 0.1, "ang": 0.1, "pm": 1e-3,
                  "um": 1e3, "µm": 1e3, "m": 1e9}
 
 
+def _mask_aborted_rows(arr):
+    """NaN out the rows a stopped scan never reached (filled with a constant
+    - often 0 next to real topography at -185 nm, which would flatten the
+    whole shared range). Same detector as the thumbnails and the preview's
+    auto contrast; geometry is kept, so panels still line up."""
+    a = np.array(arr, dtype=float, copy=True)
+    if a.ndim != 2:
+        return a
+    try:
+        from ..thumbnail_render import detect_valid_scan_region
+        region = detect_valid_scan_region(a)
+    except Exception:
+        region = None
+    if region:
+        r0, r1 = region
+        a[:r0, :] = np.nan
+        a[r1 + 1:, :] = np.nan
+    return a
+
+
 def _header_bias_v(header):
     from .report import _header_bias_v as _bias
     return _bias(header)
+
+
+_SP_PREFIX = {"f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "\u00b5": 1e-6, "\u03bc": 1e-6,
+              "m": 1e-3, "": 1.0, "k": 1e3}
+
+
+def _header_setpoint(header):
+    """(value in base SI unit, base unit) of the feedback setpoint, e.g.
+    Anfatec ``SetPoint: 50`` + ``SetPointPhysUnit: pA`` -> (5e-11, "A")."""
+    try:
+        val = float(header.get("SetPoint"))
+    except (TypeError, ValueError):
+        return None, ""
+    unit = str(header.get("SetPointPhysUnit") or "").strip()
+    for base in ("Hz", "A", "V", "m"):
+        if unit.endswith(base) and unit[:-len(base)] in _SP_PREFIX:
+            return val * _SP_PREFIX[unit[:-len(base)]], base
+    return val, unit
 
 
 class FigureController:
@@ -50,6 +90,15 @@ class FigureController:
         self._series = {}          # id -> series dict (keys ordered by z)
         self._series_of_key = {}   # image key -> series id
         self._windows = {}         # id -> window
+        # Fraction of rows actually scanned, per series frame - checked in
+        # idle time after a folder load (reading every frame up front would
+        # slow loading), so chips stop counting stopped scans once known.
+        self._scan_frac = {}
+        self._idle_queue = []
+        self._idle_timer = QtCore.QTimer()
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.setInterval(0)
+        self._idle_timer.timeout.connect(self._idle_check_scans)
         states = viewer.config.get("figure_states")
         viewer.figure_states = dict(states) if isinstance(states, dict) else {}
 
@@ -57,19 +106,24 @@ class FigureController:
     # Series index (thumbnail chips)
     # ------------------------------------------------------------------
     def _index_signature(self):
+        """Everything detection depends on: the loaded files (bias/footprint
+        come from their headers) and the CH tags (tag, height, Z range)."""
         viewer = self.viewer
         tags = getattr(viewer, "tags", {}) or {}
         sig = []
         for p in getattr(viewer, "files", []) or []:
             key = str(p)
             info = tags.get(key) or {}
-            if info.get("tag") != "constant-height":
-                continue
-            sig.append((key, info.get("abs_z_pm"), info.get("rng_nm")))
+            sig.append((key, info.get("tag"), info.get("abs_z_pm"), info.get("rng_nm"),
+                        self._scan_frac.get(key)))
         return tuple(sig)
 
     def ensure_series_index(self):
-        """Recompute the series index if CH tags/heights changed."""
+        """Recompute the series index if the files or CH tags changed.
+
+        Height series (CH frames at a ladder of tip heights) and bias series
+        (same frame at a ladder of biases, CC or CH) come from the folder
+        report's own sequence detector; a frame belongs to at most one."""
         sig = self._index_signature()
         if sig == self._index_sig:
             return False
@@ -78,18 +132,81 @@ class FigureController:
         if len(sig) >= 2:
             try:
                 images = self.image_inputs([s[0] for s in sig])
-                for s in hs.find_height_series(images):
+                found = hs.find_height_series(images) + hs.find_bias_series(images)
+                found = self._prune_stopped_scans(found, {i["key"]: i for i in images})
+                for s in found:
+                    if any(k in by_key for k in s["keys"]):
+                        continue  # never two chips on one frame
                     series[s["id"]] = s
                     for k in s["keys"]:
                         by_key[k] = s["id"]
             except Exception as exc:
-                log_status(f"[Figures] height-series detection failed: {exc}")
-        changed = by_key != self._series_of_key
+                log_status(f"[Figures] series detection failed: {exc}")
+        changed = (by_key != self._series_of_key or
+                   {k: v.get("levels") for k, v in series.items()} !=
+                   {k: v.get("levels") for k, v in self._series.items()})
         self._series, self._series_of_key = series, by_key
+        self._schedule_scan_checks()
         if series:
-            log_status(f"[Figures] {len(series)} height series detected "
+            n_h = sum(1 for s in series.values() if s.get("recipe") == "height")
+            log_status(f"[Figures] {n_h} height / {len(series) - n_h} bias series detected "
                        f"({sum(len(s['keys']) for s in series.values())} images)")
         return changed
+
+    def _prune_stopped_scans(self, found, by_key):
+        """Move frames whose scan stopped early out of each series (listed
+        as excluded, reason "aborted"); drop a series left with < 2
+        acquisition conditions. Frames not checked yet stay in for now."""
+        out = []
+        for s in found:
+            stopped = [k for k in s["keys"]
+                       if self._scan_frac.get(k) is not None and self._scan_frac[k] < _ABORTED_FRAC]
+            if stopped:
+                keys = [k for k in s["keys"] if k not in stopped]
+                levels = len({hs.condition_key(by_key[k]) for k in keys})
+                if levels < 2:
+                    continue
+                s = dict(s, keys=keys, levels=levels,
+                         excluded=list(s.get("excluded") or []) + [
+                             {"key": k, "reason": "aborted", "frac": self._scan_frac[k]} for k in stopped])
+            out.append(s)
+        return out
+
+    def _schedule_scan_checks(self):
+        files = {str(p) for p in (getattr(self.viewer, "files", []) or [])}
+        todo = [k for s in self._series.values() for k in s["keys"]
+                if k in files and k not in self._scan_frac]
+        if todo:
+            self._idle_queue = todo
+            self._idle_timer.start()
+
+    def _idle_check_scans(self):
+        files = {str(p) for p in (getattr(self.viewer, "files", []) or [])}
+        batch, self._idle_queue = self._idle_queue[:_IDLE_BATCH], self._idle_queue[_IDLE_BATCH:]
+        for key in batch:
+            if key not in files or key in self._scan_frac:
+                continue
+            header, fds = (self.viewer.headers or {}).get(key, (None, None))
+            try:
+                tag = viewer_thumb_ui.effective_tag(self.viewer, key)
+                topo = _find_topography_channel(list(fds or []))
+                picks = pick_image_channels(list(fds or []), tag, topo)
+                idx = picks[0][0] if picks else 0
+                self._scan_frac[key] = float(self.valid_fraction(key, idx))
+            except Exception:
+                self._scan_frac[key] = 1.0
+        if self._idle_queue:
+            self._idle_timer.start()
+            return
+        before = {sid: (len(s["keys"]), s.get("levels")) for sid, s in self._series.items()}
+        if any(f < _ABORTED_FRAC for f in self._scan_frac.values()) and self.ensure_series_index():
+            pass
+        after = {sid: (len(s["keys"]), s.get("levels")) for sid, s in self._series.items()}
+        if after != before:
+            try:
+                self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
+            except Exception:
+                pass
 
     def series_for_key(self, key):
         sid = self._series_of_key.get(str(key))
@@ -98,7 +215,11 @@ class FigureController:
     # ------------------------------------------------------------------
     # Inputs
     # ------------------------------------------------------------------
-    def _z_nm(self, key):
+    def _z_nm(self, key, tag=None):
+        # Only constant-height frames have a controlled tip height; asking
+        # the HUD for others may sample a file per image for nothing.
+        if tag is not None and tag != "constant-height":
+            return None
         try:
             return viewer_ch_height.ch_abs_z_nm(self.viewer, key)
         except Exception:
@@ -122,15 +243,19 @@ class FigureController:
                 time = viewer._header_datetime_dt(header, Path(key))
             except Exception:
                 time = None
+            tag = viewer_thumb_ui.effective_tag(viewer, key)
+            setpoint, setpoint_unit = _header_setpoint(header)
             out.append({
                 "key": key,
                 "name": Path(key).stem,
                 "time": time,
                 "extent": list(extent) if extent else None,
                 "angle": float(viewer._header_scan_angle(header) or 0.0),
-                "tag": viewer_thumb_ui.effective_tag(viewer, key),
+                "tag": tag,
                 "bias_v": _header_bias_v(header),
-                "z_nm": self._z_nm(key),
+                "setpoint": setpoint,
+                "setpoint_unit": setpoint_unit,
+                "z_nm": self._z_nm(key, tag),
                 "z_range_nm": (viewer.tags.get(key) or {}).get("rng_nm"),
             })
         return out
@@ -170,6 +295,7 @@ class FigureController:
             return None
         fd = fds[channel_idx]
         unit, arr = viewer._get_filtered_channel_array(key, channel_idx, header, fd)
+        arr = _mask_aborted_rows(arr)
         base_extent = viewer._header_extent(header)
         arr, extent = viewer._apply_adjustments_for_channel(key, channel_idx, arr, base_extent)
         arr = np.asarray(arr, dtype=float)
@@ -186,6 +312,24 @@ class FigureController:
                 width_nm = height_nm = None
         return {"data": arr, "unit": unit or "", "width_nm": width_nm,
                 "height_nm": height_nm, "caption": str(fd.get("Caption") or "")}
+
+    def valid_fraction(self, key, channel_idx):
+        """Fraction of the frame's rows that were actually scanned (1.0 when
+        unknown or when the channel has no variation to judge by)."""
+        viewer = self.viewer
+        header, fds = viewer.headers.get(str(key), (None, None))
+        if not header or not fds or not (0 <= int(channel_idx) < len(fds)):
+            return 1.0
+        try:
+            from ..thumbnail_render import detect_valid_scan_region
+            raw = np.asarray(viewer._get_channel_array(str(key), int(channel_idx), header,
+                                                       fds[int(channel_idx)]), dtype=float)
+            region = detect_valid_scan_region(raw)
+        except Exception:
+            return 1.0
+        if raw.ndim != 2 or not raw.shape[0] or not region:
+            return 1.0
+        return (region[1] - region[0] + 1) / float(raw.shape[0])
 
     def data_signature(self, keys):
         """Cheap fingerprint of everything that changes a panel's pixels."""
@@ -233,13 +377,16 @@ class FigureController:
     # ------------------------------------------------------------------
     # Windows
     # ------------------------------------------------------------------
-    def open_height_series(self, key):
+    def open_series(self, key):
+        """The figure of the series ``key`` belongs to (height or bias)."""
         self.ensure_series_index()
         series = self.series_for_key(key)
         if series is None:
             return self.open_selection([key])
-        return self._open(series["id"], list(series["keys"]), mode="height",
+        return self._open(series["id"], list(series["keys"]), mode=series.get("recipe", "height"),
                           excluded=series.get("excluded"))
+
+    open_height_series = open_series
 
     def open_selection(self, keys):
         keys = [str(k) for k in keys if str(k) in (self.viewer.headers or {})]
@@ -251,7 +398,8 @@ class FigureController:
         if len(sids) == 1 and None not in sids and len(keys) >= 2:
             series = self._series[next(iter(sids))]
             if set(keys) == set(series["keys"]):
-                return self._open(series["id"], list(series["keys"]), mode="height",
+                return self._open(series["id"], list(series["keys"]),
+                                  mode=series.get("recipe", "height"),
                                   excluded=series.get("excluded"))
         return self._open("sel-" + hs.series_id(keys), keys, mode="selection")
 
@@ -267,7 +415,16 @@ class FigureController:
                 return win
             except RuntimeError:
                 self._windows.pop(fid, None)
-        win = FigureWindow(self, fid, keys, mode=mode, excluded=excluded, parent=self.viewer)
+        try:
+            win = FigureWindow(self, fid, keys, mode=mode, excluded=excluded, parent=self.viewer)
+        except Exception as exc:
+            # This runs from a thumbnail click: an exception escaping a Qt
+            # event handler aborts the whole application (PyQt >= 5.5) and
+            # would take the user's unsaved session with it.
+            import traceback
+            log_status(f"[Figures] could not open figure: {exc}\n{traceback.format_exc()}")
+            QtWidgets.QMessageBox.warning(self.viewer, "Figure", f"Could not open the figure:\n{exc}")
+            return None
         self._windows[fid] = win
         win.destroyed.connect(lambda *_a, f=fid: self._windows.pop(f, None))
         win.show()
@@ -280,7 +437,10 @@ class FigureController:
         return dict(style) if isinstance(style, dict) else {}
 
     def set_default_style(self, style):
-        self.viewer.config["figure_style_default"] = dict(style or {})
+        # The header is per recipe ("auto" = dz for height, V for bias), so
+        # it never carries over from one figure to the next.
+        style = {k: v for k, v in dict(style or {}).items() if k != "header"}
+        self.viewer.config["figure_style_default"] = style
         try:
             save_config(self.viewer.config)
         except Exception:

@@ -973,6 +973,29 @@ figures. Three layers, same split as the folder report:
   Zero) and `data_signature()` is what the window polls for the live link.
   Per-figure edits live in `viewer.figure_states` (config key
   `figure_states`, capped, and session key `figure_states`).
+- **Bias series** (`find_bias_series`, recipe `"bias"`, amber `V×N` chip)
+  share everything with height series - `build_spec(mode="bias")` only
+  changes the frame axis (bias, then time) and the `"auto"` header (signed
+  `V = ...`, setpoint line when it changes). CH and CC/untagged frames go
+  through `build_image_sequences` *separately* (mixed they'd be one
+  "bias+height" group, which is a height series). Series ids are
+  `bias-<sha>` vs `<sha>`; every series dict carries `recipe` and `levels`
+  (distinct `condition_key`s = what the chip and menu count). The header
+  style key is per recipe: `set_default_style` never stores it.
+- Repeats: `collapse_repeats` keeps the latest frame per `condition_key`
+  (bias mV, z pm, setpoint 3 sig.) for series figures (`show_repeats`
+  state brings them back; selections never collapse).
+- Stopped scans: `controller.panel()` NaN-masks rows outside
+  `detect_valid_scan_region` (same detector as thumbnails / preview auto
+  contrast). Frames with < 25 % of rows scanned are pruned from series
+  (`excluded` reason `"aborted"`) - known only after reading the array, so
+  `_idle_check_scans` checks series members a few per idle tick after the
+  index is built and repopulates the thumbnails if a count changed; the
+  window's `_find_aborted` is the backstop for unchecked frames. The scan
+  fraction is part of the index signature.
+- Topography rows use `typical_range` (median of the frames' own 2-98 %);
+  signal rows keep `pooled_range` (contrast growing with Δz or bias is the
+  content).
 - Naming: `spec["columns"]` are always the *frames* and `spec["rows"]` the
   *channels*; `style["transpose"]` only changes where `figure_layout` puts
   them (frames down / channels across). Channels are identified by their

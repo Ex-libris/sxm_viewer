@@ -8,6 +8,37 @@ First public release archived on Zenodo.
 
 ## Development history (pre-release)
 
+### 2026-11-03 (bias-series figures)
+
+**The same one-click figure for bias series.** A frame re-scanned while the
+sample bias steps (constant-current topography vs V, or a constant-height
+frame at a ladder of biases) carries an amber **V×N** chip (N = distinct
+biases); click it or right-click → *Bias-series figure*:
+- frames ordered by bias, headers `V = -1.50 V` / `V = +300 mV` (always
+  signed), the setpoint as a second line when it changes between frames;
+- everything from the height-series figure works the same: any channel,
+  transpose, Format panel / right-click options, ranges, Copy / PowerPoint /
+  PDF, live link; headers also offer *Bias*, and *Reverse the frame order*
+  is new for both recipes. The header choice is per recipe (Δz for height,
+  V for bias), not carried from one to the other;
+- CC and CH frames are grouped separately, so a CC bias ladder and a CH
+  height ladder of the same spot stay two series.
+
+Also for both recipes:
+- **repeats collapse**: re-scans under identical conditions (bias, tip
+  height, setpoint) show once - the latest - with "N repeats hidden ·
+  Show"; chips count conditions, and a group that is only repeats gets no
+  chip;
+- **stopped scans**: rows a scan never reached are masked (they were a
+  constant, e.g. z = 0 next to -185 nm real topography, and flattened the
+  whole row), and frames with < 25 % of their rows scanned are left out
+  ("scan stopped early", *Include anyway*). Series frames are checked in
+  idle time after a folder load, so chip counts match the figure;
+- topography rows share a height scale fitted to the *typical* frame, so
+  a tip crash in one frame saturates there instead of darkening the rest;
+- opening a figure can no longer take the application down: an error is
+  logged and shown instead.
+
 ### 2026-11-03 (height-series figures)
 
 **One click from a constant-height height series to a finished figure.**

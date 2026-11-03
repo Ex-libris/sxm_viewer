@@ -192,15 +192,22 @@ def _add_figure_actions(viewer, menu, fp, targets):
     series = fc.series_for_key(fp)
     real = [str(p) for p in targets if str(p) in (getattr(viewer, "headers", {}) or {})]
     if series is not None:
-        act = menu.addAction(f"Height-series figure ({len(series['keys'])} frames)")
-        act.setToolTip("Every frame of this constant-height series, ordered by tip height, with one "
-                       "shared colour range per channel - ready to copy or send to PowerPoint "
-                       "(same as clicking the z×N chip)")
-        act.triggered.connect(lambda _, key=fp: fc.open_height_series(key))
+        if series.get("recipe") == "bias":
+            act = menu.addAction(f"Bias-series figure ({series.get('levels') or len(series['keys'])} biases)")
+            act.setToolTip("Every frame of this bias series, ordered by bias, with one shared colour "
+                           "range per channel - ready to copy or send to PowerPoint "
+                           "(same as clicking the V×N chip)")
+        else:
+            act = menu.addAction(f"Height-series figure ({series.get('levels') or len(series['keys'])} heights)")
+            act.setToolTip("Every frame of this constant-height series, ordered by tip height, with one "
+                           "shared colour range per channel - ready to copy or send to PowerPoint "
+                           "(same as clicking the z×N chip)")
+        act.triggered.connect(lambda _, key=fp: fc.open_series(key))
     if len(real) >= 2 and (series is None or set(real) != set(series["keys"])):
         act = menu.addAction(f"Figure from selection ({len(real)} images)")
         act.setToolTip("The selected images side by side, one row per channel kind, ordered by "
-                       "tip height when every image has one (else by time)")
+                       "tip height when every image has one, else by bias when it varies, "
+                       "else by time")
         act.triggered.connect(lambda _, keys=list(real): fc.open_selection(keys))
 
 

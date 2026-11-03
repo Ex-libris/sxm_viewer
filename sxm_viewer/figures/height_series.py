@@ -53,6 +53,7 @@ _BACKWARD_RE = re.compile(r"(?i)(bwd|backward|\bbk\b|_bk|retrace|\(b\)|<-|←)")
 
 STYLE_DEFAULTS = {
     "transpose": False,        # False: frames = columns, channels = rows
+    "reverse": False,          # reverse the frame order (z / bias / time)
     "range_mode": "row",       # "row": one range per channel | "image"
     "colorbars": True,
     "cbar_ticks": 2,           # 2 (ends) | 3 | 5
@@ -69,7 +70,7 @@ STYLE_DEFAULTS = {
     "scale_pos": "bl",
     "scale_color": "white",
     "scale_label": True,
-    "header": "dz",            # "dz" | "zabs" | "name"
+    "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
     "header_name": False,      # file name as an extra header line
     "font": 7.0,
     "panel_w": 1.55,           # inches
@@ -130,6 +131,38 @@ def bias_text(bias_v):
     if abs(b) < 1.0:
         return f"{b * 1e3:.0f} mV"
     return f"{b:.2f} V"
+
+
+def bias_header(bias_v):
+    """``V = +300 mV`` / ``V = -1.20 V`` - always signed (contrast inversion
+    across zero is usually the point of a bias series)."""
+    b = _finite(bias_v)
+    if b is None:
+        return ""
+    if abs(b) < 0.5e-3:
+        return "V = 0 mV"
+    if abs(b) < 1.0:
+        return f"V = {b * 1e3:+.0f} mV"
+    return f"V = {b:+.2f} V"
+
+
+_SI_PREFIXES = ((1e-15, "f"), (1e-12, "p"), (1e-9, "n"), (1e-6, "µ"), (1e-3, "m"),
+                (1.0, ""), (1e3, "k"), (1e6, "M"))
+
+
+def si_text(value, unit):
+    """``5e-11, 'A'`` -> ``50 pA`` (unit given as a base SI unit)."""
+    v = _finite(value)
+    if v is None:
+        return ""
+    unit = str(unit or "")
+    if v == 0:
+        return f"0 {unit}".strip()
+    for scale, prefix in reversed(_SI_PREFIXES):
+        if abs(v) >= scale * 0.9995:
+            return f"{v / scale:.3g} {prefix}{unit}".strip()
+    scale, prefix = _SI_PREFIXES[0]
+    return f"{v / scale:.3g} {prefix}{unit}".strip()
 
 
 def nice_length(target):
@@ -216,6 +249,9 @@ def find_height_series(images, min_members=2):
         if len(keys) < min_members:
             continue
         keys.sort(key=lambda k: (by_key[k]["z_level_nm"], _time_sort(by_key[k])))
+        levels = len({condition_key(by_key[k]) for k in keys})
+        if levels < min_members:
+            continue  # only re-scans of one height: not a series
         excluded = [m["key"] for m in seq["members"] if m.get("z_level_nm") is None]
         out.append({
             "id": series_id(keys),
@@ -225,9 +261,92 @@ def find_height_series(images, min_members=2):
                          for k in excluded],
             "kind": seq["kind"],
             "z_span_nm": float(seq["z_span_nm"]),
+            "levels": levels,
             "bias_varies": seq["kind"] == "bias+height",
+            "recipe": "height",
         })
     return out
+
+
+def find_bias_series(images, min_members=2):
+    """Bias series among ``images``: the same frame re-scanned while only the
+    sample bias steps (STM topography vs V in constant current, or a
+    constant-height frame at a ladder of biases).
+
+    Constant-height frames and constant-current / untagged frames are
+    grouped *separately*, so a CC bias ladder and a CH height ladder of the
+    same spot don't merge into one mixed "bias+height" group (that mix is
+    a height series with a varying bias, handled by ``find_height_series``).
+    CH frames take part with their flat-gated height (as in
+    ``find_height_series``); CC frames have no controlled height.
+
+    Returns ``[{id, keys, excluded, kind, bias_span_v, recipe}]`` with
+    ``keys`` ordered by bias (most negative first).
+    """
+    ch, other = [], []
+    for img in images or []:
+        entry = dict(img)
+        if img.get("tag") == "constant-height" and _finite(img.get("z_nm")) is not None:
+            rng = _finite(img.get("z_range_nm"))
+            entry["z_level_nm"] = _finite(img.get("z_nm"))
+            entry["z_spread_nm"] = rng if rng is not None else 0.0
+            ch.append(entry)
+        else:
+            entry["z_level_nm"] = None
+            entry["z_spread_nm"] = None
+            other.append(entry)
+    out = []
+    for group in (ch, other):
+        if len(group) < min_members:
+            continue
+        by_key = {str(i["key"]): i for i in group}
+        for seq in build_image_sequences(group):
+            if seq["kind"] != "bias":
+                continue
+            keys = [m["key"] for m in seq["members"] if _finite(m.get("bias_v")) is not None]
+            if len(keys) < min_members:
+                continue
+            keys.sort(key=lambda k: (_finite(by_key[k].get("bias_v")), _time_sort(by_key[k])))
+            levels = len({condition_key(by_key[k]) for k in keys})
+            if levels < min_members:
+                continue
+            out.append({
+                "id": "bias-" + series_id(keys),
+                "keys": keys,
+                "excluded": [],
+                "kind": "bias",
+                "bias_span_v": float(seq["bias_span_v"]),
+                "levels": levels,
+                "recipe": "bias",
+            })
+    return out
+
+
+def condition_key(m):
+    """Acquisition conditions of a frame: bias (mV), tip height (pm, CH
+    only) and setpoint (3 significant digits). Same key = a repeat."""
+    b = _finite(m.get("bias_v"))
+    z = _finite(m.get("z_nm"))
+    sp = _finite(m.get("setpoint"))
+    return (None if b is None else int(round(b * 1e3)),
+            None if z is None else int(round(z * 1e3)),
+            None if sp is None else float(f"{sp:.3g}"))
+
+
+def collapse_repeats(members):
+    """One frame per acquisition condition - the latest one (re-scans of the
+    same frame are usually taken until it is stable). Returns ``(kept,
+    hidden_keys)`` keeping the input order of the kept frames."""
+    latest = {}
+    for m in members:
+        k = condition_key(m)
+        cur = latest.get(k)
+        if cur is None or _time_sort(m) >= _time_sort(cur) and _time_sort(m) != datetime.max:
+            latest[k] = m
+    kept_ids = {id(m) for m in latest.values()}
+    kept = [m for m in members if id(m) in kept_ids]
+    hidden = [str(m["key"]) for m in members if id(m) not in kept_ids]
+    return kept, hidden
 
 
 def _time_sort(img):
@@ -250,67 +369,117 @@ def _symbol(cls, label):
     return f"{sym} (bwd)" if is_backward(label) else sym
 
 
+def _varies(values, rel=0.01, abs_tol=0.0):
+    vals = [v for v in values if v is not None]
+    if len(vals) < 2:
+        return False
+    span = max(vals) - min(vals)
+    return span > max(abs_tol, rel * max(abs(v) for v in vals))
+
+
+def resolve_header(header, mode, has_z, bias_varies):
+    """``"auto"`` -> the recipe's natural header: Δz for a height series,
+    the bias for a bias series; a selection takes Δz, else bias, else name."""
+    if header and header != "auto":
+        return header
+    if mode == "bias":
+        return "bias"
+    if mode == "height" or has_z:
+        return "dz"
+    return "bias" if bias_varies else "name"
+
+
 def build_spec(members, *, mode="height", reference_key=None, dropped=(),
-               rows=None, row_choices=None, header="dz", header_name=False,
-               row_cmaps=None):
+               rows=None, row_choices=None, header="auto", header_name=False,
+               row_cmaps=None, reverse=False, show_repeats=False):
     """Frames (``columns``) and channels (``rows``) for the figure.
 
-    ``members``: dicts ``{key, name, time, z_nm, bias_v, tag, channels,
-    picks}`` - ``channels`` = ``[{idx, label, cls}]`` (every channel of the
-    file), ``picks`` = ``[(idx, cls)]`` from ``pick_image_channels``.
+    ``members``: dicts ``{key, name, time, z_nm, bias_v, setpoint,
+    setpoint_unit, tag, channels, picks}`` - ``channels`` = ``[{idx, label,
+    cls}]`` (every channel of the file), ``picks`` = ``[(idx, cls)]`` from
+    ``pick_image_channels``.
 
-    ``mode``: ``"height"`` (frames by z) or ``"selection"`` (by z when every
-    member has one, else by time).
+    ``mode``: ``"height"`` (frames by tip height), ``"bias"`` (frames by
+    sample bias) or ``"selection"`` (by z when every member has one, else by
+    bias when it varies, else by time). ``reverse`` flips the frame order.
     ``reference_key``: Δz zero (default: lowest z = closest approach).
     ``dropped``: frame keys removed by the user.
     ``rows``: channel labels to show, in order (None = defaults);
     ``row_choices`` (legacy ``{kind: label}``) is only used for defaults.
-    ``header``: ``"dz"`` | ``"zabs"`` | ``"name"``; ``header_name`` adds the
-    file name as an extra line. ``row_cmaps``: ``{label: cmap}``.
+    ``header``: ``"auto"`` | ``"dz"`` | ``"zabs"`` | ``"bias"`` | ``"name"``;
+    ``header_name`` adds the file name as an extra line.
+    ``row_cmaps``: ``{label: cmap}``.
     """
     dropped = {str(k) for k in (dropped or ())}
     row_choices = dict(row_choices or {})
     row_cmaps = dict(row_cmaps or {})
     cols_in = [m for m in members if str(m["key"]) not in dropped]
+    hidden_repeats = []
+    if mode != "selection" and not show_repeats:
+        # Re-scans under identical conditions add columns, not information:
+        # keep the latest of each (``show_repeats`` brings them back).
+        cols_in, hidden_repeats = collapse_repeats(cols_in)
     has_z = bool(cols_in) and all(_finite(m.get("z_nm")) is not None for m in cols_in)
-    if mode == "height" or has_z:
-        cols_in.sort(key=lambda m: (_finite(m.get("z_nm")) if _finite(m.get("z_nm")) is not None else math.inf,
-                                    _time_sort(m), str(m.get("name"))))
+    biases = [_finite(m.get("bias_v")) for m in cols_in]
+    bias_varies = _varies(biases, rel=0.0, abs_tol=2e-3)
+    has_bias = bool(cols_in) and all(b is not None for b in biases)
+
+    def by_value(field):
+        return lambda m: (_finite(m.get(field)) if _finite(m.get(field)) is not None else math.inf,
+                          _time_sort(m), str(m.get("name")))
+
+    if mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
+        cols_in.sort(key=by_value("bias_v"))
+        axis = "bias"
+    elif mode == "height" or has_z:
+        cols_in.sort(key=by_value("z_nm"))
+        axis = "z"
     else:
         cols_in.sort(key=lambda m: (_time_sort(m), str(m.get("name"))))
+        axis = "time"
+    if reverse:
+        cols_in.reverse()
+    header = resolve_header(header, mode, has_z, bias_varies)
 
     keys = [str(m["key"]) for m in cols_in]
     ref_key = str(reference_key) if reference_key is not None and str(reference_key) in keys else None
     if ref_key is None and has_z and cols_in:
-        ref_key = keys[0]
+        # Closest approach (lowest z), whatever the display order.
+        ref_key = str(min(cols_in, key=by_value("z_nm"))["key"])
     ref_z = None
     if ref_key is not None:
         ref_z = _finite(next(m for m in cols_in if str(m["key"]) == ref_key).get("z_nm"))
 
-    biases = [_finite(m.get("bias_v")) for m in cols_in]
-    finite_b = [b for b in biases if b is not None]
-    bias_varies = len(finite_b) >= 2 and (max(finite_b) - min(finite_b)) > 2e-3
+    setpoints = [_finite(m.get("setpoint")) for m in cols_in]
+    setpoint_varies = _varies(setpoints, rel=0.01)
 
     columns = []
     for m in cols_in:
         key = str(m["key"])
         name = str(m.get("name") or key)
         z = _finite(m.get("z_nm"))
+        b = _finite(m.get("bias_v"))
         dz_pm = (z - ref_z) * 1e3 if (z is not None and ref_z is not None) else None
         if header == "zabs" and z is not None:
             text = f"z = {z:.3f} nm"
-        elif header == "name" or not has_z or ref_z is None:
-            text = _short(name)
-        else:
+        elif header == "bias" and b is not None:
+            text = bias_header(b)
+        elif header == "dz" and has_z and ref_z is not None:
             text = dz_text(z, ref_z)
+        else:
+            text = _short(name)
         subs = []
         if header_name and text != _short(name):
             subs.append(_short(name, 28))
-        if bias_varies:
-            subs.append(bias_text(m.get("bias_v")))
+        if bias_varies and header != "bias":
+            subs.append(bias_text(b))
+        if setpoint_varies:
+            subs.append(si_text(m.get("setpoint"), m.get("setpoint_unit") or ""))
+        if header == "bias" and has_z and _varies([_finite(c.get("z_nm")) for c in cols_in], 0.0, 5e-3):
+            # A bias series whose tip height also moved: say by how much.
+            subs.append(dz_text(z, ref_z))
         columns.append({
-            "key": key, "name": name, "z_nm": z, "dz_pm": dz_pm,
-            "bias_v": _finite(m.get("bias_v")),
+            "key": key, "name": name, "z_nm": z, "dz_pm": dz_pm, "bias_v": b,
             "is_ref": key == ref_key and header == "dz",
             "header": text,
             "subheader": "  ·  ".join(s for s in subs if s),
@@ -369,6 +538,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         "reference_key": ref_key,
         "has_z": has_z,
         "bias_varies": bias_varies,
+        "header": header,
+        "axis": axis,
+        "hidden_repeats": hidden_repeats,
     }
 
 
@@ -475,6 +647,23 @@ def _flat_row_level(arrays_by_key):
             return None
         levels.append(float(med))
     return float(np.median(levels)) if levels else None
+
+
+def typical_range(arrays, pct=(2.0, 98.0)):
+    """Median of the frames' own robust ranges."""
+    los, his = [], []
+    for a in arrays:
+        v = _sample(a, 40_000)
+        if v.size:
+            lo, hi = np.percentile(v, pct)
+            los.append(float(lo))
+            his.append(float(hi))
+    if not los:
+        return (0.0, 1.0)
+    lo, hi = float(np.median(los)), float(np.median(his))
+    if not hi > lo:
+        return robust_range(np.concatenate([_sample(a, 40_000) for a in arrays]))
+    return (lo, hi)
 
 
 def pooled_range(arrays, pct=(1.0, 99.0), per_frame=20_000):
@@ -701,7 +890,14 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
         for k, why in outliers.items():
             own_scale[(r, k)] = why
         inliers = [a for k, a in row_data.items() if k not in outliers] or list(row_data.values())
-        raw_lo, raw_hi = pooled_range(inliers)
+        if relative and flat_level is None:
+            # Topography: one height scale that fits the *typical* frame, so
+            # a tip crash or step in one frame saturates there instead of
+            # flattening every other frame (signal rows pool instead: a frame
+            # with more contrast - closer tip, other bias - is the point).
+            raw_lo, raw_hi = typical_range(inliers)
+        else:
+            raw_lo, raw_hi = pooled_range(inliers)
         d_unit, factor = row_display_unit(unit, [np.array([raw_lo, raw_hi])])
         units[r] = d_unit
         user = clims.get(clim_key(row["label"]))
