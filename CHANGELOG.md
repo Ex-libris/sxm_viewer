@@ -55,8 +55,9 @@ First public release archived on Zenodo.
   and **one bar per channel** even when each image has its own range.
 - **Molecular model on every panel**: load a .pdb / .xyz / .mol (or take
   the model already placed in the preview) and it appears at the same spot
-  on every panel - drag it, X / Y / Z to rotate, arrows to nudge, and every
-  panel follows, so channels and heights compare against one model. Same
+  on every panel - drag to move, Shift+drag to spin, Ctrl+Shift+drag or
+  middle button to rotate in 3-D, or use the X/Y/Z orientation gizmo (as in
+  the preview), X / Y / Z keys and arrows - and every panel follows live, so channels and heights compare against one model. Same
   renderer and styles as the preview (Appearance... opens the preview's
   dialog); atoms sized for the printed panel (Atom size to tune); on every
   panel or the first channel row; own Inkscape layer.

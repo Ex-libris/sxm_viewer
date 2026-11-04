@@ -1109,7 +1109,14 @@ Interaction cost: a drag caches the figure without molecules once
 (`restore_region` + `draw_artist`): ~80 ms for 12 panels instead of a ~0.8 s
 re-render. `render(draw_molecules=...)` is the Qt-free hook; `data_boxes`
 in the layout (post-`apply_aspect` image boxes) map clicks to panel nm.
-Molecules get their own Inkscape layer.
+Molecules get their own Inkscape layer. Interactive rotation must match the
+preview gesture for gesture (it was briefly lost - keep it): drag = move,
+Shift+drag = spin about the model centre, Ctrl+Shift+drag or middle button
+= free 3-D (0.5 deg/px: dx -> Y, dy -> X, y up), plus the X/Y/Z orientation
+gizmo (`_gizmo_vectors` / `_orientation_matrix` port the preview's; screen-
+only, painted by the view top-left while a model is selected; inner disc =
+tumble 0.45 deg/px, rim = spin). All modes share the cached-background
+redraw; keys X/Y/Z rotate 5 deg, arrows nudge.
 
 **Window** (`FigureWindow`): figure on white "paper" (= the export) in a
 scroll area, `_FormatPanel` **under it in a splitter**: a row of cards

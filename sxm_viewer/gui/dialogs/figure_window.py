@@ -118,6 +118,38 @@ def _mol_scale(ax, fig, user=1.0):
     return float(min(1.0, max(0.12, w_in / 3.5)) * float(user or 1.0))
 
 
+def _orientation_matrix(mol):
+    """Same as MultiPreviewCanvas._molecule_orientation_matrix."""
+    rads = np.radians(np.asarray(getattr(mol, "angles", [0.0, 0.0, 0.0]), dtype=float))
+    cx, cy, cz = np.cos(rads)
+    sx, sy, sz = np.sin(rads)
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    mat = rz @ ry @ rx
+    if bool(getattr(mol, "mirror_x", False)):
+        mat[0, :] *= -1.0
+    if bool(getattr(mol, "mirror_y", False)):
+        mat[1, :] *= -1.0
+    return mat
+
+
+def _gizmo_vectors(mol):
+    """X/Y/Z axis arrows as the preview's gizmo draws them: (idx, depth,
+    (x, y) in -1..1 with y up, colour), back to front."""
+    mat = _orientation_matrix(mol)
+    vecs = []
+    for idx, color in enumerate(("#ef4444", "#22c55e", "#3b82f6")):
+        v = np.asarray(mat[:, idx], dtype=float)
+        vecs.append((idx, float(v[2]), np.array([v[0] + 0.38 * v[2], v[1] + 0.18 * v[2]]), color))
+    norms = [max(0.22, float(np.linalg.norm(sc))) for _i, _z, sc, _c in vecs]
+    scale = 0.74 / max(norms or [1.0])
+    return [(i, z, (float(sc[0] * scale), float(sc[1] * scale)), c) for i, z, sc, c in sorted(vecs, key=lambda t: t[1])]
+
+
+_GIZMO_R = 38.0   # px
+
+
 def _molecule_from(d):
     from ..canvases.molecular_overlay import Molecule
     return Molecule.from_dict(d)
@@ -160,6 +192,7 @@ class _FigureView(QtWidgets.QWidget):
         self.add_row_box = None    # inches box of the "+ channel" handle
         self.ruler_text = ""       # page-width ruler under the paper (screen only)
         self.sel_boxes = []        # inch boxes of the selected molecule (screen only)
+        self.gizmo = None          # X/Y/Z orientation gizmo of the selected molecule (screen only)
 
     # geometry -----------------------------------------------------------
     def available_px(self):
@@ -259,6 +292,8 @@ class _FigureView(QtWidgets.QWidget):
             p.setBrush(QtCore.Qt.NoBrush)
             for b in self.sel_boxes:
                 p.drawRect(self.inches_rect(b))
+        if self.gizmo:
+            self._paint_gizmo(p)
         if not hit or not self._layout:
             return
         kind = hit.get("kind")
@@ -294,8 +329,57 @@ class _FigureView(QtWidgets.QWidget):
             p.setBrush(QtCore.Qt.NoBrush)
             p.drawRect(r.adjusted(-2, -2, 2, 2))
 
+    def gizmo_center(self):
+        return QtCore.QPointF(_GIZMO_R + 10.0, _GIZMO_R + 10.0)
+
+    def _paint_gizmo(self, p):
+        """The preview's orientation gizmo: ring + X/Y/Z arrows (depth-
+        sorted, far ones faded). Inner disc: tumble in 3-D; rim: spin."""
+        c = self.gizmo_center()
+        rad = _GIZMO_R
+        dark = self.palette().color(QtGui.QPalette.Window).lightness() < 128
+        ring = QtGui.QColor("#d7dde7" if dark else "#334155")
+        p.setPen(QtGui.QPen(ring, 1.0))
+        p.setBrush(QtGui.QColor(10, 15, 25, 110) if dark else QtGui.QColor(255, 255, 255, 200))
+        p.drawEllipse(c, rad * 0.94, rad * 0.94)
+        p.setPen(QtGui.QPen(ring, 0.8, QtCore.Qt.DotLine))
+        p.setBrush(QtCore.Qt.NoBrush)
+        p.drawEllipse(c, rad * 0.58, rad * 0.58)
+        f = p.font()
+        f.setBold(True)
+        f.setPointSizeF(8.0)
+        p.setFont(f)
+        for _idx, depth, (vx, vy), color in self.gizmo["vectors"]:
+            col = QtGui.QColor(color)
+            col.setAlphaF(0.45 + 0.45 * ((depth + 1.0) * 0.5))
+            end = QtCore.QPointF(c.x() + vx * rad, c.y() - vy * rad)
+            p.setPen(QtGui.QPen(col, 2.2))
+            p.drawLine(c, end)
+            p.setBrush(col)
+            p.drawEllipse(end, 2.4, 2.4)
+            lab = QtCore.QPointF(c.x() + vx * rad * 1.16, c.y() - vy * rad * 1.16)
+            p.drawText(QtCore.QRectF(lab.x() - 7, lab.y() - 7, 14, 14), QtCore.Qt.AlignCenter,
+                       "XYZ"[_idx])
+        p.setPen(ring)
+        p.setBrush(ring)
+        p.drawEllipse(c, 2.2, 2.2)
+
+    def _gizmo_hit(self, pos):
+        if not self.gizmo:
+            return None
+        c = self.gizmo_center()
+        lx = (pos.x() - c.x()) / _GIZMO_R
+        ly = -(pos.y() - c.y()) / _GIZMO_R
+        r = math.hypot(lx, ly)
+        if r > 1.02:
+            return None
+        return {"kind": "gizmo", "mode": "rotate_z" if r >= 0.58 else "rotate_xy", "local": (lx, ly)}
+
     # mouse --------------------------------------------------------------
     def _hit(self, pos):
+        g = self._gizmo_hit(pos)
+        if g is not None:
+            return g
         ar = self.add_rect()
         if not ar.isEmpty() and ar.contains(QtCore.QPointF(pos)):
             return {"kind": "add_row"}
@@ -330,13 +414,13 @@ class _FigureView(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.RightButton:
             self.context.emit(self._hit(event.pos()), event.globalPos())
             return
-        if event.button() != QtCore.Qt.LeftButton:
+        if event.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton):
             return
         self._pressed = True
         self.pressed.emit(self._hit(event.pos()), event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() != QtCore.Qt.LeftButton:
+        if event.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.MiddleButton):
             return
         self._pressed = False
         self.released.emit(event)
@@ -721,7 +805,8 @@ class _FormatPanel(QtWidgets.QWidget):
         edit_row.addWidget(b_props)
         edit_row.addWidget(b_rm)
         add(None, edit_row)
-        how = QtWidgets.QLabel("Drag: move · X Y Z: rotate (Shift: back)\nArrows: nudge · Del: remove")
+        how = QtWidgets.QLabel("Drag: move · Shift: spin · Ctrl+Shift / middle: 3-D\n"
+                               "Gizmo (top-left) · X Y Z · arrows · Del")
         how.setStyleSheet("color: palette(mid); font-size: 8pt;")
         add(None, how)
         for btn, act in ((b_load, "load"), (b_prev, "preview"), (b_props, "props"), (b_rm, "remove")):
@@ -1337,6 +1422,9 @@ class FigureWindow(QtWidgets.QWidget):
         self.layout_info = self._draw_into(self._fig, screen=True)
         self.view.add_row_box = self._add_row_box()
         self.view.sel_boxes = self._mol_sel_boxes()
+        mols = self._molecules()
+        self.view.gizmo = ({"vectors": _gizmo_vectors(mols[self._mol_sel])}
+                           if self._mol_sel is not None and self._mol_sel < len(mols) else None)
         self._blit()
 
     def _add_row_box(self):
@@ -1518,10 +1606,10 @@ class FigureWindow(QtWidgets.QWidget):
                     return i, r, f, entry[0]
         return None
 
-    def _mol_sel_boxes(self):
+    def _mol_sel_boxes(self, mols=None):
         """Inch boxes of the selected molecule on every panel (screen-only
         dashed highlight)."""
-        mols = self._molecules()
+        mols = mols if mols is not None else self._molecules()
         if self._mol_sel is None or self._mol_sel >= len(mols):
             return []
         bb = self._mol_bbox(mols[self._mol_sel])
@@ -1658,11 +1746,13 @@ class FigureWindow(QtWidgets.QWidget):
                 return
         super().keyPressEvent(event)
 
-    def _mol_begin_drag(self, hit, event):
-        inch = self.view.to_inches(event.pos())
-        d = self._to_data(hit["row"], hit["frame"], *inch) if inch else None
-        if d is None:
-            return
+    def _mol_begin_drag(self, hit, event, mode="translate", local=None):
+        d = None
+        if hit.get("row") is not None:
+            inch = self.view.to_inches(event.pos())
+            d = self._to_data(hit["row"], hit["frame"], *inch) if inch else None
+            if d is None:
+                return
         self._mol_sel = hit["index"]
         fig = self._fig
         # Background without the molecules, cached once; each move then
@@ -1680,11 +1770,15 @@ class FigureWindow(QtWidgets.QWidget):
         mols = [m.copy() for m in self._molecules()]
         self._mol_drag = {"index": hit["index"], "row": hit["row"], "frame": hit["frame"], "start": d,
                           "offset0": np.asarray(mols[hit["index"]].offset, dtype=float).copy(),
+                          "angles0": np.asarray(mols[hit["index"]].angles, dtype=float).copy(),
+                          "mode": mode, "local": local, "px0": QtCore.QPointF(event.pos()),
                           "mols": mols, "bg": bg, "arts": [], "before": self._snapshot(), "moved": False}
         self._mol_drag_paint()
 
     def _mol_drag_paint(self):
         d = self._mol_drag
+        if d is None:
+            return
         fig = self._fig
         for a in d["arts"]:
             try:
@@ -1699,17 +1793,49 @@ class FigureWindow(QtWidgets.QWidget):
         fig.canvas.restore_region(d["bg"])
         for ax, a in arts:
             ax.draw_artist(a)
+        self.view.sel_boxes = self._mol_sel_boxes(d["mols"])
+        self.view.gizmo = {"vectors": _gizmo_vectors(d["mols"][d["index"]])}
         self._push_buffer()
 
     def _mol_drag_move(self, event):
         d = self._mol_drag
-        inch = self.view.to_inches(event.pos())
-        p = self._to_data(d["row"], d["frame"], *inch) if inch else None
-        if p is None:
-            return
-        dx, dy = p[0] - d["start"][0], p[1] - d["start"][1]
-        d["moved"] = d["moved"] or abs(dx) + abs(dy) > 1e-6
-        d["mols"][d["index"]].offset = d["offset0"] + np.array([dx, dy, 0.0])
+        mol = d["mols"][d["index"]]
+        mode = d["mode"]
+        pos = QtCore.QPointF(event.pos())
+        dpx = pos.x() - d["px0"].x()
+        dpy = -(pos.y() - d["px0"].y())          # y up, like the preview's events
+        if mode in ("translate", "rotate_z"):
+            inch = self.view.to_inches(event.pos())
+            p = self._to_data(d["row"], d["frame"], *inch) if inch else None
+            if p is None:
+                return
+            if mode == "translate":
+                dx, dy = p[0] - d["start"][0], p[1] - d["start"][1]
+                mol.offset = d["offset0"] + np.array([dx, dy, 0.0])
+            else:
+                c = d["offset0"]
+                v0 = np.array([d["start"][0] - c[0], d["start"][1] - c[1]])
+                v1 = np.array([p[0] - c[0], p[1] - c[1]])
+                if np.linalg.norm(v0) > 0.01 and np.linalg.norm(v1) > 0.01:
+                    delta = math.degrees(math.atan2(v1[1], v1[0]) - math.atan2(v0[1], v0[0]))
+                    a = d["angles0"].copy()
+                    a[2] += delta
+                    mol.angles = a
+        elif mode in ("rotate_3d", "gizmo_rotate_xy"):
+            sens = 0.5 if mode == "rotate_3d" else 0.45
+            a = d["angles0"].copy()
+            a[0] += dpy * sens
+            a[1] += dpx * sens
+            mol.angles = a
+        elif mode == "gizmo_rotate_z":
+            c = self.view.gizmo_center()
+            sx, sy = d["local"]
+            start = math.degrees(math.atan2(sy, sx))
+            cur = math.degrees(math.atan2(-(pos.y() - c.y()), pos.x() - c.x()))
+            a = d["angles0"].copy()
+            a[2] += cur - start
+            mol.angles = a
+        d["moved"] = True
         if not self._drag_timer.isActive():
             self._drag_timer.start()
 
@@ -1741,8 +1867,13 @@ class FigureWindow(QtWidgets.QWidget):
                 tip += "\nRight-click: header options"
             elif kind == "molecule":
                 cursor = QtCore.Qt.SizeAllCursor
-                tip = ("Molecular model - same spot on every panel\nDrag: move  ·  X / Y / Z: rotate "
-                       "(Shift: back)  ·  arrows: nudge  ·  Del: remove  ·  right-click: more")
+                tip = ("Molecular model - same spot on every panel\nDrag: move  ·  Shift+drag: spin  ·  "
+                       "Ctrl+Shift+drag or middle button: rotate in 3-D\nX / Y / Z: rotate 5° (Shift: back)  ·  "
+                       "arrows: nudge  ·  Del: remove  ·  right-click: more")
+            elif kind == "gizmo":
+                cursor = QtCore.Qt.ClosedHandCursor
+                tip = ("Orientation gizmo - drag inside the ring: tumble in 3-D  ·  "
+                       "drag on the rim: spin in plane")
             elif kind == "channel":
                 cursor = QtCore.Qt.PointingHandCursor
                 row = self.spec["rows"][hit["row"]]
@@ -1773,9 +1904,25 @@ class FigureWindow(QtWidgets.QWidget):
                 self._render_screen()
             return
         kind = hit["kind"]
+        if kind == "gizmo" and event is not None and self._mol_sel is not None:
+            self._mol_begin_drag({"index": self._mol_sel, "row": None, "frame": None}, event,
+                                 mode="gizmo_" + hit["mode"], local=hit["local"])
+            return
+        if event is not None and event.button() == QtCore.Qt.MiddleButton and kind != "molecule":
+            return
         if kind == "molecule" and event is not None:
             self.setFocus()
-            self._mol_begin_drag(hit, event)
+            mods = event.modifiers()
+            # Same gestures as the preview: drag = move, Shift = spin in
+            # plane, Ctrl+Shift or middle button = free 3-D rotation.
+            if event.button() == QtCore.Qt.MiddleButton or (
+                    mods & QtCore.Qt.ShiftModifier and mods & QtCore.Qt.ControlModifier):
+                mode = "rotate_3d"
+            elif mods & QtCore.Qt.ShiftModifier:
+                mode = "rotate_z"
+            else:
+                mode = "translate"
+            self._mol_begin_drag(hit, event, mode=mode)
             return
         gpos = event.globalPos() if event is not None else QtGui.QCursor.pos()
         if kind == "close":
