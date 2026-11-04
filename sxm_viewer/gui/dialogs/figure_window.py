@@ -67,6 +67,62 @@ _ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)"
                 "ccw": "Turn to landscape (counter-clockwise)"}
 
 
+class _MoleculePainter:
+    """Stand-in ``self`` for ``MultiPreviewCanvas._draw_molecules``, so a
+    figure draws molecular models with *exactly* the preview / pop-up
+    renderer (styles, palettes, depth cue, bond colours) - one renderer,
+    nothing to keep in sync. Returns the artists it added to ``ax``."""
+
+    def __init__(self, molecules, settings):
+        self.show_molecules = True
+        self.molecules = list(molecules or [])
+        self.molecule_palette = settings.get("palette", "avogadro")
+        self._bond_color_mode = settings.get("bond_color_mode", "default")
+        self._default_bond_color = settings.get("default_bond_color", (0.9, 0.9, 0.9))
+        self._show_molecule_shadow = bool(settings.get("show_shadows", False))
+        self._show_hydrogens = bool(settings.get("show_hydrogens", True))
+        self._molecule_artists = []
+
+    def draw(self, ax, scale=1.0):
+        from ..canvases.detail_preview_canvas import MultiPreviewCanvas
+        self._molecule_artists = []
+        before = set(map(id, list(ax.collections) + list(ax.lines) + list(ax.patches) + list(ax.texts)))
+        MultiPreviewCanvas._draw_molecules(self, ax)
+        arts = [a for a in list(ax.collections) + list(ax.lines) + list(ax.patches) + list(ax.texts)
+                if id(a) not in before]
+        if abs(scale - 1.0) > 1e-3:
+            # The preview sizes atoms/bonds in points for a large canvas; a
+            # 30 mm figure panel needs them proportionally smaller.
+            for a in arts:
+                try:
+                    if hasattr(a, "get_sizes") and len(a.get_sizes()):
+                        a.set_sizes(np.asarray(a.get_sizes(), dtype=float) * scale * scale)
+                    if hasattr(a, "get_linewidths"):
+                        lw = np.asarray(a.get_linewidths(), dtype=float)
+                        if lw.size:
+                            a.set_linewidths(lw * scale)
+                    elif hasattr(a, "get_linewidth"):
+                        a.set_linewidth(float(a.get_linewidth()) * scale)
+                except Exception:
+                    pass
+        return arts
+
+
+def _mol_scale(ax, fig, user=1.0):
+    """Marker scale for a panel: its printed width against a ~3.5 in
+    preview, times the user's 'Atom size'."""
+    try:
+        w_in = ax.get_position().width * fig.get_size_inches()[0]
+    except Exception:
+        w_in = 3.5
+    return float(min(1.0, max(0.12, w_in / 3.5)) * float(user or 1.0))
+
+
+def _molecule_from(d):
+    from ..canvases.molecular_overlay import Molecule
+    return Molecule.from_dict(d)
+
+
 def _figure_classes():
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
@@ -103,6 +159,7 @@ class _FigureView(QtWidgets.QWidget):
         self.hit_test = None       # callable(x_in, y_in) -> hit dict | None
         self.add_row_box = None    # inches box of the "+ channel" handle
         self.ruler_text = ""       # page-width ruler under the paper (screen only)
+        self.sel_boxes = []        # inch boxes of the selected molecule (screen only)
 
     # geometry -----------------------------------------------------------
     def available_px(self):
@@ -197,6 +254,11 @@ class _FigureView(QtWidgets.QWidget):
             f.setPointSizeF(8.0)
             p.setFont(f)
             p.drawText(ar, QtCore.Qt.AlignCenter, "+ channel")
+        if self.sel_boxes:
+            p.setPen(QtGui.QPen(accent, 1.0, QtCore.Qt.DashLine))
+            p.setBrush(QtCore.Qt.NoBrush)
+            for b in self.sel_boxes:
+                p.drawRect(self.inches_rect(b))
         if not hit or not self._layout:
             return
         kind = hit.get("kind")
@@ -346,6 +408,14 @@ def _tab_icon(kind, color):
         f.setPixelSize(8)
         p.setFont(f)
         p.drawText(QtCore.QRectF(0, 2, size, 10), QtCore.Qt.AlignCenter, "nm")
+    elif kind == "molecule":
+        pts = [QtCore.QPointF(5, 15), QtCore.QPointF(11, 6), QtCore.QPointF(17, 15)]
+        p.drawLine(pts[0], pts[1])
+        p.drawLine(pts[1], pts[2])
+        p.drawLine(pts[0], pts[2])
+        p.setBrush(QtGui.QColor("#5ab0ff"))
+        for pt_ in pts:
+            p.drawEllipse(pt_, 2.6, 2.6)
     elif kind == "zoom":
         p.drawRect(QtCore.QRectF(3, 3, 16, 16))
         p.setPen(QtGui.QPen(QtGui.QColor("#ff9f1c"), 1.6))
@@ -360,6 +430,7 @@ class _FormatPanel(QtWidgets.QWidget):
     menus). Emits ``changed(dict)`` with the style/state keys to update."""
 
     changed = QtCore.pyqtSignal(dict)
+    mol_action = QtCore.pyqtSignal(str)   # load | preview | props | remove
 
     CARDS = (
         ("page", "Page & layout", "Journal width, arrangement"),
@@ -369,6 +440,7 @@ class _FormatPanel(QtWidgets.QWidget):
         ("letters", "Panel letters", "a, b, c … style and place"),
         ("scale", "Scale bar", "Where, length, label"),
         ("zoom", "Zoom outlines", "Boxes of the zooms"),
+        ("molecule", "Molecular model", "Same model on every panel"),
     )
 
     def __init__(self, parent=None):
@@ -624,6 +696,37 @@ class _FormatPanel(QtWidgets.QWidget):
         w["zoom_labels"] = check("Letters", "Letter next to each zoom outline")
         add(None, w["zoom_labels"])
 
+        # -- Molecular model (.pdb / .xyz / .mol), shared by all panels
+        add = card("molecule")
+        add.set_rows(6)
+        load_row = QtWidgets.QHBoxLayout()
+        b_load = QtWidgets.QPushButton("Load file…")
+        b_load.setToolTip("Overlay a .pdb / .xyz / .mol model on every panel")
+        b_prev = QtWidgets.QPushButton("From preview")
+        b_prev.setToolTip("Use the model(s) already placed on one of these frames in the preview")
+        load_row.addWidget(b_load)
+        load_row.addWidget(b_prev)
+        add(None, load_row)
+        w["molecules_on"] = check("Show", "Show the molecular model(s)")
+        add(None, w["molecules_on"])
+        w["mol_scope"] = combo({"all": "Every panel", "first": "First channel row"})
+        add("On", w["mol_scope"])
+        w["mol_size"] = spin(0.2, 4.0, 0.1, " ×")
+        w["mol_size"].setToolTip("Atom and bond size relative to the automatic (panel-width) size")
+        add("Atom size", w["mol_size"])
+        edit_row = QtWidgets.QHBoxLayout()
+        b_props = QtWidgets.QPushButton("Appearance…")
+        b_props.setToolTip("Style, rotation, scale, mirror (the preview's dialog)")
+        b_rm = QtWidgets.QPushButton("Remove")
+        edit_row.addWidget(b_props)
+        edit_row.addWidget(b_rm)
+        add(None, edit_row)
+        how = QtWidgets.QLabel("Drag: move · X Y Z: rotate (Shift: back)\nArrows: nudge · Del: remove")
+        how.setStyleSheet("color: palette(mid); font-size: 8pt;")
+        add(None, how)
+        for btn, act in ((b_load, "load"), (b_prev, "preview"), (b_props, "props"), (b_rm, "remove")):
+            btn.clicked.connect(lambda _=False, a=act: self.mol_action.emit(a))
+
         end = QtWidgets.QVBoxLayout()
         end.addStretch(1)
         self.reset_btn = QtWidgets.QPushButton("Reset format")
@@ -757,6 +860,7 @@ class FigureWindow(QtWidgets.QWidget):
     def __init__(self, source, fid, keys, *, mode="height", excluded=None, root_key=None, parent=None):
         super().__init__(parent, QtCore.Qt.Window)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)   # X/Y/Z, arrows for a selected molecule
         self.source = source
         self.fid = fid
         self.mode = mode
@@ -777,6 +881,11 @@ class FigureWindow(QtWidgets.QWidget):
         self._drag = None
         self._fig = None
         self._pending = {}
+        self._mol_sel = None          # index of the selected molecule
+        self._mol_drag = None
+        self._mol_axes = []           # screen-figure axes that carry molecules
+        self._mol_artists = []
+        self._mol_cache = (None, [])  # (state repr, [Molecule])
 
         self._build_ui()
         self._init_shortcuts()
@@ -814,6 +923,7 @@ class FigureWindow(QtWidgets.QWidget):
             "row_choices": dict(saved.get("row_choices") or {}),
             "row_cmaps": dict(saved.get("row_cmaps") or {}),
             "letter_colors": dict(saved.get("letter_colors") or {}),
+            "molecules": [dict(m) for m in (saved.get("molecules") or []) if isinstance(m, dict)],
             "show_repeats": bool(saved.get("show_repeats", False)),
             "clims": {k: v for k, v in (saved.get("clims") or {}).items() if isinstance(v, (list, tuple))},
             "style": hs.resolve_style(style),
@@ -974,6 +1084,7 @@ class FigureWindow(QtWidgets.QWidget):
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
+        self.format_panel.mol_action.connect(self._on_mol_action)
         self.format_panel.set_mode(self.mode)
         self.splitter.addWidget(self.format_panel)
         self.splitter.setStretchFactor(0, 1)
@@ -1180,10 +1291,39 @@ class FigureWindow(QtWidgets.QWidget):
         FigureCanvasAgg(fig)
         return fig
 
-    def _draw_into(self, fig):
+    def _molecules(self):
+        """Molecule objects for the state (rebuilt only when it changes)."""
+        key = repr(self.state.get("molecules"))
+        if self._mol_cache[0] != key:
+            mols = []
+            for d in self.state.get("molecules") or []:
+                try:
+                    mols.append(_molecule_from(d))
+                except Exception:
+                    pass
+            self._mol_cache = (key, mols)
+        return self._mol_cache[1]
+
+    def _draw_into(self, fig, screen=False):
+        mols = self._molecules()
+        draw = None
+        if mols:
+            painter = _MoleculePainter(mols, self.source.molecule_settings())
+            if screen:
+                self._mol_axes, self._mol_artists = [], []
+
+            def draw(ax, r, f, w, h):
+                arts = painter.draw(ax, _mol_scale(ax, fig, self.style.get("mol_size", 1.0)))
+                for i, a in enumerate(arts):
+                    a.set_gid(f"molecule_{r}_{f}_{i}")
+                if screen:
+                    self._mol_axes.append(ax)
+                    self._mol_artists.extend(arts)
+        elif screen:
+            self._mol_axes, self._mol_artists = [], []
         return hs.render(
             fig, self.spec, self._panel_map(), style=self.style, clims=self.state["clims"],
-            letter_colors=self.state.get("letter_colors"),
+            letter_colors=self.state.get("letter_colors"), draw_molecules=draw,
             get_cmap=lambda name: registry_get_cmap(name, "gray"))
 
     def _render_screen(self):
@@ -1194,8 +1334,9 @@ class FigureWindow(QtWidgets.QWidget):
             return
         if self._fig is None:
             self._fig = self._new_figure()
-        self.layout_info = self._draw_into(self._fig)
+        self.layout_info = self._draw_into(self._fig, screen=True)
         self.view.add_row_box = self._add_row_box()
+        self.view.sel_boxes = self._mol_sel_boxes()
         self._blit()
 
     def _add_row_box(self):
@@ -1255,6 +1396,13 @@ class FigureWindow(QtWidgets.QWidget):
                                     if self._actual else "")
         fig.set_dpi(dpi * dpr)
         fig.canvas.draw()
+        self._push_buffer()
+
+    def _push_buffer(self):
+        """Agg buffer of the screen figure -> the view (no re-draw)."""
+        fig = self._fig
+        fig_w, fig_h = self.layout_info["size"]
+        dpr = float(self.devicePixelRatioF() or 1.0)
         buf = np.asarray(fig.canvas.buffer_rgba())
         h, w = buf.shape[:2]
         img = QtGui.QImage(buf.data, w, h, 4 * w, QtGui.QImage.Format_RGBA8888).copy()
@@ -1262,6 +1410,9 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.set_image(img, (fig_w, fig_h), self.layout_info)
 
     def _redraw_fast(self):
+        if self._mol_drag is not None:
+            self._mol_drag_paint()
+            return
         if self._fig is not None and self.layout_info is not None:
             self._blit()
 
@@ -1316,10 +1467,260 @@ class FigureWindow(QtWidgets.QWidget):
         for entry in lay.get("scale_boxes", []):
             if _inside(entry["box"], x, y, pad=0.03):
                 return {"kind": "scalebar", "row": entry["row"], "frame": entry["frame"], "box": entry["box"]}
+        mi = self._molecule_at(x, y)
+        if mi is not None:
+            return {"kind": "molecule", "index": mi[0], "row": mi[1], "frame": mi[2], "box": mi[3]}
         for (r, f), box in lay["cells"].items():
             if _inside(box, x, y):
                 return {"kind": "panel", "row": r, "frame": f, "box": box}
         return None
+
+    # ------------------------------------------------------------------
+    # Molecular model: one placement (panel nm) shared by every panel
+    # ------------------------------------------------------------------
+    def _to_data(self, r, f, x, y):
+        entry = (self.layout_info or {}).get("data_boxes", {}).get((r, f))
+        if not entry:
+            return None
+        (x0, y0, x1, y1), w, h = entry
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x - x0) / (x1 - x0) * w, (y1 - y) / (y1 - y0) * h
+
+    def _mol_bbox(self, mol, pad=0.12):
+        c = mol.get_transformed_coordinates()
+        if c is None or not len(c):
+            return None
+        return (float(c[:, 0].min()) - pad, float(c[:, 0].max()) + pad,
+                float(c[:, 1].min()) - pad, float(c[:, 1].max()) + pad)
+
+    def _mol_panels(self):
+        lay = self.layout_info or {}
+        if not self.style.get("molecules_on", True):
+            return []
+        return [rf for rf in lay.get("data_boxes", {})
+                if self.style.get("mol_scope") != "first" or rf[0] == 0]
+
+    def _molecule_at(self, x, y):
+        mols = self._molecules()
+        if not mols:
+            return None
+        for (r, f) in self._mol_panels():
+            entry = self.layout_info["data_boxes"][(r, f)]
+            if not _inside(entry[0], x, y):
+                continue
+            d = self._to_data(r, f, x, y)
+            if d is None:
+                continue
+            for i in range(len(mols) - 1, -1, -1):
+                bb = self._mol_bbox(mols[i])
+                if bb and bb[0] <= d[0] <= bb[1] and bb[2] <= d[1] <= bb[3]:
+                    return i, r, f, entry[0]
+        return None
+
+    def _mol_sel_boxes(self):
+        """Inch boxes of the selected molecule on every panel (screen-only
+        dashed highlight)."""
+        mols = self._molecules()
+        if self._mol_sel is None or self._mol_sel >= len(mols):
+            return []
+        bb = self._mol_bbox(mols[self._mol_sel])
+        if not bb:
+            return []
+        out = []
+        for (r, f) in self._mol_panels():
+            (x0, y0, x1, y1), w, h = self.layout_info["data_boxes"][(r, f)]
+            sx, sy = (x1 - x0) / max(w, 1e-9), (y1 - y0) / max(h, 1e-9)
+            out.append((x0 + max(0.0, bb[0]) * sx, y1 - min(h, bb[3]) * sy,
+                        x0 + min(w, bb[1]) * sx, y1 - max(0.0, bb[2]) * sy))
+        return out
+
+    def _set_molecules(self, mols, push=True):
+        self._apply_edit({"molecules": [m.to_dict() for m in mols]}, push=push)
+
+    def _on_mol_action(self, action):
+        mols = [m.copy() for m in self._molecules()]
+        if action == "load":
+            start = str(self.source.export_settings().get("mol_dir") or "")
+            path, _f = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Molecular model", start, "Molecules (*.pdb *.xyz *.mol);;All files (*)")
+            if not path:
+                return
+            self.source.set_export_settings(mol_dir=str(Path(path).parent))
+            mol = _molecule_from({})
+            try:
+                mol.load(path)
+                mol.filepath = path
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, "Molecular model", f"Could not read the model:\n{exc}")
+                return
+            if not len(mol.coordinates):
+                QtWidgets.QMessageBox.warning(self, "Molecular model", "No atoms found in that file.")
+                return
+            dims = next(iter((self.layout_info or {}).get("data_boxes", {}).values()), None)
+            if dims:
+                mol.offset = np.array([dims[1] / 2.0, dims[2] / 2.0, 0.0])
+            mols.append(mol)
+            self._mol_sel = len(mols) - 1
+            self._set_molecules(mols)
+            self._flash(f"{Path(path).name}: on every panel - drag to place, X/Y/Z to rotate")
+        elif action == "preview":
+            found, src = self.source.preview_molecules(self._all_keys())
+            if not found:
+                QtWidgets.QMessageBox.information(
+                    self, "Molecular model", "None of these frames has a molecule in the preview yet.")
+                return
+            self._mol_sel = 0
+            self._apply_edit({"molecules": found})
+            self._flash(f"Model(s) from {Path(src).stem} - same spot on every panel")
+        elif action == "props":
+            self._mol_properties(self._mol_sel if self._mol_sel is not None else 0)
+        elif action == "remove":
+            if not mols:
+                return
+            if self._mol_sel is not None and self._mol_sel < len(mols):
+                mols.pop(self._mol_sel)
+            else:
+                mols = []
+            self._mol_sel = None
+            self._set_molecules(mols)
+
+    def _mol_properties(self, i):
+        mols = [m.copy() for m in self._molecules()]
+        if not mols or i is None or i >= len(mols):
+            return
+        from ..canvases.molecular_overlay import MoleculePropertiesDialog
+        before = self._snapshot()
+        mol = mols[i]
+
+        def changed():
+            # live: every panel follows the dialog
+            self.state = dict(self.state, molecules=[m.to_dict() for m in mols])
+            self._rebuild()
+
+        dlg = MoleculePropertiesDialog(mol, parent=self, callback=changed,
+                                       overlay_settings={"show_shadows_available": False,
+                                                         "show_hydrogens_available": False,
+                                                         "palette_available": False})
+        dlg.exec_()
+        if self.state != before:
+            self._undo.append(before)
+            self._redo.clear()
+            self.source.set_state(self.fid, self.state)
+
+    def _mol_transform(self, i, *, rot=None, move=None, mirror=None, reset=False, remove=False):
+        mols = [m.copy() for m in self._molecules()]
+        if i is None or i >= len(mols):
+            return
+        m = mols[i]
+        if remove:
+            mols.pop(i)
+            self._mol_sel = None
+        elif reset:
+            try:
+                mols[i] = m.reset_to_file_state(keep_offset=True)
+            except Exception:
+                m.angles = np.zeros(3)
+        else:
+            if rot is not None:
+                m.angles = np.asarray(m.angles, dtype=float) + np.asarray(rot, dtype=float)
+            if move is not None:
+                m.offset = np.asarray(m.offset, dtype=float) + np.array([move[0], move[1], 0.0])
+            if mirror == "x":
+                m.mirror_x = not m.mirror_x
+            elif mirror == "y":
+                m.mirror_y = not m.mirror_y
+        self._set_molecules(mols)
+
+    def keyPressEvent(self, event):
+        i = self._mol_sel
+        if i is not None and i < len(self._molecules()):
+            key = event.key()
+            sign = -1.0 if event.modifiers() & QtCore.Qt.ShiftModifier else 1.0
+            step = 0.5 if event.modifiers() & QtCore.Qt.ShiftModifier else 0.05
+            axes = {QtCore.Qt.Key_X: 0, QtCore.Qt.Key_Y: 1, QtCore.Qt.Key_Z: 2}
+            if key in axes:
+                rot = [0.0, 0.0, 0.0]
+                rot[axes[key]] = 5.0 * sign
+                self._mol_transform(i, rot=rot)
+                return
+            moves = {QtCore.Qt.Key_Left: (-step, 0), QtCore.Qt.Key_Right: (step, 0),
+                     QtCore.Qt.Key_Up: (0, step), QtCore.Qt.Key_Down: (0, -step)}
+            if key in moves:
+                self._mol_transform(i, move=moves[key])
+                return
+            if key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                self._mol_transform(i, remove=True)
+                return
+            if key == QtCore.Qt.Key_Escape:
+                self._mol_sel = None
+                self._render_screen()
+                return
+        super().keyPressEvent(event)
+
+    def _mol_begin_drag(self, hit, event):
+        inch = self.view.to_inches(event.pos())
+        d = self._to_data(hit["row"], hit["frame"], *inch) if inch else None
+        if d is None:
+            return
+        self._mol_sel = hit["index"]
+        fig = self._fig
+        # Background without the molecules, cached once; each move then
+        # redraws only the molecule artists (fast with many panels).
+        for a in self._mol_artists:
+            a.set_visible(False)
+        fig.canvas.draw()
+        bg = fig.canvas.copy_from_bbox(fig.bbox)
+        for a in self._mol_artists:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        self._mol_artists = []
+        mols = [m.copy() for m in self._molecules()]
+        self._mol_drag = {"index": hit["index"], "row": hit["row"], "frame": hit["frame"], "start": d,
+                          "offset0": np.asarray(mols[hit["index"]].offset, dtype=float).copy(),
+                          "mols": mols, "bg": bg, "arts": [], "before": self._snapshot(), "moved": False}
+        self._mol_drag_paint()
+
+    def _mol_drag_paint(self):
+        d = self._mol_drag
+        fig = self._fig
+        for a in d["arts"]:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        painter = _MoleculePainter(d["mols"], self.source.molecule_settings())
+        arts = []
+        for ax in self._mol_axes:
+            arts.extend((ax, a) for a in painter.draw(ax, _mol_scale(ax, fig, self.style.get("mol_size", 1.0))))
+        d["arts"] = [a for _ax, a in arts]
+        fig.canvas.restore_region(d["bg"])
+        for ax, a in arts:
+            ax.draw_artist(a)
+        self._push_buffer()
+
+    def _mol_drag_move(self, event):
+        d = self._mol_drag
+        inch = self.view.to_inches(event.pos())
+        p = self._to_data(d["row"], d["frame"], *inch) if inch else None
+        if p is None:
+            return
+        dx, dy = p[0] - d["start"][0], p[1] - d["start"][1]
+        d["moved"] = d["moved"] or abs(dx) + abs(dy) > 1e-6
+        d["mols"][d["index"]].offset = d["offset0"] + np.array([dx, dy, 0.0])
+        if not self._drag_timer.isActive():
+            self._drag_timer.start()
+
+    def _mol_drag_end(self):
+        d, self._mol_drag = self._mol_drag, None
+        if d["moved"]:
+            self._undo.append(d["before"])
+            self._redo.clear()
+            self.state = dict(self._snapshot(), molecules=[m.to_dict() for m in d["mols"]])
+            self.source.set_state(self.fid, self.state)
+        self._render_screen()
 
     def _on_hover(self, hit):
         cursor = QtCore.Qt.ArrowCursor
@@ -1338,6 +1739,10 @@ class FigureWindow(QtWidgets.QWidget):
                 else:
                     tip = col["name"]
                 tip += "\nRight-click: header options"
+            elif kind == "molecule":
+                cursor = QtCore.Qt.SizeAllCursor
+                tip = ("Molecular model - same spot on every panel\nDrag: move  ·  X / Y / Z: rotate "
+                       "(Shift: back)  ·  arrows: nudge  ·  Del: remove  ·  right-click: more")
             elif kind == "channel":
                 cursor = QtCore.Qt.PointingHandCursor
                 row = self.spec["rows"][hit["row"]]
@@ -1363,8 +1768,15 @@ class FigureWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     def _on_press(self, hit, event):
         if not hit:
+            if self._mol_sel is not None:
+                self._mol_sel = None
+                self._render_screen()
             return
         kind = hit["kind"]
+        if kind == "molecule" and event is not None:
+            self.setFocus()
+            self._mol_begin_drag(hit, event)
+            return
         gpos = event.globalPos() if event is not None else QtGui.QCursor.pos()
         if kind == "close":
             col = self.spec["columns"][hit["frame"]]
@@ -1411,6 +1823,9 @@ class FigureWindow(QtWidgets.QWidget):
                       "before": self._snapshot(), "gpos": event.globalPos()}
 
     def _on_drag_move(self, event):
+        if self._mol_drag is not None:
+            self._mol_drag_move(event)
+            return
         d = self._drag
         if not d:
             return
@@ -1441,6 +1856,9 @@ class FigureWindow(QtWidgets.QWidget):
             self._drag_timer.start()
 
     def _on_release(self, _event):
+        if self._mol_drag is not None:
+            self._mol_drag_end()
+            return
         d, self._drag = self._drag, None
         if not d:
             return
@@ -1501,6 +1919,22 @@ class FigureWindow(QtWidgets.QWidget):
             menu = self._add_channel_menu()
         elif kind == "colorbar":
             menu = self._colour_menu(hit["row"], hit["frame"])
+        elif kind == "molecule":
+            i = hit["index"]
+            self._mol_sel = i
+            menu = QtWidgets.QMenu(self)
+            mol = self._molecules()[i]
+            menu.addSection(Path(str(mol.filepath or "Molecule")).name)
+            menu.addAction("Appearance, rotation, scale…").triggered.connect(lambda: self._mol_properties(i))
+            for text, rot in (("Rotate +90° (in plane)", [0, 0, 90]), ("Flip over (X 180°)", [180, 0, 0])):
+                menu.addAction(text).triggered.connect(lambda _=False, r_=rot: self._mol_transform(i, rot=r_))
+            menu.addAction("Mirror left-right").triggered.connect(lambda: self._mol_transform(i, mirror="x"))
+            menu.addAction("Mirror up-down").triggered.connect(lambda: self._mol_transform(i, mirror="y"))
+            menu.addAction("Reset orientation").triggered.connect(lambda: self._mol_transform(i, reset=True))
+            menu.addSeparator()
+            self._choice(menu, "Shown on", "mol_scope", {"all": "Every panel", "first": "First channel row"})
+            menu.addSeparator()
+            menu.addAction("Remove this model").triggered.connect(lambda: self._mol_transform(i, remove=True))
         elif kind == "letter":
             menu = QtWidgets.QMenu(self)
             self._single_letter_menu(menu, hit["row"], hit["frame"])

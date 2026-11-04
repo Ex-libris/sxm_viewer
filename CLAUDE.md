@@ -1091,6 +1091,26 @@ card row + the matching right-click menu. Notable ones:
 - Headers can be `none`; `channel_labels` hides the row names (bands
   shrink); `ref_bold` (off by default).
 
+**Molecular models** (Molecule card, right-click a model): one list of
+`Molecule.to_dict()` in figure state `molecules`, positioned in **panel
+nm** (each panel's axes are `0..w, 0..h` nm, y up), so one placement is the
+same physical spot on every channel / frame of a series - the point is
+comparing channels against the same model. Drawn with the preview's own
+renderer: `_MoleculePainter` is a 7-attribute stand-in `self` for
+`MultiPreviewCanvas._draw_molecules` (palette / bond mode / shadow / H come
+from `controller.molecule_settings()` = the preview canvas), so styles never
+drift; marker sizes and bond widths are post-scaled to the panel's printed
+width (`_mol_scale`, x `mol_size`) because the preview sizes them in points
+for a big canvas. "From preview" (`controller.preview_molecules`) takes the
+live preview / `viewer.molecule_overlays` and subtracts the frame's display-
+extent lower-left corner (preview data coords are extent-based, y up).
+Interaction cost: a drag caches the figure without molecules once
+(`copy_from_bbox`) and each move redraws only the molecule artists
+(`restore_region` + `draw_artist`): ~80 ms for 12 panels instead of a ~0.8 s
+re-render. `render(draw_molecules=...)` is the Qt-free hook; `data_boxes`
+in the layout (post-`apply_aspect` image boxes) map clicks to panel nm.
+Molecules get their own Inkscape layer.
+
 **Window** (`FigureWindow`): figure on white "paper" (= the export) in a
 scroll area, `_FormatPanel` **under it in a splitter**: a row of cards
 (icon from `_tab_icon` + title + one-line hint) with every option visible -

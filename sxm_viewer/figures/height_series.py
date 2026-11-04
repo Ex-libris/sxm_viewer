@@ -99,6 +99,9 @@ STYLE_DEFAULTS = {
     "cbar_label_pos": "inside",  # channel name: centred inside the bar | outside
     "cbar_outline": True,      # thin frame around colour bars
     "rotate_tall": "off",      # turn tall images to landscape: off | cw | ccw
+    "molecules_on": True,      # show the figure's molecular model(s)
+    "mol_scope": "all",        # all panels | first (first channel row only)
+    "mol_size": 1.0,           # atom/bond size x the automatic panel-width size
 }
 
 # Keys whose sensible default depends on the recipe (a zoom figure shows
@@ -1399,7 +1402,7 @@ def _letter_region(pos, cell, size_pt, n_chars, inset=0.04):
 
 
 def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-           text_color="black", letter_colors=None):
+           text_color="black", letter_colors=None, draw_molecules=None):
     """Draw the figure (see ``_render``) in the style's font family.
     ``letter_colors``: per-letter overrides ``{letter_key(row_label,
     frame_key): colour}``; everything else follows ``style["letter_color"]``
@@ -1407,7 +1410,8 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     import matplotlib
     with matplotlib.rc_context(font_rc(resolve_style(style))):
         return _render(fig, spec, panels, style=style, clims=clims, get_cmap=get_cmap,
-                       text_color=text_color, letter_colors=letter_colors)
+                       text_color=text_color, letter_colors=letter_colors,
+                       draw_molecules=draw_molecules)
 
 
 def letter_key(row_label, frame_key):
@@ -1415,7 +1419,7 @@ def letter_key(row_label, frame_key):
 
 
 def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-            text_color="black", letter_colors=None):
+            text_color="black", letter_colors=None, draw_molecules=None):
     """Draw the figure into ``fig`` (cleared first).
 
     ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
@@ -1488,6 +1492,7 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     ranges, panel_ranges, units, images, panel_images = {}, {}, {}, {}, {}
     own_scale, axes_of, dims_of = {}, {}, {}
     cbar_artists, letter_boxes, scale_boxes = [], [], []
+    data_boxes = {}   # (row, frame) -> (inch box of the drawn image, w_nm, h_nm)
     for r, row in enumerate(spec["rows"]):
         mixed = row["kind"] == "mixed"
         cell_kind = row.get("cell_kind") or {}
@@ -1569,6 +1574,20 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             ax.set_xlim(0.0, w)
             ax.set_ylim(0.0, h)
             ax.set_aspect("equal", adjustable="box", anchor="C")
+            try:
+                ax.apply_aspect()
+                pos = ax.get_position()
+                data_boxes[(r, f)] = ((pos.x0 * size[0], (1.0 - pos.y1) * size[1],
+                                       pos.x1 * size[0], (1.0 - pos.y0) * size[1]), w, h)
+            except Exception:
+                data_boxes[(r, f)] = (box, w, h)
+            # Molecular model(s): panel nm coordinates, so one placement is
+            # the same spot on every channel / frame of the figure.
+            if draw_molecules is not None and st.get("molecules_on", True) and                     (st.get("mol_scope") != "first" or r == 0):
+                try:
+                    draw_molecules(ax, r, f, w, h)
+                except Exception:
+                    pass
             taken = set()
             letter = letter_of.get((r, f))
             if letter and not str(st["letter_pos"]).startswith("out"):
@@ -1701,6 +1720,7 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                    "images": images, "panel_images": panel_images,
                    "colorbar_artists": cbar_artists, "own_scale": own_scale,
                    "letter_boxes": letter_boxes, "scale_boxes": scale_boxes,
+                   "data_boxes": data_boxes,
                    "style": st, "n_rows": n_rows})
     return layout
 

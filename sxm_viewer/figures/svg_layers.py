@@ -32,6 +32,7 @@ for _prefix, _uri in (("", SVG_NS), ("xlink", XLINK_NS), ("inkscape", INKSCAPE_N
 LAYERS = (
     ("Images", re.compile(r"^image_\d+_\d+$")),
     ("Zoom outlines", re.compile(r"^zoom(box|label|frame)_\d+_\d+$")),
+    ("Molecules", re.compile(r"^molecule_\d+_\d+_\d+$")),
     ("Notes", re.compile(r"^note_\d+_\d+$")),
     ("Scale bars", re.compile(r"^scalebar_\d+_\d+(_label)?$")),
     ("Letters", re.compile(r"^letter_\d+_\d+$")),

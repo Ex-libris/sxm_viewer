@@ -53,6 +53,13 @@ First public release archived on Zenodo.
   on their own line above the header, in dark text on the page.
 - **min / max colour bars**: the bar stays, its ends read "min" and "max";
   and **one bar per channel** even when each image has its own range.
+- **Molecular model on every panel**: load a .pdb / .xyz / .mol (or take
+  the model already placed in the preview) and it appears at the same spot
+  on every panel - drag it, X / Y / Z to rotate, arrows to nudge, and every
+  panel follows, so channels and heights compare against one model. Same
+  renderer and styles as the preview (Appearance... opens the preview's
+  dialog); atoms sized for the printed panel (Atom size to tune); on every
+  panel or the first channel row; own Inkscape layer.
 - **Automatic letter and scale-bar colour**: white or black per letter,
   judged on the image under it (grey rows get black letters, dark rows
   white); right-click a letter to give just that one its own colour.

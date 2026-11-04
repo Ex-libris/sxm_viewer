@@ -568,6 +568,69 @@ class FigureController:
                 names.append(n)
         return names[:24]
 
+    # ------------------------------------------------------------------
+    # Molecular models (shared with the preview / pop-ups)
+    # ------------------------------------------------------------------
+    def molecule_settings(self):
+        """The preview's molecule look (palette, bonds, shadows, H), so a
+        figure's model matches what the user tuned in the preview."""
+        pc = getattr(self.viewer, "preview_canvas", None)
+        return {
+            "palette": str(getattr(pc, "molecule_palette", "avogadro") or "avogadro"),
+            "bond_color_mode": getattr(pc, "_bond_color_mode", "default"),
+            "default_bond_color": getattr(pc, "_default_bond_color", (0.9, 0.9, 0.9)),
+            "show_shadows": bool(getattr(pc, "_show_molecule_shadow", False)),
+            "show_hydrogens": bool(getattr(pc, "_show_hydrogens", True)),
+        }
+
+    def _frame_origin_nm(self, key):
+        """Lower-left corner (display data coords) of a frame as the preview
+        draws it - subtracting it maps preview molecule positions into a
+        figure panel's local nm (both have y up)."""
+        viewer = self.viewer
+        header, _fds = (viewer.headers or {}).get(str(key), (None, None))
+        if not header:
+            return 0.0, 0.0
+        try:
+            base = viewer._header_extent(header)
+            _arr, ext = viewer._apply_adjustments_for_channel(str(key), 0, np.zeros((2, 2)), base)
+            ext = viewer._display_extent(ext, header)
+            return min(float(ext[0]), float(ext[1])), min(float(ext[2]), float(ext[3]))
+        except Exception:
+            return 0.0, 0.0
+
+    def preview_molecules(self, keys):
+        """Molecules already placed on one of these frames in the preview
+        (live preview first, then the per-file overlays), as dicts in panel
+        nm. Returns ``(molecules, source_key)``."""
+        viewer = self.viewer
+        keys = [str(k) for k in keys]
+        found, src = [], None
+        last = getattr(viewer, "last_preview", None)
+        pc = getattr(viewer, "preview_canvas", None)
+        if last and str(last[0]) in keys and getattr(pc, "molecules", None):
+            found = [m.to_dict() for m in pc.molecules]
+            src = str(last[0])
+        if not found:
+            for k in keys:
+                mols = (getattr(viewer, "molecule_overlays", {}) or {}).get(k)
+                if mols:
+                    found = [dict(m) if isinstance(m, dict) else m.to_dict() for m in mols]
+                    src = k
+                    break
+        if not found:
+            return [], None
+        ox, oy = self._frame_origin_nm(src)
+        out = []
+        for m in found:
+            m = dict(m)
+            off = list(m.get("offset") or [0.0, 0.0, 0.0])
+            off[0] = float(off[0]) - ox
+            off[1] = float(off[1]) - oy
+            m["offset"] = off
+            out.append(m)
+        return out, src
+
     def forget_window(self, fid, win):
         if self._windows.get(fid) is win:
             self._windows.pop(fid, None)
