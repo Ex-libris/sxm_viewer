@@ -7696,12 +7696,21 @@ QLabel:hover {{
         arr_np = np.asarray(arr, dtype=float)
         unit_label = unit or ""
         factor = 1.0
-        range_probe = arr_np
+        # Pick the unit from the robust range actually displayed (the auto
+        # colour range), not the array's absolute max: Anfatec keeps the
+        # unscanned rows of a stopped frame as literal 0 (Nanonis: NaN), so
+        # after Zero those rows sat ~150 nm off the surface and pinned the
+        # unit at nm while the colour range spanned only pm.
+        lim = self._auto_preview_clim(arr_np)
+        range_probe = np.asarray(lim, dtype=float) if lim is not None else arr_np
         zeroed = self._is_image_zeroed(file_key)
         if zeroed:
-            ref = self._zero_reference(arr_np)
+            ref = float(lim[0]) if lim is not None else self._zero_reference(arr_np)
             if ref is not None:
-                range_probe = arr_np - ref
+                shifted = range_probe - ref
+                # A flat channel zeroes to all 0: keep the unit of its level.
+                if np.any(np.abs(shifted[np.isfinite(shifted)]) > 0):
+                    range_probe = shifted
         if unit_label:
             if getattr(self, 'display_units_si', False):
                 target = _SI_BASE_UNITS.get(unit_label, (unit_label, 1.0))
