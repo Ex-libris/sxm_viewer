@@ -33,6 +33,14 @@ python -m sxm_viewer
   handlers calling `save_config`) writes to the user's real
   `~/.sxm_viewer_config.json`. Either avoid config-persisting calls in test
   scripts or restore the file afterwards.
+- Headless testing notes (learned building the figure recipes): back up
+  and restore `~/.sxm_viewer_config.json` around every script (figure
+  windows save styles/state on each edit); the offscreen platform has no
+  font glyphs and inflated font metrics, so widget widths measured there
+  are ~2x real and grabbed screenshots show blank text (matplotlib text
+  renders fine - check figures via `savefig`, layouts via numbers); lazy
+  thumbnails stay placeholders unless you pump the event loop; stdout is
+  lost on a hard abort, so run with `python -u` and print with `flush=True`.
 - PowerShell 5.1 mangles embedded double quotes when passing args to native
   executables — write `git commit` messages without `"` characters (or use a
   `-F` message file).
@@ -386,6 +394,10 @@ All drawn/managed inside `MultiPreviewCanvas`
   `CanvasGraphicsView.show_alignment_guides`/`clear_alignment_guides`.
 
 ### Publication canvas (figure composition workspace)
+For series / zoom figures use the figure recipes instead (see "Figure
+recipes" below); the canvas remains the free-layout tool, reachable from a
+figure's ⋯ > "Open in canvas".
+
 `ExperimentalCanvasWindow` (`gui/canvases/canvas_window.py`) is the top-level
 window for composing a multi-panel publication figure from loaded scans;
 launched lazily from `main_window.py` and cached on `self._canvas_window`.
@@ -942,83 +954,167 @@ entirely off-thread. Never let the worker touch the viewer.
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
 
-### Figure recipes: height-series figure (`figures/`, `gui/controllers/figures.py`, `gui/dialogs/figure_window.py`)
-The successor job to the publication canvas for data-aware multi-panel
-figures. Three layers, same split as the folder report:
-- `sxm_viewer/figures/height_series.py` (Qt-free): `find_height_series`
-  reuses `reporting.model.build_image_sequences` (so report and figure agree
-  on what a series is) fed with **only CH-tagged frames**, `z_level_nm` =
-  the HUD height (`ch_height.ch_abs_z_nm`, so captions can't contradict the
-  preview) and `z_spread_nm` = the tag's `rng_nm` (topo max-min). A CH tag
-  alone is not flatness: real frames step Z mid-scan (rng = the step) or
-  carry a z=0 region (rng ~ 190 nm) - the report's 20 pm flat gate drops
-  their z and they come back as `excluded`. `build_spec` (columns by z,
-  Δz headers, rows by `pick_image_channels` kinds, row channel
-  alternatives) and `render` (one matplotlib renderer for screen and every
-  export; deterministic inch layout so the window hit-tests without asking
-  matplotlib).
-- Row ranges: never pool across baselines. `baseline_outliers` flags frames
-  whose *median* is > 3 typical spans (75th pct of frame spans) from the
-  row median ("offset") or that have no signal ("flat", dimmed); the shared
-  range is `pooled_range` over the rest with **equal weight per frame**;
-  one display unit per row (the viewer's `_scale_unit_for_display` picks a
-  unit per image, so panels are gathered in the normalised unit and scaled
-  here). Topography rows are relative (each frame minus its own p1).
-- `FigureController` (GUI thread): `ensure_series_index()` runs at the top
-  of every `populate_thumbnails_for_channel`, cached on a signature of the
-  CH tags (key, abs_z_pm, rng_nm) - it drives the `z×N` chip
-  (`thumbnail_ui.series_chip_rect` is the one rect for drawing in
-  `_decorate_thumbnail_pixmap` and hit-testing in `_handle_thumb_click`).
-  `panel()` goes through the preview pipeline (filters, adjustments, turns,
-  Zero) and `data_signature()` is what the window polls for the live link.
-  Per-figure edits live in `viewer.figure_states` (config key
-  `figure_states`, capped, and session key `figure_states`).
-- **Bias series** (`find_bias_series`, recipe `"bias"`, amber `V×N` chip)
-  share everything with height series - `build_spec(mode="bias")` only
-  changes the frame axis (bias, then time) and the `"auto"` header (signed
-  `V = ...`, setpoint line when it changes). CH and CC/untagged frames go
-  through `build_image_sequences` *separately* (mixed they'd be one
-  "bias+height" group, which is a height series). Series ids are
-  `bias-<sha>` vs `<sha>`; every series dict carries `recipe` and `levels`
-  (distinct `condition_key`s = what the chip and menu count). The header
-  style key is per recipe: `set_default_style` never stores it.
-- Repeats: `collapse_repeats` keeps the latest frame per `condition_key`
-  (bias mV, z pm, setpoint 3 sig.) for series figures (`show_repeats`
-  state brings them back; selections never collapse).
-- Stopped scans: `controller.panel()` NaN-masks rows outside
-  `detect_valid_scan_region` (same detector as thumbnails / preview auto
-  contrast). Frames with < 25 % of rows scanned are pruned from series
-  (`excluded` reason `"aborted"`) - known only after reading the array, so
-  `_idle_check_scans` checks series members a few per idle tick after the
-  index is built and repopulates the thumbnails if a count changed; the
-  window's `_find_aborted` is the backstop for unchecked frames. The scan
-  fraction is part of the index signature.
-- Topography rows use `typical_range` (median of the frames' own 2-98 %);
-  signal rows keep `pooled_range` (contrast growing with Δz or bias is the
-  content).
-- Naming: `spec["columns"]` are always the *frames* and `spec["rows"]` the
-  *channels*; `style["transpose"]` only changes where `figure_layout` puts
-  them (frames down / channels across). Channels are identified by their
-  **caption** (`row["label"]`), so state stores `rows` (ordered captions,
-  None = defaults from `pick_image_channels`), `row_cmaps` and `clims`
-  keyed by `clim_key(label[, frame_key])` (per-channel, or per panel in
-  "each image its own range" mode). Unknown vendor captions fall back to
-  the unit for the class (`gui/controllers/figures.py` `_CLASS_OF_UNIT`: A → current, Hz → freq,
-  m → z); Anfatec current is `It_to_PC`/`It_ext` (`channel_preference`
-  picks It_to_PC, forward before backward).
-- All format options are one `style` dict (`STYLE_DEFAULTS` /
-  `resolve_style`); the last edited style is the default for new figures
-  (config `figure_style_default`). Add an option there + in `render` + in
-  the window's `_FormatPanel` and matching right-click menu.
-- `FigureWindow` is pure UI against that source; all edits are direct
-  manipulation on the figure (header = reference, hover × = drop, channel
-  label = switch/move/remove menu, "+ channel" handle, colourbar drag =
-  contrast / click = Min/Max popover, right-click = element options) or the
-  Format panel, with its own undo stack. Colourbar end labels are aligned
-  inside their bar (`set_colorbar_range`) so stacked bars never overlap.
-- Arrays drawn with `origin="upper"`: the preview's two paths
-  (`flipud`+lower / as-is+upper) both put row 0 at the top. The publication
-  canvas's own `flipud` is for its QImage painter, not a matplotlib rule.
+### Figure recipes: data-aware multi-panel figures (`figures/`, `gui/controllers/figures.py`, `gui/dialogs/figure_window.py`)
+The successor to the publication canvas for the figures SPM users actually
+make. Design goal (from the user): **one click from data to a finished,
+publication-ready figure** - no dialog, no settings up front; every
+adjustment made in place on the figure or in the always-visible Format bar.
+The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") for
+free layout, but is no longer the starting point.
+
+**Three recipes, one window.** Thumbnails carry clickable chips (painted in
+`_decorate_thumbnail_pixmap`, hit-tested in `thumbnail_ui._handle_series_chip_click`
+via the shared `series_chip_rect` / `zoom_chip_rect`); right-click offers
+the same plus *Figure from selection* for anything else:
+- **Height series** (green `z×N`): CH frames re-scanning one footprint at a
+  ladder of tip heights; frames by z, `Δz = +20 pm` headers.
+- **Bias series** (amber `V×N`): same footprint, only the bias steps (CC
+  topography or CH); frames by bias, signed `V = +300 mV` headers, setpoint
+  line when it changes.
+- **Overview + zooms** (blue `⊡N`, may sit beside a series chip): a frame
+  with smaller frames inside it; overview left, zoom grid right, each zoom
+  outlined + lettered on the overview in its own colour.
+N counts distinct acquisition conditions (`levels`), not files.
+
+**Layers** (same split as the folder report - Qt-free core, GUI gathers):
+- `figures/height_series.py` (Qt-free; despite the name it hosts all
+  recipes): detection (`find_height_series`, `find_bias_series`,
+  `find_zoom_families`), `build_spec` (frames + channels + headers),
+  `figure_layout` (deterministic inch boxes - the window hit-tests from
+  these, never asking matplotlib), `render` (one matplotlib renderer for
+  screen *and* every export), range helpers. `figures/svg_layers.py` turns
+  the SVG into Inkscape layers by artist `gid`.
+- `FigureController` (GUI thread): series index for the chips, inputs
+  through the preview pipeline (`panel()`: filters, adjustments, quarter
+  turns, Zero, aborted-row mask), `data_signature()` for the live link,
+  remembered state/styles/export settings, Obsidian menu.
+- `FigureWindow` + `_FormatPanel` (pure UI against that controller).
+
+**Detection rules (each one came from a real folder):**
+- Height/bias series reuse `reporting.model.build_image_sequences` so the
+  report and the figure agree on what a series is. Height: only CH-tagged
+  frames, `z_level_nm` = the **HUD** height (`ch_height.ch_abs_z_nm`, so
+  captions can't contradict the preview), `z_spread_nm` = the CH tag's
+  `rng_nm`. **A CH tag is not flatness**: real frames step Z mid-scan (rng =
+  the step) or carry a z = 0 region (rng ~190 nm); the report's 20 pm gate
+  drops their z and they come back as `excluded` ("Include anyway" in the
+  ⓘ note).
+- Bias: CH and CC/untagged frames go through the detector **separately** -
+  mixed, a CC bias ladder and a CH height ladder of one spot become one
+  "bias+height" group.
+- Zooms: rotation-aware containment of all four corners (4 % overhang),
+  parent = the *smallest* frame with >= 2.5x the area; one level deep (a
+  zoom with zooms gets its own family). Geometry mirrors
+  `geometry.spec_mapping` (`_local_to_abs` = `pixel_to_nm`, `_abs_to_local`
+  = `map_spec_to_pixels`, rotate-then-normalise) - keep them in sync.
+- Repeats collapse to the **latest** frame per `condition_key` (bias mV,
+  z pm, setpoint 3 sig.; zooms: same footprint), `show_repeats` brings them
+  back. Real series were often mostly repeats (13 frames = 3 heights).
+- Stopped scans: `panel()` NaN-masks rows outside `detect_valid_scan_region`
+  (a stopped scan's constant z = 0 rows beside -185 nm topography flattened
+  whole rows). Frames < 25 % scanned are pruned (`excluded` reason
+  `"aborted"`) - only knowable after reading the array, so
+  `_idle_check_scans` checks chip members a few per idle tick after the
+  index is built and repopulates thumbnails if a count changes; the scan
+  fraction is part of the index signature; `_find_aborted` in the window
+  is the backstop.
+- `ensure_series_index()` runs at the top of every
+  `populate_thumbnails_for_channel`, cached on (files, tag, abs_z_pm,
+  rng_nm, scan fraction); `_z_nm` only asks the HUD for CH frames (others
+  could sample a file each).
+
+**Spec model:** `spec["columns"]` are always the *frames*, `spec["rows"]`
+the *channels*; `style["transpose"]` / the zoom layout only change where
+they go. Channels are identified by **caption** (`row["label"]`); state
+keeps `rows` (ordered captions, None = defaults from `pick_image_channels`),
+`row_cmaps`, `clims` keyed by `clim_key(label[, frame_key])`. Pseudo
+channel `hs.BEST` ("Best channel per frame", `kind == "mixed"`) gives each
+frame its own first pick - the zoom default when frames were taken in
+different modes (CC overview topography + CH zoom current); mixed rows are
+scaled per cell in their own unit. Unknown vendor captions fall back to the
+unit (`_CLASS_OF_UNIT`: A -> current, Hz -> freq, m -> z).
+
+**Ranges** (never pool across baselines): `baseline_outliers` flags frames
+whose *median* sits > 3 typical spans (75th pct of frame spans) from the
+row median ("offset", own scale) or that have no signal ("flat", dimmed,
+tagged with the real level); `_flat_row_level` catches a flat channel or a
+single flat frame (CH topography). Signal rows: `pooled_range` with **equal
+weight per frame**; topography rows: `typical_range` (median of frames' own
+2-98 %, so one tip crash saturates instead of darkening the rest) and
+relative (each frame minus its p1). One display unit per row (the viewer's
+`_scale_unit_for_display` picks per image - 4 pA next to 0.4 nA). Real
+data that forced this: a Δf series with 5 PLL-unlocked frames at
+-12 033 Hz and one mid-scan jump. Tick precision follows the *span*
+(`_tick`), or 90.06…90.14 prints "90.1" twice.
+
+**Style** - one dict, `STYLE_DEFAULTS` / `resolve_style` (bool
+`scale_label` migrates). Keys in `RECIPE_KEYS` (ranges, colour bars, scale
+bar, header, layout) have per-recipe defaults (`RECIPE_DEFAULTS`: zooms =
+own ranges, no bars) and are remembered per recipe (config
+`figure_style_recipe`); everything else globally (`figure_style_default`);
+the header is never carried over (`"auto"` = Δz / V / size per recipe).
+To add an option: `STYLE_DEFAULTS` + `render`/layout + a `_FormatPanel`
+card row + the matching right-click menu. Notable ones:
+- `page`: `PAGE_PRESETS` (Nature 89/183 mm, Science 55/120/183, ACS
+  3.25/7 in, generic 85/120/178) set the width **and** `page_text_style`
+  (text pt, letter pt/style). The panel width is solved from the page
+  (every layout width is affine in it: two trial layouts give the answer);
+  if panels would drop below `_MIN_PANEL_IN` the frames wrap into more rows.
+  Fonts stay in absolute points; derived sizes go through `pt()` (>= 5 pt).
+- `font_family` (Arial default, `available_fonts` journal fonts first):
+  `render` wraps `_render` in `rc_context(font_rc(st))` - text props are
+  fixed at artist creation, so this covers screen, PDF, SVG, PPT.
+- Letters: `letter_pos` corners or `out_tl`/`out_tr` (outside, own line
+  above the header - `_letter_line_y`; the layout adds `_outside_letter_h`
+  to the header band / row gaps); outline optional.
+- Scale bar on every image by default; length label `first` = once per
+  distinct length (zoom frames of different sizes all stay labelled),
+  `all`, `none`; `scale_font`; thickness from the panel's **shorter** side
+  (from the height, tall frames got slabs).
+- Colour bars: `cbar_style` outside (ticks) / inside (values in the bar,
+  contrast-coloured) / minmax (gradient labelled "min"/"max");
+  `cbar_label_pos` inside = channel name centred in the bar; `cbar_scope`
+  row = one bar per channel even with per-image ranges (min/max, not
+  draggable). `cbar_dims` is shared by layout and renderer; end labels are
+  aligned inside their bar so stacked bars never overlap.
+- `rotate_tall`: portrait panels turned to landscape for the figure only
+  (`rotate_tall_panels`: data rot90, width/height swapped, `turns` bumped so
+  zoom outlines follow). `panel()`'s width/height are already the
+  *displayed* (viewer-turned) size - never swap them again for `turns`.
+- Headers can be `none`; `channel_labels` hides the row names (bands
+  shrink); `ref_bold` (off by default).
+
+**Window** (`FigureWindow`): figure on white "paper" (= the export) in a
+scroll area, `_FormatPanel` **under it in a splitter**: a row of cards
+(icon from `_tab_icon` + title + one-line hint) with every option visible -
+the user rejected both a right-hand panel (cramped, cropped text) and tabs
+(discoverability). Drop-downs get a fixed width (`fit()`) with full names in
+their pop-ups. Opens fitted to the window (actual size is a per-window view,
+never remembered). Direct manipulation: Δz header = reference; hover × =
+drop frame; channel label = switch/move/remove/recolour; "+ channel";
+colour bar drag = contrast, click = Min/Max popover, double-click = auto;
+right-click any element = its options; **Ctrl+wheel** = size of what is
+under the cursor (text with letters in proportion / bar width / scale-bar
+label / letters; Ctrl+Shift = panels), coalesced into one undo step. Live
+link: `data_signature()` polled + on activation. Outputs: Copy (PNG+SVG /
+PNG / SVG), PowerPoint (new/current slide, shapes/picture), Obsidian (via
+`viewer.export.export_to_obsidian(render=...)`), Inkscape (layered SVG,
+opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
+300-1200 dpi, transparent background.
+
+**Lessons (what made this take longer than it should have):**
+- Validate against several *real* folders (Anfatec local, Nanonis-converted,
+  network): every robustness rule above came from one of them, none from
+  synthetic data.
+- Matplotlib SVG puts an image's `gid` on the `<image>` element, not a
+  `<g>` - match ids on any element (`svg_layers`).
+- Anfatec headers: `Bias` is in `BiasPhysUnit` (mV) - `_header_bias_v`
+  converts (report and figures both used to print -2000 V); tunnel current
+  is `It_to_PC` / `It_ext` (unit A), which `classify_channel` used to call
+  "other" (so CH report pages had no current).
+- An exception escaping a Qt handler aborts the process when no
+  `sys.excepthook` is installed (the app's `cli.py` installs one; headless
+  test scripts don't) - `FigureController._open` catches and reports.
 
 ### CH height label: z_abs or Δz to a reference (`gui/viewer/ch_height.py`)
 The acquisition HUD's CH line is resolved at *draw* time, not baked into the
