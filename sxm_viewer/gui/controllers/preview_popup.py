@@ -9,6 +9,7 @@ from ..._shared import QtWidgets, QtCore
 from ..canvases.detail_preview_canvas import MultiPreviewCanvas
 from .profile import PopupProfileController
 from ..viewer import ch_height as viewer_ch_height
+from ..viewer import export_routes as viewer_export_routes
 
 
 def _popup_image_size_text(view):
@@ -655,6 +656,8 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
     canvas.set_virtual_copy_callback(lambda v: owner._create_virtual_copy_from_popup_view(v))
     if hasattr(owner, "ch_z_label_mode"):
         viewer_ch_height.install_canvas_callbacks(owner, canvas)
+    if hasattr(owner, "export_to_obsidian"):
+        viewer_export_routes.install_canvas_menu_support(owner, canvas)
     # Double-click on the popup canvas is disabled to prevent recursive
     # popup-spawning (every double-click used to open yet another copy).
     canvas.set_double_click_callback(None)

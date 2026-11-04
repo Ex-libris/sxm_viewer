@@ -52,15 +52,25 @@ def _spec_display_name(spec):
 _BIAS_HEADER_KEYS = ("GapVoltage", "BiasVoltage", "Bias", "UBias", "Voltage")
 
 
+_BIAS_UNIT_TO_V = {"v": 1.0, "mv": 1e-3, "uv": 1e-6, "µv": 1e-6, "μv": 1e-6, "kv": 1e3}
+
+
 def _header_bias_v(header):
-    """Numeric sample bias in V from the header, or None."""
+    """Numeric sample bias in V from the header, or None.
+
+    Honors the header's unit (``<key>PhysUnit`` / ``BiasPhysUnit``):
+    Anfatec headers store ``Bias: -2000`` with ``BiasPhysUnit: mV``, which
+    used to come out as -2000 V. Missing unit = V (Nanonis adapter)."""
     for key in _BIAS_HEADER_KEYS:
         val = header.get(key)
         if val in (None, ""):
             continue
         num = _safe_float(val)
-        if num is not None:
-            return float(num)
+        if num is None:
+            continue
+        unit = header.get(f"{key}PhysUnit") or header.get("BiasPhysUnit") or "V"
+        factor = _BIAS_UNIT_TO_V.get(str(unit).strip().lower(), 1.0)
+        return float(num) * factor
     return None
 
 

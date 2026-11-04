@@ -100,6 +100,9 @@ from .controllers.report import ReportController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer import ch_height as viewer_ch_height
+from .viewer import thumb_menu as viewer_thumb_menu
+from .viewer import spectro_menu as viewer_spectro_menu
+from .viewer import export_routes as viewer_export_routes
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes
 from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
@@ -1275,6 +1278,7 @@ class SXMGridViewer(QtWidgets.QWidget):
             lambda file_key: self.spectro_compare_controller.open_all_specs_popup(file_key)
         )
         viewer_ch_height.install_canvas_callbacks(self, self.preview_canvas)
+        viewer_export_routes.install_canvas_menu_support(self, self.preview_canvas)
         # R / Shift+R on the main preview turn the image (popups don't get
         # this: orientation is per-file viewer state, not per-canvas).
         self.preview_canvas._rotate_image_callback = lambda turns: self.rotate_images(turns)
@@ -5279,6 +5283,49 @@ QLabel:hover {{
             painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
             painter.drawText(chip, QtCore.Qt.AlignCenter, "ZERO")
             painter.end()
+        series = None
+        try:
+            series = self.figure_controller.series_for_key(str(file_key))
+        except Exception:
+            series = None
+        if series is not None:
+            # Series chip, bottom-right - click it for the figure: green
+            # "z×N" = height series (CH frames at a ladder of tip heights),
+            # amber "V×N" = bias series (same frame at a ladder of biases).
+            is_bias = series.get("recipe") == "bias"
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = viewer_thumb_ui.series_chip_rect(pix.width(), pix.height())
+            if is_bias:
+                painter.setBrush(QtGui.QColor(225, 140, 0, 235))
+                painter.setPen(QtGui.QPen(QtGui.QColor(110, 60, 0), 1.2))
+            else:
+                painter.setBrush(QtGui.QColor(0, 150, 70, 230))
+                painter.setPen(QtGui.QPen(QtGui.QColor(0, 70, 30), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter,
+                             f"{'V' if is_bias else 'z'}×{series.get('levels') or len(series['keys'])}")
+            painter.end()
+        zoom = None
+        try:
+            zoom = self.figure_controller.zoom_for_key(str(file_key))
+        except Exception:
+            zoom = None
+        if zoom is not None:
+            # Blue "⊡N" chip: this frame is an overview with N zooms inside
+            # it - click it for the overview + zooms figure.
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            chip = viewer_thumb_ui.zoom_chip_rect(pix.width(), pix.height(), series is not None)
+            painter.setBrush(QtGui.QColor(40, 110, 220, 235))
+            painter.setPen(QtGui.QPen(QtGui.QColor(10, 40, 110), 1.2))
+            painter.drawRoundedRect(chip, 5, 5)
+            painter.setPen(QtGui.QColor(255, 255, 255))
+            painter.setFont(QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold))
+            painter.drawText(chip, QtCore.Qt.AlignCenter, f"⊡{zoom.get('levels') or len(zoom['keys']) - 1}")
+            painter.end()
         highlight_spec = None
         if getattr(self, '_highlighted_spec', None):
             highlight_key = str(self._highlighted_spec.get('image_key') or self._highlighted_spec.get('path') or '')
@@ -7699,11 +7746,17 @@ QLabel:hover {{
                 for ix, x in enumerate(x_vals):
                     f.write(f"{x:.9g}\t{y:.9g}\t{z_vals[iy, ix]:.9g}\n")
 
-    def on_export_pngs(self):
-        return viewer_export.on_export_pngs(self)
+    def on_export_pngs(self, paths=None, out_dir=None):
+        return viewer_export.on_export_pngs(self, paths, out_dir)
 
-    def on_export_xyz_files(self):
-        return viewer_export.on_export_xyz_files(self)
+    def export_to_obsidian(self, note=None, vault=None, paths=None, **kwargs):
+        return viewer_export.export_to_obsidian(self, note, vault, paths, **kwargs)
+
+    def populate_obsidian_menu(self, menu, paths=None):
+        return viewer_export.populate_obsidian_menu(self, menu, paths)
+
+    def on_export_xyz_files(self, paths=None, out_dir=None):
+        return viewer_export.on_export_xyz_files(self, paths, out_dir)
 
     def _thumbnail_channel_idx_for_file(self, file_key):
         key = str(file_key)
@@ -9391,340 +9444,10 @@ QLabel:hover {{
         except Exception:
             pass
     def _on_thumb_context_menu(self, label_widget, pos):
-        fp = str(label_widget.property("file_path"))
-        # If user has a multi-selection, operate on all of them (plus the clicked one)
-        targets = sorted(set(self.thumb_multi_select or []) | {fp})
-        menu = QtWidgets.QMenu(self)
-        all_starred = all(str(p) in self.starred for p in targets)
-        star_label = "Remove star  (S)" if all_starred else "★ Star  (S)"
-        if len(targets) > 1:
-            star_label = ("Remove star" if all_starred else "★ Star") + f" ({len(targets)} selected)  (S)"
-        star_act = QtWidgets.QAction(star_label, menu)
-        star_act.setToolTip("Mark as favourite - S toggles the star on the selected thumbnails; view only starred images with Ctrl+Alt+F or Display → Show only → Starred")
-        star_act.triggered.connect(lambda _, paths=list(targets): self.toggle_star_for_paths(paths))
-        menu.addAction(star_act)
-        menu.addSeparator()
-        # Compare all point spectra assigned to the clicked image - mirrors the
-        # preview canvas' Analysis action so it's reachable from the grid too
-        # (matrix/grid points are excluded; those belong in the Grid Map).
-        try:
-            image_specs = self.spectro_compare_controller.all_specs_for_image(fp)
-        except Exception:
-            image_specs = []
-        if len(image_specs) >= 2:
-            compare_all_specs_act = QtWidgets.QAction(
-                f"Compare All Spectra on This Image ({len(image_specs)})...", menu)
-            compare_all_specs_act.setToolTip(
-                "Open every point spectrum assigned to this image together in a comparison window")
-            compare_all_specs_act.triggered.connect(
-                lambda _, key=fp: self.spectro_compare_controller.open_all_specs_popup(key))
-            menu.addAction(compare_all_specs_act)
-            menu.addSeparator()
-        current_thumb_steps = self._thumbnail_filter_steps(fp)
-        current_thumb_summary = self._filter_pipeline_label_from_steps(current_thumb_steps)
-        sub = menu.addMenu("Filters")
-        if current_thumb_summary:
-            status_act = QtWidgets.QAction(f"Current: {current_thumb_summary}", menu)
-            status_act.setEnabled(False)
-            sub.addAction(status_act)
-            sub.addSeparator()
-        for key, info in FILTER_DEFINITIONS.items():
-            if info.get('requires_dialog'):
-                # Needs a per-image review dialog (e.g. periodic-noise removal
-                # - which peaks to remove is specific to one image's own
-                # spectrum) - doesn't make sense as a blind batch action, so
-                # it's left out of this multi-file quick-menu entirely.
-                continue
-            prefix = "Add step: " if current_thumb_steps else ""
-            act = QtWidgets.QAction(f"{prefix}{self._filter_action_label(key)}", menu)
-            if info.get('needs_gaussian') and not _gaussian_available():
-                act.setEnabled(False)
-                act.setToolTip("Requires scipy or OpenCV.")
-            act.triggered.connect(lambda _, k=key, paths=list(targets), focus=fp: self._apply_filter_to_paths(paths, k, focus_path=focus))
-            sub.addAction(act)
-        custom_label = "Edit custom pipeline..." if current_thumb_steps else "Custom pipeline..."
-        custom_act = QtWidgets.QAction(custom_label, menu)
-        custom_act.triggered.connect(lambda _, paths=list(targets), focus=fp: self._open_custom_filter_dialog(paths, focus))
-        sub.addAction(custom_act)
-        clear_one = QtWidgets.QAction("Clear filter", menu)
-        clear_one.triggered.connect(lambda _, paths=[fp]: self._clear_filter_for_paths(paths))
-        menu.addAction(clear_one)
-        if len(targets) > 1:
-            clear_sel = QtWidgets.QAction("Clear filter (selected)", menu)
-            clear_sel.triggered.connect(lambda _, paths=list(targets): self._clear_filter_for_paths(paths))
-            menu.addAction(clear_sel)
-        has_adjust = False
-        try:
-            ch_for_menu = int(self.channel_dropdown.currentIndex())
-            has_adjust = any(bool(self._get_adjust_spec(p, ch_for_menu)) for p in targets)
-        except Exception:
-            has_adjust = False
-        if has_adjust:
-            reset_adjust_act = QtWidgets.QAction("Reset display adjustments", menu)
-            reset_adjust_act.setToolTip(
-                "Clear the clip/gamma display adjustments from Image > Crop/Rotate (Ctrl+Z restores)")
-
-            def _reset_targets(_=False, paths=list(targets), ch=None):
-                ch = int(self.channel_dropdown.currentIndex()) if ch is None else ch
-                for p in paths:
-                    old = self._get_adjust_spec(p, ch)
-                    if not old:
-                        continue
-                    self._adjustment_undo_stack.append(("tone", str(p), int(ch), dict(old)))
-                    self._set_adjust_spec(p, ch, None)
-                    self._refresh_adjusted_channel(p, ch)
-
-            reset_adjust_act.triggered.connect(_reset_targets)
-            menu.addAction(reset_adjust_act)
-        menu.addSeparator()
-        add_source_file_menu(menu, fp, self)
-
-        menu.addSeparator()
-        copy_svg_act = QtWidgets.QAction("Copy selected as SVG (current view)", menu)
-        copy_svg_act.triggered.connect(lambda: self.copy_selected_as_svg(targets))
-        menu.addAction(copy_svg_act)
-
-        export_png_act = QtWidgets.QAction("Export PNGs...", menu)
-        export_png_act.triggered.connect(self.on_export_pngs)
-        menu.addAction(export_png_act)
-        ppt_supported, ppt_reason = powerpoint_support_status()
-        send_ppt_act = QtWidgets.QAction("Send selected to PowerPoint", menu)
-        send_ppt_act.triggered.connect(lambda _, paths=list(targets): self._send_thumbnail_targets_to_powerpoint(paths, new_slide=True))
-        send_current_slide_act = QtWidgets.QAction("Send selected to Current Slide", menu)
-        send_current_slide_act.triggered.connect(lambda _, paths=list(targets): self._send_thumbnail_targets_to_powerpoint(paths, new_slide=False))
-        if not ppt_supported:
-            send_ppt_act.setEnabled(False)
-            send_current_slide_act.setEnabled(False)
-            send_ppt_act.setToolTip(ppt_reason or "")
-            send_current_slide_act.setToolTip(ppt_reason or "")
-        menu.addAction(send_ppt_act)
-        menu.addAction(send_current_slide_act)
-        export_xyz_act = QtWidgets.QAction("Export XYZ...", menu)
-        export_xyz_act.triggered.connect(self.on_export_xyz_files)
-        menu.addAction(export_xyz_act)
-        export_stp_act = QtWidgets.QAction("Export WSxM STP...", menu)
-        export_stp_act.triggered.connect(self.on_export_stp_files)
-        menu.addAction(export_stp_act)
-        report_act = QtWidgets.QAction("Generate folder report (PDF)...", menu)
-        report_act.setToolTip("One-click PDF overview of this folder: session map, "
-                              "images with their spectroscopy positions and curves, "
-                              "grid maps with curve-shape clustering, and a "
-                              "needs-attention appendix.")
-        report_act.triggered.connect(self.report_controller.generate_folder_report)
-        menu.addAction(report_act)
-        adjust_act = QtWidgets.QAction("Adjust image...", menu)
-        adjust_act.triggered.connect(self.on_adjust_image)
-        menu.addAction(adjust_act)
-        orient_targets = [str(p) for p in targets if str(p) in getattr(self, "thumb_widgets", {})]
-        if orient_targets:
-            orient_menu = menu.addMenu("Orientation" + (f" ({len(orient_targets)} selected)" if len(orient_targets) > 1 else ""))
-            for text, turns in (("Rotate 90° clockwise  (R)", 1),
-                                ("Rotate 90° anticlockwise  (Shift+R)", -1),
-                                ("Rotate 180°", 2)):
-                act = QtWidgets.QAction(text, orient_menu)
-                act.triggered.connect(lambda _, paths=list(orient_targets), k=turns: self.rotate_images(k, paths))
-                orient_menu.addAction(act)
-            orient_menu.addSeparator()
-            orient_reset = QtWidgets.QAction("Reset to acquired orientation", orient_menu)
-            orient_reset.setEnabled(any(self._get_image_orientation(p) for p in orient_targets))
-            orient_reset.triggered.connect(lambda _, paths=list(orient_targets): self.reset_image_orientation(paths))
-            orient_menu.addAction(orient_reset)
-            zero_menu = menu.addMenu("Zero" + (f" ({len(orient_targets)} selected)" if len(orient_targets) > 1 else ""))
-            self._populate_zero_menu(zero_menu, orient_targets)
-            if len(orient_targets) == 1 and viewer_ch_height.ch_abs_z_nm(self, orient_targets[0]) is not None:
-                ch_menu = menu.addMenu("CH height label")
-                viewer_ch_height.populate_menu(self, ch_menu, orient_targets[0])
-
-        # Per-image colormap for every selected thumbnail (real files and
-        # virtual copies alike) — stored in per_file_channel_cmap, so the
-        # rest of the grid keeps the global thumbnail cmap.
-        cmap_targets = [str(p) for p in targets if str(p) in getattr(self, "thumb_widgets", {})]
-        if cmap_targets:
-            cmap_suffix = f" ({len(cmap_targets)} selected)" if len(cmap_targets) > 1 else ""
-            cmap_menu = menu.addMenu("Colormap" + cmap_suffix)
-            ch_for_cmap = None
-            try:
-                ch_for_cmap = int(label_widget.property("channel_index"))
-            except Exception:
-                ch_for_cmap = None
-            current_cmaps = {
-                (self.per_file_channel_cmap or {}).get((p, ch_for_cmap)) for p in cmap_targets
-            }
-            current_cmap = next(iter(current_cmaps)) if len(current_cmaps) == 1 else None
-            cmap_names = cmap_registry.all_cmap_names()
-            featured = []
-            for name in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma", "coolwarm", "turbo"]:
-                if name in cmap_names and name not in featured:
-                    featured.append(name)
-            if current_cmap and current_cmap not in featured:
-                featured.insert(0, current_cmap)
-            for cmap_name in featured:
-                act = QtWidgets.QAction(cmap_name, cmap_menu)
-                try:
-                    act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
-                except Exception:
-                    pass
-                act.setCheckable(True)
-                act.setChecked(cmap_name == current_cmap)
-                act.triggered.connect(lambda _, paths=list(cmap_targets), name=cmap_name: self._set_thumbnail_entry_cmap(paths, name))
-                cmap_menu.addAction(act)
-            cmap_menu.addSeparator()
-            cmap_gallery = QtWidgets.QAction("\U0001F3A8 Colormap gallery...", cmap_menu)
-            cmap_gallery.triggered.connect(lambda _, paths=list(cmap_targets): self._pick_thumbnail_cmap_from_gallery(paths))
-            cmap_menu.addAction(cmap_gallery)
-            cmap_reset = QtWidgets.QAction("Use global thumbnail/preview cmap", cmap_menu)
-            cmap_reset.setEnabled(any(c for c in current_cmaps))
-            cmap_reset.triggered.connect(lambda _, paths=list(cmap_targets): self._set_thumbnail_entry_cmap(paths, None))
-            cmap_menu.addAction(cmap_reset)
-
-        # Virtual copies submenu
-        virt_menu = menu.addMenu("Virtual copy")
-        virt_cur = QtWidgets.QAction("Current channel", virt_menu)
-        virt_cur.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, self.channel_dropdown.currentIndex()))
-        virt_menu.addAction(virt_cur)
-        virt_other = QtWidgets.QAction("Choose channel...", virt_menu)
-        virt_other.triggered.connect(lambda _, paths=list(targets): self._create_virtual_channel_copies(paths, None))
-        virt_menu.addAction(virt_other)
-        virt_menu.addSeparator()
-        virt_remove = QtWidgets.QAction("Remove virtual copies (selected)", virt_menu)
-        virt_remove.triggered.connect(lambda _, paths=list(targets): self._remove_virtual_entries(paths))
-        virt_menu.addAction(virt_remove)
-
-        mol_menu = menu.addMenu("Molecules")
-        mol_clear = QtWidgets.QAction("Clear molecules (selected)", mol_menu)
-        mol_clear.triggered.connect(lambda _, paths=list(targets): self._clear_molecules_for_paths(paths))
-        mol_menu.addAction(mol_clear)
-        mol_copy = QtWidgets.QAction("Copy molecules from source", mol_menu)
-        mol_copy.setEnabled(any(self._is_processed_key(str(p)) for p in targets))
-        mol_copy.triggered.connect(lambda _, paths=list(targets): self._copy_molecules_from_source(paths))
-        mol_menu.addAction(mol_copy)
-
-        if hasattr(self, '_clear_multi_spec_selection'):
-            menu.addSeparator()
-            clear_specs_act = QtWidgets.QAction("Clear spectroscopy selections", menu)
-            clear_specs_act.triggered.connect(self._clear_multi_spec_selection)
-            menu.addAction(clear_specs_act)
-
-        menu.addSeparator()
-        collection_menu = menu.addMenu("Collections")
-        show_tray_act = QtWidgets.QAction("Show Collection Tray", collection_menu)
-        show_tray_act.triggered.connect(self.on_show_collection_tray)
-        collection_menu.addAction(show_tray_act)
-        selected_count = len([p for p in targets if p])
-        add_label = (
-            f"Add Selected Thumbnails ({selected_count})..." if selected_count > 1
-            else "Add Selected Thumbnail..." if selected_count == 1
-            else "Add Selected Thumbnails..."
-        )
-        add_selected_collection_act = QtWidgets.QAction(add_label, collection_menu)
-        add_selected_collection_act.setEnabled(selected_count > 0)
-        add_selected_collection_act.triggered.connect(self.on_add_selected_thumbnails_to_collection)
-        collection_menu.addAction(add_selected_collection_act)
-        add_label_to = (
-            f"Add Selected Thumbnails ({selected_count}) to..." if selected_count > 1
-            else "Add Selected Thumbnail to..." if selected_count == 1
-            else "Add Selected Thumbnails to..."
-        )
-        add_selected_collection_to_act = QtWidgets.QAction(add_label_to, collection_menu)
-        add_selected_collection_to_act.setEnabled(selected_count > 0)
-        add_selected_collection_to_act.setToolTip(
-            "Route the selected thumbnail(s) to a collection you pick now - does not change your "
-            "current collection target."
-            if selected_count > 0 else "Select one or more thumbnails first, then use this action."
-        )
-        add_selected_collection_to_act.triggered.connect(self.on_add_selected_thumbnails_to_collection_picker)
-        collection_menu.addAction(add_selected_collection_to_act)
-        remove_selected_collection_act = QtWidgets.QAction("Remove Selected Thumbnails from Collection", collection_menu)
-        remove_selected_collection_act.triggered.connect(
-            lambda: self.collection_controller.remove_thumbnail_entries(
-                [{"file_path": str(path), "channel_index": int(self.channel_dropdown.currentIndex() or 0)} for path in targets if path]
-            )
-        )
-        remove_selected_collection_act.setEnabled(bool(getattr(self, "_collection_source", None)) and selected_count > 0)
-        collection_menu.addAction(remove_selected_collection_act)
-        create_collection_act = QtWidgets.QAction("Create a Collection...", collection_menu)
-        create_collection_act.triggered.connect(self.on_create_collection)
-        collection_menu.addAction(create_collection_act)
-        open_collection_act = QtWidgets.QAction("Open a Collection...", collection_menu)
-        open_collection_act.triggered.connect(self.on_browse_collections)
-        collection_menu.addAction(open_collection_act)
-        clear_target_act = QtWidgets.QAction("Clear Current Collection Target", collection_menu)
-        clear_target_act.triggered.connect(self.on_clear_current_collection)
-        collection_menu.addAction(clear_target_act)
-        if selected_count == 0:
-            add_selected_collection_act.setToolTip("Select one or more thumbnails first, then use this action.")
-        elif not getattr(self, "_collection_source", None):
-            add_selected_collection_act.setToolTip(
-                "Choose or open a collection first, or use this action to create one when prompted."
-            )
-
-        menu.addSeparator()
-        drift_act = QtWidgets.QAction("Drift-correct and export...", menu)
-        drift_act.triggered.connect(lambda _, paths=list(targets): drift_animation.on_drift_correct(self, paths))
-        menu.addAction(drift_act)
-        anim_act = QtWidgets.QAction("Create animation from selection...", menu)
-        anim_act.triggered.connect(lambda _, paths=list(targets): drift_animation.on_create_animation(self, paths))
-        menu.addAction(anim_act)
-
-        menu.exec_(label_widget.mapToGlobal(pos))
+        return viewer_thumb_menu.show_thumb_context_menu(self, label_widget, pos)
 
     def _on_spectro_thumb_context_menu(self, label_widget, pos):
-        spec = label_widget.property("spectro_entry")
-        if not spec:
-            return
-        key = str(spec.get("path", "") or "")
-        selected = sorted(set(getattr(self, "spectro_thumb_multi_select", set()) or []))
-        targets = selected if selected else [key]
-        menu = QtWidgets.QMenu(self)
-        open_act = QtWidgets.QAction("Open spectroscopy", menu)
-        open_act.triggered.connect(lambda: self._open_spectroscopy_popup(spec))
-        menu.addAction(open_act)
-        site_act = QtWidgets.QAction("Open position summary", menu)
-        site_act.triggered.connect(lambda: self._open_spectro_summary_for_site(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or ""), quiet=True))
-        menu.addAction(site_act)
-        compare_site_act = QtWidgets.QAction("Compare spectra at this position", menu)
-        compare_site_act.triggered.connect(lambda: self.spectro_compare_controller.open_site_popup(spec, file_key=str(spec.get("image_key") or spec.get("primary_image_key") or "")))
-        menu.addAction(compare_site_act)
-        details_act = QtWidgets.QAction("Show metadata in Details", menu)
-        details_act.triggered.connect(lambda: self.show_spectroscopy_details(spec))
-        menu.addAction(details_act)
-        current_image_key = self._current_spectro_assignment_target_image_key()
-        if current_image_key:
-            assign_act = QtWidgets.QAction(f"Assign to current image ({Path(current_image_key).name})", menu)
-            assign_act.triggered.connect(lambda: self._apply_spectro_assignment_override([spec], current_image_key))
-            menu.addAction(assign_act)
-        clear_assign_act = QtWidgets.QAction("Clear manual assignment", menu)
-        clear_assign_act.setEnabled(bool(str(spec.get("assignment_override_image_key") or "").strip()))
-        clear_assign_act.triggered.connect(lambda: self._clear_spectro_assignment_override([spec]))
-        menu.addAction(clear_assign_act)
-        add_source_file_menu(menu, spec.get("path"), self)
-
-        channels = list((spec.get("channels") or {}).keys())
-        common = set(channels)
-        if selected:
-            for path in selected:
-                entry = None
-                for s in getattr(self, "spectros", []) or []:
-                    if str(s.get("path", "") or "") == path:
-                        entry = s
-                        break
-                if entry is None:
-                    continue
-                common &= set((entry.get("channels") or {}).keys())
-        channel_menu = menu.addMenu("Miniature channel")
-        channel_list = sorted(common) if common else channels
-        if not channel_list:
-            channel_list = channels
-        if channel_list:
-            current = self.spectro_thumb_channel_by_path.get(key) or self.spectro_miniature_default_channel or channel_list[0]
-            for ch_name in channel_list:
-                act = QtWidgets.QAction(ch_name, channel_menu)
-                act.setCheckable(True)
-                act.setChecked(ch_name == current)
-                act.triggered.connect(lambda _checked, ch=ch_name, paths=list(targets): self.on_set_spectro_thumbnail_channel(ch, paths))
-                channel_menu.addAction(act)
-
-        menu.exec_(label_widget.mapToGlobal(pos))
+        return viewer_spectro_menu.show_spectro_thumb_context_menu(self, label_widget, pos)
 
     def _apply_filter_to_paths(self, paths, filter_key=None, pipeline=None, label=None, focus_path=None):
         return self.filter_controller._apply_filter_to_paths(paths, filter_key=filter_key, pipeline=pipeline, label=label, focus_path=focus_path)
@@ -11018,8 +10741,8 @@ QLabel:hover {{
 
     def on_export_selected_same_view(self):
         return viewer_export.on_export_selected_same_view(self)
-    def on_export_stp_files(self):
-        return viewer_export.on_export_wsxm_stp_files(self)
+    def on_export_stp_files(self, paths=None, out_dir=None):
+        return viewer_export.on_export_wsxm_stp_files(self, paths, out_dir)
 
     def _export_view_as_stp(self, view):
         return viewer_export.export_view_as_stp(self, view)

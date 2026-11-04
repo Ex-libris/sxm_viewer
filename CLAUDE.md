@@ -33,6 +33,14 @@ python -m sxm_viewer
   handlers calling `save_config`) writes to the user's real
   `~/.sxm_viewer_config.json`. Either avoid config-persisting calls in test
   scripts or restore the file afterwards.
+- Headless testing notes (learned building the figure recipes): back up
+  and restore `~/.sxm_viewer_config.json` around every script (figure
+  windows save styles/state on each edit); the offscreen platform has no
+  font glyphs and inflated font metrics, so widget widths measured there
+  are ~2x real and grabbed screenshots show blank text (matplotlib text
+  renders fine - check figures via `savefig`, layouts via numbers); lazy
+  thumbnails stay placeholders unless you pump the event loop; stdout is
+  lost on a hard abort, so run with `python -u` and print with `flush=True`.
 - PowerShell 5.1 mangles embedded double quotes when passing args to native
   executables — write `git commit` messages without `"` characters (or use a
   `-F` message file).
@@ -87,6 +95,10 @@ python -m sxm_viewer
   regions, per-grid curve clustering, KPFM fit maps, flagged items),
   `pdf.py` (matplotlib `PdfPages` page rendering), `channels.py` (channel-
   name classification heuristics — see "Folder reports" below).
+- `molecules/` — the molecular-model overlay (.xyz/.pdb...), Qt-free and
+  shared by every window: `model.py` (`Molecule`, palettes, radii, render
+  styles), `render.py` (`draw_molecules`, THE renderer), `interaction.py`
+  (gesture map + drag math, orientation/gizmo). See "Molecular overlays".
 - `utils/` — small helpers (`units.py` unit parsing/formatting, `logging.py`).
 - `gui/` — the Qt UI (see below).
 
@@ -188,6 +200,36 @@ re-grep the method name to confirm before relying on an exact line.
 - Right-click/context menus (not the toolbar) are separate methods:
   `_on_thumb_context_menu`, `_on_spectro_thumb_context_menu`,
   `_populate_marker_style_menu` in `main_window.py`.
+- **Image right-click menus share one mechanism, `gui/menu_kit.py`**
+  (viewer-agnostic): `section()` greyed headers (QLabel `QWidgetAction`s -
+  `addSection` text isn't drawn by the native Windows style),
+  `checkable`/`choice_group`, and the export section (`Route` registry +
+  `add_export_section`: "Again: ..." / user-pinned routes / "More export"
+  with "Customise pinned..."). `MenuPrefs` stores pinned routes and the last
+  export per *scope* in config `context_menus.<scope>`. Rules for every
+  such menu: sections Display / (Tools) / Export / Analyse & create /
+  Organise, at most one submenu level, hide items that don't apply.
+  - Thumbnails: `gui/viewer/thumb_menu.py` (`_on_thumb_context_menu` is a
+    shim), routes in `gui/viewer/export_routes.py:thumbnail_routes`, scope
+    `thumbnails` (migrates the old `thumb_menu` config key once).
+  - Main preview + every pop-up: `MultiPreviewCanvas._show_context_menu`
+    (one builder for both), built-in routes in `_view_export_routes`;
+    the owner calls `export_routes.install_canvas_menu_support` (main
+    window init + `preview_popup.spawn_preview_popup`) to pass the scope
+    `view` prefs and viewer-backed routes (Obsidian). Other canvases (e.g.
+    the matrix-fit dialog) fall back to in-memory prefs.
+  - Spectroscopy thumbnails: `gui/viewer/spectro_menu.py`
+    (`_on_spectro_thumb_context_menu` is a shim), scope `spectra`, ctx
+    `{"specs", "channel"}`. Exports render the plot off-screen from the spec
+    data (miniature channel + axis, SI-prefixed y unit via
+    `_auto_display_unit`; several selected spectra overlaid) so no Spectrum
+    window is needed; specs are hydrated lazily inside each route, not at
+    menu open. Obsidian results may carry their own `caption`.
+  - Route `run(ctx, dest)` returns a destination record (`{"out_dir"}` /
+    `{"note","vault"}`) to make "Again" possible; export functions take
+    `paths`/`out_dir` and return the destination on success for this.
+  New per-image actions go into the right section of these builders, not
+  as new top-level items.
 - The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
   and its tabbed side panel are built independently of the main window's.
 - Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
@@ -333,9 +375,10 @@ All drawn/managed inside `MultiPreviewCanvas`
 (`gui/canvases/detail_preview_canvas.py`) unless noted:
 - **Scale bar** — `_add_scale_bar`/`_refresh_scale_bars`, drag via `_on_sb_*`,
   toggle Ctrl+4.
-- **3D molecule overlay** — `Molecule`/`MoleculePropertiesDialog`
-  (`gui/canvases/molecular_overlay.py`); drawn by `_draw_molecules`, toggle
-  Ctrl+3.
+- **3D molecule overlay** — `Molecule` (`sxm_viewer/molecules/`, see
+  "Molecular overlays" below) / `MoleculePropertiesDialog`
+  (`gui/canvases/molecular_overlay.py`); `_draw_molecules` is a wrapper
+  around `molecules.render.draw_molecules`, toggle Ctrl+3.
 - **2D/SVG molecule overlay** — `SvgMoleculeOverlay`/`SvgAtom`/`SvgBond`
   (`gui/canvases/svg_molecule_overlay.py`); drawn by `_draw_svg_molecules`.
 - **Profile line & HUD** — `_update_profile_artists`, saved profiles via
@@ -356,6 +399,10 @@ All drawn/managed inside `MultiPreviewCanvas`
   `CanvasGraphicsView.show_alignment_guides`/`clear_alignment_guides`.
 
 ### Publication canvas (figure composition workspace)
+For series / zoom figures use the figure recipes instead (see "Figure
+recipes" below); the canvas remains the free-layout tool, reachable from a
+figure's ⋯ > "Open in canvas".
+
 `ExperimentalCanvasWindow` (`gui/canvases/canvas_window.py`) is the top-level
 window for composing a multi-panel publication figure from loaded scans;
 launched lazily from `main_window.py` and cached on `self._canvas_window`.
@@ -855,7 +902,7 @@ pass look like it did nothing:
   flipped correctly, the partial one silently bailed.
 
 ### Folder reports (PDF)
-"Generate folder report (PDF)..." (thumbnail context menu + toolbar
+"Generate folder report (PDF)..." (toolbar
 "Report" action) renders a multi-page PDF overview of the loaded folder.
 Two-phase design: `ReportController.collect_payload`
 (`gui/controllers/report.py`) snapshots viewer state on the GUI thread —
@@ -911,6 +958,242 @@ entirely off-thread. Never let the worker touch the viewer.
   `MatrixSpectroViewer` methods (which live on a QDialog and can't be
   imported Qt-free) — keep them in sync, especially the local-frame flip
   rules (see "Grid Map Explorer" above).
+
+### Figure recipes: data-aware multi-panel figures (`figures/`, `gui/controllers/figures.py`, `gui/dialogs/figure_window.py`)
+The successor to the publication canvas for the figures SPM users actually
+make. Design goal (from the user): **one click from data to a finished,
+publication-ready figure** - no dialog, no settings up front; every
+adjustment made in place on the figure or in the always-visible Format bar.
+The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") for
+free layout, but is no longer the starting point.
+
+**Three recipes, one window.** Thumbnails carry clickable chips (painted in
+`_decorate_thumbnail_pixmap`, hit-tested in `thumbnail_ui._handle_series_chip_click`
+via the shared `series_chip_rect` / `zoom_chip_rect`); right-click offers
+the same plus *Figure from selection* for anything else:
+- **Height series** (green `z×N`): CH frames re-scanning one footprint at a
+  ladder of tip heights; frames by z, `Δz = +20 pm` headers.
+- **Bias series** (amber `V×N`): same footprint, only the bias steps (CC
+  topography or CH); frames by bias, signed `V = +300 mV` headers, setpoint
+  line when it changes.
+- **Overview + zooms** (blue `⊡N`, may sit beside a series chip): a frame
+  with smaller frames inside it; overview left, zoom grid right, each zoom
+  outlined + lettered on the overview in its own colour.
+N counts distinct acquisition conditions (`levels`), not files.
+
+**Layers** (same split as the folder report - Qt-free core, GUI gathers):
+- `figures/height_series.py` (Qt-free; despite the name it hosts all
+  recipes): detection (`find_height_series`, `find_bias_series`,
+  `find_zoom_families`), `build_spec` (frames + channels + headers),
+  `figure_layout` (deterministic inch boxes - the window hit-tests from
+  these, never asking matplotlib), `render` (one matplotlib renderer for
+  screen *and* every export), range helpers. `figures/svg_layers.py` turns
+  the SVG into Inkscape layers by artist `gid`.
+- `FigureController` (GUI thread): series index for the chips, inputs
+  through the preview pipeline (`panel()`: filters, adjustments, quarter
+  turns, Zero, aborted-row mask), `data_signature()` for the live link,
+  remembered state/styles/export settings, Obsidian menu.
+- `FigureWindow` + `_FormatPanel` (pure UI against that controller).
+
+**Detection rules (each one came from a real folder):**
+- Height/bias series reuse `reporting.model.build_image_sequences` so the
+  report and the figure agree on what a series is. Height: only CH-tagged
+  frames, `z_level_nm` = the **HUD** height (`ch_height.ch_abs_z_nm`, so
+  captions can't contradict the preview), `z_spread_nm` = the CH tag's
+  `rng_nm`. **A CH tag is not flatness**: real frames step Z mid-scan (rng =
+  the step) or carry a z = 0 region (rng ~190 nm); the report's 20 pm gate
+  drops their z and they come back as `excluded` ("Include anyway" in the
+  ⓘ note).
+- Bias: CH and CC/untagged frames go through the detector **separately** -
+  mixed, a CC bias ladder and a CH height ladder of one spot become one
+  "bias+height" group.
+- Zooms: rotation-aware containment of all four corners (4 % overhang),
+  parent = the *smallest* frame with >= 2.5x the area; one level deep (a
+  zoom with zooms gets its own family). Geometry mirrors
+  `geometry.spec_mapping` (`_local_to_abs` = `pixel_to_nm`, `_abs_to_local`
+  = `map_spec_to_pixels`, rotate-then-normalise) - keep them in sync.
+- Repeats collapse to the **latest** frame per `condition_key` (bias mV,
+  z pm, setpoint 3 sig.; zooms: same footprint), `show_repeats` brings them
+  back. Real series were often mostly repeats (13 frames = 3 heights).
+- Stopped scans: `panel()` NaN-masks rows outside `detect_valid_scan_region`
+  (a stopped scan's constant z = 0 rows beside -185 nm topography flattened
+  whole rows). Frames < 25 % scanned are pruned (`excluded` reason
+  `"aborted"`) - only knowable after reading the array, so
+  `_idle_check_scans` checks chip members a few per idle tick after the
+  index is built and repopulates thumbnails if a count changes; the scan
+  fraction is part of the index signature; `_find_aborted` in the window
+  is the backstop.
+- `ensure_series_index()` runs at the top of every
+  `populate_thumbnails_for_channel`, cached on (files, tag, abs_z_pm,
+  rng_nm, scan fraction); `_z_nm` only asks the HUD for CH frames (others
+  could sample a file each).
+
+**Spec model:** `spec["columns"]` are always the *frames*, `spec["rows"]`
+the *channels*; `style["transpose"]` / the zoom layout only change where
+they go. Channels are identified by **caption** (`row["label"]`); state
+keeps `rows` (ordered captions, None = defaults from `pick_image_channels`),
+`row_cmaps`, `clims` keyed by `clim_key(label[, frame_key])`. Pseudo
+channel `hs.BEST` ("Best channel per frame", `kind == "mixed"`) gives each
+frame its own first pick - the zoom default when frames were taken in
+different modes (CC overview topography + CH zoom current); mixed rows are
+scaled per cell in their own unit. Unknown vendor captions fall back to the
+unit (`_CLASS_OF_UNIT`: A -> current, Hz -> freq, m -> z).
+
+**Ranges** (never pool across baselines): `baseline_outliers` flags frames
+whose *median* sits > 3 typical spans (75th pct of frame spans) from the
+row median ("offset", own scale) or that have no signal ("flat", dimmed,
+tagged with the real level); `_flat_row_level` catches a flat channel or a
+single flat frame (CH topography). Signal rows: `pooled_range` with **equal
+weight per frame**; topography rows: `typical_range` (median of frames' own
+2-98 %, so one tip crash saturates instead of darkening the rest) and
+relative (each frame minus its p1). One display unit per row (the viewer's
+`_scale_unit_for_display` picks per image - 4 pA next to 0.4 nA). Real
+data that forced this: a Δf series with 5 PLL-unlocked frames at
+-12 033 Hz and one mid-scan jump. Tick precision follows the *span*
+(`_tick`), or 90.06…90.14 prints "90.1" twice.
+
+**Style** - one dict, `STYLE_DEFAULTS` / `resolve_style` (bool
+`scale_label` migrates). Keys in `RECIPE_KEYS` (ranges, colour bars, scale
+bar, header, layout) have per-recipe defaults (`RECIPE_DEFAULTS`: zooms =
+own ranges, no bars) and are remembered per recipe (config
+`figure_style_recipe`); everything else globally (`figure_style_default`);
+the header is never carried over (`"auto"` = Δz / V / size per recipe).
+To add an option: `STYLE_DEFAULTS` + `render`/layout + a `_FormatPanel`
+card row + the matching right-click menu. Notable ones:
+- `page`: `PAGE_PRESETS` (Nature 89/183 mm, Science 55/120/183, ACS
+  3.25/7 in, generic 85/120/178) set the width **and** `page_text_style`
+  (text pt, letter pt/style). The panel width is solved from the page
+  (every layout width is affine in it: two trial layouts give the answer);
+  if panels would drop below `_MIN_PANEL_IN` the frames wrap into more rows.
+  Fonts stay in absolute points; derived sizes go through `pt()` (>= 5 pt).
+- `font_family` (Arial default, `available_fonts` journal fonts first):
+  `render` wraps `_render` in `rc_context(font_rc(st))` - text props are
+  fixed at artist creation, so this covers screen, PDF, SVG, PPT.
+- Colours of text over images: `letter_color` / `scale_color` "auto" pick
+  white or black **per letter / bar** from the pixels under it, through the
+  live colormap + range (`auto_color` reuses the preview's Qt-free
+  `gui/canvases/scale_bar_contrast.py` WCAG rule - one contrast rule app
+  wide). Per-letter overrides live in figure state `letter_colors`
+  (`letter_key(row_label, frame_key)`), set from a letter's right-click
+  menu. Outlines take the opposite tone of whatever colour the text got.
+- Letters: `letter_pos` corners or `out_tl`/`out_tr` (outside, own line
+  above the header - `_letter_line_y`; the layout adds `_outside_letter_h`
+  to the header band / row gaps); outline optional.
+- Scale bar on every image by default; length label `first` = once per
+  distinct length (zoom frames of different sizes all stay labelled),
+  `all`, `none`; `scale_font`; thickness from the panel's **shorter** side
+  (from the height, tall frames got slabs).
+- Colour bars: `cbar_style` outside (ticks) / inside (values in the bar,
+  contrast-coloured) / minmax (gradient labelled "min"/"max");
+  `cbar_label_pos` inside = channel name centred in the bar; `cbar_scope`
+  row = one bar per channel even with per-image ranges (min/max, not
+  draggable). `cbar_dims` is shared by layout and renderer; end labels are
+  aligned inside their bar so stacked bars never overlap.
+- `rotate_tall`: portrait panels turned to landscape for the figure only
+  (`rotate_tall_panels`: data rot90, width/height swapped, `turns` bumped so
+  zoom outlines follow). `panel()`'s width/height are already the
+  *displayed* (viewer-turned) size - never swap them again for `turns`.
+- Headers can be `none`; `channel_labels` hides the row names (bands
+  shrink); `ref_bold` (off by default).
+
+**Molecular models** (Molecule card, right-click a model): one list of
+`Molecule.to_dict()` in figure state `molecules`, positioned in **panel
+nm** (each panel's axes are `0..w, 0..h` nm, y up), so one placement is the
+same physical spot on every channel / frame of a series - the point is
+comparing channels against the same model. Drawn with the shared renderer
+(`_MoleculePainter` -> `molecules.render.draw_molecules`; palette / bond
+mode / shadow / H from `controller.molecule_settings()` = the preview
+canvas) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
+points for the big preview. "From preview" (`controller.preview_molecules`) takes the
+live preview / `viewer.molecule_overlays` and subtracts the frame's display-
+extent lower-left corner (preview data coords are extent-based, y up).
+Interaction cost: a drag caches the figure without molecules once
+(`copy_from_bbox`) and each move redraws only the molecule artists
+(`restore_region` + `draw_artist`): ~80 ms for 12 panels instead of a ~0.8 s
+re-render. `render(draw_molecules=...)` is the Qt-free hook; `data_boxes`
+in the layout (post-`apply_aspect` image boxes) map clicks to panel nm.
+Molecules get their own Inkscape layer. Interactive rotation must match the
+preview gesture for gesture (it was briefly lost - keep it): drag = move,
+Shift+drag = spin about the model centre, Ctrl+Shift+drag or middle button
+= free 3-D (0.5 deg/px: dx -> Y, dy -> X, y up), plus the X/Y/Z orientation
+gizmo (`molecules.interaction.gizmo_vectors`; screen-only, painted by the
+view top-left while a model is selected; inner disc = tumble 0.45 deg/px,
+rim = spin) - all of it from `molecules.interaction`, so it cannot drift. All modes share the cached-background
+redraw; keys X/Y/Z rotate 5 deg, arrows nudge.
+
+**Window** (`FigureWindow`): figure on white "paper" (= the export) in a
+scroll area, `_FormatPanel` **under it in a splitter**: a row of cards
+(icon from `_tab_icon` + title + one-line hint) with every option visible -
+the user rejected both a right-hand panel (cramped, cropped text) and tabs
+(discoverability). Drop-downs get a fixed width (`fit()`) with full names in
+their pop-ups. Opens fitted to the window (actual size is a per-window view,
+never remembered). Direct manipulation: Δz header = reference; hover × =
+drop frame; channel label = switch/move/remove/recolour; "+ channel";
+colour bar drag = contrast, click = Min/Max popover, double-click = auto;
+right-click any element = its options; **Ctrl+wheel** = size of what is
+under the cursor (text with letters in proportion / bar width / scale-bar
+label / letters; Ctrl+Shift = panels), coalesced into one undo step. Live
+link: `data_signature()` polled + on activation. Outputs: Copy (PNG+SVG /
+PNG / SVG), PowerPoint (new/current slide, shapes/picture - always sent
+with `width`/`height`/`image_size` = the figure's size in points; the
+bridge's defaults fit everything into a 600 x 450 pt box, which is why it
+was not at real scale), Obsidian (via
+`viewer.export.export_to_obsidian(render=...)`), Inkscape (layered SVG,
+opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
+300-1200 dpi, transparent background.
+
+**Lessons (what made this take longer than it should have):**
+- Validate against several *real* folders (Anfatec local, Nanonis-converted,
+  network): every robustness rule above came from one of them, none from
+  synthetic data.
+- Matplotlib SVG puts an image's `gid` on the `<image>` element, not a
+  `<g>` - match ids on any element (`svg_layers`).
+- Anfatec headers: `Bias` is in `BiasPhysUnit` (mV) - `_header_bias_v`
+  converts (report and figures both used to print -2000 V); tunnel current
+  is `It_to_PC` / `It_ext` (unit A), which `classify_channel` used to call
+  "other" (so CH report pages had no current).
+- An exception escaping a Qt handler aborts the process when no
+  `sys.excepthook` is installed (the app's `cli.py` installs one; headless
+  test scripts don't) - `FigureController._open` catches and reports.
+
+### Molecular overlays: one model, one renderer, one gesture map (`sxm_viewer/molecules/`)
+A molecular model looks and behaves the same in the preview, pop-ups,
+figure windows, preview exports and the publication canvas because each of
+them is a thin host over one Qt-free package:
+- `model.py` — `Molecule` (load .xyz/.pdb/..., `angles`/`offset`/`scale`,
+  mirrors, `get_transformed_coordinates`, `to_dict`/`from_dict`,
+  `reset_to_file_state`), palettes, radii, render-style profiles, colour
+  resolution. `gui/canvases/molecular_overlay.py` re-exports all of it
+  (old imports keep working) and holds only the Qt dialogs.
+- `render.py` — `draw_molecules(ax, molecules, settings, *, scale=1.0)`,
+  the only molecule renderer: `settings` = palette / bond colour mode /
+  default bond colour / shadows / hydrogens (`DEFAULT_SETTINGS`), returns
+  entries `{mol, ax, scatter, atom_underlay, atom_order, shadow,
+  line_underlay, lines}` (`artists_of` flattens them). `scale` multiplies
+  screen-sized marks (marker areas x scale^2, line/edge widths x scale);
+  `panel_scale(ax, user)` derives it from a printed panel's width. Bonds are
+  round-capped/joined in every style so they read as one continuous stick.
+  Light atoms and bond halves (luminance > `LIGHT_LUMINANCE`: white H, the
+  near-white default bond colour) get a dark rim/casing so they read on a
+  white figure without sampling the background; same-colour split bonds are
+  drawn as one segment (overlapping translucent round caps made dark dots).
+  `BOND_STYLE_WIDTH` thin/default/thick = 0.45/1/2 - the depth cue alone
+  varies widths up to 3x, so the styles must be further apart than that.
+- `interaction.py` — what a gesture *does*: `drag_mode` /
+  `drag_mode_for_key` (drag = translate, Shift = spin, Ctrl+Shift or middle
+  = 3-D tumble 0.5 deg/px), `drag_update` (pose from press pose + pointer;
+  pixel deltas and gizmo vectors y-up), `gizmo_hit_mode` (inner disc
+  < 0.58 = tumble 0.45 deg/px, rim = spin), `orientation_matrix`,
+  `axis_screen_vectors`, `gizmo_vectors`, `atoms_hit` (14 px),
+  `key_rotation` (5 deg), `apply_transform`.
+Hosts only translate their events (matplotlib data/pixel coords in
+`MultiPreviewCanvas`; Qt positions -> panel nm in `FigureWindow`) and own
+undo, selection and redraw strategy. A new look or gesture goes into the
+package, never into a host. Verify a change by pixel-diffing preview
+renders per style and replaying gestures through the real handlers (the
+refactor that created the package was checked that way: identical pixels,
+identical poses). Found by that replay: the preview's Ctrl+Shift tumble had
+never worked - it tested `'control' in key`, matplotlib sends `ctrl+shift`.
 
 ### CH height label: z_abs or Δz to a reference (`gui/viewer/ch_height.py`)
 The acquisition HUD's CH line is resolved at *draw* time, not baked into the
@@ -1097,6 +1380,20 @@ the user's default. Stored in config as `favorite_cmaps` (dict:
 `clear_colormap_favorites`). Favourites win over merely-last-used values
 at startup; Display → "Reset colormap defaults" clears them; the folder
 report reads the same favourites via `payload["prefs"]`.
+
+### PNG / Obsidian export (as displayed)
+"Export PNGs" (toolbar + thumbnail menu) and "Export to Obsidian" share
+`gui/viewer/export.py:render_targets_as_displayed`: each target (thumbnail
+selection in grid order, else the previewed image) is loaded into the main
+preview and `preview_canvas.fig` is saved, so the active display preset,
+overlays (and the H-hidden state), per-file cmap/contrast/Zero/turn apply;
+the previous preview is restored afterwards. One PNG per image (the whole
+displayed figure, extra channel views included). Obsidian support is
+file-based and Qt-free (`sxm_viewer/integrations/obsidian.py`): vaults from
+`%APPDATA%/obsidian/obsidian.json`, the active note from
+`<vault>/.obsidian/workspace.json`, link style/attachment folder from
+`app.json`; embeds are appended to the end of the note. Options are
+remembered in config `obsidian_export` (image folder per vault).
 
 ### Cross-cutting conventions
 

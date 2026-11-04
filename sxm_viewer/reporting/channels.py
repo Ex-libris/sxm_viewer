@@ -33,10 +33,13 @@ _CLASS_PATTERNS = (
     )),
     ("lockin", (r"\bli[_\s]?\d*\s*demod", r"\bli\d*[xy]\b", r"\blia", r"lock[\s_-]?in",
                 r"demod", r"l\d+l?[xy]\b", r"didv", r"di_dv")),
-    ("current", (r"current", r"\bit\b", r"^i[_\s(]", r"^i$")),
+    # Anfatec names the tunnel current "It_to_PC" (to the PC's ADC) and
+    # "It_ext" (external input) - "it" followed by "_" has no \b boundary.
+    ("current", (r"current", r"\bit\b", r"^i[_\s(]", r"^i$",
+                 r"(?:^|_)it_(?:to|ext)", r"^it(?:fwd|bwd)?(?:_|$)")),
     ("z", (r"topo", r"height", r"^z\b", r"^z[_\s(]", r"z[_\s]?rel", r"\bz_m\b")),
-    ("time", (r"time",)),
-    ("amplitude", (r"amplitude", r"\bamp\b")),
+    ("time", (r"time", r"^zeit")),
+    ("amplitude", (r"amplitude", r"\bamp\b", r"ampl(?:fwd|bwd|_|$)")),
     ("phase", (r"phase",)),
     ("excitation", (r"excitation", r"drive")),
 )
@@ -92,6 +95,22 @@ def pick_signal_channels(channels, limit=4):
     return [(name, cls) for _, _, name, cls in scored[:limit]]
 
 
+def channel_preference(cls, caption):
+    """Lower = preferred among channels of one class: forward before
+    backward, and for current the measured tunnel current ("It_to_PC")
+    before an external copy ("It_ext")."""
+    low = str(caption or "").lower()
+    score = 0
+    if re.search(r"bwd|backward|\bbk\b", low):
+        score += 10
+    if cls == "current":
+        if "to_pc" in low or "to pc" in low:
+            score -= 1
+        elif "ext" in low:
+            score += 1
+    return score
+
+
 def pick_image_channels(fds, tag, topo_idx):
     """Channel indices to render for an image, per the CH/CC heuristics.
 
@@ -104,10 +123,14 @@ def pick_image_channels(fds, tag, topo_idx):
     fds = list(fds or [])
     if tag == "constant-height":
         by_class = {}
+        best = {}
         for idx, fd in enumerate(fds):
             text = f"{fd.get('Caption', '')} {fd.get('FileName', '')}"
             cls = classify_channel(text)
-            by_class.setdefault(cls, idx)
+            score = channel_preference(cls, str(fd.get("Caption") or ""))
+            if cls not in best or score < best[cls]:
+                best[cls] = score
+                by_class[cls] = idx
         picks = []
         if "current" in by_class:
             picks.append((by_class["current"], "current"))

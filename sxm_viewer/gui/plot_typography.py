@@ -101,9 +101,11 @@ def apply_qfont_style(font, *, family: str | None = None, bold: bool | None = No
     return font
 
 
-def add_font_menu_action(menu, parent, current_family: str | None, apply_callback, *, current_style: dict | None = None, apply_style_callback=None):
-    """Add typography controls with family and optional bold/italic/underline toggles."""
-    font_menu = menu.addMenu("Typography")
+def add_font_menu_action(menu, parent, current_family: str | None, apply_callback, *, current_style: dict | None = None, apply_style_callback=None, inline: bool = False):
+    """Add typography controls with family and optional bold/italic/underline
+    toggles - in a "Typography" submenu, or straight into ``menu`` when
+    ``inline`` (callers then add their own section header)."""
+    font_menu = menu if inline else menu.addMenu("Typography")
     current = normalize_font_family(current_family)
     current_act = font_menu.addAction(f"Current: {current}")
     current_act.setEnabled(False)
