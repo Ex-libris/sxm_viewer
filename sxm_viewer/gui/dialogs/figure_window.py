@@ -46,8 +46,9 @@ _HEADER_NAMES = {"auto": "Automatic (Δz / bias / size)", "dz": "Δz to the refe
                  "none": "None (no header)"}
 _MODE_TITLES = {"height": "Height series", "bias": "Bias series", "zoom": "Overview + zooms",
                 "selection": "Figure"}
-_CBAR_STYLES = {"outside": "Numbers outside (ticks)", "inside": "Numbers inside the bar",
-                "minmax": "Words: min / max"}
+_CBAR_STYLES = {"outside": "Numbers outside", "inside": "Numbers inside the bar",
+                "minmax": "min / max outside", "minmax_in": "min / max inside the bar"}
+_CBAR_TICKS = {0: "None", 2: "2 (ends)", 3: "3", 5: "5"}
 _CBAR_TEXT = {"rotated": "Rotated text", "horizontal": "Horizontal text"}
 _ZOOM_COLORS = {"color": "One colour per zoom", "white": "White", "black": "Black"}
 _DPI_CHOICES = (300, 600, 1200)
@@ -547,7 +548,8 @@ class _FormatPanel(QtWidgets.QWidget):
         add("Bars", w["cbar_scope"])
         w["cbar_style"] = combo(_CBAR_STYLES)
         add("Values", w["cbar_style"])
-        w["cbar_ticks"] = combo({2: "2 (ends)", 3: "3", 5: "5"})
+        w["cbar_ticks"] = combo(_CBAR_TICKS)
+        w["cbar_ticks"].setToolTip("None = a plain gradient, no tick marks or values")
         add("Ticks", w["cbar_ticks"])
         w["cbar_label"] = check("Channel and unit")
         add(None, w["cbar_label"])
@@ -735,8 +737,8 @@ class _FormatPanel(QtWidgets.QWidget):
             for key in ("cbar_ticks", "cbar_label", "cbar_style", "cbar_text", "cbar_w",
                         "cbar_label_pos", "cbar_outline"):
                 w[key].setEnabled(bars_on)
-            if bars_on and style.get("cbar_style") == "minmax":
-                for key in ("cbar_ticks", "cbar_w", "cbar_text"):
+            if bars_on and style.get("cbar_style") in ("minmax", "minmax_in"):
+                for key in ():
                     w[key].setEnabled(False)
             w["page_mm"].setEnabled(style.get("page") == "custom")
             w["panel_w"].setEnabled((style.get("page") or "free") == "free")
@@ -1645,7 +1647,7 @@ class FigureWindow(QtWidgets.QWidget):
                                                    "image": "Each image its own range"})
         menu.addSeparator()
         self._toggle(menu, "Colour bars", "colorbars")
-        self._choice(menu, "Ticks", "cbar_ticks", {2: "2 (ends)", 3: "3", 5: "5"})
+        self._choice(menu, "Ticks", "cbar_ticks", _CBAR_TICKS)
         menu.addSeparator()
         self._toggle(menu, "Channel and unit label", "cbar_label")
         self._choice(menu, "Channel name", "cbar_label_pos", _CBAR_LABEL_POS)

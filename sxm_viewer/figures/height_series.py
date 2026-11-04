@@ -62,7 +62,7 @@ STYLE_DEFAULTS = {
     "reverse": False,          # reverse the frame order (z / bias / time)
     "range_mode": "row",       # "row": one range per channel | "image"
     "colorbars": True,
-    "cbar_ticks": 2,           # 2 (ends) | 3 | 5
+    "cbar_ticks": 2,           # 0 (none) | 2 (ends) | 3 | 5
     "cbar_label": True,
     "letters": True,
     "letter_style": "a",       # "a" | "A" | "(a)" | "a)" | "a."
@@ -91,7 +91,7 @@ STYLE_DEFAULTS = {
     "scale_outline": True,     # ... around the scale bar and its label
     "scale_thick": 0.018,      # scale bar thickness, fraction of panel height
     "cbar_w": 0.07,            # colourbar thickness (inches)
-    "cbar_style": "outside",   # outside (ticks) | inside (values in the bar) | minmax (text only)
+    "cbar_style": "outside",   # outside | inside (numbers) | minmax | minmax_in ("min"/"max" words)
     "cbar_text": "rotated",    # rotated | horizontal (vertical colourbars)
     "zoom_color": "color",     # zoom outlines: color (one per zoom) | white | black
     "zoom_labels": True,       # letter of each zoom next to its outline
@@ -946,12 +946,16 @@ def cbar_dims(st, orient="v"):
     style = st.get("cbar_style") or "outside"
     rotated = (st.get("cbar_text") or "rotated") == "rotated"
     bar = float(st.get("cbar_w") or 0.07)
-    if style == "minmax":
+    no_ticks = int(st.get("cbar_ticks", 2) or 0) == 0
+    if style in ("inside", "minmax_in"):
+        # values ("12.5" or "max") centred inside the bar's ends
+        bar = max(bar, 1.7 * pt) if not no_ticks else bar
+        extra = 0.0
+    elif no_ticks:
+        extra = 0.0
+    elif style == "minmax":
         # A real bar whose ends read "min" / "max" (no numbers).
         extra = (1.3 * pt if rotated else 0.30 * font / 7.0) if orient == "v" else 1.5 * pt
-    elif style == "inside":
-        bar = max(bar, 1.7 * pt)
-        extra = 0.0
     else:
         extra = (1.3 * pt if rotated else 0.36 * font / 7.0) if orient == "v" else 1.5 * pt
     if st.get("cbar_label"):
@@ -1589,7 +1593,9 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                             if st["cbar_label"]:
                                 label = row["display"] or None
                             cb = _colorbar(fig, ref_im, entry, size, 0.0, 1.0,
-                                           dict(st, cbar_style="minmax"), text_color, label, "")
+                                           dict(st, cbar_style="minmax_in" if st.get("cbar_style") in
+                                                ("inside", "minmax_in") else "minmax"),
+                                           text_color, label, "")
                         else:
                             if st["cbar_label"]:
                                 label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
@@ -1708,7 +1714,8 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     cax = fig.add_axes(_ax_rect(entry["box"], size))
     cax.set_gid(f"colorbar_{entry['row']}_{entry['frame'] if entry['frame'] is not None else 'row'}")
     import matplotlib.colors as mcolors
-    norm = mcolors.Normalize(lo, hi) if (st.get("cbar_style") == "minmax" and lo == 0.0 and hi == 1.0) else im.norm
+    norm = (mcolors.Normalize(lo, hi) if (st.get("cbar_style") in ("minmax", "minmax_in")
+                                           and lo == 0.0 and hi == 1.0) else im.norm)
     mappable = mcm.ScalarMappable(norm=norm, cmap=im.get_cmap())
     cb = fig.colorbar(mappable, cax=cax, orientation="horizontal" if horizontal else "vertical")
     cb._sxm_n_ticks = int(st["cbar_ticks"])
@@ -1718,12 +1725,18 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     cb.outline.set_linewidth(0.5)
     cb.outline.set_visible(bool(st.get("cbar_outline", True)))
     cb.ax.tick_params(labelsize=pt(font - 0.5), length=2, width=0.5, pad=1.5, colors=text_color)
-    if style == "inside":
+    if style in ("inside", "minmax_in"):
         cb._sxm_inside_colors = (_contrast_text_color(im.get_cmap(), 0.04),
                                  _contrast_text_color(im.get_cmap(), 0.96))
     set_colorbar_range(cb, lo, hi)
     if label:
-        if (st.get("cbar_label_pos") or "inside") == "inside":
+        x0, y0, x1, y1 = entry["box"]
+        length_in = (x1 - x0) if horizontal else (y1 - y0)
+        fs_in = pt(font - 0.5) / 72.0 * 0.62
+        ends = 0 if int(st.get("cbar_ticks", 2) or 0) == 0 or style in ("outside", "minmax") else 10
+        # A short bar can't hold the name and both end values: name outside.
+        fits = (len(label) + ends) * fs_in * 1.25 <= length_in
+        if (st.get("cbar_label_pos") or "inside") == "inside" and fits:
             # The channel name sits centred *in* the bar - along it for a
             # vertical bar, flat for a horizontal one - in a colour that
             # reads on the middle of the colormap.
@@ -1771,27 +1784,35 @@ def set_colorbar_range(cb, lo, hi):
         return
     cb.mappable.set_clim(lo, hi)
     horizontal = cb.orientation == "horizontal"
-    if getattr(cb, "_sxm_style", "outside") == "inside":
-        # Values live *inside* the bar (Publication style), in a colour that
-        # reads on that end of the colormap.
+    style = getattr(cb, "_sxm_style", "outside")
+    if int(getattr(cb, "_sxm_n_ticks", 2) or 0) == 0:
+        # No ticks at all: just the gradient (and its name).
+        cb.set_ticks([])
+        return
+    if style in ("inside", "minmax_in"):
+        # Values live *inside* the bar (Publication style), centred at its
+        # ends, in a colour that reads on that end of the colormap.
         cb.set_ticks([])
         for t in getattr(cb, "_sxm_inside", []):
             try:
                 t.remove()
             except Exception:
                 pass
+        words = style == "minmax_in"
+        lo_txt = "min" if words else _tick(lo, span)
+        hi_txt = "max" if words else _tick(hi, span)
         lo_c, hi_c = getattr(cb, "_sxm_inside_colors", ("white", "black"))
         fs = getattr(cb, "_sxm_font", 7.0) - 0.5
         if horizontal:
-            a = cb.ax.text(0.02, 0.5, _tick(lo, span), transform=cb.ax.transAxes, ha="left",
+            a = cb.ax.text(0.02, 0.5, lo_txt, transform=cb.ax.transAxes, ha="left",
                            va="center", fontsize=fs, color=lo_c)
-            b = cb.ax.text(0.98, 0.5, _tick(hi, span), transform=cb.ax.transAxes, ha="right",
+            b = cb.ax.text(0.98, 0.5, hi_txt, transform=cb.ax.transAxes, ha="right",
                            va="center", fontsize=fs, color=hi_c)
         else:
             rot = 90 if getattr(cb, "_sxm_rotated", True) else 0
-            a = cb.ax.text(0.5, 0.02, _tick(lo, span), transform=cb.ax.transAxes, ha="center",
+            a = cb.ax.text(0.5, 0.02, lo_txt, transform=cb.ax.transAxes, ha="center",
                            va="bottom", rotation=rot, fontsize=fs, color=lo_c)
-            b = cb.ax.text(0.5, 0.98, _tick(hi, span), transform=cb.ax.transAxes, ha="center",
+            b = cb.ax.text(0.5, 0.98, hi_txt, transform=cb.ax.transAxes, ha="center",
                            va="top", rotation=rot, fontsize=fs, color=hi_c)
         cb._sxm_inside = [a, b]
         return
