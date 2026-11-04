@@ -41,6 +41,7 @@ from .molecular_overlay import (
     element_color_override,
     atom_marker_area_factor,
     available_atom_palettes,
+    palette_label,
     normalize_molecule_render_style,
 )
 from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SUFFIXES
@@ -9294,7 +9295,7 @@ class MultiPreviewCanvas(FigureCanvas):
         current_pal = (getattr(self, "molecule_palette", "avogadro") or "avogadro").lower()
         palette_actions = {}
         for pal in available_atom_palettes():
-            act = pal_menu.addAction(pal.title())
+            act = pal_menu.addAction(palette_label(pal))
             act.setCheckable(True)
             act.setChecked(pal == current_pal)
             palette_actions[act] = pal

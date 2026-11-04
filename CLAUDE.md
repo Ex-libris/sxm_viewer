@@ -1017,7 +1017,10 @@ N counts distinct acquisition conditions (`levels`), not files.
   back. Real series were often mostly repeats (13 frames = 3 heights).
 - Stopped scans: `panel()` NaN-masks rows outside `detect_valid_scan_region`
   (a stopped scan's constant z = 0 rows beside -185 nm topography flattened
-  whole rows). Frames < 25 % scanned are pruned (`excluded` reason
+  whole rows). The detector's tolerance is relative to the frame's range
+  (`min(1, span) x 1e-10`): it used to be absolute, so current in A
+  (row ptp ~1e-11) read as "never scanned" - half-blank current panels and
+  complete CH frames pruned as stopped. Frames < 25 % scanned are pruned (`excluded` reason
   `"aborted"`) - only knowable after reading the array, so
   `_idle_check_scans` checks chip members a few per idle tick after the
   index is built and repopulates thumbnails if a count changes; the scan
@@ -1103,7 +1106,8 @@ same physical spot on every channel / frame of a series - the point is
 comparing channels against the same model. Drawn with the shared renderer
 (`_MoleculePainter` -> `molecules.render.draw_molecules`; palette / bond
 mode / shadow / H from `controller.molecule_settings()` = the preview
-canvas) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
+canvas, except the palette when style `mol_palette` != "preview" -
+`FigureWindow._mol_settings`) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
 points for the big preview. "From preview" (`controller.preview_molecules`) takes the
 live preview / `viewer.molecule_overlays` and subtracts the frame's display-
 extent lower-left corner (preview data coords are extent-based, y up).
@@ -1122,11 +1126,22 @@ rim = spin) - all of it from `molecules.interaction`, so it cannot drift. All mo
 redraw; keys X/Y/Z rotate 5 deg, arrows nudge.
 
 **Window** (`FigureWindow`): figure on white "paper" (= the export) in a
-scroll area, `_FormatPanel` **under it in a splitter**: a row of cards
-(icon from `_tab_icon` + title + one-line hint) with every option visible -
-the user rejected both a right-hand panel (cramped, cropped text) and tabs
-(discoverability). Drop-downs get a fixed width (`fit()`) with full names in
-their pop-ups. Opens fitted to the window (actual size is a per-window view,
+scroll area, `_FormatPanel` under it as **one row of chips** (icon +
+the category's current state in words, greyed when the feature is off, `•`
+= differs from the recipe default set via `set_defaults`); a chip opens its
+card as a `_CardPopover` (Qt popup, edits apply live) above it. History:
+a right-hand panel (cramped, cropped text) and tabs (state hidden) were
+rejected, then a strip of always-open cards needed sideways scrolling and
+cropped rows - the chips keep every category and its state visible at no
+height. Card grammar: whole-feature on/off = header switch (letters,
+`_scale_on` <-> `scale_bar` "off", molecules; colour bars = bold section
+check), 2-6 choices = `_Segmented` (QComboBox data API, so `_emit`/`sync`
+use `_is_choice`), long lists = combo, numbers = spin with unit; ↺ per card
+resets its keys (`_card_keys`). A left click on a letter / scale bar, and
+"All ... options…" in the right-click menus, open the card at the cursor
+(`FigureWindow.open_format_card`). `_sync_format_panel` checks
+`isHidden()`, not `isVisible()` - the first sync runs before the window is
+shown, and the panel used to stay blank until the first edit. Opens fitted to the window (actual size is a per-window view,
 never remembered). Direct manipulation: Δz header = reference; hover × =
 drop frame; channel label = switch/move/remove/recolour; "+ channel";
 colour bar drag = contrast, click = Min/Max popover, double-click = auto;
@@ -1141,6 +1156,17 @@ was not at real scale), Obsidian (via
 `viewer.export.export_to_obsidian(render=...)`), Inkscape (layered SVG,
 opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
 300-1200 dpi, transparent background.
+**Scan pixels are never resampled on export** (`_export_figure` sets
+`interpolation="none"` on every scan image; `_vector_save` turns off
+`image.composite_image`): SVG / PDF / EPS - and so PowerPoint shapes,
+Inkscape and the clipboard SVG - embed each scan at its own pixel size,
+tagged `image-rendering: pixelated` by matplotlib. With the old
+`"nearest"` matplotlib resampled vector images to the figure's 100 dpi
+(a 480 x 160 scan arrived as 110 x 37 px). Raster outputs (PNG, TIFF,
+PNG clipboard, PowerPoint picture, Obsidian) raise the chosen dpi to
+`native_dpi(fig)` (rounded up to 50) when it would drop scan rows or
+columns, and say so in the status line. Verified pixel-exact: the
+embedded PNG equals `im.to_rgba(data)`.
 
 **Lessons (what made this take longer than it should have):**
 - Validate against several *real* folders (Anfatec local, Nanonis-converted,

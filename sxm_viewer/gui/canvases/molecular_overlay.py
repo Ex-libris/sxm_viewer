@@ -10,6 +10,9 @@ from ...molecules.model import (  # noqa: F401 - re-exported for existing import
     PYMOL_COLORS,
     JMOL_COLORS,
     AVOGADRO_COLORS,
+    VESTA_COLORS,
+    PALETTE_LABELS,
+    palette_label,
     ATOM_PALETTES,
     DIVERGING_COLORMAPS,
     SEQUENTIAL_COLORMAPS,
@@ -219,7 +222,7 @@ class MoleculePropertiesDialog(QtWidgets.QDialog):
         if self._show_palette_option:
             self.combo_palette = QtWidgets.QComboBox()
             for pal in available_atom_palettes():
-                self.combo_palette.addItem(pal.title(), pal)
+                self.combo_palette.addItem(palette_label(pal), pal)
             current_palette = str((self.overlay_settings or {}).get("palette", "avogadro") or "avogadro").lower()
             current_idx = max(0, self.combo_palette.findData(current_palette))
             self.combo_palette.setCurrentIndex(current_idx)

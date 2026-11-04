@@ -344,6 +344,15 @@ def detect_valid_scan_region(arr, tolerance=1e-10):
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         row_ptp = np.nanmax(masked, axis=1) - np.nanmin(masked, axis=1)
         row_std = np.nanstd(masked, axis=1)
+        # Tolerance relative to the frame's own range: channels in SI units
+        # (current in A, ~1e-11) vary row to row by far less than an
+        # absolute 1e-10, which marked real current rows as "never scanned"
+        # and blanked half a frame. A stopped scan's filler rows are exactly
+        # constant, so they still read as no variation. Unchanged for any
+        # frame whose range is >= 1 (nm topography, Hz, V).
+        span = float(np.nanmax(row_ptp)) if np.any(np.isfinite(row_ptp)) else 0.0
+    if np.isfinite(span) and span > 0:
+        tolerance = float(tolerance) * min(1.0, span)
     has_variation = (finite_count >= 2) & ((row_ptp > tolerance) | (row_std > tolerance))
 
     valid_idx = np.flatnonzero(has_variation)

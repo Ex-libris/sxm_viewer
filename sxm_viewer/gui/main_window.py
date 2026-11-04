@@ -104,7 +104,7 @@ from .viewer import thumb_menu as viewer_thumb_menu
 from .viewer import spectro_menu as viewer_spectro_menu
 from .viewer import export_routes as viewer_export_routes
 from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
-from .canvases.molecular_overlay import available_atom_palettes
+from .canvases.molecular_overlay import available_atom_palettes, palette_label
 from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import details as spectro_details
@@ -4673,7 +4673,7 @@ QLabel:hover {{
         palette_group = QtWidgets.QActionGroup(palette_menu)
         current_palette = str(getattr(self, "molecule_palette", "avogadro") or "avogadro").lower()
         for palette in available_atom_palettes():
-            label = {"cpk": "CPK", "pymol": "PyMOL", "jmol": "Jmol"}.get(palette, palette.capitalize())
+            label = palette_label(palette)
             act = palette_menu.addAction(label)
             act.setCheckable(True)
             act.setChecked(current_palette == palette)

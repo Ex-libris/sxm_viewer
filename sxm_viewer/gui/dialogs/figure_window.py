@@ -88,10 +88,44 @@ def _mol_scale(ax, fig, user=1.0):
     return molecule_render.panel_scale(ax, user)
 
 
+def _mol_palette_choices():
+    """Figure atom-palette options: follow the preview, or a fixed one."""
+    from ...molecules.model import available_atom_palettes, palette_label
+    out = {"preview": "As preview"}
+    out.update((k, palette_label(k)) for k in available_atom_palettes())
+    return out
+
+
 _gizmo_vectors = molecule_interaction.gizmo_vectors
 
 
 _GIZMO_R = 38.0   # px
+
+
+def _scan_images(fig):
+    """The scan images of a rendered figure (colour bars are meshes, not
+    images, and are not included)."""
+    from matplotlib.image import AxesImage
+    return [im for ax in fig.axes for im in ax.get_images() if isinstance(im, AxesImage)]
+
+
+def native_dpi(fig):
+    """Smallest output resolution at which every scan pixel gets at least
+    one output pixel (no data row/column dropped)."""
+    need = 0.0
+    for im in _scan_images(fig):
+        arr = im.get_array()
+        if arr is None or getattr(arr, "ndim", 0) < 2:
+            continue
+        try:
+            im.axes.apply_aspect()
+            bb = im.get_window_extent()
+        except Exception:
+            continue
+        w_in, h_in = bb.width / fig.dpi, bb.height / fig.dpi
+        if w_in > 0 and h_in > 0:
+            need = max(need, arr.shape[1] / w_in, arr.shape[0] / h_in)
+    return need
 
 
 def _molecule_from(d):
@@ -452,321 +486,471 @@ def _tab_icon(kind, color):
     return QtGui.QIcon(pix)
 
 
+class _Segmented(QtWidgets.QWidget):
+    """A row of exclusive buttons for a short choice (2-6 options), with
+    the slice of QComboBox's API the Format cards use (addItem, findData,
+    currentData, setCurrentIndex, currentIndexChanged), so ``_emit`` /
+    ``sync`` treat it exactly like a drop-down. Every option stays visible
+    and nothing is truncated."""
+
+    currentIndexChanged = QtCore.pyqtSignal(int)
+
+    _QSS = ("QToolButton { border: 1px solid palette(mid); "
+            "padding: 2px 7px; background: palette(base); color: palette(text); }"
+            "QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
+            "QToolButton:disabled { color: palette(mid); }"
+            "QToolButton:checked:disabled { background: palette(midlight); }")
+
+    def __init__(self, items, tips=None, parent=None):
+        super().__init__(parent)
+        self._lay = QtWidgets.QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(0)
+        self._data, self._buttons = [], []
+        self._index = -1
+        self._tips = dict(tips or {})
+        for key, text in items.items():
+            self.addItem(text, key)
+        self._lay.addStretch(1)
+
+    def addItem(self, text, data=None):
+        b = QtWidgets.QToolButton(self)
+        b.setText(text)
+        b.setCheckable(True)
+        b.setAutoRaise(False)
+        # Joined buttons: every one after the first drops its left border.
+        b.setStyleSheet(self._QSS + ("" if not self._buttons else "QToolButton { border-left-width: 0px; }"))
+        if data in self._tips:
+            b.setToolTip(self._tips[data])
+        i = len(self._buttons)
+        b.clicked.connect(lambda _=False, i=i: self._clicked(i))
+        self._lay.insertWidget(i, b)
+        self._buttons.append(b)
+        self._data.append(data)
+
+    def _clicked(self, i):
+        changed = i != self._index
+        self.setCurrentIndex(i)
+        if not changed:
+            self._buttons[i].setChecked(True)   # exclusive: clicking the active one keeps it
+
+    def count(self):
+        return len(self._data)
+
+    def itemText(self, i):
+        return self._buttons[i].text()
+
+    def findData(self, value):
+        for i, d in enumerate(self._data):
+            if d == value and type(d) is type(value):
+                return i
+        for i, d in enumerate(self._data):
+            if d == value:
+                return i
+        return -1
+
+    def currentIndex(self):
+        return self._index
+
+    def currentData(self):
+        return self._data[self._index] if 0 <= self._index < len(self._data) else None
+
+    def currentText(self):
+        return self.itemText(self._index) if 0 <= self._index < len(self._data) else ""
+
+    def setCurrentIndex(self, i):
+        for j, b in enumerate(self._buttons):
+            b.setChecked(j == i)
+        if i != self._index:
+            self._index = i
+            self.currentIndexChanged.emit(i)
+
+
+def _is_choice(widget):
+    return isinstance(widget, (QtWidgets.QComboBox, _Segmented))
+
+
+class _CardPopover(QtWidgets.QFrame):
+    """One Format card, floating above its chip. A Qt popup: it closes on
+    a click outside or Esc, and edits apply live underneath it."""
+
+    closed = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent, QtCore.Qt.Popup)
+        self.setObjectName("figureCardPopover")
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.setStyleSheet("QFrame#figureCardPopover { border: 1px solid palette(mid); "
+                           "border-radius: 6px; background: palette(window); }")
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.closed.emit()
+
+
+# Chip labels: (kind, title, one-line description).
+_FORMAT_CARDS = (
+    ("page", "Page & layout", "Journal width, arrangement of frames and channels"),
+    ("channels", "Channels", "Tick to show, drag to reorder"),
+    ("titles", "Text", "Font, size, frame headers, channel names"),
+    ("colour", "Colour", "Ranges and colour bars"),
+    ("letters", "Panel letters", "a, b, c … on the images"),
+    ("scale", "Scale bar", "Where, length and label"),
+    ("zoom", "Zoom outlines", "Boxes of the zooms on the overview"),
+    ("molecule", "Molecular model", "The same model on every panel"),
+)
+
+_CORNER_ARROWS = {"tl": "↖", "tr": "↗", "bl": "↙", "br": "↘"}
+_CORNER_TIPS = {"tl": "Top left", "tr": "Top right", "bl": "Bottom left", "br": "Bottom right",
+                "out_tl": "Outside the image, above its top-left corner",
+                "out_tr": "Outside the image, above its top-right corner"}
+
+
 class _FormatPanel(QtWidgets.QWidget):
-    """Every figure option at once: a row of cards under the figure, each
-    with an icon, a title and a one-line hint (mirrors the right-click
-    menus). Emits ``changed(dict)`` with the style/state keys to update."""
+    """The figure's options as one row of *chips* under the figure. Each
+    chip is a category with its current setting in words ("Letters A, B ·
+    ↖") and opens that category's card as a pop-over above it, so every
+    option stays one click away without a strip of cramped, cropped cards
+    (or tabs, which hid the state). Cards follow one widget grammar: on/off
+    of a whole feature = a switch in the card header; 2-6 choices = a
+    segmented row (``_Segmented``); long lists = a drop-down; numbers = a
+    spin box with its unit. A dot on a chip / ↺ in its card = changed from
+    the default. Emits ``changed(dict)`` with the style/state keys to update
+    (same contract as the old card strip)."""
 
     changed = QtCore.pyqtSignal(dict)
     mol_action = QtCore.pyqtSignal(str)   # load | preview | props | remove
 
-    CARDS = (
-        ("page", "Page & layout", "Journal width, arrangement"),
-        ("channels", "Channels", "Tick to show · drag to reorder"),
-        ("titles", "Text", "Font, size, headers, names"),
-        ("colour", "Colour", "Ranges and colour bars"),
-        ("letters", "Panel letters", "a, b, c … style and place"),
-        ("scale", "Scale bar", "Where, length, label"),
-        ("zoom", "Zoom outlines", "Boxes of the zooms"),
-        ("molecule", "Molecular model", "Same model on every panel"),
-    )
+    CARDS = _FORMAT_CARDS
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.scroll = QtWidgets.QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        strip = QtWidgets.QWidget()
-        self.row = QtWidgets.QHBoxLayout(strip)
-        self.row.setContentsMargins(6, 4, 6, 4)
-        self.row.setSpacing(8)
-        self.scroll.setWidget(strip)
-        outer.addWidget(self.scroll)
+        bar = QtWidgets.QHBoxLayout(self)
+        bar.setContentsMargins(0, 2, 0, 2)
+        bar.setSpacing(6)
         self._syncing = False
-        self._cards = {}
+        self._cards = {}          # kind -> _CardPopover
+        self._chips = {}          # kind -> QToolButton
+        self._card_keys = {}      # kind -> [widget keys]
+        self._defaults = {}
+        self._style = {}
+        self._mode = None
+        self._last_scale = "all"
+        self._closed_at = (None, 0.0)
         icon_color = self.palette().color(QtGui.QPalette.WindowText)
+        self._icon_color = icon_color
         w = {}
+        building = {"kind": None}
 
-        def card(kind, columns=1):
-            """A titled card; returns add(label, widget) placing rows in
-            ``columns`` label/field column pairs, top to bottom."""
+        for kind, title, blurb in self.CARDS:
+            chip = QtWidgets.QToolButton(self)
+            chip.setIcon(_tab_icon(kind, icon_color))
+            chip.setIconSize(QtCore.QSize(18, 18))
+            chip.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            chip.setCheckable(True)
+            chip.setText(title)
+            chip.setToolTip(f"<b>{title}</b><br>{blurb}")
+            chip.setObjectName("figureChip")
+            chip.setStyleSheet(
+                "QToolButton#figureChip { border: 1px solid palette(midlight); border-radius: 12px; "
+                "padding: 3px 10px 3px 6px; }"
+                "QToolButton#figureChip:hover { border-color: palette(mid); }"
+                "QToolButton#figureChip:checked { border-color: palette(highlight); "
+                "background: palette(midlight); }"
+                "QToolButton#figureChip[off=\"true\"] { color: palette(mid); }")
+            chip.clicked.connect(lambda _=False, k=kind: self._chip_clicked(k))
+            bar.addWidget(chip)
+            self._chips[kind] = chip
+        bar.addStretch(1)
+        self.reset_btn = QtWidgets.QToolButton(self)
+        self.reset_btn.setText("Reset all")
+        self.reset_btn.setAutoRaise(True)
+        self.reset_btn.setToolTip("Every format option back to its default (frames, channels and "
+                                  "ranges are kept)")
+        bar.addWidget(self.reset_btn)
+
+        def card(kind, toggle=None):
+            """A titled pop-over card; returns add(label, widget) placing
+            label/field rows top to bottom. ``toggle``: the feature's on/off
+            check box, shown as a switch in the header."""
             title, blurb = next((t, b) for k, t, b in self.CARDS if k == kind)
-            frame = QtWidgets.QFrame()
-            frame.setObjectName("figureCard")
-            frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
-            frame.setStyleSheet("QFrame#figureCard { border: 1px solid palette(midlight); border-radius: 6px; }")
-            col = QtWidgets.QVBoxLayout(frame)
-            col.setContentsMargins(8, 6, 8, 6)
-            col.setSpacing(4)
+            building["kind"] = kind
+            self._card_keys[kind] = []
+            pop = _CardPopover(self)
+            pop.closed.connect(lambda k=kind: self._card_closed(k))
+            col = pop.layout()
             head = QtWidgets.QHBoxLayout()
             head.setSpacing(6)
             ic = QtWidgets.QLabel()
-            ic.setPixmap(_tab_icon(kind, icon_color).pixmap(22, 22))
+            ic.setPixmap(_tab_icon(kind, icon_color).pixmap(20, 20))
             head.addWidget(ic)
-            tl = QtWidgets.QLabel(f"<b>{title}</b>")
-            head.addWidget(tl)
+            head.addWidget(QtWidgets.QLabel(f"<b>{title}</b>"))
             head.addStretch(1)
+            if toggle is not None:
+                head.addWidget(toggle)
+            rst = QtWidgets.QToolButton()
+            rst.setText("↺")
+            rst.setAutoRaise(True)
+            rst.setToolTip(f"{title}: back to the defaults")
+            rst.clicked.connect(lambda _=False, k=kind: self._reset_card(k))
+            head.addWidget(rst)
+            pop._reset_btn = rst
             col.addLayout(head)
             hint = QtWidgets.QLabel(blurb)
-            hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
+            hint.setStyleSheet("color: palette(mid);")
             col.addWidget(hint)
+            line = QtWidgets.QFrame()
+            line.setFrameShape(QtWidgets.QFrame.HLine)
+            line.setStyleSheet("color: palette(midlight);")
+            col.addWidget(line)
             grid = QtWidgets.QGridLayout()
-            grid.setHorizontalSpacing(6)
-            grid.setVerticalSpacing(3)
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(5)
+            grid.setColumnStretch(1, 1)
             col.addLayout(grid)
-            col.addStretch(1)
-            self.row.addWidget(frame)
-            self._cards[kind] = frame
+            self._cards[kind] = pop
             state = {"n": 0}
-            per_col = None
 
-            def add(label, widget, span=False):
-                nonlocal per_col
-                i = state["n"]
+            def add(label, widget):
+                r = state["n"]
                 state["n"] += 1
-                c = (i // per_col) if per_col else 0
-                r = (i % per_col) if per_col else i
-                if span or label is None:
+                if label is None:
                     if isinstance(widget, QtWidgets.QLayout):
-                        grid.addLayout(widget, r, 2 * c, 1, 2)
+                        grid.addLayout(widget, r, 0, 1, 2)
                     else:
-                        grid.addWidget(widget, r, 2 * c, 1, 2)
+                        grid.addWidget(widget, r, 0, 1, 2)
                     return
                 lab = QtWidgets.QLabel(label)
-                lab.setStyleSheet("color: palette(text);")
-                grid.addWidget(lab, r, 2 * c)
+                grid.addWidget(lab, r, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 if isinstance(widget, QtWidgets.QLayout):
-                    grid.addLayout(widget, r, 2 * c + 1)
+                    grid.addLayout(widget, r, 1)
                 else:
-                    grid.addWidget(widget, r, 2 * c + 1)
+                    grid.addWidget(widget, r, 1)
 
-            def set_rows(n):
-                nonlocal per_col
-                per_col = int(math.ceil(n / columns))
+            def section(text_or_widget):
+                r = state["n"]
+                state["n"] += 1
+                if isinstance(text_or_widget, str):
+                    text_or_widget = QtWidgets.QLabel(f"<b>{text_or_widget}</b>")
+                grid.addWidget(text_or_widget, r, 0, 1, 2)
 
-            add.set_rows = set_rows
+            add.section = section
             return add
 
+        def reg(key, widget):
+            w[key] = widget
+            if building["kind"]:
+                self._card_keys[building["kind"]].append(key)
+            return widget
+
         def fit(c):
-            # Readable fixed width in the card; the pop-up list shows the
-            # full names (no card grows to its longest entry).
-            c.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
-            c.setMinimumContentsLength(15)
-            c.setMaximumWidth(190)
-            view = c.view()
-            view.setMinimumWidth(max(view.sizeHintForColumn(0) + 28, 190))
+            c.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+            c.setMaxVisibleItems(18)
             return c
 
-        def combo(items):
+        def combo(key, items):
             c = QtWidgets.QComboBox()
-            for key, text in items.items():
-                c.addItem(text, key)
-            return fit(c)
+            for k, text in items.items():
+                c.addItem(text, k)
+            return reg(key, fit(c))
 
-        def spin(lo, hi, step, suffix):
+        def seg(key, items, tips=None):
+            return reg(key, _Segmented(items, tips))
+
+        def spin(key, lo, hi, step, suffix):
             s = QtWidgets.QDoubleSpinBox()
             s.setRange(lo, hi)
             s.setSingleStep(step)
             s.setSuffix(suffix)
-            s.setMinimumWidth(78)
-            return s
+            s.setMinimumWidth(86)
+            return reg(key, s)
 
-        def check(text, tip=None):
+        def check(key, text, tip=None):
             b = QtWidgets.QCheckBox(text)
             if tip:
                 b.setToolTip(tip)
+            return reg(key, b)
+
+        def switch(key, tip):
+            b = QtWidgets.QCheckBox("On")
+            b.setToolTip(tip)
+            f = b.font()
+            f.setBold(True)
+            b.setFont(f)
+            w[key] = b
             return b
+
+        def hrow(*widgets):
+            lay = QtWidgets.QHBoxLayout()
+            lay.setSpacing(12)
+            for x in widgets:
+                lay.addWidget(x)
+            lay.addStretch(1)
+            return lay
 
         # -- Page & layout
         add = card("page")
-        add.set_rows(7)
-        w["page"] = combo(hs.PAGE_NAMES)
-        w["page"].setToolTip("Journal column width: sets the figure width and every text size")
+        combo("page", hs.PAGE_NAMES).setToolTip(
+            "Journal column width: sets the figure width and every text size")
         add("Page", w["page"])
-        w["page_mm"] = spin(30.0, 400.0, 1.0, " mm")
+        spin("page_mm", 30.0, 400.0, 1.0, " mm")
         add("Custom width", w["page_mm"])
-        w["_actual"] = check("Actual size (100 %)", "Draw the figure at its printed size on this screen")
-        add(None, w["_actual"])
-        w["transpose"] = combo({False: "Frames → across, channels ↓ down",
-                                True: "Frames ↓ down, channels → across"})
-        add("Arrange", w["transpose"])
-        w["reverse"] = check("Reverse order", "Reverse the frame order")
-        add(None, w["reverse"])
-        w["rotate_tall"] = combo(_ROTATE_TALL)
-        w["rotate_tall"].setToolTip("Tall (portrait) images turned a quarter turn for this figure; "
-                                    "scale bars and zoom outlines follow")
-        add("Tall images", w["rotate_tall"])
-        w["panel_w"] = spin(0.6, 4.0, 0.1, " in")
-        w["panel_w"].setToolTip("Free size only - a page width sets it (Ctrl+Shift+wheel)")
+        spin("panel_w", 0.6, 4.0, 0.1, " in").setToolTip(
+            "Free size only - a page width sets it (Ctrl+Shift+wheel)")
         add("Panel width", w["panel_w"])
+        add.section("Arrangement")
+        seg("transpose", {False: "Frames across", True: "Frames down"},
+            {False: "Frames left to right, one channel per row",
+             True: "Frames top to bottom, one channel per column"})
+        add("Frames", w["transpose"])
+        combo("rotate_tall", _ROTATE_TALL).setToolTip(
+            "Tall (portrait) images turned a quarter turn for this figure; "
+            "scale bars and zoom outlines follow")
+        add("Tall images", w["rotate_tall"])
+        add(None, hrow(check("reverse", "Reverse order", "Reverse the frame order"),
+                       check("_actual", "Actual size (100 %)",
+                             "Draw the figure at its printed size on this screen")))
+        self._card_keys["page"].remove("_actual")
 
         # -- Channels
         add = card("channels")
-        w["channels"] = QtWidgets.QListWidget()
-        w["channels"].setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
-        w["channels"].setMinimumWidth(180)
-        w["channels"].setMaximumWidth(230)
-        w["channels"].setToolTip("Tick the channels to show; drag to reorder")
-        add(None, w["channels"])
+        lst = reg("channels", QtWidgets.QListWidget())
+        lst.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        lst.setMinimumSize(260, 150)
+        lst.setToolTip("Tick the channels to show; drag to reorder")
+        add(None, lst)
 
         # -- Text
         add = card("titles")
-        add.set_rows(6)
-        w["font_family"] = QtWidgets.QComboBox()
-        w["font_family"].setMaxVisibleItems(18)
+        ff = reg("font_family", QtWidgets.QComboBox())
         for name in hs.available_fonts():
-            w["font_family"].addItem(name, name)
-        w["font_family"].setToolTip("Font of every text in the figure (journal-friendly fonts first)")
-        fit(w["font_family"])
-        add("Font", w["font_family"])
-        w["font"] = spin(5.0, 14.0, 0.5, " pt")
-        w["font"].setToolTip("Text size (Ctrl+wheel on the figure)")
+            ff.addItem(name, name)
+        ff.setToolTip("Font of every text in the figure (journal-friendly fonts first)")
+        fit(ff)
+        add("Font", ff)
+        spin("font", 5.0, 14.0, 0.5, " pt").setToolTip("Text size (Ctrl+wheel on the figure)")
         add("Size", w["font"])
-        w["header"] = combo(_HEADER_NAMES)
-        add("Frame header", w["header"])
-        w["header_name"] = check("+ file name", "Add the file name under the header")
-        add(None, w["header_name"])
-        w["ref_bold"] = check("Bold Δz = 0", "Bold header for the Δz = 0 reference frame")
-        add(None, w["ref_bold"])
-        w["channel_labels"] = check("Channel names",
-                                    "I, Δf ... left of the rows (above them when frames run down)")
-        add(None, w["channel_labels"])
+        add.section("Frame headers")
+        combo("header", _HEADER_NAMES)
+        add("Header", w["header"])
+        add(None, hrow(check("header_name", "+ file name", "Add the file name under the header"),
+                       check("ref_bold", "Bold Δz = 0", "Bold header for the Δz = 0 reference frame")))
+        add.section("Channels")
+        add(None, check("channel_labels", "Channel names next to the rows",
+                        "I, Δf ... left of the rows (above them when frames run down)"))
 
         # -- Colour
-        add = card("colour", columns=2)
-        add.set_rows(10)
-        w["range_mode"] = combo({"row": "Shared per channel", "image": "Each image its own"})
+        add = card("colour")
+        seg("range_mode", {"row": "Shared per channel", "image": "Each image its own"},
+            {"row": "One colour range per channel, the same on every frame",
+             "image": "Every image scaled to its own range"})
         add("Range", w["range_mode"])
-        w["colorbars"] = check("Colour bars")
-        add(None, w["colorbars"])
-        w["cbar_scope"] = combo({"auto": "Follow the range", "row": "One per channel (min / max)"})
-        w["cbar_scope"].setToolTip("One bar per channel even when each image has its own range - "
-                                   "its ends then read min and max")
+        bars = check("colorbars", "Colour bars")
+        f = bars.font()
+        f.setBold(True)
+        bars.setFont(f)
+        add.section(bars)
+        seg("cbar_scope", {"auto": "Follow the range", "row": "One per channel"},
+            {"row": "One bar per channel even when each image has its own range - "
+                    "its ends then read min and max"})
         add("Bars", w["cbar_scope"])
-        w["cbar_style"] = combo(_CBAR_STYLES)
+        combo("cbar_style", _CBAR_STYLES)
         add("Values", w["cbar_style"])
-        w["cbar_ticks"] = combo(_CBAR_TICKS)
-        w["cbar_ticks"].setToolTip("None = a plain gradient, no tick marks or values")
+        seg("cbar_ticks", {0: "None", 2: "2", 3: "3", 5: "5"},
+            {0: "A plain gradient, no tick marks or values", 2: "The two ends"})
         add("Ticks", w["cbar_ticks"])
-        w["cbar_label"] = check("Channel and unit")
-        add(None, w["cbar_label"])
-        w["cbar_label_pos"] = combo(_CBAR_LABEL_POS)
-        add("Name", w["cbar_label_pos"])
-        w["cbar_text"] = combo(_CBAR_TEXT)
+        seg("cbar_text", {"rotated": "Rotated", "horizontal": "Horizontal"})
         add("Text", w["cbar_text"])
-        w["cbar_w"] = spin(0.5, 8.0, 0.25, " mm")
-        add("Width", w["cbar_w"])
-        w["cbar_outline"] = check("Bar frame", "Thin frame around each colour bar")
-        add(None, w["cbar_outline"])
+        seg("cbar_label_pos", {"inside": "Inside the bar", "outside": "Outside"})
+        add("Name", hrow(check("cbar_label", "Channel and unit"), w["cbar_label_pos"]))
+        spin("cbar_w", 0.5, 8.0, 0.25, " mm")
+        add("Width", hrow(w["cbar_w"], check("cbar_outline", "Frame",
+                                             "Thin frame around each colour bar")))
 
         # -- Panel letters
-        add = card("letters")
-        add.set_rows(8)
-        w["letters"] = check("Show letters")
-        add(None, w["letters"])
-        w["letter_style"] = combo(_LETTER_STYLE_NAMES)
+        add = card("letters", toggle=switch("letters", "Show panel letters"))
+        self._card_keys["letters"].append("letters")
+        seg("letter_style", {k: k for k in _LETTER_STYLE_NAMES}, _LETTER_STYLE_NAMES)
         add("Style", w["letter_style"])
-        w["letter_scope"] = combo({"frame": "One per frame", "panel": "Every panel"})
-        add("On", w["letter_scope"])
-        w["letter_pos"] = combo(_LETTER_PLACES)
-        w["letter_pos"].setToolTip("Inside a corner, or outside the image above it (dark on the page)")
-        add("Place", w["letter_pos"])
-        w["letter_color"] = combo(_AUTO_COLORS)
-        w["letter_color"].setToolTip("Automatic: white or black per letter, from the image under it. "
-                                     "Right-click a letter to set just that one")
+        seg("letter_scope", {"frame": "Each frame", "panel": "Every panel"},
+            {"frame": "One letter per frame (column)", "panel": "A letter on every image"})
+        add("Applies to", w["letter_scope"])
+        seg("letter_pos", {**_CORNER_ARROWS, "out_tl": "Above ↖", "out_tr": "Above ↗"}, _CORNER_TIPS)
+        add("Position", w["letter_pos"])
+        seg("letter_color", {"auto": "Auto", "white": "White", "black": "Black"},
+            {"auto": "White or black per letter, from the image under it. "
+                     "Right-click a letter to set just that one"})
         add("Colour", w["letter_color"])
-        w["letter_size"] = spin(5.0, 24.0, 0.5, " pt")
-        add("Size", w["letter_size"])
-        w["letter_bold"] = check("Bold")
-        add(None, w["letter_bold"])
-        w["letter_outline"] = check("Outline")
-        add(None, w["letter_outline"])
+        spin("letter_size", 5.0, 24.0, 0.5, " pt")
+        add("Size", hrow(w["letter_size"], check("letter_bold", "Bold"),
+                         check("letter_outline", "Outline")))
 
         # -- Scale bar
-        add = card("scale")
-        add.set_rows(8)
-        w["scale_bar"] = combo(_SCALE_NAMES)
-        add("Show on", w["scale_bar"])
-        len_row = QtWidgets.QHBoxLayout()
-        w["scale_auto"] = check("Auto")
-        w["scale_len_nm"] = spin(0.01, 100000.0, 0.5, " nm")
-        w["scale_len_nm"].setDecimals(2)
-        len_row.addWidget(w["scale_auto"])
-        len_row.addWidget(w["scale_len_nm"], 1)
-        add("Length", len_row)
-        w["scale_label"] = combo(_SCALE_LABELS)
+        add = card("scale", toggle=switch("_scale_on", "Show scale bars"))
+        seg("scale_bar", {"all": "Every image", "one": "One image"})
+        add("Applies to", w["scale_bar"])
+        w["scale_auto"] = check("scale_auto", "Auto")
+        spin("scale_len_nm", 0.01, 100000.0, 0.5, " nm").setDecimals(2)
+        add("Length", hrow(w["scale_auto"], w["scale_len_nm"]))
+        seg("scale_label", {"first": "Once per length", "all": "Every bar", "none": "None"},
+            {"first": "Label the first bar of each length only"})
         add("Label", w["scale_label"])
-        w["scale_font"] = spin(4.5, 16.0, 0.5, " pt")
-        w["scale_font"].setSpecialValueText("Text size")
+        spin("scale_font", 4.5, 16.0, 0.5, " pt").setSpecialValueText("Text size")
         w["scale_font"].setToolTip("Size of the length label (Ctrl+wheel on a scale bar)")
         add("Label size", w["scale_font"])
-        w["scale_pos"] = combo(_CORNER_NAMES)
-        add("Corner", w["scale_pos"])
-        w["scale_color"] = combo(_AUTO_COLORS)
+        seg("scale_pos", _CORNER_ARROWS, _CORNER_TIPS)
+        add("Position", w["scale_pos"])
+        seg("scale_color", {"auto": "Auto", "white": "White", "black": "Black"},
+            {"auto": "White or black per bar, from the image under it"})
         add("Colour", w["scale_color"])
-        w["scale_thick"] = spin(0.5, 5.0, 0.25, " %")
-        w["scale_thick"].setToolTip("Bar thickness, % of the panel's shorter side")
-        add("Thickness", w["scale_thick"])
-        w["scale_outline"] = check("Outline")
-        add(None, w["scale_outline"])
+        spin("scale_thick", 0.5, 5.0, 0.25, " %").setToolTip(
+            "Bar thickness, % of the panel's shorter side")
+        add("Thickness", hrow(w["scale_thick"], check("scale_outline", "Outline")))
 
         # -- Zoom outlines (zoom figures only)
         add = card("zoom")
-        add.set_rows(3)
-        w["zoom_color"] = combo(_ZOOM_COLORS)
+        seg("zoom_color", {"color": "One colour per zoom", "white": "White", "black": "Black"})
         add("Colour", w["zoom_color"])
-        w["zoom_lw"] = spin(0.25, 4.0, 0.25, " pt")
-        add("Line width", w["zoom_lw"])
-        w["zoom_labels"] = check("Letters", "Letter next to each zoom outline")
-        add(None, w["zoom_labels"])
+        spin("zoom_lw", 0.25, 4.0, 0.25, " pt")
+        add("Line width", hrow(w["zoom_lw"], check("zoom_labels", "Letters",
+                                                   "Letter next to each zoom outline")))
 
         # -- Molecular model (.pdb / .xyz / .mol), shared by all panels
-        add = card("molecule")
-        add.set_rows(6)
-        load_row = QtWidgets.QHBoxLayout()
+        add = card("molecule", toggle=switch("molecules_on", "Show the molecular model(s)"))
+        self._card_keys["molecule"].append("molecules_on")
         b_load = QtWidgets.QPushButton("Load file…")
         b_load.setToolTip("Overlay a .pdb / .xyz / .mol model on every panel")
         b_prev = QtWidgets.QPushButton("From preview")
         b_prev.setToolTip("Use the model(s) already placed on one of these frames in the preview")
-        load_row.addWidget(b_load)
-        load_row.addWidget(b_prev)
-        add(None, load_row)
-        w["molecules_on"] = check("Show", "Show the molecular model(s)")
-        add(None, w["molecules_on"])
-        w["mol_scope"] = combo({"all": "Every panel", "first": "First channel row"})
-        add("On", w["mol_scope"])
-        w["mol_size"] = spin(0.2, 4.0, 0.1, " ×")
-        w["mol_size"].setToolTip("Atom and bond size relative to the automatic (panel-width) size")
+        add(None, hrow(b_load, b_prev))
+        seg("mol_scope", {"all": "Every panel", "first": "First channel row"})
+        add("Applies to", w["mol_scope"])
+        spin("mol_size", 0.2, 4.0, 0.1, " ×").setToolTip(
+            "Atom and bond size relative to the automatic (panel-width) size")
         add("Atom size", w["mol_size"])
-        edit_row = QtWidgets.QHBoxLayout()
+        combo("mol_palette", _mol_palette_choices()).setToolTip(
+            "Atom colours (CPK, Jmol, PyMOL, Avogadro, ASE, VESTA);\n"
+            "'As preview' follows the preview's palette")
+        add("Palette", w["mol_palette"])
         b_props = QtWidgets.QPushButton("Appearance…")
         b_props.setToolTip("Style, rotation, scale, mirror (the preview's dialog)")
         b_rm = QtWidgets.QPushButton("Remove")
-        edit_row.addWidget(b_props)
-        edit_row.addWidget(b_rm)
-        add(None, edit_row)
-        how = QtWidgets.QLabel("Drag: move · Shift: spin · Ctrl+Shift / middle: 3-D\n"
-                               "Gizmo (top-left) · X Y Z · arrows · Del")
-        how.setStyleSheet("color: palette(mid); font-size: 8pt;")
+        add(None, hrow(b_props, b_rm))
+        how = QtWidgets.QLabel("Drag: move  ·  Shift+drag: spin  ·  Ctrl+Shift or middle: 3-D\n"
+                               "Gizmo (top-left)  ·  X / Y / Z: rotate  ·  arrows: nudge  ·  Del")
+        how.setStyleSheet("color: palette(mid);")
         add(None, how)
+        self._mol_buttons = (b_props, b_rm)
         for btn, act in ((b_load, "load"), (b_prev, "preview"), (b_props, "props"), (b_rm, "remove")):
             btn.clicked.connect(lambda _=False, a=act: self.mol_action.emit(a))
-
-        end = QtWidgets.QVBoxLayout()
-        end.addStretch(1)
-        self.reset_btn = QtWidgets.QPushButton("Reset format")
-        self.reset_btn.setToolTip("Back to the defaults (your figures keep their data choices)")
-        end.addWidget(self.reset_btn)
-        self.row.addLayout(end)
-        self.row.addStretch(1)
+        building["kind"] = None
         self.w = w
 
         for key, widget in w.items():
-            if isinstance(widget, QtWidgets.QComboBox):
+            if _is_choice(widget):
                 widget.currentIndexChanged.connect(lambda _i, k=key: self._emit(k))
             elif isinstance(widget, QtWidgets.QCheckBox):
                 widget.toggled.connect(lambda _on, k=key: self._emit(k))
@@ -775,13 +959,148 @@ class _FormatPanel(QtWidgets.QWidget):
         w["channels"].itemChanged.connect(lambda _i: self._emit("channels"))
         w["channels"].model().rowsMoved.connect(lambda *_a: self._emit("channels"))
 
+    # ------------------------------------------------------------------
+    # Chips and pop-over cards
+    # ------------------------------------------------------------------
     def sizeHint(self):
-        return QtCore.QSize(1200, 250)
+        return QtCore.QSize(1200, 34)
 
     def set_mode(self, mode):
-        frame = self._cards.get("zoom")
-        if frame is not None:
-            frame.setVisible(mode == "zoom")
+        self._mode = mode
+        chip = self._chips.get("zoom")
+        if chip is not None:
+            chip.setVisible(mode == "zoom")
+
+    def set_defaults(self, style):
+        """The style the ↺ buttons go back to (and the chips' change dot
+        compares against)."""
+        self._defaults = dict(style or {})
+
+    def _chip_clicked(self, kind):
+        chip = self._chips[kind]
+        last, t = self._closed_at
+        # The press that closed this chip's own pop-over must not reopen it.
+        if last == kind and (QtCore.QTime.currentTime().msecsSinceStartOfDay() - t) < 250:
+            chip.setChecked(False)
+            return
+        self.open_card(kind)
+
+    def open_card(self, kind, global_pos=None):
+        """Show a card above its chip (or at ``global_pos``, e.g. next to a
+        clicked letter on the figure)."""
+        pop = self._cards.get(kind)
+        if pop is None:
+            return
+        for k, c in self._chips.items():
+            c.setChecked(k == kind)
+        pop.adjustSize()
+        size = pop.sizeHint()
+        screen = QtWidgets.QApplication.screenAt(global_pos or self.mapToGlobal(QtCore.QPoint(0, 0)))
+        avail = (screen or QtWidgets.QApplication.primaryScreen()).availableGeometry()
+        if global_pos is None:
+            chip = self._chips[kind]
+            anchor = chip.mapToGlobal(QtCore.QPoint(0, 0))
+            x, y = anchor.x(), anchor.y() - size.height() - 6
+        else:
+            x, y = global_pos.x() + 12, global_pos.y() - size.height() // 2
+        x = max(avail.left() + 4, min(x, avail.right() - size.width() - 4))
+        y = max(avail.top() + 4, min(y, avail.bottom() - size.height() - 4))
+        pop.move(x, y)
+        pop.show()
+        pop.raise_()
+
+    def _card_closed(self, kind):
+        self._closed_at = (kind, QtCore.QTime.currentTime().msecsSinceStartOfDay())
+        chip = self._chips.get(kind)
+        if chip is not None:
+            chip.setChecked(False)
+
+    def _style_keys(self, kind):
+        keys = [k for k in self._card_keys.get(kind, ()) if not k.startswith("_")
+                and k not in ("channels", "scale_auto")]
+        if kind == "scale":
+            keys.append("scale_len_nm")
+        return keys
+
+    def _card_changed(self, kind):
+        if kind == "channels":
+            return False
+        d = self._defaults
+        if not d:
+            return False
+        return any(self._style.get(k) != d.get(k) for k in self._style_keys(kind) if k in d)
+
+    def _reset_card(self, kind):
+        if kind == "channels":
+            self.changed.emit({"rows": []})
+            return
+        d = self._defaults
+        out = {k: d.get(k) for k in self._style_keys(kind) if k in d}
+        if out:
+            self.changed.emit(out)
+
+    def _summary(self, kind, st, spec, n_mols):
+        """Chip text: the category's current state in a few words, and
+        whether the feature is off."""
+        def name(table, key, fallback=""):
+            return str(table.get(st.get(key), fallback))
+
+        if kind == "page":
+            page = st.get("page") or "free"
+            if page == "free":
+                txt = "Free size"
+            elif page == "custom":
+                txt = f"{float(st.get('page_mm') or 0):.0f} mm"
+            else:
+                txt = hs.PAGE_NAMES.get(page, page).replace(" column", " col.")
+            return f"{txt} · {'frames down' if st.get('transpose') else 'frames across'}", False
+        if kind == "channels":
+            rows = (spec or {}).get("rows") or []
+            labels = [hs.channel_text(r.get("display") or r.get("label") or "").split(" (")[0]
+                      for r in rows]
+            if not labels:
+                return "Channels", False
+            short = ", ".join(labels[:2]) + ("…" if len(labels) > 2 else "")
+            return (short if len(short) <= 34 else f"{len(labels)} channels"), False
+        if kind == "titles":
+            fam = st.get("font_family") or hs.default_font()
+            return f"{fam} {float(st.get('font') or 0):g} pt", False
+        if kind == "colour":
+            rng = "Shared range" if st.get("range_mode") == "row" else "Own ranges"
+            return f"{rng} · {'bars' if st.get('colorbars') else 'no bars'}", False
+        if kind == "letters":
+            if not st.get("letters"):
+                return "Letters off", True
+            pos = _CORNER_ARROWS.get(st.get("letter_pos"), "above")
+            return f"Letters {name(_LETTER_STYLE_NAMES, 'letter_style')} · {pos}", False
+        if kind == "scale":
+            if st.get("scale_bar") == "off":
+                return "Scale bar off", True
+            length = st.get("scale_len_nm")
+            ln = f"{float(length):g} nm" if length else "auto"
+            return f"Scale bar {ln} · {_CORNER_ARROWS.get(st.get('scale_pos'), '')}", False
+        if kind == "zoom":
+            return f"Outlines {float(st.get('zoom_lw') or 1):g} pt", False
+        if kind == "molecule":
+            if not n_mols:
+                return "Molecule: none", True
+            if not st.get("molecules_on", True):
+                return "Molecule hidden", True
+            return f"{n_mols} model{'s' if n_mols != 1 else ''}", False
+        return kind, False
+
+    def _update_chips(self, spec, n_mols):
+        for kind, chip in self._chips.items():
+            text, off = self._summary(kind, self._style, spec, n_mols)
+            dot = "  •" if self._card_changed(kind) else ""
+            chip.setText(text + dot)
+            if chip.property("off") != off:
+                chip.setProperty("off", off)
+                chip.style().unpolish(chip)
+                chip.style().polish(chip)
+            pop = self._cards.get(kind)
+            if pop is not None:
+                pop._reset_btn.setEnabled(kind == "channels" or self._card_changed(kind))
 
     # Widget value <-> style value for keys shown in friendlier units.
     _TO_WIDGET = {"scale_thick": lambda v: float(v) * 100.0, "cbar_w": lambda v: float(v) * 25.4}
@@ -804,8 +1123,13 @@ class _FormatPanel(QtWidgets.QWidget):
             w["scale_len_nm"].setEnabled(not auto)
             self.changed.emit({"scale_len_nm": None if auto else float(w["scale_len_nm"].value())})
             return
+        if key in ("_scale_on", "scale_bar"):
+            on = w["_scale_on"].isChecked()
+            where = w["scale_bar"].currentData() or self._last_scale or "all"
+            self.changed.emit({"scale_bar": where if on else "off"})
+            return
         widget = w[key]
-        if isinstance(widget, QtWidgets.QComboBox):
+        if _is_choice(widget):
             value = widget.currentData()
         elif isinstance(widget, QtWidgets.QCheckBox):
             value = widget.isChecked()
@@ -821,20 +1145,22 @@ class _FormatPanel(QtWidgets.QWidget):
             return
         self.changed.emit({key: value})
 
-    def sync(self, style, spec, auto_scale_nm=None, actual=False):
+    def sync(self, style, spec, auto_scale_nm=None, actual=False, n_molecules=0):
         self._syncing = True
+        self._style = dict(style or {})
         try:
             w = self.w
             w["_actual"].setChecked(bool(actual))
             for key, widget in w.items():
-                if key in ("channels", "scale_auto", "scale_len_nm", "_actual"):
+                if key in ("channels", "scale_auto", "scale_len_nm", "_actual", "_scale_on",
+                           "scale_bar"):
                     continue
                 value = style.get(key)
                 if key == "font_family" and not value:
                     value = hs.default_font()
                 if key in self._TO_WIDGET and value is not None:
                     value = self._TO_WIDGET[key](value)
-                if isinstance(widget, QtWidgets.QComboBox):
+                if _is_choice(widget):
                     idx = widget.findData(value)
                     if idx >= 0:
                         widget.setCurrentIndex(idx)
@@ -845,6 +1171,13 @@ class _FormatPanel(QtWidgets.QWidget):
                         widget.setValue(float(value))
                     elif key == "scale_font":
                         widget.setValue(widget.minimum())
+            where = style.get("scale_bar") or "all"
+            scale_on = where != "off"
+            if scale_on:
+                self._last_scale = where
+            w["_scale_on"].setChecked(scale_on)
+            idx = w["scale_bar"].findData(self._last_scale)
+            w["scale_bar"].setCurrentIndex(max(0, idx))
             auto = style.get("scale_len_nm") is None
             w["scale_auto"].setChecked(auto)
             length = style.get("scale_len_nm") or auto_scale_nm
@@ -862,23 +1195,24 @@ class _FormatPanel(QtWidgets.QWidget):
                 lst.addItem(it)
             letters_on = bool(style.get("letters"))
             for key in ("letter_style", "letter_scope", "letter_pos", "letter_color",
-                        "letter_size", "letter_bold"):
+                        "letter_size", "letter_bold", "letter_outline"):
                 w[key].setEnabled(letters_on)
-            scale_on = style.get("scale_bar") != "off"
-            for key in ("scale_auto", "scale_pos", "scale_color", "scale_label", "scale_font"):
+            for key in ("scale_bar", "scale_auto", "scale_pos", "scale_color", "scale_label",
+                        "scale_font", "scale_thick", "scale_outline"):
                 w[key].setEnabled(scale_on)
             w["scale_len_nm"].setEnabled(scale_on and not auto)
             bars_on = bool(style.get("colorbars"))
-            for key in ("cbar_ticks", "cbar_label", "cbar_style", "cbar_text", "cbar_w",
-                        "cbar_label_pos", "cbar_outline"):
+            for key in ("cbar_scope", "cbar_ticks", "cbar_label", "cbar_style", "cbar_text",
+                        "cbar_w", "cbar_label_pos", "cbar_outline"):
                 w[key].setEnabled(bars_on)
-            if bars_on and style.get("cbar_style") in ("minmax", "minmax_in"):
-                for key in ():
-                    w[key].setEnabled(False)
             w["page_mm"].setEnabled(style.get("page") == "custom")
             w["panel_w"].setEnabled((style.get("page") or "free") == "free")
-            for key in ("scale_thick", "scale_outline"):
-                w[key].setEnabled(scale_on)
+            mol_on = bool(n_molecules) and bool(style.get("molecules_on", True))
+            for key in ("mol_scope", "mol_size", "mol_palette"):
+                w[key].setEnabled(mol_on)
+            for b in self._mol_buttons:
+                b.setEnabled(bool(n_molecules))
+            self._update_chips(spec, n_molecules)
         finally:
             self._syncing = False
 
@@ -1093,8 +1427,6 @@ class FigureWindow(QtWidgets.QWidget):
         strip.addWidget(self.more_btn)
         root.addLayout(strip)
 
-        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self)
-        self.splitter.setChildrenCollapsible(False)
         self.scroll = QtWidgets.QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -1109,25 +1441,22 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.wheel.connect(self._on_wheel)
         self.view.resized.connect(lambda: self._render_timer.start() if not self._actual else None)
         self.scroll.setWidget(self.view)
-        self.splitter.addWidget(self.scroll)
+        root.addWidget(self.scroll, 1)
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
         self.format_panel.mol_action.connect(self._on_mol_action)
         self.format_panel.set_mode(self.mode)
-        self.splitter.addWidget(self.format_panel)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
-        self.splitter.setSizes([520, 260])
+        self.format_panel.set_defaults(hs.resolve_style(hs.RECIPE_DEFAULTS.get(self.mode, {})))
+        root.addWidget(self.format_panel)
         open_fmt = bool(self.source.export_settings().get("format_open", True))
         self.format_panel.setVisible(open_fmt)
         self.format_btn.blockSignals(True)
         self.format_btn.setChecked(open_fmt)
         self.format_btn.blockSignals(False)
-        root.addWidget(self.splitter, 1)
 
         self.hint = QtWidgets.QLabel(self)
-        self.hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
+        self.hint.setStyleSheet("color: palette(mid);")
         self.hint.setWordWrap(True)
         self.hint.setText(_MODE_HINTS.get(self.mode, "") + "hover a header, ×: drop  ·  click a channel "
                           "label: switch / remove  ·  drag a colourbar: contrast, click it: exact values  ·  "
@@ -1154,13 +1483,18 @@ class FigureWindow(QtWidgets.QWidget):
         self._render_timer.start()
 
     def _sync_format_panel(self):
-        if not self.format_panel.isVisible() or not self.spec:
+        # isHidden, not isVisible: the first sync runs from __init__, before
+        # the window is shown, when isVisible() is False for every child -
+        # the panel then stayed blank (no channels, "Free size" on a
+        # Double-column figure) until the first edit.
+        if self.format_panel.isHidden() or not self.spec:
             return
         auto_len = None
         widths = [p.get("width_nm") for p in self._panel_map().values() if p.get("width_nm")]
         if widths:
             auto_len = hs.nice_length(0.3 * widths[0])
-        self.format_panel.sync(self.style, self.spec, auto_len, actual=self._actual)
+        self.format_panel.sync(self.style, self.spec, auto_len, actual=self._actual,
+                               n_molecules=len(self._molecules()))
 
     def _on_format_changed(self, change):
         # Spin boxes fire per step - coalesce into one edit.
@@ -1337,7 +1671,7 @@ class FigureWindow(QtWidgets.QWidget):
         mols = self._molecules()
         draw = None
         if mols:
-            painter = _MoleculePainter(mols, self.source.molecule_settings())
+            painter = _MoleculePainter(mols, self._mol_settings())
             if screen:
                 self._mol_axes, self._mol_artists = [], []
 
@@ -1617,6 +1951,15 @@ class FigureWindow(QtWidgets.QWidget):
             self._mol_sel = None
             self._set_molecules(mols)
 
+    def _mol_settings(self):
+        """The preview's molecule look, with this figure's own palette
+        when one is chosen (style ``mol_palette``)."""
+        settings = dict(self.source.molecule_settings())
+        pal = str(self.style.get("mol_palette") or "preview").lower()
+        if pal != "preview":
+            settings["palette"] = pal
+        return settings
+
     def _mol_properties(self, i):
         mols = [m.copy() for m in self._molecules()]
         if not mols or i is None or i >= len(mols):
@@ -1720,7 +2063,7 @@ class FigureWindow(QtWidgets.QWidget):
                 a.remove()
             except Exception:
                 pass
-        painter = _MoleculePainter(d["mols"], self.source.molecule_settings())
+        painter = _MoleculePainter(d["mols"], self._mol_settings())
         arts = []
         for ax in self._mol_axes:
             arts.extend((ax, a) for a in painter.draw(ax, _mol_scale(ax, fig, self.style.get("mol_size", 1.0))))
@@ -1859,6 +2202,22 @@ class FigureWindow(QtWidgets.QWidget):
             self._add_channel_menu().exec_(gpos)
         elif kind == "colorbar":
             self._begin_cbar_drag(hit, event)
+        elif kind in ("letter", "scalebar"):
+            # A click on a letter / scale bar opens its card next to it.
+            self.view._pressed = False
+            card = "letters" if kind == "letter" else "scale"
+            QtCore.QTimer.singleShot(0, lambda c=card, p=gpos: self.open_format_card(c, p))
+
+    def open_format_card(self, kind, global_pos=None):
+        """Show one Format card (the bar is turned on if it was hidden)."""
+        if self.format_panel.isHidden():
+            self.format_btn.setChecked(True)
+        self._sync_format_panel()
+        self.format_panel.open_card(kind, global_pos)
+
+    def _card_action(self, menu, kind, text, gpos):
+        menu.addSeparator()
+        menu.addAction(text).triggered.connect(lambda: self.open_format_card(kind, gpos))
 
     def _cbar_range(self, r, f):
         lay = self.layout_info or {}
@@ -1984,6 +2343,7 @@ class FigureWindow(QtWidgets.QWidget):
             menu = self._add_channel_menu()
         elif kind == "colorbar":
             menu = self._colour_menu(hit["row"], hit["frame"])
+            self._card_action(menu, "colour", "All colour options…", gpos)
         elif kind == "molecule":
             i = hit["index"]
             self._mol_sel = i
@@ -1998,15 +2358,19 @@ class FigureWindow(QtWidgets.QWidget):
             menu.addAction("Reset orientation").triggered.connect(lambda: self._mol_transform(i, reset=True))
             menu.addSeparator()
             self._choice(menu, "Shown on", "mol_scope", {"all": "Every panel", "first": "First channel row"})
+            self._choice(menu.addMenu("Atom palette"), None, "mol_palette", _mol_palette_choices())
             menu.addSeparator()
             menu.addAction("Remove this model").triggered.connect(lambda: self._mol_transform(i, remove=True))
+            self._card_action(menu, "molecule", "All molecule options…", gpos)
         elif kind == "letter":
             menu = QtWidgets.QMenu(self)
             self._single_letter_menu(menu, hit["row"], hit["frame"])
             self._letters_menu(menu.addMenu("All letters"))
+            self._card_action(menu, "letters", "All letter options…", gpos)
         elif kind == "scalebar":
             menu = QtWidgets.QMenu(self)
             self._scale_menu(menu)
+            self._card_action(menu, "scale", "All scale bar options…", gpos)
         else:
             menu = QtWidgets.QMenu(self)
             if kind in ("frame", "close"):
@@ -2353,9 +2717,32 @@ class FigureWindow(QtWidgets.QWidget):
     # Outputs
     # ------------------------------------------------------------------
     def _export_figure(self):
+        """The figure for every output. Scans are drawn with
+        ``interpolation="none"``: vector formats (SVG -> PowerPoint shapes /
+        Inkscape / clipboard, PDF, EPS) then embed each scan at its own
+        pixel size instead of resampling it to the figure's 100 dpi (a
+        480 x 160 scan used to arrive as 110 x 37 px), and raster outputs
+        get no smoothing between pixels."""
         fig = self._new_figure()
         self._draw_into(fig)
+        for im in _scan_images(fig):
+            im.set_interpolation("none")
         return fig
+
+    def _raster_dpi(self, fig, dpi=None):
+        """The requested dpi, raised (to the next 50) when it would drop scan
+        pixels; returns ``(dpi, raised)``."""
+        dpi = int(dpi or self._export_opts()[0])
+        need = native_dpi(fig)
+        if need > dpi:
+            return int(math.ceil(need / 50.0) * 50), True
+        return dpi, False
+
+    def _vector_save(self, fig, target, **kw):
+        import matplotlib
+        # Never merge images into one composite resampled at the figure dpi.
+        with matplotlib.rc_context({"image.composite_image": False, "svg.fonttype": "none"}):
+            fig.savefig(target, facecolor=self._face(), **kw)
 
     def _default_name(self):
         cols = self.spec["columns"] if self.spec else []
@@ -2376,15 +2763,18 @@ class FigureWindow(QtWidgets.QWidget):
         import matplotlib
         fig = fig or self._export_figure()
         buf = io.BytesIO()
-        with matplotlib.rc_context({"svg.fonttype": "none"}):
-            fig.savefig(buf, format="svg", facecolor=self._face())
+        self._vector_save(fig, buf, format="svg")
+        # interpolation="none" also makes matplotlib tag each <image> with
+        # image-rendering: pixelated, so viewers show data pixels as squares.
         data = buf.getvalue()
         return svg_layers.layered_svg(data) if layered else data
 
     def _png_bytes(self, fig=None, dpi=None):
         fig = fig or self._export_figure()
+        dpi, raised = self._raster_dpi(fig, dpi)
+        self._last_raster = (dpi, raised)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=dpi or self._export_opts()[0], facecolor=self._face())
+        fig.savefig(buf, format="png", dpi=dpi, facecolor=self._face())
         return buf.getvalue()
 
     def _options_menu(self, menu):
@@ -2456,8 +2846,12 @@ class FigureWindow(QtWidgets.QWidget):
             except Exception:
                 pass
         QtWidgets.QApplication.clipboard().setMimeData(mime)
-        self._flash({"both": "Copied - paste anywhere", "png": "Copied as PNG",
-                     "svg": "Copied as SVG"}[mode])
+        msg = {"both": "Copied - paste anywhere", "png": "Copied as PNG",
+               "svg": "Copied as SVG"}[mode]
+        dpi, raised = getattr(self, "_last_raster", (None, False))
+        if raised and mode != "svg":
+            msg += f" (PNG at {dpi} dpi, so every scan pixel is kept)"
+        self._flash(msg)
 
     def send_to_powerpoint(self, mode=None):
         if not self._ready():
@@ -2518,7 +2912,7 @@ class FigureWindow(QtWidgets.QWidget):
         if ext not in self._SAVE_FILTERS:
             path, ext = path + ".pdf", ".pdf"
         fig = self._export_figure()
-        dpi, _transparent = self._export_opts()
+        dpi, raised = self._raster_dpi(fig)
         try:
             if ext == ".svg":
                 # Always layered: a plain SVG viewer ignores the layers,
@@ -2530,12 +2924,14 @@ class FigureWindow(QtWidgets.QWidget):
             elif ext == ".png":
                 fig.savefig(path, dpi=dpi, facecolor=self._face())
             else:
-                fig.savefig(path, facecolor=self._face())
+                self._vector_save(fig, path)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save figure", f"Could not save:\n{exc}")
             return
         self.source.set_export_settings(save_ext=ext, save_dir=str(Path(path).parent))
-        self._flash(f"Saved {Path(path).name}")
+        extra = (f" at {dpi} dpi, so every scan pixel is kept"
+                 if raised and ext in (".png", ".tif") else "")
+        self._flash(f"Saved {Path(path).name}{extra}")
 
     @staticmethod
     def _inkscape_exe():
