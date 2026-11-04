@@ -213,91 +213,27 @@ def _normalize_extent(extent):
 
 
 def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
+    """Molecules on a canvas tile, through the app's one molecule renderer
+    (``molecules.render`` - same styles as the preview), sized for the
+    tile's printed width."""
     if not molecules:
         return
     try:
-        from matplotlib.patches import Circle
-        from .molecular_overlay import Molecule, get_atom_radius, resolve_atom_color, effective_bond_color_mode
+        from ...molecules.model import Molecule
+        from ...molecules import render as molecule_render
     except Exception:
         return
-
+    mols = []
     for entry in molecules:
         try:
-            mol = entry if isinstance(entry, Molecule) else Molecule.from_dict(entry)
-            coords = mol.get_transformed_coordinates()
+            mols.append(entry if isinstance(entry, Molecule) else Molecule.from_dict(entry))
         except Exception:
             continue
-        if coords is None or len(coords) == 0:
-            continue
-
-        xs_full = np.asarray(coords[:, 0], dtype=float)
-        ys_full = np.asarray(coords[:, 1], dtype=float)
-        zs_full = np.asarray(coords[:, 2], dtype=float) if coords.shape[1] >= 3 else np.zeros(len(coords))
-        xs = xs_full
-        ys = ys_full
-        zs = zs_full
-        if not show_hydrogens:
-            keep = np.array([(str(el).strip().upper() != "H") for el in getattr(mol, "elements", [])], dtype=bool)
-            if keep.size == len(xs) and np.any(keep):
-                xs = xs[keep]
-                ys = ys[keep]
-                zs = zs[keep]
-                elements = [el for el, k in zip(getattr(mol, "elements", []), keep) if k]
-            else:
-                elements = list(getattr(mol, "elements", []))
-        else:
-            elements = list(getattr(mol, "elements", []))
-        order = np.argsort(zs)
-        display_mode = str(getattr(mol, "display_mode", "Atoms + Bonds") or "Atoms + Bonds").lower()
-        bond_mode = effective_bond_color_mode(mol)
-        bond_color = getattr(mol, "bond_color_override", None) if bond_mode == "single" else None
-        bond_color = bond_color or "#e8edf4"
-        bond_style = str(getattr(mol, "bond_style", "default") or "default").lower()
-        line_width = 0.8 if bond_style == "thin" else 2.0 if bond_style == "thick" else 1.2
-        try:
-            atom_opacity = min(1.0, max(0.0, float(getattr(mol, "atom_opacity", 1.0))))
-            bond_opacity = min(1.0, max(0.0, float(getattr(mol, "bond_opacity", 1.0))))
-        except Exception:
-            atom_opacity = bond_opacity = 1.0
-        space_filling = bool(getattr(mol, "space_filling", False))
-
-        if display_mode != "atoms only":
-            for bond in getattr(mol, "bonds", []) or []:
-                try:
-                    i, j = int(bond[0]), int(bond[1])
-                    if not show_hydrogens:
-                        ei = (mol.elements[i] if i < len(mol.elements) else "") or ""
-                        ej = (mol.elements[j] if j < len(mol.elements) else "") or ""
-                        if str(ei).strip().upper() == "H" or str(ej).strip().upper() == "H":
-                            continue
-                    if bond_mode == "by_atoms":
-                        # Split bond: each half takes its own atom's element color.
-                        ei = mol.elements[i] if i < len(mol.elements) else "C"
-                        ej = mol.elements[j] if j < len(mol.elements) else "C"
-                        mx = 0.5 * (xs_full[i] + xs_full[j])
-                        my = 0.5 * (ys_full[i] + ys_full[j])
-                        ax.plot([xs_full[i], mx], [ys_full[i], my], color=resolve_atom_color(mol, ei, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
-                        ax.plot([mx, xs_full[j]], [my, ys_full[j]], color=resolve_atom_color(mol, ej, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
-                    else:
-                        ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
-                except Exception:
-                    continue
-
-        if display_mode == "bonds only":
-            continue
-
-        for idx in order:
-            try:
-                element = (elements[idx] if idx < len(elements) else "C") or "C"
-                color = resolve_atom_color(mol, element, palette)
-                radius = get_atom_radius(element, getattr(mol, "radius_mode", "covalent"))
-                radius *= abs(float(getattr(mol, "scale", 0.1))) * float(getattr(mol, "radius_scale", 1.0))
-                # Space-filling: true radius; otherwise a reduced ball size.
-                radius = float(radius) if space_filling else max(0.03, float(radius) * 0.33)
-                patch = Circle((xs[idx], ys[idx]), radius=radius, facecolor=color, edgecolor="#101316", linewidth=0.5, alpha=0.92 * atom_opacity, zorder=6 + (idx / max(1, len(order))))
-                ax.add_patch(patch)
-            except Exception:
-                continue
+    if not mols:
+        return
+    molecule_render.draw_molecules(
+        ax, mols, {"palette": palette, "show_hydrogens": bool(show_hydrogens)},
+        scale=molecule_render.panel_scale(ax))
 
 
 def render_tile_figure_mpl(

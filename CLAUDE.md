@@ -95,6 +95,10 @@ python -m sxm_viewer
   regions, per-grid curve clustering, KPFM fit maps, flagged items),
   `pdf.py` (matplotlib `PdfPages` page rendering), `channels.py` (channel-
   name classification heuristics — see "Folder reports" below).
+- `molecules/` — the molecular-model overlay (.xyz/.pdb...), Qt-free and
+  shared by every window: `model.py` (`Molecule`, palettes, radii, render
+  styles), `render.py` (`draw_molecules`, THE renderer), `interaction.py`
+  (gesture map + drag math, orientation/gizmo). See "Molecular overlays".
 - `utils/` — small helpers (`units.py` unit parsing/formatting, `logging.py`).
 - `gui/` — the Qt UI (see below).
 
@@ -371,9 +375,10 @@ All drawn/managed inside `MultiPreviewCanvas`
 (`gui/canvases/detail_preview_canvas.py`) unless noted:
 - **Scale bar** — `_add_scale_bar`/`_refresh_scale_bars`, drag via `_on_sb_*`,
   toggle Ctrl+4.
-- **3D molecule overlay** — `Molecule`/`MoleculePropertiesDialog`
-  (`gui/canvases/molecular_overlay.py`); drawn by `_draw_molecules`, toggle
-  Ctrl+3.
+- **3D molecule overlay** — `Molecule` (`sxm_viewer/molecules/`, see
+  "Molecular overlays" below) / `MoleculePropertiesDialog`
+  (`gui/canvases/molecular_overlay.py`); `_draw_molecules` is a wrapper
+  around `molecules.render.draw_molecules`, toggle Ctrl+3.
 - **2D/SVG molecule overlay** — `SvgMoleculeOverlay`/`SvgAtom`/`SvgBond`
   (`gui/canvases/svg_molecule_overlay.py`); drawn by `_draw_svg_molecules`.
 - **Profile line & HUD** — `_update_profile_artists`, saved profiles via
@@ -1095,13 +1100,11 @@ card row + the matching right-click menu. Notable ones:
 `Molecule.to_dict()` in figure state `molecules`, positioned in **panel
 nm** (each panel's axes are `0..w, 0..h` nm, y up), so one placement is the
 same physical spot on every channel / frame of a series - the point is
-comparing channels against the same model. Drawn with the preview's own
-renderer: `_MoleculePainter` is a 7-attribute stand-in `self` for
-`MultiPreviewCanvas._draw_molecules` (palette / bond mode / shadow / H come
-from `controller.molecule_settings()` = the preview canvas), so styles never
-drift; marker sizes and bond widths are post-scaled to the panel's printed
-width (`_mol_scale`, x `mol_size`) because the preview sizes them in points
-for a big canvas. "From preview" (`controller.preview_molecules`) takes the
+comparing channels against the same model. Drawn with the shared renderer
+(`_MoleculePainter` -> `molecules.render.draw_molecules`; palette / bond
+mode / shadow / H from `controller.molecule_settings()` = the preview
+canvas) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
+points for the big preview. "From preview" (`controller.preview_molecules`) takes the
 live preview / `viewer.molecule_overlays` and subtracts the frame's display-
 extent lower-left corner (preview data coords are extent-based, y up).
 Interaction cost: a drag caches the figure without molecules once
@@ -1113,9 +1116,9 @@ Molecules get their own Inkscape layer. Interactive rotation must match the
 preview gesture for gesture (it was briefly lost - keep it): drag = move,
 Shift+drag = spin about the model centre, Ctrl+Shift+drag or middle button
 = free 3-D (0.5 deg/px: dx -> Y, dy -> X, y up), plus the X/Y/Z orientation
-gizmo (`_gizmo_vectors` / `_orientation_matrix` port the preview's; screen-
-only, painted by the view top-left while a model is selected; inner disc =
-tumble 0.45 deg/px, rim = spin). All modes share the cached-background
+gizmo (`molecules.interaction.gizmo_vectors`; screen-only, painted by the
+view top-left while a model is selected; inner disc = tumble 0.45 deg/px,
+rim = spin) - all of it from `molecules.interaction`, so it cannot drift. All modes share the cached-background
 redraw; keys X/Y/Z rotate 5 deg, arrows nudge.
 
 **Window** (`FigureWindow`): figure on white "paper" (= the export) in a
@@ -1152,6 +1155,39 @@ opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
 - An exception escaping a Qt handler aborts the process when no
   `sys.excepthook` is installed (the app's `cli.py` installs one; headless
   test scripts don't) - `FigureController._open` catches and reports.
+
+### Molecular overlays: one model, one renderer, one gesture map (`sxm_viewer/molecules/`)
+A molecular model looks and behaves the same in the preview, pop-ups,
+figure windows, preview exports and the publication canvas because each of
+them is a thin host over one Qt-free package:
+- `model.py` — `Molecule` (load .xyz/.pdb/..., `angles`/`offset`/`scale`,
+  mirrors, `get_transformed_coordinates`, `to_dict`/`from_dict`,
+  `reset_to_file_state`), palettes, radii, render-style profiles, colour
+  resolution. `gui/canvases/molecular_overlay.py` re-exports all of it
+  (old imports keep working) and holds only the Qt dialogs.
+- `render.py` — `draw_molecules(ax, molecules, settings, *, scale=1.0)`,
+  the only molecule renderer: `settings` = palette / bond colour mode /
+  default bond colour / shadows / hydrogens (`DEFAULT_SETTINGS`), returns
+  entries `{mol, ax, scatter, atom_underlay, atom_order, shadow,
+  line_underlay, lines}` (`artists_of` flattens them). `scale` multiplies
+  screen-sized marks (marker areas x scale^2, line/edge widths x scale);
+  `panel_scale(ax, user)` derives it from a printed panel's width. Bonds are
+  round-capped/joined in every style so they read as one continuous stick.
+- `interaction.py` — what a gesture *does*: `drag_mode` /
+  `drag_mode_for_key` (drag = translate, Shift = spin, Ctrl+Shift or middle
+  = 3-D tumble 0.5 deg/px), `drag_update` (pose from press pose + pointer;
+  pixel deltas and gizmo vectors y-up), `gizmo_hit_mode` (inner disc
+  < 0.58 = tumble 0.45 deg/px, rim = spin), `orientation_matrix`,
+  `axis_screen_vectors`, `gizmo_vectors`, `atoms_hit` (14 px),
+  `key_rotation` (5 deg), `apply_transform`.
+Hosts only translate their events (matplotlib data/pixel coords in
+`MultiPreviewCanvas`; Qt positions -> panel nm in `FigureWindow`) and own
+undo, selection and redraw strategy. A new look or gesture goes into the
+package, never into a host. Verify a change by pixel-diffing preview
+renders per style and replaying gestures through the real handlers (the
+refactor that created the package was checked that way: identical pixels,
+identical poses). Found by that replay: the preview's Ctrl+Shift tumble had
+never worked - it tested `'control' in key`, matplotlib sends `ctrl+shift`.
 
 ### CH height label: z_abs or Δz to a reference (`gui/viewer/ch_height.py`)
 The acquisition HUD's CH line is resolved at *draw* time, not baked into the

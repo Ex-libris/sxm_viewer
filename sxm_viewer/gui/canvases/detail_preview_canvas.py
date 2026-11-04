@@ -47,6 +47,8 @@ from .svg_molecule_overlay import SvgMoleculeOverlay, _SUPPORTED_2D_STRUCTURE_SU
 from .canvas_rendering import iso_export_filename
 from ..dialogs.svg_molecule_style import SvgMoleculeStyleDialog
 from . import preview_export_figures
+from ...molecules import render as molecule_render
+from ...molecules import interaction as molecule_interaction
 from . import scale_bar_contrast
 from .preview_axes_sync import sync_axes_to_view, style_colorbar
 from . import colorbar_fit
@@ -2536,337 +2538,23 @@ class MultiPreviewCanvas(FigureCanvas):
         if _redraw_ms >= 20.0:
             log_status(f"[Perf] Full _redraw: total {_redraw_ms:.0f} ms | views={len(self.views)} | idle_draw={use_idle_draw}")
 
+    def _molecule_render_settings(self):
+        """This canvas' molecule look, for ``molecules.render``."""
+        return {
+            "palette": self.molecule_palette,
+            "bond_color_mode": self._bond_color_mode,
+            "default_bond_color": self._default_bond_color,
+            "show_shadows": bool(self._show_molecule_shadow),
+            "show_hydrogens": bool(getattr(self, "_show_hydrogens", True)),
+        }
+
     def _draw_molecules(self, ax):
+        # The shared renderer (molecules/render.py): the same code draws
+        # molecules in the preview, pop-ups, figures, exports and canvas.
         if not self.show_molecules or not self.molecules:
             return
-
-        for mol in self.molecules:
-            coords = mol.get_transformed_coordinates()
-            if len(coords) == 0:
-                continue
-            hide_h = not getattr(self, "_show_hydrogens", True)
-            
-            # Z-range for depth cueing
-            z_vals = coords[:, 2]
-            z_min = z_vals.min()
-            z_range = z_vals.max() - z_vals.min()
-            is_flat = z_range < 1e-6
-            if is_flat:
-                z_range = 1.0
-            # Depth cue: far atoms/bonds fade and shrink. A planar molecule
-            # has no depth to cue, so it gets the near (full) opacity rather
-            # than every atom being treated as "farthest" - that made flat
-            # overlays look washed out with no way to make them opaque.
-            depth_cue = bool(getattr(mol, "depth_cue", True)) and not is_flat
-            atom_opacity = float(np.clip(float(getattr(mol, "atom_opacity", 1.0) or 0.0), 0.0, 1.0))
-            bond_opacity = float(np.clip(float(getattr(mol, "bond_opacity", 1.0) or 0.0), 0.0, 1.0))
-            space_filling = bool(getattr(mol, "space_filling", False))
-
-            lc = None
-            lc_underlay = None
-            sc = None
-            shadow_sc = None
-            atom_underlay_sc = None
-            atom_order = None
-            atom_style = normalize_molecule_render_style(mol.render_style)
-            bond_style = (mol.bond_style or "default").lower()
-            style_profiles = {
-                "shaded": {
-                    "size_base": 80, "size_scale": 140, "shadow_alpha": 0.25,
-                    "show_shadow": True, "atom_alpha": 1.0, "highlight": 0.25,
-                    "edgecolor": "black", "edgewidth": 0.6, "bond_scale": 1.0,
-                    "bond_alpha_min": 0.4, "bond_alpha_span": 0.6, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-                "flat": {
-                    "size_base": 76, "size_scale": 126, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.98, "highlight": 0.0,
-                    "edgecolor": "black", "edgewidth": 0.5, "bond_scale": 1.0,
-                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-                "ballstick": {
-                    "size_base": 34, "size_scale": 62, "shadow_alpha": 0.14,
-                    "show_shadow": True, "atom_alpha": 1.0, "highlight": 0.18,
-                    "edgecolor": "black", "edgewidth": 0.75, "bond_scale": 1.35,
-                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": True,
-                    "force_bond_by_atoms": True, "outline": False,
-                },
-                "cpk": {
-                    "size_base": 150, "size_scale": 240, "shadow_alpha": 0.28,
-                    "show_shadow": True, "atom_alpha": 0.96, "highlight": 0.3,
-                    "edgecolor": "black", "edgewidth": 0.75, "bond_scale": 0.75,
-                    "bond_alpha_min": 0.3, "bond_alpha_span": 0.35, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-                "licorice": {
-                    "size_base": 48, "size_scale": 82, "shadow_alpha": 0.2,
-                    "show_shadow": True, "atom_alpha": 0.98, "highlight": 0.12,
-                    "edgecolor": "black", "edgewidth": 0.55, "bond_scale": 1.5,
-                    "bond_alpha_min": 0.5, "bond_alpha_span": 0.45, "split_bonds": True,
-                    "force_bond_by_atoms": True, "outline": False,
-                },
-                "wire": {
-                    "size_base": 14, "size_scale": 24, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.82, "highlight": 0.0,
-                    "edgecolor": "black", "edgewidth": 0.3, "bond_scale": 0.65,
-                    "bond_alpha_min": 0.45, "bond_alpha_span": 0.35, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-                "line": {
-                    "size_base": 8, "size_scale": 14, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.8, "highlight": 0.0,
-                    "edgecolor": "none", "edgewidth": 0.0, "bond_scale": 0.5,
-                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.25, "split_bonds": True,
-                    "force_bond_by_atoms": True, "outline": False,
-                },
-                "sticks": {
-                    "size_base": 18, "size_scale": 35, "shadow_alpha": 0.12,
-                    "show_shadow": True, "atom_alpha": 0.96, "highlight": 0.08,
-                    "edgecolor": "black", "edgewidth": 0.35, "bond_scale": 1.6,
-                    "bond_alpha_min": 0.55, "bond_alpha_span": 0.4, "split_bonds": True,
-                    "force_bond_by_atoms": True, "outline": False,
-                },
-                "skeletal": {
-                    "size_base": 10, "size_scale": 20, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.88, "highlight": 0.0,
-                    "edgecolor": "black", "edgewidth": 0.25, "bond_scale": 0.85,
-                    "bond_alpha_min": 0.5, "bond_alpha_span": 0.35, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-                "outline": {
-                    "size_base": 78, "size_scale": 128, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.12, "highlight": 0.0,
-                    "edgecolor": "white", "edgewidth": 1.0, "bond_scale": 1.1,
-                    "bond_alpha_min": 0.85, "bond_alpha_span": 0.05, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": True,
-                },
-                "ghost": {
-                    "size_base": 82, "size_scale": 132, "shadow_alpha": 0.0,
-                    "show_shadow": False, "atom_alpha": 0.28, "highlight": 0.05,
-                    "edgecolor": "black", "edgewidth": 0.35, "bond_scale": 0.9,
-                    "bond_alpha_min": 0.22, "bond_alpha_span": 0.18, "split_bonds": False,
-                    "force_bond_by_atoms": False, "outline": False,
-                },
-            }
-            profile = style_profiles.get(atom_style, style_profiles["shaded"])
-            size_base = profile["size_base"]
-            size_scale = profile["size_scale"]
-            shadow_alpha = profile["shadow_alpha"]
-
-            def _atom_base_rgba(idx):
-                elem = mol.elements[idx] if idx < len(mol.elements) else ""
-                return matplotlib.colors.to_rgba(resolve_atom_color(mol, elem, self.molecule_palette))
-
-            # Draw Bonds
-            if 'Bonds' in mol.display_mode and len(mol.bonds) > 0:
-                lines = []
-                underlay_lines = []
-                colors = []
-                underlay_colors = []
-                linewidths = []
-                underlay_widths = []
-                lw_scale = profile["bond_scale"]
-                if bond_style == "thick":
-                    lw_scale *= 1.6
-                elif bond_style == "thin":
-                    lw_scale *= 0.7
-                display_mode_lower = (mol.display_mode or "").lower()
-                force_atom_bond_colors = profile["force_bond_by_atoms"] or ("bonds only" in display_mode_lower)
-                bond_outline_rgba = (0.0, 0.0, 0.0, 0.95 * bond_opacity)
-                for (i, j) in mol.bonds:
-                    if i >= len(coords) or j >= len(coords): continue
-                    ei = (mol.elements[i] or "").strip().upper() if i < len(mol.elements) else ""
-                    ej = (mol.elements[j] or "").strip().upper() if j < len(mol.elements) else ""
-                    if hide_h:
-                        try:
-                            if ei == 'H' or ej == 'H':
-                                continue
-                        except Exception:
-                            pass
-                    p1 = coords[i]
-                    p2 = coords[j]
-                    z_mid = (p1[2] + p2[2]) * 0.5
-                    z_norm = (z_mid - z_min) / z_range if depth_cue else 0.0
-                    depth = z_norm if depth_cue else 1.0
-                    alpha = (profile["bond_alpha_min"] + profile["bond_alpha_span"] * depth) * bond_opacity
-                    lw = (1.0 + 2.0 * z_norm) * lw_scale
-                    bond_mode = effective_bond_color_mode(mol, self._bond_color_mode)
-                    if force_atom_bond_colors and bond_mode == "default":
-                        bond_mode = "by_atoms"
-                    rgba1 = _atom_base_rgba(i)
-                    rgba2 = _atom_base_rgba(j)
-                    if bond_mode == "single" and mol.bond_color_override:
-                        br, bg, bb, _ = matplotlib.colors.to_rgba(mol.bond_color_override)
-                        segment_color = (br, bg, bb, alpha)
-                        lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                        colors.append(segment_color)
-                        linewidths.append(lw)
-                        if profile["outline"]:
-                            underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                            underlay_colors.append(bond_outline_rgba)
-                            underlay_widths.append(lw + 2.4)
-                    elif bond_mode == "by_atoms":
-                        r1, g1, b1, _ = rgba1
-                        r2, g2, b2, _ = rgba2
-                        if profile["split_bonds"]:
-                            mid = 0.5 * (p1 + p2)
-                            lines.append([(p1[0], p1[1]), (mid[0], mid[1])])
-                            colors.append((r1, g1, b1, alpha))
-                            linewidths.append(lw)
-                            lines.append([(mid[0], mid[1]), (p2[0], p2[1])])
-                            colors.append((r2, g2, b2, alpha))
-                            linewidths.append(lw)
-                            if profile["outline"]:
-                                underlay_lines.extend([
-                                    [(p1[0], p1[1]), (mid[0], mid[1])],
-                                    [(mid[0], mid[1]), (p2[0], p2[1])],
-                                ])
-                                underlay_colors.extend([bond_outline_rgba] * 2)
-                                underlay_widths.extend([lw + 2.4, lw + 2.4])
-                        else:
-                            br, bg, bb = (0.5 * (r1 + r2), 0.5 * (g1 + g2), 0.5 * (b1 + b2))
-                            lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                            colors.append((br, bg, bb, alpha))
-                            linewidths.append(lw)
-                            if profile["outline"]:
-                                underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                                underlay_colors.append(bond_outline_rgba)
-                                underlay_widths.append(lw + 2.4)
-                    else:
-                        br, bg, bb = self._default_bond_color
-                        lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                        colors.append((br, bg, bb, alpha))
-                        linewidths.append(lw)
-                        if profile["outline"]:
-                            underlay_lines.append([(p1[0], p1[1]), (p2[0], p2[1])])
-                            underlay_colors.append(bond_outline_rgba)
-                            underlay_widths.append(lw + 2.4)
-
-                if underlay_lines:
-                    lc_underlay = LineCollection(underlay_lines, colors=underlay_colors, linewidths=underlay_widths, zorder=28.7)
-                    ax.add_collection(lc_underlay)
-                    try:
-                        lc_underlay.set_capstyle("round")
-                        lc_underlay.set_joinstyle("round")
-                    except Exception:
-                        pass
-                lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
-                ax.add_collection(lc)
-                lc.set_pickradius(5)
-                try:
-                    # Round ends in every style: bonds meeting at an atom (and
-                    # the two halves of a two-colour bond) blend into one
-                    # continuous stick, as in Avogadro / VESTA / PyMOL -
-                    # square ("butt") ends left notches and gaps at each joint.
-                    lc.set_capstyle("round")
-                    lc.set_joinstyle("round")
-                except Exception:
-                    pass
-
-            # Draw Atoms
-            if 'Atoms' in mol.display_mode:
-                # Sort atoms by Z for simple painter's algorithm
-                order = np.argsort(z_vals)
-                if hide_h:
-                    order = [idx for idx in order if str(mol.elements[idx]).strip().upper() != 'H']
-                if len(order) == 0:
-                    continue
-                atom_order = list(order)
-                coords_sorted = coords[order]
-                elements_sorted = [mol.elements[i] for i in order]
-                
-                x = coords_sorted[:, 0]
-                y = coords_sorted[:, 1]
-                z = coords_sorted[:, 2]
-                
-                z_norm = (z - z_min) / z_range if depth_cue else np.zeros(len(z))
-                depth = z_norm if depth_cue else np.ones(len(z))
-                # The radius model is honoured as chosen for every
-                # representation (CPK used to silently swap covalent->vdW).
-                rad_mode = getattr(mol, "radius_mode", "covalent")
-                rad_scale = float(getattr(mol, "radius_scale", 1.0) or 1.0)
-                if space_filling:
-                    # True size in data units: Å radius x molecule scale
-                    # (Å -> axis unit) x radius scale.
-                    mol_scale = abs(float(getattr(mol, "scale", 0.1) or 0.1))
-                    radii_data = np.array(
-                        [get_atom_radius(e, rad_mode) for e in elements_sorted], dtype=float
-                    ) * mol_scale * rad_scale
-                    sizes = None
-                else:
-                    # Scatter `s` is an area, so scale by r**2 to keep the
-                    # on-screen radius proportional to the radius model.
-                    radii_data = None
-                    area_factors = np.array(
-                        [atom_marker_area_factor(e, rad_mode, rad_scale) for e in elements_sorted], dtype=float
-                    )
-                    sizes = (size_base + size_scale * z_norm) * area_factors
-
-                rgba_colors = [_atom_base_rgba(i) for i in order]
-                final_colors = []
-                for i, (r, g, b, a) in enumerate(rgba_colors):
-                    depth_alpha = profile["atom_alpha"] * (0.45 + 0.55 * depth[i]) * atom_opacity
-                    highlight = profile["highlight"]
-                    r_h = min(1.0, r + (1 - r) * highlight)
-                    g_h = min(1.0, g + (1 - g) * highlight)
-                    b_h = min(1.0, b + (1 - b) * highlight)
-                    final_colors.append((r_h, g_h, b_h, depth_alpha))
-                edge = profile["edgecolor"]
-                if str(edge).lower() != "none":
-                    edge = matplotlib.colors.to_rgba(edge, atom_opacity)
-
-                def _atom_layer(dx, dy, grow, facecolors, edgecolors, linewidths, zorder):
-                    if space_filling:
-                        diam = 2.0 * radii_data * grow
-                        coll = EllipseCollection(
-                            diam, diam, np.zeros_like(diam),
-                            units="xy",
-                            offsets=np.c_[x + dx, y + dy],
-                            offset_transform=ax.transData,
-                            facecolors=facecolors,
-                            edgecolors=edgecolors,
-                            linewidths=linewidths,
-                            zorder=zorder,
-                        )
-                        ax.add_collection(coll, autolim=False)
-                        return coll
-                    return ax.scatter(
-                        x + dx, y + dy,
-                        s=sizes * grow * grow,
-                        c=facecolors,
-                        edgecolors=edgecolors,
-                        linewidths=linewidths,
-                        zorder=zorder,
-                    )
-
-                if profile["outline"]:
-                    atom_underlay_sc = _atom_layer(
-                        0.0, 0.0, math.sqrt(1.55),
-                        [(0.0, 0.0, 0.0, 0.92 * atom_opacity)] * len(x), 'none', 0, 28.85,
-                    )
-                if self._show_molecule_shadow and profile["show_shadow"]:
-                    shadow_sc = _atom_layer(
-                        0.05, -0.05, math.sqrt(1.25),
-                        [(0, 0, 0, shadow_alpha * atom_opacity)] * len(x), 'none', 0, 28,
-                    )
-                sc = _atom_layer(0.0, 0.0, 1.0, final_colors, edge, profile["edgewidth"], 30)
-                if atom_style == "outline":
-                    try:
-                        sc.set_path_effects([PathEffects.Stroke(linewidth=2.2, foreground='black'), PathEffects.Normal()])
-                    except Exception:
-                        pass
-
-            self._molecule_artists.append({
-                'mol': mol,
-                'ax': ax,
-                'scatter': sc,
-                'atom_underlay': atom_underlay_sc,
-                'atom_order': atom_order,
-                'shadow': shadow_sc,
-                'line_underlay': lc_underlay,
-                'lines': lc
-            })
+        self._molecule_artists.extend(
+            molecule_render.draw_molecules(ax, self.molecules, self._molecule_render_settings()))
 
     def _svg_overlay_reference_view(self, ax=None):
         if ax is not None:
@@ -3508,29 +3196,10 @@ class MultiPreviewCanvas(FigureCanvas):
         return (time.perf_counter() * 1000.0) < float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0)
 
     def _molecule_orientation_matrix(self, mol):
-        if mol is None:
-            return np.eye(3, dtype=float)
-        rads = np.radians(np.asarray(getattr(mol, "angles", [0.0, 0.0, 0.0]), dtype=float))
-        cx, cy, cz = np.cos(rads)
-        sx, sy, sz = np.sin(rads)
-        rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=float)
-        ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=float)
-        rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=float)
-        mat = rz @ ry @ rx
-        if bool(getattr(mol, "mirror_x", False)):
-            mat[0, :] *= -1.0
-        if bool(getattr(mol, "mirror_y", False)):
-            mat[1, :] *= -1.0
-        return mat
+        return molecule_interaction.orientation_matrix(mol)
 
     def _molecule_axis_screen_vectors(self, mol):
-        mat = self._molecule_orientation_matrix(mol)
-        vectors = []
-        for idx, color in enumerate(("#ef4444", "#22c55e", "#3b82f6")):
-            vec = np.asarray(mat[:, idx], dtype=float)
-            screen = np.array([vec[0] + 0.38 * vec[2], vec[1] + 0.18 * vec[2]], dtype=float)
-            vectors.append((idx, vec, screen, color))
-        return vectors
+        return molecule_interaction.axis_screen_vectors(mol)
 
     def _molecule_gizmo_hit_test(self, event):
         gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
@@ -3549,10 +3218,9 @@ class MultiPreviewCanvas(FigureCanvas):
             return None
         local_x = ((float(event.x) - float(bbox.x0)) / width) * 2.0 - 1.0
         local_y = ((float(event.y) - float(bbox.y0)) / height) * 2.0 - 1.0
-        radius = math.hypot(local_x, local_y)
-        if radius > 1.02:
+        mode = molecule_interaction.gizmo_hit_mode(local_x, local_y)
+        if mode is None:
             return None
-        mode = "rotate_z" if radius >= 0.58 else "rotate_xy"
         return {"mode": mode, "local": (float(local_x), float(local_y))}
 
     def _begin_molecule_gizmo_drag(self, hit, event):
@@ -5857,9 +5525,8 @@ class MultiPreviewCanvas(FigureCanvas):
             pass
         try:
             mol = self.molecules[idx]
-            new_angles = np.array(mol.angles, dtype=float, copy=True)
-            new_angles[axis] += -5.0 if reverse else 5.0
-            mol.angles = new_angles
+            molecule_interaction.apply_transform(
+                mol, rot=molecule_interaction.key_rotation(axis, reverse))
             self._update_molecule_artists()
             self._wake_molecule_gizmo(2200, redraw=False)
             self._update_molecule_gizmo_overlay()
@@ -9274,17 +8941,15 @@ class MultiPreviewCanvas(FigureCanvas):
             try:
                 atom_px = event.inaxes.transData.transform(coords[:, :2])
                 event_px = np.array([float(event.x), float(event.y)], dtype=float)
-                dist_px = np.hypot(atom_px[:, 0] - event_px[0], atom_px[:, 1] - event_px[1])
-                thresh_px = 14.0
-                if getattr(mol, "space_filling", False) and 'Atoms' in str(mol.display_mode) and len(elements) == len(dist_px):
+                radii_px = None
+                if getattr(mol, "space_filling", False) and 'Atoms' in str(mol.display_mode) and len(elements) == len(atom_px):
                     # Big to-scale atoms: anywhere inside an atom counts.
                     p0, p1 = event.inaxes.transData.transform([(0.0, 0.0), (1.0, 0.0)])
                     px_per_unit = abs(float(p1[0] - p0[0]))
                     radii_px = np.array(
                         [get_atom_radius(e, mol.radius_mode) for e in elements], dtype=float
                     ) * abs(float(mol.scale)) * float(mol.radius_scale) * px_per_unit
-                    thresh_px = np.maximum(thresh_px, radii_px)
-                hit = bool(dist_px.size and np.any(dist_px <= thresh_px))
+                hit = molecule_interaction.atoms_hit(atom_px, event_px, radii_px)
             except Exception:
                 dx = coords[:, 0] - event.xdata
                 dy = coords[:, 1] - event.ydata
@@ -9303,16 +8968,9 @@ class MultiPreviewCanvas(FigureCanvas):
                     self._molecule_drag_mol_start = mol.offset.copy()
                     self._molecule_drag_mol_angles = mol.angles.copy()
                     
-                    key = str(event.key).lower() if event.key else ''
-                    if event.button == 2:
-                        # Middle button drag: full 3D rotate
-                        self._molecule_drag_mode = 'rotate_3d'
-                    elif 'control' in key and 'shift' in key:
-                        self._molecule_drag_mode = 'rotate_3d'
-                    elif 'shift' in key:
-                        self._molecule_drag_mode = 'rotate_z'
-                    else:
-                        self._molecule_drag_mode = 'translate'
+                    # Shared gesture map (molecules/interaction.py): drag =
+                    # move, Shift = spin, Ctrl+Shift / middle = 3-D tumble.
+                    self._molecule_drag_mode = molecule_interaction.drag_mode_for_key(event.button, event.key)
                     self._update_molecule_gizmo_overlay()
                     return True
                 elif event.button == 3:
@@ -9403,7 +9061,6 @@ class MultiPreviewCanvas(FigureCanvas):
             start_angles = gizmo_drag.get("start_angles")
             if start_angles is None:
                 start_angles = mol.angles
-            new_angles = np.array(start_angles, dtype=float, copy=True)
             if gizmo_drag.get("mode") == "rotate_z":
                 gizmo_ax = getattr(self, "_molecule_gizmo_axes", None)
                 bbox = getattr(gizmo_ax, "bbox", None)
@@ -9411,16 +9068,15 @@ class MultiPreviewCanvas(FigureCanvas):
                     return
                 center_x = float(bbox.x0 + (bbox.width * 0.5))
                 center_y = float(bbox.y0 + (bbox.height * 0.5))
-                start_local = gizmo_drag.get("start_local") or (0.0, 0.0)
-                start_angle = math.degrees(math.atan2(float(start_local[1]), float(start_local[0])))
-                current_angle = math.degrees(math.atan2(float(event.y) - center_y, float(event.x) - center_x))
-                new_angles[2] += current_angle - start_angle
+                _off, new_angles = molecule_interaction.drag_update(
+                    molecule_interaction.GIZMO_ROTATE_Z, mol.offset, start_angles,
+                    start_local=gizmo_drag.get("start_local") or (0.0, 0.0),
+                    current_local=(float(event.x) - center_x, float(event.y) - center_y))
             else:
-                dx_px = float(event.x) - float(gizmo_drag["start_px"][0])
-                dy_px = float(event.y) - float(gizmo_drag["start_px"][1])
-                sensitivity = 0.45
-                new_angles[0] += dy_px * sensitivity
-                new_angles[1] += dx_px * sensitivity
+                _off, new_angles = molecule_interaction.drag_update(
+                    molecule_interaction.GIZMO_ROTATE_XY, mol.offset, start_angles,
+                    delta_px=(float(event.x) - float(gizmo_drag["start_px"][0]),
+                              float(event.y) - float(gizmo_drag["start_px"][1])))
             mol.angles = new_angles
             self._wake_molecule_gizmo(2400, redraw=False)
             self._update_molecule_artists()
@@ -9432,31 +9088,17 @@ class MultiPreviewCanvas(FigureCanvas):
             mol = self.molecules[self._molecule_drag_idx]
             self._wake_molecule_gizmo(2200, redraw=False)
             
-            if self._molecule_drag_mode == 'translate':
-                dx = event.xdata - self._molecule_drag_start[0]
-                dy = event.ydata - self._molecule_drag_start[1]
-                mol.offset = self._molecule_drag_mol_start + np.array([dx, dy, 0.0])
-            
-            elif self._molecule_drag_mode == 'rotate_z':
-                center = self._molecule_drag_mol_start
-                v_start = np.array([self._molecule_drag_start[0] - center[0], self._molecule_drag_start[1] - center[1]])
-                v_curr = np.array([event.xdata - center[0], event.ydata - center[1]])
-                if np.linalg.norm(v_start) > 0.01 and np.linalg.norm(v_curr) > 0.01:
-                    angle_start = np.arctan2(v_start[1], v_start[0])
-                    angle_curr = np.arctan2(v_curr[1], v_curr[0])
-                    delta_deg = np.degrees(angle_curr - angle_start)
-                    new_angles = self._molecule_drag_mol_angles.copy()
-                    new_angles[2] += delta_deg
-                    mol.angles = new_angles
-            
-            elif self._molecule_drag_mode == 'rotate_3d':
-                if event.x is None or event.y is None: return
-                dx_px = event.x - self._molecule_drag_start_px[0]
-                dy_px = event.y - self._molecule_drag_start_px[1]
-                sensitivity = 0.5 # degrees per pixel
-                new_angles = self._molecule_drag_mol_angles.copy()
-                new_angles[0] += dy_px * sensitivity
-                new_angles[1] += dx_px * sensitivity
+            mode = self._molecule_drag_mode
+            if mode == 'rotate_3d' and (event.x is None or event.y is None):
+                return
+            new_offset, new_angles = molecule_interaction.drag_update(
+                mode, self._molecule_drag_mol_start, self._molecule_drag_mol_angles,
+                start=self._molecule_drag_start, current=(event.xdata, event.ydata),
+                delta_px=((event.x - self._molecule_drag_start_px[0], event.y - self._molecule_drag_start_px[1])
+                          if mode == 'rotate_3d' else (0.0, 0.0)))
+            if mode == 'translate':
+                mol.offset = new_offset
+            elif mode in ('rotate_z', 'rotate_3d'):
                 mol.angles = new_angles
 
             # Update rotation guide (visual only, no full redraw needed)

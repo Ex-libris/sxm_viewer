@@ -31,6 +31,8 @@ from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...cmap_registry import get_cmap as registry_get_cmap
 from ...figures import height_series as hs
 from ...figures import svg_layers
+from ...molecules import interaction as molecule_interaction
+from ...molecules import render as molecule_render
 
 _PAPER_MARGIN = 14       # px around the paper inside the view
 _CLOSE_SIZE = 14         # px, hover × on frame headers
@@ -68,83 +70,25 @@ _ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)"
 
 
 class _MoleculePainter:
-    """Stand-in ``self`` for ``MultiPreviewCanvas._draw_molecules``, so a
-    figure draws molecular models with *exactly* the preview / pop-up
-    renderer (styles, palettes, depth cue, bond colours) - one renderer,
-    nothing to keep in sync. Returns the artists it added to ``ax``."""
+    """Draws molecular models into a figure panel with the app's one
+    molecule renderer (``molecules.render``, also used by the preview and
+    pop-ups), at the panel's print scale. Returns the artists it added."""
 
     def __init__(self, molecules, settings):
-        self.show_molecules = True
         self.molecules = list(molecules or [])
-        self.molecule_palette = settings.get("palette", "avogadro")
-        self._bond_color_mode = settings.get("bond_color_mode", "default")
-        self._default_bond_color = settings.get("default_bond_color", (0.9, 0.9, 0.9))
-        self._show_molecule_shadow = bool(settings.get("show_shadows", False))
-        self._show_hydrogens = bool(settings.get("show_hydrogens", True))
-        self._molecule_artists = []
+        self.settings = dict(settings or {})
 
     def draw(self, ax, scale=1.0):
-        from ..canvases.detail_preview_canvas import MultiPreviewCanvas
-        self._molecule_artists = []
-        before = set(map(id, list(ax.collections) + list(ax.lines) + list(ax.patches) + list(ax.texts)))
-        MultiPreviewCanvas._draw_molecules(self, ax)
-        arts = [a for a in list(ax.collections) + list(ax.lines) + list(ax.patches) + list(ax.texts)
-                if id(a) not in before]
-        if abs(scale - 1.0) > 1e-3:
-            # The preview sizes atoms/bonds in points for a large canvas; a
-            # 30 mm figure panel needs them proportionally smaller.
-            for a in arts:
-                try:
-                    if hasattr(a, "get_sizes") and len(a.get_sizes()):
-                        a.set_sizes(np.asarray(a.get_sizes(), dtype=float) * scale * scale)
-                    if hasattr(a, "get_linewidths"):
-                        lw = np.asarray(a.get_linewidths(), dtype=float)
-                        if lw.size:
-                            a.set_linewidths(lw * scale)
-                    elif hasattr(a, "get_linewidth"):
-                        a.set_linewidth(float(a.get_linewidth()) * scale)
-                except Exception:
-                    pass
-        return arts
+        entries = molecule_render.draw_molecules(ax, self.molecules, self.settings, scale=scale)
+        return molecule_render.artists_of(entries)
 
 
 def _mol_scale(ax, fig, user=1.0):
-    """Marker scale for a panel: its printed width against a ~3.5 in
-    preview, times the user's 'Atom size'."""
-    try:
-        w_in = ax.get_position().width * fig.get_size_inches()[0]
-    except Exception:
-        w_in = 3.5
-    return float(min(1.0, max(0.12, w_in / 3.5)) * float(user or 1.0))
+    """Marker scale for a panel (``molecules.render.panel_scale``)."""
+    return molecule_render.panel_scale(ax, user)
 
 
-def _orientation_matrix(mol):
-    """Same as MultiPreviewCanvas._molecule_orientation_matrix."""
-    rads = np.radians(np.asarray(getattr(mol, "angles", [0.0, 0.0, 0.0]), dtype=float))
-    cx, cy, cz = np.cos(rads)
-    sx, sy, sz = np.sin(rads)
-    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
-    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
-    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
-    mat = rz @ ry @ rx
-    if bool(getattr(mol, "mirror_x", False)):
-        mat[0, :] *= -1.0
-    if bool(getattr(mol, "mirror_y", False)):
-        mat[1, :] *= -1.0
-    return mat
-
-
-def _gizmo_vectors(mol):
-    """X/Y/Z axis arrows as the preview's gizmo draws them: (idx, depth,
-    (x, y) in -1..1 with y up, colour), back to front."""
-    mat = _orientation_matrix(mol)
-    vecs = []
-    for idx, color in enumerate(("#ef4444", "#22c55e", "#3b82f6")):
-        v = np.asarray(mat[:, idx], dtype=float)
-        vecs.append((idx, float(v[2]), np.array([v[0] + 0.38 * v[2], v[1] + 0.18 * v[2]]), color))
-    norms = [max(0.22, float(np.linalg.norm(sc))) for _i, _z, sc, _c in vecs]
-    scale = 0.74 / max(norms or [1.0])
-    return [(i, z, (float(sc[0] * scale), float(sc[1] * scale)), c) for i, z, sc, c in sorted(vecs, key=lambda t: t[1])]
+_gizmo_vectors = molecule_interaction.gizmo_vectors
 
 
 _GIZMO_R = 38.0   # px
@@ -370,10 +314,10 @@ class _FigureView(QtWidgets.QWidget):
         c = self.gizmo_center()
         lx = (pos.x() - c.x()) / _GIZMO_R
         ly = -(pos.y() - c.y()) / _GIZMO_R
-        r = math.hypot(lx, ly)
-        if r > 1.02:
+        mode = molecule_interaction.gizmo_hit_mode(lx, ly)
+        if mode is None:
             return None
-        return {"kind": "gizmo", "mode": "rotate_z" if r >= 0.58 else "rotate_xy", "local": (lx, ly)}
+        return {"kind": "gizmo", "mode": mode, "local": (lx, ly)}
 
     # mouse --------------------------------------------------------------
     def _hit(self, pos):
@@ -1710,27 +1654,18 @@ class FigureWindow(QtWidgets.QWidget):
             except Exception:
                 m.angles = np.zeros(3)
         else:
-            if rot is not None:
-                m.angles = np.asarray(m.angles, dtype=float) + np.asarray(rot, dtype=float)
-            if move is not None:
-                m.offset = np.asarray(m.offset, dtype=float) + np.array([move[0], move[1], 0.0])
-            if mirror == "x":
-                m.mirror_x = not m.mirror_x
-            elif mirror == "y":
-                m.mirror_y = not m.mirror_y
+            molecule_interaction.apply_transform(m, rot=rot, move=move, mirror=mirror)
         self._set_molecules(mols)
 
     def keyPressEvent(self, event):
         i = self._mol_sel
         if i is not None and i < len(self._molecules()):
             key = event.key()
-            sign = -1.0 if event.modifiers() & QtCore.Qt.ShiftModifier else 1.0
-            step = 0.5 if event.modifiers() & QtCore.Qt.ShiftModifier else 0.05
+            shift = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            step = 0.5 if shift else 0.05
             axes = {QtCore.Qt.Key_X: 0, QtCore.Qt.Key_Y: 1, QtCore.Qt.Key_Z: 2}
             if key in axes:
-                rot = [0.0, 0.0, 0.0]
-                rot[axes[key]] = 5.0 * sign
-                self._mol_transform(i, rot=rot)
+                self._mol_transform(i, rot=molecule_interaction.key_rotation(axes[key], reverse=shift))
                 return
             moves = {QtCore.Qt.Key_Left: (-step, 0), QtCore.Qt.Key_Right: (step, 0),
                      QtCore.Qt.Key_Up: (0, step), QtCore.Qt.Key_Down: (0, -step)}
@@ -1804,37 +1739,23 @@ class FigureWindow(QtWidgets.QWidget):
         pos = QtCore.QPointF(event.pos())
         dpx = pos.x() - d["px0"].x()
         dpy = -(pos.y() - d["px0"].y())          # y up, like the preview's events
+        # The shared gesture math (molecules/interaction.py), as in the preview.
+        p = cur_local = None
         if mode in ("translate", "rotate_z"):
             inch = self.view.to_inches(event.pos())
             p = self._to_data(d["row"], d["frame"], *inch) if inch else None
             if p is None:
                 return
-            if mode == "translate":
-                dx, dy = p[0] - d["start"][0], p[1] - d["start"][1]
-                mol.offset = d["offset0"] + np.array([dx, dy, 0.0])
-            else:
-                c = d["offset0"]
-                v0 = np.array([d["start"][0] - c[0], d["start"][1] - c[1]])
-                v1 = np.array([p[0] - c[0], p[1] - c[1]])
-                if np.linalg.norm(v0) > 0.01 and np.linalg.norm(v1) > 0.01:
-                    delta = math.degrees(math.atan2(v1[1], v1[0]) - math.atan2(v0[1], v0[0]))
-                    a = d["angles0"].copy()
-                    a[2] += delta
-                    mol.angles = a
-        elif mode in ("rotate_3d", "gizmo_rotate_xy"):
-            sens = 0.5 if mode == "rotate_3d" else 0.45
-            a = d["angles0"].copy()
-            a[0] += dpy * sens
-            a[1] += dpx * sens
-            mol.angles = a
         elif mode == "gizmo_rotate_z":
             c = self.view.gizmo_center()
-            sx, sy = d["local"]
-            start = math.degrees(math.atan2(sy, sx))
-            cur = math.degrees(math.atan2(-(pos.y() - c.y()), pos.x() - c.x()))
-            a = d["angles0"].copy()
-            a[2] += cur - start
-            mol.angles = a
+            cur_local = (pos.x() - c.x(), -(pos.y() - c.y()))
+        offset, angles = molecule_interaction.drag_update(
+            mode, d["offset0"], d["angles0"], start=d["start"], current=p,
+            delta_px=(dpx, dpy), start_local=d["local"], current_local=cur_local)
+        if mode == "translate":
+            mol.offset = offset
+        else:
+            mol.angles = angles
         d["moved"] = True
         if not self._drag_timer.isActive():
             self._drag_timer.start()
@@ -1915,13 +1836,10 @@ class FigureWindow(QtWidgets.QWidget):
             mods = event.modifiers()
             # Same gestures as the preview: drag = move, Shift = spin in
             # plane, Ctrl+Shift or middle button = free 3-D rotation.
-            if event.button() == QtCore.Qt.MiddleButton or (
-                    mods & QtCore.Qt.ShiftModifier and mods & QtCore.Qt.ControlModifier):
-                mode = "rotate_3d"
-            elif mods & QtCore.Qt.ShiftModifier:
-                mode = "rotate_z"
-            else:
-                mode = "translate"
+            mode = molecule_interaction.drag_mode(
+                middle=event.button() == QtCore.Qt.MiddleButton,
+                shift=bool(mods & QtCore.Qt.ShiftModifier),
+                ctrl=bool(mods & QtCore.Qt.ControlModifier))
             self._mol_begin_drag(hit, event, mode=mode)
             return
         gpos = event.globalPos() if event is not None else QtGui.QCursor.pos()

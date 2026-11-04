@@ -8,6 +8,17 @@ First public release archived on Zenodo.
 
 ## Development history (pre-release)
 
+### 2026-11-04 (one molecular-model mechanism)
+
+- **Molecular models are one shared mechanism**: the preview, pop-ups,
+  figure windows, exports and the publication canvas now load, draw and
+  manipulate models through one package (`sxm_viewer/molecules`), so a look
+  or gesture changed in one place changes everywhere.
+- **Publication canvas** draws models with the same styles as the preview
+  (it had its own simpler circles-and-lines drawing).
+- **Fix**: Ctrl+Shift+drag on a model in the preview now tumbles it in 3-D
+  as documented (it only spun it in plane).
+
 ### 2026-11-03 (overview + zooms, publication formatting)
 
 - **Overview + zooms figure**: a frame with smaller frames scanned inside
