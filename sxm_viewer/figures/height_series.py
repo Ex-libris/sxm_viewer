@@ -1795,6 +1795,8 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     cb._sxm_style = style
     cb._sxm_rotated = rotated
     cb._sxm_font = font
+    bx0, by0, bx1, by1 = entry["box"]
+    cb._sxm_len_in = abs(bx1 - bx0) if horizontal else abs(by1 - by0)
     cb.outline.set_linewidth(0.5)
     cb.outline.set_visible(bool(st.get("cbar_outline", True)))
     cb.ax.tick_params(labelsize=pt(font - 0.5), length=2, width=0.5, pad=1.5, colors=text_color)
@@ -1839,6 +1841,47 @@ class _MinMax:
         self.mappable = None
 
 
+_INSIDE_MIN_PT = 4.5
+
+
+def _fit_inside_labels(length_in, fs, lo_txt, hi_txt, lo, hi, words=False):
+    """Both end values inside a bar must fit its length without meeting
+    in the middle (short bars of a wide series printed "-512.1" over
+    "-520.9"). Shrink the text first, then use a 2-digit form of the
+    numbers; returns ``(font_pt, lo_txt, hi_txt)``."""
+    if not length_in or length_in <= 0:
+        return fs, lo_txt, hi_txt
+
+    def need(a, b):
+        # glyph advance ~0.6 em, plus a one-em gap between the two values
+        return lambda size: (0.6 * (len(a) + len(b)) + 1.0) * size / 72.0
+
+    room = float(length_in) * 0.94
+    fit = room / need(lo_txt, hi_txt)(1.0)
+    if fit >= fs:
+        return fs, lo_txt, hi_txt
+    if fit >= _INSIDE_MIN_PT or words:
+        return max(fit, _INSIDE_MIN_PT), lo_txt, hi_txt
+    a, b = _short_tick(lo), _short_tick(hi)
+    if a == b:   # a narrow range: 2 digits would print one number twice
+        return _INSIDE_MIN_PT, lo_txt, hi_txt
+    fit = room / need(a, b)(1.0)
+    return max(min(fs, fit), _INSIDE_MIN_PT), a, b
+
+
+def _short_tick(v):
+    """Two significant digits ("-520.9" -> "-520", "0.0973" -> "0.097")."""
+    a = abs(v)
+    if a == 0:
+        return "0"
+    if a >= 1e5 or a < 1e-3:
+        return f"{v:.0e}"
+    if a >= 100:
+        return f"{v:.0f}"
+    txt = f"{v:.{max(0, 1 - int(math.floor(math.log10(a))))}f}"
+    return txt.rstrip("0").rstrip(".") if "." in txt else txt
+
+
 def set_colorbar_range(cb, lo, hi):
     """Few ticks only - a figure colourbar, not an axis."""
     span = abs(hi - lo)
@@ -1876,6 +1919,8 @@ def set_colorbar_range(cb, lo, hi):
         hi_txt = "max" if words else _tick(hi, span)
         lo_c, hi_c = getattr(cb, "_sxm_inside_colors", ("white", "black"))
         fs = getattr(cb, "_sxm_font", 7.0) - 0.5
+        fs, lo_txt, hi_txt = _fit_inside_labels(getattr(cb, "_sxm_len_in", None), fs,
+                                                lo_txt, hi_txt, lo, hi, words)
         if horizontal:
             a = cb.ax.text(0.02, 0.5, lo_txt, transform=cb.ax.transAxes, ha="left",
                            va="center", fontsize=fs, color=lo_c)

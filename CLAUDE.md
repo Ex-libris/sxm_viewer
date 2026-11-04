@@ -1017,7 +1017,10 @@ N counts distinct acquisition conditions (`levels`), not files.
   back. Real series were often mostly repeats (13 frames = 3 heights).
 - Stopped scans: `panel()` NaN-masks rows outside `detect_valid_scan_region`
   (a stopped scan's constant z = 0 rows beside -185 nm topography flattened
-  whole rows). Frames < 25 % scanned are pruned (`excluded` reason
+  whole rows). The detector's tolerance is relative to the frame's range
+  (`min(1, span) x 1e-10`): it used to be absolute, so current in A
+  (row ptp ~1e-11) read as "never scanned" - half-blank current panels and
+  complete CH frames pruned as stopped. Frames < 25 % scanned are pruned (`excluded` reason
   `"aborted"`) - only knowable after reading the array, so
   `_idle_check_scans` checks chip members a few per idle tick after the
   index is built and repopulates thumbnails if a count changes; the scan
@@ -1123,11 +1126,22 @@ rim = spin) - all of it from `molecules.interaction`, so it cannot drift. All mo
 redraw; keys X/Y/Z rotate 5 deg, arrows nudge.
 
 **Window** (`FigureWindow`): figure on white "paper" (= the export) in a
-scroll area, `_FormatPanel` **under it in a splitter**: a row of cards
-(icon from `_tab_icon` + title + one-line hint) with every option visible -
-the user rejected both a right-hand panel (cramped, cropped text) and tabs
-(discoverability). Drop-downs get a fixed width (`fit()`) with full names in
-their pop-ups. Opens fitted to the window (actual size is a per-window view,
+scroll area, `_FormatPanel` under it as **one row of chips** (icon +
+the category's current state in words, greyed when the feature is off, `•`
+= differs from the recipe default set via `set_defaults`); a chip opens its
+card as a `_CardPopover` (Qt popup, edits apply live) above it. History:
+a right-hand panel (cramped, cropped text) and tabs (state hidden) were
+rejected, then a strip of always-open cards needed sideways scrolling and
+cropped rows - the chips keep every category and its state visible at no
+height. Card grammar: whole-feature on/off = header switch (letters,
+`_scale_on` <-> `scale_bar` "off", molecules; colour bars = bold section
+check), 2-6 choices = `_Segmented` (QComboBox data API, so `_emit`/`sync`
+use `_is_choice`), long lists = combo, numbers = spin with unit; ↺ per card
+resets its keys (`_card_keys`). A left click on a letter / scale bar, and
+"All ... options…" in the right-click menus, open the card at the cursor
+(`FigureWindow.open_format_card`). `_sync_format_panel` checks
+`isHidden()`, not `isVisible()` - the first sync runs before the window is
+shown, and the panel used to stay blank until the first edit. Opens fitted to the window (actual size is a per-window view,
 never remembered). Direct manipulation: Δz header = reference; hover × =
 drop frame; channel label = switch/move/remove/recolour; "+ channel";
 colour bar drag = contrast, click = Min/Max popover, double-click = auto;
