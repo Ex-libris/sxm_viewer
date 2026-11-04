@@ -382,17 +382,29 @@ def robust_limits(arr, low_pct=2.0, high_pct=98.0):
         region = detect_valid_scan_region(data_arr)
         if region:
             r0, r1 = region
-            data_arr = data_arr[r0:r1 + 1, :]
+            full = data_arr
+            data_arr = data_arr[r0:r1 + 1, :].copy()
+            # A scan stopped mid-line keeps the filler value (Anfatec: 0) on
+            # the rest of its last line; drop it there too, or those pixels
+            # pull the limits to the filler level.
+            tail = full[r1 + 1:, :]
+            tail = tail[np.isfinite(tail)]
+            if tail.size and np.ptp(tail) == 0:
+                last = data_arr[-1, :]
+                last[last == tail[0]] = np.nan
     data = data_arr[np.isfinite(data_arr)]
     if data.size == 0:
         return None, None
-    # Optionally trim a dominant flat bin
+    # Optionally trim a dominant flat bin (a constant stripe). Only when the
+    # bin's values really are flat: a few far outliers stretch the histogram
+    # until all the real data lands in one bin, which must not be dropped.
     try:
         hist, edges = np.histogram(data, bins=256)
         idx_max = int(np.argmax(hist))
         frac = hist[idx_max] / float(data.size)
-        if frac > 0.7:
-            lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+        lo_edge, hi_edge = edges[idx_max], edges[idx_max + 1]
+        in_bin = data[(data >= lo_edge) & (data <= hi_edge)]
+        if frac > 0.7 and in_bin.size and np.ptp(in_bin) <= 0.01 * (hi_edge - lo_edge):
             trimmed = data[(data < lo_edge) | (data > hi_edge)]
             if trimmed.size >= max(10, int(0.001 * data.size)):
                 if trimmed.size > 100:
