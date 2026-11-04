@@ -18,6 +18,9 @@ First public release archived on Zenodo.
   (it had its own simpler circles-and-lines drawing).
 - **Fix**: Ctrl+Shift+drag on a model in the preview now tumbles it in 3-D
   as documented (it only spun it in plane).
+- **Hydrogens visible on white**: white atoms and white bond halves get a
+  thin dark rim, so hydrogens no longer vanish on figures or bright images.
+- **Thin / Thick bonds** are now clearly different (0.45x / 2x of default).
 
 ### 2026-11-03 (overview + zooms, publication formatting)
 

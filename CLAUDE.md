@@ -1173,6 +1173,12 @@ them is a thin host over one Qt-free package:
   screen-sized marks (marker areas x scale^2, line/edge widths x scale);
   `panel_scale(ax, user)` derives it from a printed panel's width. Bonds are
   round-capped/joined in every style so they read as one continuous stick.
+  Light atoms and bond halves (luminance > `LIGHT_LUMINANCE`: white H, the
+  near-white default bond colour) get a dark rim/casing so they read on a
+  white figure without sampling the background; same-colour split bonds are
+  drawn as one segment (overlapping translucent round caps made dark dots).
+  `BOND_STYLE_WIDTH` thin/default/thick = 0.45/1/2 - the depth cue alone
+  varies widths up to 3x, so the styles must be further apart than that.
 - `interaction.py` — what a gesture *does*: `drag_mode` /
   `drag_mode_for_key` (drag = translate, Shift = spin, Ctrl+Shift or middle
   = 3-D tumble 0.5 deg/px), `drag_update` (pose from press pose + pointer;

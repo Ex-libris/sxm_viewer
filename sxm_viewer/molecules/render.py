@@ -31,6 +31,21 @@ DEFAULT_SETTINGS = {
 }
 
 
+# Bond width per bond style. Clearly apart on purpose: the depth cue alone
+# varies widths up to 3x inside one molecule, so thin/thick must differ more.
+BOND_STYLE_WIDTH = {"thin": 0.45, "default": 1.0, "thick": 2.0}
+# Atoms / bond halves lighter than this (relative luminance) get a dark rim:
+# white hydrogens and white bond halves otherwise vanish on a white figure
+# or a bright image (any background, no sampling needed).
+LIGHT_LUMINANCE = 0.72
+CASING_RGB = (0.18, 0.18, 0.18)
+
+
+def _luminance(rgba):
+    r, g, b = rgba[0], rgba[1], rgba[2]
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
 def artists_of(entries):
     """Every matplotlib artist in ``draw_molecules`` entries."""
     out = []
@@ -186,11 +201,7 @@ def draw_molecules(ax, molecules, settings=None, *, scale=1.0):
             underlay_colors = []
             linewidths = []
             underlay_widths = []
-            lw_scale = profile["bond_scale"]
-            if bond_style == "thick":
-                lw_scale *= 1.6
-            elif bond_style == "thin":
-                lw_scale *= 0.7
+            lw_scale = profile["bond_scale"] * BOND_STYLE_WIDTH.get(bond_style, 1.0)
             display_mode_lower = (mol.display_mode or "").lower()
             force_atom_bond_colors = profile["force_bond_by_atoms"] or ("bonds only" in display_mode_lower)
             bond_outline_rgba = (0.0, 0.0, 0.0, 0.95 * bond_opacity)
@@ -229,7 +240,7 @@ def draw_molecules(ax, molecules, settings=None, *, scale=1.0):
                 elif bond_mode == "by_atoms":
                     r1, g1, b1, _ = rgba1
                     r2, g2, b2, _ = rgba2
-                    if profile["split_bonds"]:
+                    if profile["split_bonds"] and tuple(rgba1[:3]) != tuple(rgba2[:3]):
                         mid = 0.5 * (p1 + p2)
                         lines.append([(p1[0], p1[1]), (mid[0], mid[1])])
                         colors.append((r1, g1, b1, alpha))
@@ -263,6 +274,15 @@ def draw_molecules(ax, molecules, settings=None, *, scale=1.0):
                         underlay_colors.append(bond_outline_rgba)
                         underlay_widths.append(lw + 2.4)
 
+            if not profile["outline"]:
+                # Light segments (white H halves, the near-white default
+                # bond colour) get a thin dark casing so they read on any
+                # background; dark segments are left as they are.
+                for seg, col, w in zip(lines, colors, linewidths):
+                    if _luminance(col) > LIGHT_LUMINANCE:
+                        underlay_lines.append(seg)
+                        underlay_colors.append(CASING_RGB + (min(1.0, 0.9 * col[3]),))
+                        underlay_widths.append(w + 1.1)
             if underlay_lines:
                 lc_underlay = LineCollection(underlay_lines, colors=underlay_colors, linewidths=[w * scale for w in underlay_widths], zorder=28.7)
                 ax.add_collection(lc_underlay)
@@ -370,7 +390,14 @@ def draw_molecules(ax, molecules, settings=None, *, scale=1.0):
                     0.05, -0.05, math.sqrt(1.25),
                     [(0, 0, 0, shadow_alpha * atom_opacity)] * len(x), 'none', 0, 28,
                 )
-            sc = _atom_layer(0.0, 0.0, 1.0, final_colors, edge, profile["edgewidth"] * scale, 30)
+            edge_w = profile["edgewidth"]
+            if not profile["outline"]:
+                # Light atoms (H) always get a visible dark rim.
+                base_edge = edge if str(edge).lower() != "none" else (0.0, 0.0, 0.0, 0.0)
+                light = [_luminance(c) > LIGHT_LUMINANCE for c in rgba_colors]
+                edge = [CASING_RGB + (atom_opacity,) if lt else base_edge for lt in light]
+                edge_w = [max(0.6, profile["edgewidth"]) if lt else profile["edgewidth"] for lt in light]
+            sc = _atom_layer(0.0, 0.0, 1.0, final_colors, edge, np.asarray(edge_w, dtype=float) * scale, 30)
             if atom_style == "outline":
                 try:
                     sc.set_path_effects([PathEffects.Stroke(linewidth=2.2 * scale, foreground='black'), PathEffects.Normal()])
