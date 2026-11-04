@@ -102,6 +102,32 @@ _gizmo_vectors = molecule_interaction.gizmo_vectors
 _GIZMO_R = 38.0   # px
 
 
+def _scan_images(fig):
+    """The scan images of a rendered figure (colour bars are meshes, not
+    images, and are not included)."""
+    from matplotlib.image import AxesImage
+    return [im for ax in fig.axes for im in ax.get_images() if isinstance(im, AxesImage)]
+
+
+def native_dpi(fig):
+    """Smallest output resolution at which every scan pixel gets at least
+    one output pixel (no data row/column dropped)."""
+    need = 0.0
+    for im in _scan_images(fig):
+        arr = im.get_array()
+        if arr is None or getattr(arr, "ndim", 0) < 2:
+            continue
+        try:
+            im.axes.apply_aspect()
+            bb = im.get_window_extent()
+        except Exception:
+            continue
+        w_in, h_in = bb.width / fig.dpi, bb.height / fig.dpi
+        if w_in > 0 and h_in > 0:
+            need = max(need, arr.shape[1] / w_in, arr.shape[0] / h_in)
+    return need
+
+
 def _molecule_from(d):
     from ..canvases.molecular_overlay import Molecule
     return Molecule.from_dict(d)
@@ -2691,9 +2717,32 @@ class FigureWindow(QtWidgets.QWidget):
     # Outputs
     # ------------------------------------------------------------------
     def _export_figure(self):
+        """The figure for every output. Scans are drawn with
+        ``interpolation="none"``: vector formats (SVG -> PowerPoint shapes /
+        Inkscape / clipboard, PDF, EPS) then embed each scan at its own
+        pixel size instead of resampling it to the figure's 100 dpi (a
+        480 x 160 scan used to arrive as 110 x 37 px), and raster outputs
+        get no smoothing between pixels."""
         fig = self._new_figure()
         self._draw_into(fig)
+        for im in _scan_images(fig):
+            im.set_interpolation("none")
         return fig
+
+    def _raster_dpi(self, fig, dpi=None):
+        """The requested dpi, raised (to the next 50) when it would drop scan
+        pixels; returns ``(dpi, raised)``."""
+        dpi = int(dpi or self._export_opts()[0])
+        need = native_dpi(fig)
+        if need > dpi:
+            return int(math.ceil(need / 50.0) * 50), True
+        return dpi, False
+
+    def _vector_save(self, fig, target, **kw):
+        import matplotlib
+        # Never merge images into one composite resampled at the figure dpi.
+        with matplotlib.rc_context({"image.composite_image": False, "svg.fonttype": "none"}):
+            fig.savefig(target, facecolor=self._face(), **kw)
 
     def _default_name(self):
         cols = self.spec["columns"] if self.spec else []
@@ -2714,15 +2763,18 @@ class FigureWindow(QtWidgets.QWidget):
         import matplotlib
         fig = fig or self._export_figure()
         buf = io.BytesIO()
-        with matplotlib.rc_context({"svg.fonttype": "none"}):
-            fig.savefig(buf, format="svg", facecolor=self._face())
+        self._vector_save(fig, buf, format="svg")
+        # interpolation="none" also makes matplotlib tag each <image> with
+        # image-rendering: pixelated, so viewers show data pixels as squares.
         data = buf.getvalue()
         return svg_layers.layered_svg(data) if layered else data
 
     def _png_bytes(self, fig=None, dpi=None):
         fig = fig or self._export_figure()
+        dpi, raised = self._raster_dpi(fig, dpi)
+        self._last_raster = (dpi, raised)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=dpi or self._export_opts()[0], facecolor=self._face())
+        fig.savefig(buf, format="png", dpi=dpi, facecolor=self._face())
         return buf.getvalue()
 
     def _options_menu(self, menu):
@@ -2794,8 +2846,12 @@ class FigureWindow(QtWidgets.QWidget):
             except Exception:
                 pass
         QtWidgets.QApplication.clipboard().setMimeData(mime)
-        self._flash({"both": "Copied - paste anywhere", "png": "Copied as PNG",
-                     "svg": "Copied as SVG"}[mode])
+        msg = {"both": "Copied - paste anywhere", "png": "Copied as PNG",
+               "svg": "Copied as SVG"}[mode]
+        dpi, raised = getattr(self, "_last_raster", (None, False))
+        if raised and mode != "svg":
+            msg += f" (PNG at {dpi} dpi, so every scan pixel is kept)"
+        self._flash(msg)
 
     def send_to_powerpoint(self, mode=None):
         if not self._ready():
@@ -2856,7 +2912,7 @@ class FigureWindow(QtWidgets.QWidget):
         if ext not in self._SAVE_FILTERS:
             path, ext = path + ".pdf", ".pdf"
         fig = self._export_figure()
-        dpi, _transparent = self._export_opts()
+        dpi, raised = self._raster_dpi(fig)
         try:
             if ext == ".svg":
                 # Always layered: a plain SVG viewer ignores the layers,
@@ -2868,12 +2924,14 @@ class FigureWindow(QtWidgets.QWidget):
             elif ext == ".png":
                 fig.savefig(path, dpi=dpi, facecolor=self._face())
             else:
-                fig.savefig(path, facecolor=self._face())
+                self._vector_save(fig, path)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Save figure", f"Could not save:\n{exc}")
             return
         self.source.set_export_settings(save_ext=ext, save_dir=str(Path(path).parent))
-        self._flash(f"Saved {Path(path).name}")
+        extra = (f" at {dpi} dpi, so every scan pixel is kept"
+                 if raised and ext in (".png", ".tif") else "")
+        self._flash(f"Saved {Path(path).name}{extra}")
 
     @staticmethod
     def _inkscape_exe():

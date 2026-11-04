@@ -1156,6 +1156,17 @@ was not at real scale), Obsidian (via
 `viewer.export.export_to_obsidian(render=...)`), Inkscape (layered SVG,
 opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
 300-1200 dpi, transparent background.
+**Scan pixels are never resampled on export** (`_export_figure` sets
+`interpolation="none"` on every scan image; `_vector_save` turns off
+`image.composite_image`): SVG / PDF / EPS - and so PowerPoint shapes,
+Inkscape and the clipboard SVG - embed each scan at its own pixel size,
+tagged `image-rendering: pixelated` by matplotlib. With the old
+`"nearest"` matplotlib resampled vector images to the figure's 100 dpi
+(a 480 x 160 scan arrived as 110 x 37 px). Raster outputs (PNG, TIFF,
+PNG clipboard, PowerPoint picture, Obsidian) raise the chosen dpi to
+`native_dpi(fig)` (rounded up to 50) when it would drop scan rows or
+columns, and say so in the status line. Verified pixel-exact: the
+embedded PNG equals `im.to_rgba(data)`.
 
 **Lessons (what made this take longer than it should have):**
 - Validate against several *real* folders (Anfatec local, Nanonis-converted,
