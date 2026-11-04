@@ -1103,7 +1103,8 @@ same physical spot on every channel / frame of a series - the point is
 comparing channels against the same model. Drawn with the shared renderer
 (`_MoleculePainter` -> `molecules.render.draw_molecules`; palette / bond
 mode / shadow / H from `controller.molecule_settings()` = the preview
-canvas) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
+canvas, except the palette when style `mol_palette` != "preview" -
+`FigureWindow._mol_settings`) at `scale=panel_scale(ax) x mol_size`, because marks are sized in
 points for the big preview. "From preview" (`controller.preview_molecules`) takes the
 live preview / `viewer.molecule_overlays` and subtracts the frame's display-
 extent lower-left corner (preview data coords are extent-based, y up).

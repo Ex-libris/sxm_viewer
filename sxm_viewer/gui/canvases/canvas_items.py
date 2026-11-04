@@ -6,7 +6,7 @@ import io
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from ... import cmap_registry
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame, safe_default_filename
-from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color
+from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color, palette_label
 
 
 def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
@@ -1199,7 +1199,7 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         palette_actions = {}
         current_pal = (self._molecule_palette or "pymol").lower()
         for pal in available_atom_palettes():
-            act = palette_menu.addAction(pal.title())
+            act = palette_menu.addAction(palette_label(pal))
             act.setCheckable(True)
             act.setChecked(pal == current_pal)
             palette_actions[act] = pal

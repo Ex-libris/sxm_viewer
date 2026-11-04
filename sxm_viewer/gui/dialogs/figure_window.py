@@ -88,6 +88,14 @@ def _mol_scale(ax, fig, user=1.0):
     return molecule_render.panel_scale(ax, user)
 
 
+def _mol_palette_choices():
+    """Figure atom-palette options: follow the preview, or a fixed one."""
+    from ...molecules.model import available_atom_palettes, palette_label
+    out = {"preview": "As preview"}
+    out.update((k, palette_label(k)) for k in available_atom_palettes())
+    return out
+
+
 _gizmo_vectors = molecule_interaction.gizmo_vectors
 
 
@@ -742,6 +750,10 @@ class _FormatPanel(QtWidgets.QWidget):
         w["mol_size"] = spin(0.2, 4.0, 0.1, " ×")
         w["mol_size"].setToolTip("Atom and bond size relative to the automatic (panel-width) size")
         add("Atom size", w["mol_size"])
+        w["mol_palette"] = combo(_mol_palette_choices())
+        w["mol_palette"].setToolTip("Atom colours (CPK, Jmol, PyMOL, Avogadro, ASE, VESTA);\n"
+                                    "'As preview' follows the preview's palette")
+        add("Palette", w["mol_palette"])
         edit_row = QtWidgets.QHBoxLayout()
         b_props = QtWidgets.QPushButton("Appearance…")
         b_props.setToolTip("Style, rotation, scale, mirror (the preview's dialog)")
@@ -1337,7 +1349,7 @@ class FigureWindow(QtWidgets.QWidget):
         mols = self._molecules()
         draw = None
         if mols:
-            painter = _MoleculePainter(mols, self.source.molecule_settings())
+            painter = _MoleculePainter(mols, self._mol_settings())
             if screen:
                 self._mol_axes, self._mol_artists = [], []
 
@@ -1617,6 +1629,15 @@ class FigureWindow(QtWidgets.QWidget):
             self._mol_sel = None
             self._set_molecules(mols)
 
+    def _mol_settings(self):
+        """The preview's molecule look, with this figure's own palette
+        when one is chosen (style ``mol_palette``)."""
+        settings = dict(self.source.molecule_settings())
+        pal = str(self.style.get("mol_palette") or "preview").lower()
+        if pal != "preview":
+            settings["palette"] = pal
+        return settings
+
     def _mol_properties(self, i):
         mols = [m.copy() for m in self._molecules()]
         if not mols or i is None or i >= len(mols):
@@ -1720,7 +1741,7 @@ class FigureWindow(QtWidgets.QWidget):
                 a.remove()
             except Exception:
                 pass
-        painter = _MoleculePainter(d["mols"], self.source.molecule_settings())
+        painter = _MoleculePainter(d["mols"], self._mol_settings())
         arts = []
         for ax in self._mol_axes:
             arts.extend((ax, a) for a in painter.draw(ax, _mol_scale(ax, fig, self.style.get("mol_size", 1.0))))
@@ -1998,6 +2019,7 @@ class FigureWindow(QtWidgets.QWidget):
             menu.addAction("Reset orientation").triggered.connect(lambda: self._mol_transform(i, reset=True))
             menu.addSeparator()
             self._choice(menu, "Shown on", "mol_scope", {"all": "Every panel", "first": "First channel row"})
+            self._choice(menu.addMenu("Atom palette"), None, "mol_palette", _mol_palette_choices())
             menu.addSeparator()
             menu.addAction("Remove this model").triggered.connect(lambda: self._mol_transform(i, remove=True))
         elif kind == "letter":

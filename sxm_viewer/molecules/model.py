@@ -55,6 +55,35 @@ AVOGADRO_COLORS = {
 }
 
 
+# VESTA palette (VESTA's default elements.ini, Z = 1..95)
+VESTA_COLORS = {
+    'H': '#FFCCCC', 'He': '#FCE9CF', 'Li': '#86E074', 'Be': '#5FD87B',
+    'B': '#20A20F', 'C': '#814929', 'N': '#B0BAE6', 'O': '#FF0300',
+    'F': '#B0BAE6', 'Ne': '#FF38B5', 'Na': '#FADD3D', 'Mg': '#FC7C16',
+    'Al': '#81B3D6', 'Si': '#1B3BFA', 'P': '#C19CC3', 'S': '#FFFA00',
+    'Cl': '#32FC03', 'Ar': '#CFFEC5', 'K': '#A122F7', 'Ca': '#5B96BE',
+    'Sc': '#B663AC', 'Ti': '#78CAFF', 'V': '#E61A00', 'Cr': '#00009E',
+    'Mn': '#A9099E', 'Fe': '#B57200', 'Co': '#0000AF', 'Ni': '#B8BCBE',
+    'Cu': '#2247DD', 'Zn': '#8F9082', 'Ga': '#9FE474', 'Ge': '#7E6FA6',
+    'As': '#75D057', 'Se': '#9AEF10', 'Br': '#7F3103', 'Kr': '#FAC1F3',
+    'Rb': '#FF0099', 'Sr': '#00FF27', 'Y': '#67988E', 'Zr': '#00FF00',
+    'Nb': '#4CB376', 'Mo': '#B486B0', 'Tc': '#CDAFCB', 'Ru': '#CFB8AE',
+    'Rh': '#CED2AB', 'Pd': '#C2C4B9', 'Ag': '#B8BCBE', 'Cd': '#F31FDC',
+    'In': '#D781BB', 'Sn': '#9B8FBA', 'Sb': '#D88350', 'Te': '#ADA252',
+    'I': '#8F1F8B', 'Xe': '#9BA1F8', 'Cs': '#0FFFB9', 'Ba': '#1EF02D',
+    'La': '#5AC449', 'Ce': '#D1FD06', 'Pr': '#FDE206', 'Nd': '#FC8E07',
+    'Pm': '#0000F5', 'Sm': '#FD067D', 'Eu': '#FB08D5', 'Gd': '#C004FF',
+    'Tb': '#7104FE', 'Dy': '#3106FD', 'Ho': '#0742FB', 'Er': '#49733B',
+    'Tm': '#0000E0', 'Yb': '#27FDF4', 'Lu': '#26FDB5', 'Hf': '#B4B459',
+    'Ta': '#B79B56', 'W': '#8E8A80', 'Re': '#B3B18E', 'Os': '#C9B179',
+    'Ir': '#C9CF73', 'Pt': '#CCC6BF', 'Au': '#FEB338', 'Hg': '#D3B8CC',
+    'Tl': '#96896D', 'Pb': '#53535B', 'Bi': '#D230F8', 'Po': '#0000FF',
+    'At': '#0000FF', 'Rn': '#FFFF00', 'Fr': '#000000', 'Ra': '#6EAA59',
+    'Ac': '#649E73', 'Th': '#26FE78', 'Pa': '#29FB35', 'U': '#7AA2AA',
+    'Np': '#4C4C4C', 'Pu': '#4C4C4C', 'Am': '#4C4C4C'
+}
+
+
 ATOM_PALETTES = {
     'cpk': CPK_COLORS,
     'pymol': PYMOL_COLORS,
@@ -65,8 +94,26 @@ ATOM_PALETTES = {
         'S': '#FFFF30', 'P': '#FF8000', 'F': '#90E050', 'Cl': '#1FF01F',
         'Br': '#A62929', 'I': '#940094', 'Fe': '#E06633', 'Cu': '#C88033',
         'Zn': '#7d80b0', 'Si': '#DA8B45', 'B': '#FFB5B5'
-    }
+    },
+    'vesta': VESTA_COLORS,
 }
+
+
+# Display names for the palette keys (menus, combos).
+PALETTE_LABELS = {
+    'cpk': 'CPK',
+    'jmol': 'Jmol',
+    'pymol': 'PyMOL',
+    'avogadro': 'Avogadro',
+    'ase': 'ASE',
+    'vesta': 'VESTA',
+}
+
+
+def palette_label(key):
+    """Human-readable name of a palette key ('pymol' -> 'PyMOL')."""
+    k = str(key or '').lower()
+    return PALETTE_LABELS.get(k, k.title())
 
 
 # Curated colormap categories for coloring bonds by a data value. The

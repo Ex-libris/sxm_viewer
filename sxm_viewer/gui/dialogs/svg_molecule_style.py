@@ -24,6 +24,7 @@ _PALETTE_LABELS = {
     "pymol": "PyMOL",
     "avogadro": "Avogadro",
     "ase": "ASE",
+    "vesta": "VESTA",
 }
 
 _BOND_COLOR_MODES = [

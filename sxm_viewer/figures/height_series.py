@@ -102,6 +102,7 @@ STYLE_DEFAULTS = {
     "molecules_on": True,      # show the figure's molecular model(s)
     "mol_scope": "all",        # all panels | first (first channel row only)
     "mol_size": 1.0,           # atom/bond size x the automatic panel-width size
+    "mol_palette": "preview",  # atom colours: preview (= the preview's palette) | a palette key
 }
 
 # Keys whose sensible default depends on the recipe (a zoom figure shows
