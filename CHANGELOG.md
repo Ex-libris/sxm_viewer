@@ -53,6 +53,11 @@ First public release archived on Zenodo.
   on their own line above the header, in dark text on the page.
 - **min / max colour bars**: the bar stays, its ends read "min" and "max";
   and **one bar per channel** even when each image has its own range.
+- **Automatic letter and scale-bar colour**: white or black per letter,
+  judged on the image under it (grey rows get black letters, dark rows
+  white); right-click a letter to give just that one its own colour.
+- **PowerPoint at real size**: the figure lands at its printed size (an
+  85 mm figure is 85 mm on the slide), like PDF and Inkscape.
 - **Titles**: frame headers can be *None*; channel names beside the rows can
   be hidden (the layout reclaims the space); the Δz = 0 reference is bold
   only if you ask for it.

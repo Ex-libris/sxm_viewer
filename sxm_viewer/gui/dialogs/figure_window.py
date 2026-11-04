@@ -50,6 +50,7 @@ _CBAR_STYLES = {"outside": "Numbers outside", "inside": "Numbers inside the bar"
                 "minmax": "min / max outside", "minmax_in": "min / max inside the bar"}
 _CBAR_TICKS = {0: "None", 2: "2 (ends)", 3: "3", 5: "5"}
 _CBAR_TEXT = {"rotated": "Rotated text", "horizontal": "Horizontal text"}
+_AUTO_COLORS = {"auto": "Automatic (contrast)", "white": "White", "black": "Black"}
 _ZOOM_COLORS = {"color": "One colour per zoom", "white": "White", "black": "Black"}
 _DPI_CHOICES = (300, 600, 1200)
 _WHEEL_COALESCE_S = 1.0
@@ -574,7 +575,9 @@ class _FormatPanel(QtWidgets.QWidget):
         w["letter_pos"] = combo(_LETTER_PLACES)
         w["letter_pos"].setToolTip("Inside a corner, or outside the image above it (dark on the page)")
         add("Place", w["letter_pos"])
-        w["letter_color"] = combo({"white": "White", "black": "Black"})
+        w["letter_color"] = combo(_AUTO_COLORS)
+        w["letter_color"].setToolTip("Automatic: white or black per letter, from the image under it. "
+                                     "Right-click a letter to set just that one")
         add("Colour", w["letter_color"])
         w["letter_size"] = spin(5.0, 24.0, 0.5, " pt")
         add("Size", w["letter_size"])
@@ -603,7 +606,7 @@ class _FormatPanel(QtWidgets.QWidget):
         add("Label size", w["scale_font"])
         w["scale_pos"] = combo(_CORNER_NAMES)
         add("Corner", w["scale_pos"])
-        w["scale_color"] = combo({"white": "White", "black": "Black"})
+        w["scale_color"] = combo(_AUTO_COLORS)
         add("Colour", w["scale_color"])
         w["scale_thick"] = spin(0.5, 5.0, 0.25, " %")
         w["scale_thick"].setToolTip("Bar thickness, % of the panel's shorter side")
@@ -810,6 +813,7 @@ class FigureWindow(QtWidgets.QWidget):
             "rows": list(saved["rows"]) if saved.get("rows") else None,
             "row_choices": dict(saved.get("row_choices") or {}),
             "row_cmaps": dict(saved.get("row_cmaps") or {}),
+            "letter_colors": dict(saved.get("letter_colors") or {}),
             "show_repeats": bool(saved.get("show_repeats", False)),
             "clims": {k: v for k, v in (saved.get("clims") or {}).items() if isinstance(v, (list, tuple))},
             "style": hs.resolve_style(style),
@@ -861,7 +865,7 @@ class FigureWindow(QtWidgets.QWidget):
         self._apply_edit({
             "reference_key": self.source.default_reference(self._keys),
             "dropped": [], "forced": [], "rows": None, "row_choices": {},
-            "row_cmaps": {}, "clims": {}, "show_repeats": False,
+            "row_cmaps": {}, "clims": {}, "show_repeats": False, "letter_colors": {},
         })
 
     def reset_format(self):
@@ -1179,6 +1183,7 @@ class FigureWindow(QtWidgets.QWidget):
     def _draw_into(self, fig):
         return hs.render(
             fig, self.spec, self._panel_map(), style=self.style, clims=self.state["clims"],
+            letter_colors=self.state.get("letter_colors"),
             get_cmap=lambda name: registry_get_cmap(name, "gray"))
 
     def _render_screen(self):
@@ -1498,7 +1503,8 @@ class FigureWindow(QtWidgets.QWidget):
             menu = self._colour_menu(hit["row"], hit["frame"])
         elif kind == "letter":
             menu = QtWidgets.QMenu(self)
-            self._letters_menu(menu)
+            self._single_letter_menu(menu, hit["row"], hit["frame"])
+            self._letters_menu(menu.addMenu("All letters"))
         elif kind == "scalebar":
             menu = QtWidgets.QMenu(self)
             self._scale_menu(menu)
@@ -1576,12 +1582,49 @@ class FigureWindow(QtWidgets.QWidget):
                 style=dict(hs.page_text_style(k), page=k)))
         menu.addAction("More format options…").triggered.connect(lambda: self.format_btn.setChecked(True))
 
+    def _single_letter_menu(self, menu, r, f):
+        """Colour of just this letter (overrides the all-letters choice)."""
+        row = self.spec["rows"][r]
+        col = self.spec["columns"][f]
+        key = hs.letter_key(row["label"], col["key"])
+        cur = (self.state.get("letter_colors") or {}).get(key)
+        menu.addSection("This letter")
+        group = QtWidgets.QActionGroup(menu)
+        for value, text in ((None, "Like the others"), ("white", "White"), ("black", "Black")):
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(cur == value)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, v=value: self._set_letter_color(key, v))
+        other = menu.addAction("Other colour…")
+        other.setCheckable(True)
+        other.setChecked(cur not in (None, "white", "black"))
+        group.addAction(other)
+        other.triggered.connect(lambda: self._pick_letter_color(key, cur))
+        if self.state.get("letter_colors"):
+            menu.addAction("Reset every letter to automatic").triggered.connect(
+                lambda: self._apply_edit({"letter_colors": {}}, style={"letter_color": "auto"}))
+
+    def _set_letter_color(self, key, value):
+        colors = dict(self.state.get("letter_colors") or {})
+        if value is None:
+            colors.pop(key, None)
+        else:
+            colors[key] = value
+        self._apply_edit({"letter_colors": colors})
+
+    def _pick_letter_color(self, key, cur):
+        start = QtGui.QColor(cur) if cur and cur not in ("white", "black") else QtGui.QColor("#ffd23f")
+        c = QtWidgets.QColorDialog.getColor(start, self, "Letter colour")
+        if c.isValid():
+            self._set_letter_color(key, c.name())
+
     def _letters_menu(self, menu):
         self._toggle(menu, "Show letters", "letters")
         self._choice(menu, "Style", "letter_style", _LETTER_STYLE_NAMES)
         self._choice(menu, "On", "letter_scope", {"frame": "One per frame", "panel": "Every panel"})
         self._choice(menu, "Place", "letter_pos", _LETTER_PLACES)
-        self._choice(menu, "Colour", "letter_color", {"white": "White", "black": "Black"})
+        self._choice(menu, "Colour (all letters)", "letter_color", _AUTO_COLORS)
         menu.addSection("Size")
         group = QtWidgets.QActionGroup(menu)
         for pt in (7, 9, 11, 14):
@@ -1603,7 +1646,7 @@ class FigureWindow(QtWidgets.QWidget):
         act.triggered.connect(lambda: self._apply_edit(style={"scale_len_nm": None}))
         menu.addAction("Set length…").triggered.connect(self._ask_scale_length)
         self._choice(menu, "Corner", "scale_pos", _CORNER_NAMES)
-        self._choice(menu, "Colour", "scale_color", {"white": "White", "black": "Black"})
+        self._choice(menu, "Colour", "scale_color", _AUTO_COLORS)
         self._choice(menu, "Length label", "scale_label", _SCALE_LABELS)
         menu.addSection("Label size")
         group = QtWidgets.QActionGroup(menu)
@@ -1934,11 +1977,18 @@ class FigureWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             new_slide = mode.startswith("new")
+            fig = self._export_figure()
+            w_pt, h_pt = (float(v) * 72.0 for v in fig.get_size_inches())
+            # Real size: the box *is* the figure (1 pt = 1/72 in), so an
+            # 85 mm figure lands 85 mm wide, like PDF / Inkscape.
+            size_kw = dict(left=36.0, top=36.0, width=w_pt, height=h_pt,
+                           image_size=(w_pt, h_pt), preserve_aspect=True)
             if mode.endswith("picture"):
-                pix = QtGui.QPixmap.fromImage(QtGui.QImage.fromData(self._png_bytes(), "PNG"))
-                slide, _name = ppt_bridge.send_pixmap_to_ppt(pix, label=None, new_slide=new_slide)
+                pix = QtGui.QPixmap.fromImage(QtGui.QImage.fromData(self._png_bytes(fig), "PNG"))
+                slide, _name = ppt_bridge.send_pixmap_to_ppt(pix, label=None, new_slide=new_slide, **size_kw)
             else:
-                slide, _name = ppt_bridge.send_svg_to_ppt(self._svg_bytes(), label=None, new_slide=new_slide)
+                slide, _name = ppt_bridge.send_svg_to_ppt(self._svg_bytes(fig), label=None,
+                                                          new_slide=new_slide, **size_kw)
         except Exception as exc:
             QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.warning(
@@ -1946,7 +1996,7 @@ class FigureWindow(QtWidgets.QWidget):
                 f"Could not send to PowerPoint:\n{exc}\n\nIs a presentation open?")
             return
         QtWidgets.QApplication.restoreOverrideCursor()
-        self._flash(f"Sent to PowerPoint (slide {slide})")
+        self._flash(f"Sent to PowerPoint (slide {slide}) at {w_pt / 72 * 25.4:.0f} × {h_pt / 72 * 25.4:.0f} mm")
 
     _SAVE_FILTERS = {".pdf": "PDF (*.pdf)", ".svg": "SVG (*.svg)", ".png": "PNG image (*.png)",
                      ".tif": "TIFF image (*.tif *.tiff)", ".eps": "EPS (*.eps)"}

@@ -1064,6 +1064,13 @@ card row + the matching right-click menu. Notable ones:
 - `font_family` (Arial default, `available_fonts` journal fonts first):
   `render` wraps `_render` in `rc_context(font_rc(st))` - text props are
   fixed at artist creation, so this covers screen, PDF, SVG, PPT.
+- Colours of text over images: `letter_color` / `scale_color` "auto" pick
+  white or black **per letter / bar** from the pixels under it, through the
+  live colormap + range (`auto_color` reuses the preview's Qt-free
+  `gui/canvases/scale_bar_contrast.py` WCAG rule - one contrast rule app
+  wide). Per-letter overrides live in figure state `letter_colors`
+  (`letter_key(row_label, frame_key)`), set from a letter's right-click
+  menu. Outlines take the opposite tone of whatever colour the text got.
 - Letters: `letter_pos` corners or `out_tl`/`out_tr` (outside, own line
   above the header - `_letter_line_y`; the layout adds `_outside_letter_h`
   to the header band / row gaps); outline optional.
@@ -1097,7 +1104,10 @@ right-click any element = its options; **Ctrl+wheel** = size of what is
 under the cursor (text with letters in proportion / bar width / scale-bar
 label / letters; Ctrl+Shift = panels), coalesced into one undo step. Live
 link: `data_signature()` polled + on activation. Outputs: Copy (PNG+SVG /
-PNG / SVG), PowerPoint (new/current slide, shapes/picture), Obsidian (via
+PNG / SVG), PowerPoint (new/current slide, shapes/picture - always sent
+with `width`/`height`/`image_size` = the figure's size in points; the
+bridge's defaults fit everything into a 600 x 450 pt box, which is why it
+was not at real scale), Obsidian (via
 `viewer.export.export_to_obsidian(render=...)`), Inkscape (layered SVG,
 opened from a temp folder), Save PDF / layered SVG / PNG / LZW TIFF / EPS,
 300-1200 dpi, transparent background.

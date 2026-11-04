@@ -68,13 +68,13 @@ STYLE_DEFAULTS = {
     "letter_style": "a",       # "a" | "A" | "(a)" | "a)" | "a."
     "letter_scope": "frame",   # "frame": one per frame | "panel": every panel
     "letter_pos": "tl",        # tl | tr | bl | br (inside) | out_tl | out_tr (outside, above)
-    "letter_color": "white",   # white | black
+    "letter_color": "auto",    # auto (contrast with the image under it) | white | black
     "letter_size": 9.0,
     "letter_bold": True,
     "scale_bar": "all",        # "all" (every image) | "one" | "off"
     "scale_len_nm": None,      # None = automatic
     "scale_pos": "bl",
-    "scale_color": "white",
+    "scale_color": "auto",     # auto | white | black
     "scale_label": "first",    # length label: "first" (once per length) | "all" | "none"
     "scale_font": None,        # length label size (pt); None = text size
     "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
@@ -1354,25 +1354,68 @@ def rotate_tall_panels(panels, mode):
     return out
 
 
+def _is_light(color):
+    try:
+        from matplotlib.colors import to_rgb
+        r, g, b = to_rgb(color)
+    except Exception:
+        return True
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 0.5
+
+
 def _effects(enabled, color):
     if not enabled:
         return []
     import matplotlib.patheffects as pe
-    other = "black" if color == "white" else "white"
+    # Outline in the opposite tone of the text (works for any colour).
+    other = "black" if _is_light(color) else "white"
     return [pe.withStroke(linewidth=1.6, foreground=other)]
 
 
+def auto_color(ax, region, fallback="white"):
+    """White or black for text drawn over ``region`` (axes fractions
+    ``(x0, x1, y0, y1)``) - judged on the image pixels actually there,
+    through the live colormap and range. The same WCAG rule as the preview's
+    scale bar (``gui/canvases/scale_bar_contrast.py``, Qt-free)."""
+    try:
+        from ..gui.canvases import scale_bar_contrast as sbc
+    except Exception:
+        return fallback
+    c = sbc.contrast_color(ax, region, None)
+    if c is None:
+        return fallback
+    return "white" if c == sbc.LIGHT else "black"
+
+
+def _letter_region(pos, cell, size_pt, n_chars, inset=0.04):
+    """Axes-fraction box covered by a corner letter (for its contrast)."""
+    x0, y0, x1, y1 = cell
+    cw, ch = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
+    fw = min(1.0, max(0.12, 0.62 * size_pt / 72.0 * max(1, n_chars)) / cw)
+    fh = min(1.0, 1.25 * size_pt / 72.0 / ch)
+    left = inset if pos in ("tl", "bl") else 1.0 - inset - fw
+    bottom = 1.0 - inset - fh if pos in ("tl", "tr") else inset
+    return (left, left + fw, bottom, bottom + fh)
+
+
 def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-           text_color="black"):
-    """Draw the figure (see ``_render``) in the style's font family."""
+           text_color="black", letter_colors=None):
+    """Draw the figure (see ``_render``) in the style's font family.
+    ``letter_colors``: per-letter overrides ``{letter_key(row_label,
+    frame_key): colour}``; everything else follows ``style["letter_color"]``
+    ("auto" = contrast with the image under each letter)."""
     import matplotlib
     with matplotlib.rc_context(font_rc(resolve_style(style))):
         return _render(fig, spec, panels, style=style, clims=clims, get_cmap=get_cmap,
-                       text_color=text_color)
+                       text_color=text_color, letter_colors=letter_colors)
+
+
+def letter_key(row_label, frame_key):
+    return f"{row_label}|{frame_key}"
 
 
 def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-            text_color="black"):
+            text_color="black", letter_colors=None):
     """Draw the figure into ``fig`` (cleared first).
 
     ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
@@ -1546,9 +1589,12 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             else:
                 images.setdefault(r, []).append(im)
                 last_im = im
+            override = (letter_colors or {}).get(letter_key(row["label"], col["key"]))
             if letter and str(st["letter_pos"]).startswith("out"):
                 lx = box[0] if st["letter_pos"] == "out_tl" else box[2]
-                color = st["letter_color"] if st["letter_color"] != "white" else text_color
+                # On the white page: dark unless the user chose a colour.
+                color = override or (st["letter_color"] if st["letter_color"] not in ("white", "auto")
+                                     else text_color)
                 ly = _letter_line_y(layout, f, box)
                 t = fig.text(lx / size[0], 1.0 - ly / size[1], letter, color=color,
                              fontsize=float(st["letter_size"]),
@@ -1561,14 +1607,20 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 letter_boxes.append({"row": r, "frame": f,
                                      "box": (bx0, ly - lh_in, bx0 + lw_in, ly)})
             elif letter:
-                t = _draw_corner_text(ax, w, h, letter, st["letter_pos"], st["letter_color"],
+                color = override or st["letter_color"]
+                if color == "auto":
+                    # Each letter judged on its own background: a grey row
+                    # and a dark row get different letter colours.
+                    color = auto_color(ax, _letter_region(st["letter_pos"], box, float(st["letter_size"]),
+                                                          len(letter)))
+                t = _draw_corner_text(ax, w, h, letter, st["letter_pos"], color,
                                       float(st["letter_size"]), bool(st["letter_bold"]),
-                                      _effects(st["letter_outline"], st["letter_color"]))
+                                      _effects(st["letter_outline"], color))
                 t.set_gid(f"letter_{r}_{f}")
                 letter_boxes.append({"row": r, "frame": f, "box": _corner_box(
                     box, st["letter_pos"], float(st["letter_size"]), len(letter))})
             if (r, f) in scale_cells and _finite(p.get("width_nm")):
-                sb = _draw_scale_bar(ax, w, h, st, font, _effects(st["scale_outline"], st["scale_color"]),
+                sb = _draw_scale_bar(ax, w, h, st, font, None,
                                      gid=f"scalebar_{r}_{f}", show_label=(r, f) in label_cells)
                 if sb:
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
@@ -1924,7 +1976,13 @@ def _draw_scale_bar(ax, w, h, st, font, effects, gid="scalebar", show_label=True
         return None
     pos = st["scale_pos"]
     color = st["scale_color"]
-    edge = "black" if color == "white" else "white"
+    if color == "auto":
+        fx0 = 0.06 if pos in ("tl", "bl") else 0.94 - length / w
+        fy = (0.07, 0.22) if pos in ("bl", "br") else (0.78, 0.93)
+        color = auto_color(ax, (fx0, fx0 + length / w, fy[0], fy[1]))
+    edge = "black" if _is_light(color) else "white"
+    if effects is None:
+        effects = _effects(st.get("scale_outline", True), color)
     # Thickness from the panel's shorter side, so a tall frame doesn't get
     # a slab (and the bar looks the same on every aspect ratio).
     bar_h = max(min(float(st.get("scale_thick") or 0.018), 0.05) * min(w, h), 1e-9)
