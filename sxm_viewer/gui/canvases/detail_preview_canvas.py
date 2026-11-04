@@ -2748,14 +2748,19 @@ class MultiPreviewCanvas(FigureCanvas):
                     ax.add_collection(lc_underlay)
                     try:
                         lc_underlay.set_capstyle("round")
+                        lc_underlay.set_joinstyle("round")
                     except Exception:
                         pass
                 lc = LineCollection(lines, colors=colors, linewidths=linewidths, zorder=29)
                 ax.add_collection(lc)
                 lc.set_pickradius(5)
                 try:
-                    if atom_style in {"ballstick", "licorice", "sticks", "line"}:
-                        lc.set_capstyle("round")
+                    # Round ends in every style: bonds meeting at an atom (and
+                    # the two halves of a two-colour bond) blend into one
+                    # continuous stick, as in Avogadro / VESTA / PyMOL -
+                    # square ("butt") ends left notches and gaps at each joint.
+                    lc.set_capstyle("round")
+                    lc.set_joinstyle("round")
                 except Exception:
                     pass
 
@@ -3158,6 +3163,8 @@ class MultiPreviewCanvas(FigureCanvas):
                     colors=render["bond_colors"],
                     linewidths=render["bond_linewidth"],
                     zorder=37,
+                    capstyle="round",
+                    joinstyle="round",
                 )
                 line_collection.set_path_effects([
                     PathEffects.Stroke(linewidth=render["bond_stroke_width"], foreground=(0.0, 0.0, 0.0, 0.55)),

@@ -276,10 +276,10 @@ def _draw_molecules(ax, molecules, palette, show_hydrogens=True):
                         ej = mol.elements[j] if j < len(mol.elements) else "C"
                         mx = 0.5 * (xs_full[i] + xs_full[j])
                         my = 0.5 * (ys_full[i] + ys_full[j])
-                        ax.plot([xs_full[i], mx], [ys_full[i], my], color=resolve_atom_color(mol, ei, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="butt")
-                        ax.plot([mx, xs_full[j]], [my, ys_full[j]], color=resolve_atom_color(mol, ej, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="butt")
+                        ax.plot([xs_full[i], mx], [ys_full[i], my], color=resolve_atom_color(mol, ei, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
+                        ax.plot([mx, xs_full[j]], [my, ys_full[j]], color=resolve_atom_color(mol, ej, palette), linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
                     else:
-                        ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5)
+                        ax.plot([xs_full[i], xs_full[j]], [ys_full[i], ys_full[j]], color=bond_color, linewidth=line_width, alpha=0.85 * bond_opacity, zorder=5, solid_capstyle="round")
                 except Exception:
                     continue
 
