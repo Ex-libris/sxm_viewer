@@ -8907,7 +8907,9 @@ QLabel:hover {{
                 actions[act] = p
             browse_act = menu.addAction("Browse...")
             chosen = menu.exec_(QtGui.QCursor.pos())
-            if chosen and chosen in actions:
+            if chosen is None:
+                return  # menu dismissed (Esc / click outside): do nothing
+            if chosen is not browse_act and chosen in actions:
                 self.preview_canvas.add_molecule(actions[chosen])
                 self.on_show_molecules_toggled(True)
                 self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
