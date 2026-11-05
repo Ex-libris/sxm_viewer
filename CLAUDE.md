@@ -22,11 +22,23 @@ cd ..
 python -m sxm_viewer
 ```
 
-- Legacy launch shim: `python sxm_grid_viewer.py` (forwards to `python -m sxm_viewer`).
-- There is no lint/format/test tooling configured for the main package (no
-  `pyproject.toml`, `setup.cfg`, `pytest.ini`, or CI test workflow) — verify
-  changes by running the app manually. The one exception is the vendored
-  `nanonispy2` reader (see below), which ships its own `tests/test_read.py`.
+- Installed as a package: `python -m pip install .` then `sxm-viewer`
+  (`pyproject.toml`; version from `sxm_viewer.__version__`).
+- Legacy launch shim: `python scripts/sxm_grid_viewer.py` (forwards to `sxm_viewer.cli.main`).
+- Checks (all run in CI, `.github/workflows/tests.yml`, Windows, Python
+  3.10 + 3.12) - see `docs/TESTING.md` for what each catches:
+  - `ruff check sxm_viewer scripts` - narrow gate configured in
+    `pyproject.toml`: syntax errors, undefined names, unused imports.
+  - `python -m pytest sxm_viewer/tests` - unit tests (profile measuring/units).
+  - `python scripts/check_imports.py` - imports every package module offscreen.
+  - `python scripts/smoke_test.py [--folder DATA --report]` - drives the
+    real viewer offscreen; with a data folder it also loads, previews and
+    renders a PDF report. Isolates config to a temp dir.
+  - `python scripts/render_fingerprint.py` - pixel fingerprints of preview
+    renders, compared across revisions (needs a data folder; not in CI).
+  The vendored `nanonispy2` tests (`providers/nanonis/vendor/.../tests`) are
+  upstream's and import the upstream name `nanonispy`, so they do not run
+  as shipped; leave them untouched like the rest of the vendor folder.
 - Headless smoke tests work with `$env:QT_QPA_PLATFORM = "offscreen"` before
   constructing `SXMGridViewer` in a script. **Trap**: the offscreen viewer is
   the real app — anything that persists config (e.g. `set_ui_theme`, toggle
@@ -70,7 +82,8 @@ python -m sxm_viewer
   layer, plus a process-wide patch of `FigureCanvasQTAgg.resizeEvent` to guard
   against non-finite/zero resize events. `matplotlib.use("Agg")` is set here.
 - `app_meta.py` — app name/org constants and window-icon discovery
-  (`samples/app_icon.*`).
+  (packaged `assets/app_icon.ico`; an `app_icon.*` in `samples/` overrides
+  it in a source checkout).
 - `cli.py` — the real entry point (`python -m sxm_viewer` → `__main__.py` →
   `cli.main()`), which builds the `QApplication` and shows `SXMGridViewer`.
 - `data/` — format-agnostic parsing: `io.py` (Omicron/Anfatec header + channel

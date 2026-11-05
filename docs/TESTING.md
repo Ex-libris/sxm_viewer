@@ -1,12 +1,26 @@
 # Testing and verification
 
-There is no pytest suite for the GUI, and that is a deliberate consequence of
-the architecture rather than an oversight: `SXMGridViewer` is a ~540-method
-class whose behaviour is entangled with live Qt widgets, so unit-testing it
-in isolation would require the decomposition tracked in
-`docs/refactor/DUPLICATION_INVENTORY.md` (item R1).
+There is no unit-test suite for the main window itself, and that is a
+deliberate consequence of the architecture rather than an oversight:
+`SXMGridViewer` is a ~540-method class whose behaviour is entangled with live
+Qt widgets, so unit-testing it in isolation would require the decomposition
+tracked in `docs/refactor/DUPLICATION_INVENTORY.md` (item R1).
 
-What exists instead, in increasing order of coverage:
+## 0. What CI runs on every push
+
+`.github/workflows/tests.yml` (Windows, Python 3.10 and 3.12, `pip install .`):
+
+| Step | Command | Catches |
+| --- | --- | --- |
+| Lint gate | `ruff check sxm_viewer scripts` | syntax errors, undefined names, unused imports (config in `pyproject.toml`) |
+| Unit tests | `python -m pytest sxm_viewer/tests` | profile measuring and SI-unit formatting |
+| Import check | `python scripts/check_imports.py` | a broken import in any module, including ones no test opens |
+| Smoke test | `python scripts/smoke_test.py` | the app no longer starts (UI checks only - CI has no data) |
+
+The checks below that need a data folder (smoke test with `--folder`, render
+fingerprints) are run locally before a release.
+
+What exists beyond CI, in increasing order of coverage:
 
 ## 1. Smoke test (the main safety net)
 
@@ -81,7 +95,9 @@ python scripts\analysis\check_regressions.py
 Fails if a known-boilerplate counter increases, or if any *phantom call*
 appears (a call to a method that exists nowhere - dead code hiding behind an
 always-False `hasattr` guard). The phantom counter is at 0 and should stay
-there. See `docs/refactor/PATTERNS.md`.
+there: the 0.1.0 release audit found one that had crept in
+(`on_profile_display_setting_changed`, lost in a merge) while the baseline
+was not being checked. See `docs/refactor/PATTERNS.md`.
 
 ## 4. Analysis toolkit
 
@@ -96,7 +112,9 @@ when planning a refactor rather than as a per-commit check.
 
 `sxm_viewer/providers/nanonis/vendor/` ships upstream `nanonispy2` with its
 own `tests/test_read.py`. Do not edit that directory - it mirrors an
-external package.
+external package. Those tests import the upstream module name `nanonispy`,
+so they do not run as shipped; the reader itself is exercised by the smoke
+test on any Nanonis folder.
 
 ## 6. Qt-free unit testing (where it is easy)
 

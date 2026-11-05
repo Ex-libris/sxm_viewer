@@ -2,9 +2,28 @@
 
 Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 - 2026-11-05
 
-First public release archived on Zenodo.
+First public release, archived on Zenodo.
+
+Release preparation (no change to how images, spectra or figures look - the
+preview renders were checked pixel for pixel against the previous version on
+Anfatec and Nanonis data):
+
+- **Fix**: pop-up windows that had a profile line drawn on them stayed in
+  memory after being closed (figure and image data included).
+- **Fix**: pressing Esc on the recent-molecules menu opened a file dialog.
+- **Installer**: `scripts/install.py` no longer downloads or installs without
+  HTTPS certificate verification; it needs Python 3.10-3.13, as the package
+  does.
+- **Packaging**: `pip install .` gives a complete installation, application
+  icon included; the wheel no longer picks up compiled `.pyc` files.
+- **Cleanup**: about 1,900 lines of unused imports, unreachable code and
+  leftovers of earlier UI versions removed; deprecated calls updated for
+  current Python.
+- **Continuous integration**: every push runs the unit tests, an import of
+  every module and a headless start of the application on Windows (Python
+  3.10 and 3.12). The documentation site is built from `master` only.
 
 ## Development history (pre-release)
 
