@@ -1,4 +1,4 @@
-﻿"""Detail canvases and spectroscopy dialogs."""
+"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
 import contextlib
@@ -3427,7 +3427,6 @@ class MultiPreviewCanvas(FigureCanvas):
             self._spectra_points[ax] = []
             return
         raw_extent = view.get('extent_raw')
-        rel = self._use_relative_axes(view)
         arr_vals = np.asarray(view.get('arr'))
         try:
             arr_h, arr_w = arr_vals.shape
@@ -7418,7 +7417,6 @@ class MultiPreviewCanvas(FigureCanvas):
 
         if not self.profile_enabled and not self._profile_move_only:
             return
-        shift_pressed = self._shift_pressed(event)
         mods_qt = self._event_qt_modifiers(event)
         ctrl_pressed = bool(mods_qt & QtCore.Qt.ControlModifier)
         if event.button != 1:
@@ -8489,10 +8487,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if want_outline and view is not None:
             # Alt+click: outline dominant blob around clicked point (no drag needed)
             if event.xdata is not None and event.ydata is not None:
-                # print(f"Alt detected! xdata={event.xdata}, ydata={event.ydata}")
                 self._outline_from_point(view, ax, event.xdata, event.ydata)
-            else:
-                print("[Outline] Alt detected but coordinates are None; ignoring.")
             return
         overlay_hit = self._interactive_overlay_hit_test(event)
         # Pan start: left/middle drag on the image background when zoomed.
@@ -8719,9 +8714,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             self._redraw()
         except Exception as e:
-            import traceback
-            print(f"Failed to load molecule: {e}")
-            traceback.print_exc()
+            log_status(f"[Molecule] Failed to load molecule: {e}")
 
     def add_svg_molecule(self, path, reference_bond_length_angstrom: float = 1.54):
         try:
@@ -9218,10 +9211,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if not targets:
             return False
         self.push_undo_state("colormap")
-        changed = False
         for current_view in targets:
             current_view["cmap"] = cmap_name
-            changed = True
         # Mark cmap sync as explicit user intent so the owner can persist
         # a new per-file override key from this action.
         try:
@@ -12458,9 +12449,6 @@ class MultiPreviewCanvas(FigureCanvas):
         key = self._outline_key(view)
         if key is None:
             return None
-        c0, c1, r0, r1 = pixel_bounds
-        width = max(1, int(abs(c1 - c0) + 1))
-        height = max(1, int(abs(r1 - r0) + 1))
         seq = self._fixed_crop_sequence
         real_unit = self._guess_view_unit(view)
         real_size = (0.0, 0.0)
@@ -12503,12 +12491,6 @@ class MultiPreviewCanvas(FigureCanvas):
         geom = self._history_entry_geometry(entry)
         if geom is None:
             return
-        left = geom["left"]
-        right = geom["right"]
-        bottom = geom["bottom"]
-        top = geom["top"]
-        width = geom["width"]
-        height = geom["height"]
         corners = geom["corners"]
         seq = entry.get("sequence")
         is_active = seq is not None and seq == self._fixed_crop_history_highlight_seq

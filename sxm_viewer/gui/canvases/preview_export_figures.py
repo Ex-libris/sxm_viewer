@@ -259,7 +259,6 @@ def render_views_grid(canvas, views):
             try:
                 divider = make_axes_locatable(ax)
                 orientation = 'horizontal' if publication else 'vertical'
-                side = "bottom" if publication else "right"
                 cax = colorbar_fit.append_colorbar_axes(
                     divider, ax, orientation, canvas._colorbar_text_pt(font_scale),
                     0.08 if publication else 0.05,

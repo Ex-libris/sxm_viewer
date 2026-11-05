@@ -118,7 +118,6 @@ def on_drift_correct(viewer, paths):
                 shift, _, _ = phase_cross_correlation(ref_gray, target, upsample_factor=20, normalization="phase")
                 shifts[i] = [float(shift[0]), float(shift[1])]  # dy, dx mapping target -> ref
             elif has_cv:
-                import cv2  # type: ignore
                 criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-6)
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
                 _, warp_matrix = cv2.findTransformECC(ref_gray, target, warp_matrix, cv2.MOTION_TRANSLATION, criteria)
@@ -621,7 +620,6 @@ def show_alignment_preview(viewer, names, aligned, shifts, channel_idx, source_p
             header, fds = header_fds
             if not fds:
                 continue
-            fd_src = fds[channel_idx if 0 <= channel_idx < len(fds) else 0]
             header_new = dict(header)
             header_new['xPixel'] = arr.shape[1]
             header_new['yPixel'] = arr.shape[0]

@@ -1,4 +1,4 @@
-"""Detail canvases and spectroscopy dialogs."""
+"""Spectroscopy dialogs: single spectrum, comparison, grid map explorer, KPFM trends."""
 from __future__ import annotations
 
 import functools
@@ -6,6 +6,7 @@ import json
 import math
 import time
 import re
+from typing import Optional, Tuple
 
 import numpy as np
 from matplotlib import patheffects as mpatheffects
@@ -22,15 +23,10 @@ from ..._shared import (
     QtGui,
     QtWidgets,
     QIcon,
-    FigureCanvas,
-    Figure,
-    np,
     Path,
     defaultdict,
     OrderedDict,
     datetime,
-    json,
-    math,
     _scipy_ndimage,
     log_status,
 )
@@ -9193,7 +9189,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
         for spec_id, spec, payload, x_disp_full, res in entries:
             x_vals = payload["x"]
             y_filtered = payload["y"]
-            axis_label = payload["axis_label"]
             axis_unit = payload["axis_unit"]
             y_unit_raw = payload["y_unit_raw"]
             y_unit_final = payload["y_unit_final"]
@@ -10686,14 +10681,6 @@ class SpectroscopyCompareDialog(QtWidgets.QDialog):
                     line_parts.append(str(y_val))
             rows.append("\t".join(line_parts))
 
-        for trace in traces:
-            file_name = Path(trace.get("path") or "").name
-            point = trace.get("matrix_index")
-            point_txt = "" if point is None else str(point)
-            channel = trace.get("channel") or ""
-            x_unit = trace.get("x_unit") or ""
-            y_unit = trace.get("y_unit") or ""
-            label = trace.get("label") or file_name or "trace"
         QtWidgets.QApplication.clipboard().setText("\n".join(rows))
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Copied all traces", self)
 

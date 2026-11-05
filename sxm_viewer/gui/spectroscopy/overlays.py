@@ -646,7 +646,7 @@ def _render_spectroscopy_overlays(
             rect = _turn_rect(rect)
             kind = group.get("kind") or "cloud"
             footprint_color = color_matrix if kind == "grid" else color_cloud
-            chip_rect = _draw_footprint(painter, rect, kind=kind, color=footprint_color, count=len(member_specs))
+            _draw_footprint(painter, rect, kind=kind, color=footprint_color, count=len(member_specs))
             markers.append({
                 'rect': rect,
                 'spec': member_specs[0],
@@ -678,7 +678,7 @@ def _render_spectroscopy_overlays(
                 dims = f"{grid_cols}×{grid_rows}" if grid_cols and grid_rows else None
             except Exception:
                 dims = None
-            chip_rect = _draw_footprint(painter, rect, kind="matrix", color=matrix_color, count=len(m_specs), dims=dims)
+            _draw_footprint(painter, rect, kind="matrix", color=matrix_color, count=len(m_specs), dims=dims)
             tooltip = Path(m_specs[0].get('path', '')).name
             if dims:
                 tooltip = f"{tooltip}\nGrid: {dims}"

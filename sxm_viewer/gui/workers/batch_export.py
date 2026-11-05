@@ -1,4 +1,4 @@
-"""Detail canvases and spectroscopy dialogs."""
+"""Background worker for batch image export."""
 from __future__ import annotations
 
 

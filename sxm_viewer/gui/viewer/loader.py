@@ -1,6 +1,8 @@
 """Loader helpers for SXMGridViewer."""
 from __future__ import annotations
 
+from datetime import timezone
+
 import copy
 import time
 from functools import lru_cache
@@ -695,7 +697,7 @@ def _save_spectro_manifest(cache_dir: Path | None, manifest_entries: dict):
         manifest_path = cache_dir / _SPECTRO_MANIFEST_FILE
         payload = {
             "version": _SPECTRO_MANIFEST_VERSION,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "entries": manifest_entries,
         }
         with open(manifest_path, "w", encoding="utf-8") as handle:
@@ -1307,7 +1309,7 @@ def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None
             "filename": filepath.name,
             "mtime": float(mtime),
             "size": int(fsize),
-            "cached_at": datetime.utcnow().isoformat(),
+            "cached_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "spec_count": len(specs or []),
             # Recorded so cache reads can tell "this file genuinely has no
             # drawable data" (serve from cache) apart from "a usable payload

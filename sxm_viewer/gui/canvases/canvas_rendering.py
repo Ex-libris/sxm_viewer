@@ -298,13 +298,11 @@ def render_tile_figure_mpl(
     text_color = text_color or _text_color_for_frame(frame_color)
     cbar_label_text = _normalize_cbar_label(colorbar_label or "")
 
-    min_title_px = 2.0
     min_tick_px = 2.0
     min_label_px = 2.0
     min_overlay_px = 2.0
     min_meta_px = 2.0
 
-    title_fs = max(min_title_px, 11.0 * text_scale)
     tick_fs = max(min_tick_px, 9.5 * text_scale)
     label_fs = max(min_label_px, 9.5 * text_scale)
     overlay_fs = max(min_overlay_px, 8.5 * text_scale)

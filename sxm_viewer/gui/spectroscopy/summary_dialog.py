@@ -7,10 +7,6 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QVBoxLayout, QCheckBox, QPushButton, QLabel, QTreeWidget, QTreeWidgetItem
 
 from ..._shared import (
-    QtCore,
-    QtGui,
-    QtWidgets,
-    Path,
     OrderedDict,
 )
 from ... import cmap_registry

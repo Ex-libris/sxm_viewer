@@ -1,4 +1,4 @@
-﻿"""Quick crop control helpers."""
+"""Quick crop control helpers."""
 from __future__ import annotations
 
 import math

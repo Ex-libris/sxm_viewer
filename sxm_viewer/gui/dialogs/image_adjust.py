@@ -1,4 +1,4 @@
-"""Detail canvases and spectroscopy dialogs."""
+"""Image > Crop/Rotate dialog and its live preview panel."""
 from __future__ import annotations
 
 import json
@@ -17,11 +17,6 @@ from ..._shared import (
     QtCore,
     QtWidgets,
     QIcon,
-    FigureCanvas,
-    Figure,
-    np,
-    json,
-    math,
 )
 from ... import cmap_registry
 from ..thumbnail_render import (

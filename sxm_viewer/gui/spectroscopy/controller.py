@@ -6,7 +6,6 @@ from functools import lru_cache
 from pathlib import Path
 from ..._shared import (
     np,
-    Path,
     defaultdict,
     OrderedDict,
     datetime,

@@ -909,7 +909,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     file_key = str(header_path)
     header, fds = viewer.headers.get(file_key, (None,None))
     if header is None or channel_idx < 0 or channel_idx >= len(fds): return
-    fd = fds[channel_idx]; fname = fd.get("FileName")
+    fd = fds[channel_idx]
     axis_unit = 'px'
     try:
         xpix = int(header.get('xPixel', 128)); ypix = int(header.get('yPixel', xpix))

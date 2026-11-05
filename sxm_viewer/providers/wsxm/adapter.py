@@ -16,7 +16,7 @@ never needs to know WSxM exists.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -276,7 +276,7 @@ def _convert_session_file(session_path: Path) -> List[Path]:
         "mtime": src_stat.st_mtime,
         "size": src_stat.st_size,
         "files_signature": files_signature,
-        "generated": datetime.utcnow().isoformat(timespec="seconds"),
+        "generated": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
         "headers": [p.name for p in generated],
         "version": WSXM_CACHE_VERSION,
     }
@@ -882,7 +882,7 @@ def _write_wsxm_style_header(
     lines = [
         f"# Converted from {source.name} via WSxM adapter",
         f"ConvertedSource = {source}",
-        f"ConvertedTimestamp = {datetime.utcnow().isoformat(timespec='seconds')}",
+        f"ConvertedTimestamp = {datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}",
     ]
     for key, value in header.items():
         if value is None or value == "":

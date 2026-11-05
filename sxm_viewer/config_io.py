@@ -53,7 +53,6 @@ def flush_pending_config_save():
     silently dropped (this exact failure mode already happened once for the
     similarly-debounced spectro manifest before its own close-time flush was
     added)."""
-    global _save_timer
     if _save_timer is not None:
         _save_timer.stop()
     _flush_pending_write()

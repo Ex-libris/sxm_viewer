@@ -269,7 +269,7 @@ class PeriodicNoiseDialog(QtWidgets.QDialog):
         if kind == "suggested" and 0 <= index < len(self._regions):
             self.tip_label.setText(self._regions[index]["tip"])
         elif kind == "custom":
-            _shape, mode = self._custom_regions[index][0], self._custom_regions[index][1]
+            mode = self._custom_regions[index][1]
             if mode == "protect":
                 self.tip_label.setText(
                     "Custom protected region - forces this frequency area back to unattenuated, "

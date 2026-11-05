@@ -1,4 +1,4 @@
-﻿"""Profile dialog coordination helpers for preview pop-outs."""
+"""Profile dialog coordination helpers for preview pop-outs."""
 from __future__ import annotations
 
 from typing import Optional, Tuple, List

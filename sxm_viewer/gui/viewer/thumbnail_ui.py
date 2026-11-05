@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-import sip
+from PyQt5 import sip
 import time
 
 from ..._shared import (

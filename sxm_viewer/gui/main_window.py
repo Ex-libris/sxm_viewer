@@ -1,4 +1,4 @@
-﻿"""Main Qt widget implementing the SXM Viewer."""
+"""Main Qt widget implementing the SXM Viewer."""
 from __future__ import annotations
 
 import math
@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 from PyQt5 import QtCore, QtGui, QtWidgets
-import sip
+from PyQt5 import sip
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QListWidgetItem
 
@@ -3192,7 +3192,7 @@ QLabel:hover {{
             "Recover it now, ignore it for this launch, or discard it."
         )
         recover_btn = box.addButton("Recover", QtWidgets.QMessageBox.AcceptRole)
-        later_btn = box.addButton("Ignore for now", QtWidgets.QMessageBox.RejectRole)
+        box.addButton("Ignore for now", QtWidgets.QMessageBox.RejectRole)
         discard_btn = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
         box.exec_()
         clicked = box.clickedButton()
@@ -8186,7 +8186,6 @@ QLabel:hover {{
             if idx is None or idx < 0 or idx >= len(fds):
                 continue
             fd = fds[idx]
-            fname = fd.get('FileName')
             try:
                 unit_final, arr_conv = self._get_filtered_channel_array(str(header_path), idx, header, fd)
             except Exception:

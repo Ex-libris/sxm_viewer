@@ -1,4 +1,4 @@
-"""Detail canvases and spectroscopy dialogs."""
+"""Image filter dialogs: single-filter editor and custom filter pipeline."""
 from __future__ import annotations
 
 
@@ -8,7 +8,6 @@ from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
-    np,
 )
 from ..ppt_mixin import PPTContextMenuMixin
 from ...processing.filters import FILTER_DEFINITIONS

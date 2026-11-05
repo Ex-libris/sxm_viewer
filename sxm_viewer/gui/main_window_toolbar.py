@@ -8,6 +8,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import QToolBar, QPushButton
 
+from .._shared import log_status
 from .constants import TOOLBAR_CANVAS_MIN_HEIGHT, TOOLBAR_CANVAS_MIN_WIDTH
 from .styles import MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
 
@@ -18,7 +19,7 @@ def _load_molecule_pixmap(size: QtCore.QSize, color: QtGui.QColor | None = None)
     """Render molecule SVG directly to a pixmap at the requested size, recoloring if requested."""
     try:
         if not _MOLECULE_ICON_PATH.exists():
-            print(f"Molecule icon path does not exist: {_MOLECULE_ICON_PATH}")
+            log_status(f"Molecule icon not found: {_MOLECULE_ICON_PATH}")
             return QtGui.QPixmap()
         
         renderer = QSvgRenderer(str(_MOLECULE_ICON_PATH))
@@ -56,7 +57,7 @@ def _load_molecule_pixmap(size: QtCore.QSize, color: QtGui.QColor | None = None)
                         image.setPixelColor(x, y, tint)
         return QtGui.QPixmap.fromImage(image)
             
-    except Exception as e:
+    except Exception:
         return QtGui.QPixmap()
 
 

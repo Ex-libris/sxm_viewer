@@ -1,5 +1,7 @@
-"""Detail canvases and spectroscopy dialogs."""
+"""Per-pixel fitting of grid (matrix) spectroscopy: worker thread and result dialog."""
 from __future__ import annotations
+
+from datetime import timezone
 
 import json
 import math
@@ -10,11 +12,8 @@ from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
-    np,
     Path,
     datetime,
-    json,
-    math,
 )
 from ...data.spectroscopy import (
     fit_parabola_bias,
@@ -887,7 +886,7 @@ class MatrixFitDialog(QtWidgets.QDialog):
             meta['acquisition_start'] = times[0].isoformat()
             meta['acquisition_end'] = times[-1].isoformat()
             meta['estimated_duration_seconds'] = float((times[-1] - times[0]).total_seconds())
-        meta['saved_at'] = datetime.utcnow().isoformat()
+        meta['saved_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         return meta
 
     def closeEvent(self, event):
