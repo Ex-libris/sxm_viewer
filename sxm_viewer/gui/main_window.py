@@ -3328,8 +3328,8 @@ QLabel:hover {{
             return
         preview = getattr(self, "preview_canvas", None)
         canvas = self._focused_canvas_with_undo()
-        if canvas is not None and canvas is not preview:
-            # Another canvas with its own local history (not journaled).
+        if canvas is not None and getattr(canvas, "_undo_journal_callback", None) is None:
+            # A canvas with its own local, unjournaled history.
             try:
                 handle_undo = getattr(canvas, "handle_undo_request", None)
                 if callable(handle_undo) and handle_undo():
@@ -3340,12 +3340,21 @@ QLabel:hover {{
             except Exception:
                 pass
         # One chronological order: undo the newest action wherever it was
-        # made (preview display, quick crop, adjustments, collection).
+        # made (main preview or a pop-up's display, quick crop, adjustments,
+        # collection). View/crop tokens carry the canvas that holds them.
+        def _live(c):
+            return c is not None and not sip.isdeleted(c)
+
+        def _undo_crop(c):
+            if c is None or c is preview:
+                return self.quick_crop_controller.undo_last_crop()
+            return _live(c) and c.undo_fixed_crop_entry() is not None
+
         if self._undo_journal.undo({
-            "view": lambda: bool(preview is not None and preview.undo_last_action()),
-            "crop": self.quick_crop_controller.undo_last_crop,
-            "adjust": self._undo_last_adjustment,
-            "collection": self._undo_collection_action,
+            "view": lambda c: bool(_live(c or preview) and (c or preview).undo_last_action()),
+            "crop": _undo_crop,
+            "adjust": lambda _t: self._undo_last_adjustment(),
+            "collection": lambda _t: self._undo_collection_action(),
         }):
             return
         # Fallback for steps pushed without a journal entry. The preview's
@@ -3372,9 +3381,22 @@ QLabel:hover {{
         canvas = getattr(self, "preview_canvas", None)
         if canvas is None:
             return
-        canvas._undo_journal_callback = self._undo_journal.record
+        self.install_canvas_undo_journal(canvas)
         canvas._undo_keeps_current_image = True
+
+    def install_canvas_undo_journal(self, canvas, window=None):
+        """Put ``canvas`` (main preview or a pop-up) in the main window's one
+        Ctrl+Z order: its undo pushes are journaled and Ctrl+Z on it - or
+        anywhere in its pop-up ``window`` - runs the global undo."""
+        canvas._undo_journal_callback = lambda source, c=canvas: self._undo_journal.record(source, c)
         canvas._global_undo_callback = self._on_global_undo_requested
+        if window is not None and window is not self:
+            # The main window's Ctrl+Z shortcut does not reach separate
+            # top-level windows; give the pop-up its own.
+            shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), window)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self._on_global_undo_requested)
+            window._global_undo_shortcut = shortcut
 
     def _undo_collection_action(self):
         if self.collection_controller.undo_last_collection_action():
@@ -10441,6 +10463,7 @@ QLabel:hover {{
         if transient_preset:
             persist = False
         self._canvas_display_syncing = True
+        suspended = []
         try:
             normalized = {
                 "show_ticks": bool(options.get("show_ticks", True)),
@@ -10508,6 +10531,15 @@ QLabel:hover {{
                         pass
 
             canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+            # Mirroring the change onto the other canvases is not an undo
+            # step of its own: only the canvas the user changed records one
+            # (its undo re-syncs the rest). Otherwise one click took several
+            # Ctrl+Z presses in the global undo order.
+            recorder = source_canvas or getattr(self, "preview_canvas", None)  # toolbar: the preview
+            mirrored = [c for c in canvases if c is not None and c is not recorder]
+            for canv in mirrored:
+                canv._undo_suspend_depth = getattr(canv, "_undo_suspend_depth", 0) + 1
+            suspended.extend(mirrored)
             for canv in canvases:
                 if canv is None:
                     continue
@@ -10598,6 +10630,8 @@ QLabel:hover {{
                     self.config["relative_axes"] = bool(rel)
                 save_config(self.config)
         finally:
+            for canv in suspended:
+                canv._undo_suspend_depth = max(0, getattr(canv, "_undo_suspend_depth", 1) - 1)
             self._canvas_display_syncing = False
 
     def on_show_molecules_toggled(self, checked: bool):

@@ -720,6 +720,11 @@ def spawn_preview_popup(owner, views, title=None, *, show_immediately=True, rest
         canvas._undo_suspend_depth = max(0, getattr(canvas, "_undo_suspend_depth", 0) - 1)
     except Exception:
         pass
+    # Pop-up changes join the main window's one chronological Ctrl+Z order
+    # (installed after setup, so building the pop-up isn't an undo step).
+    install_undo = getattr(owner, "install_canvas_undo_journal", None)
+    if callable(install_undo):
+        install_undo(canvas, dlg)
 
     def _set_popup_relative_zero(enabled):
         popup_display_state["relative_zero"] = bool(enabled)

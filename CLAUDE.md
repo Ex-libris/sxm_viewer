@@ -273,18 +273,25 @@ re-grep the method name to confirm before relying on an exact line.
   selected items, Ctrl+A selects all, Escape clears selection,
   Delete/Backspace deletes, Ctrl+Z/Ctrl+Y undo/redo.
 - **Global undo** (`gui/undo_journal.py`): Ctrl+Z in the main window is one
-  chronological order. Each undo stack records its pushes in
-  `viewer._undo_journal` (sources `view` = main preview `push_undo_state`,
-  `crop` = quick-crop entries, `adjust` = `_adjustment_undo_stack`, a
-  `JournaledList`, `collection`); `_on_global_undo_requested` pops the newest
-  token and runs that source's undo, skipping tokens whose entry is gone.
-  The main preview hands Ctrl+Z to it (`_global_undo_callback`) and, with
+  chronological order, pop-ups included. Each undo stack records its pushes
+  in `viewer._undo_journal` as `(source, weakref target)` (sources `view` =
+  a canvas' `push_undo_state`, `crop` = quick-crop entries, `adjust` =
+  `_adjustment_undo_stack`, a `JournaledList`, `collection`);
+  `_on_global_undo_requested` pops the newest token and runs that source's
+  undo on its target, skipping tokens whose entry or canvas is gone.
+  `install_canvas_undo_journal(canvas, window)` puts a canvas in the order
+  (main preview at startup, every `spawn_preview_popup` pop-up after its
+  setup, plus a Ctrl+Z `QShortcut` on the pop-up window - the main window's
+  shortcut doesn't reach other top-level windows). Display options mirrored
+  to other canvases (`_apply_canvas_display_options`) are suspended there:
+  one click = one step, on the canvas that was changed (the preview for
+  toolbar changes). The main preview hands Ctrl+Z over (`_global_undo_callback`) and, with
   `_undo_keeps_current_image`, restores only display settings from a
   snapshot taken on another image (snapshots carry `views`; restoring them
   used to swap the image or blank the preview). Startup/session-load preset
   snapshots are kept out of the journal but stay in the canvas history for
-  "Back to ...". Pop-ups keep local undo. A new undo stack in the main window
-  must journal its pushes, or Ctrl+Z only reaches it after the journal is
+  "Back to ...". Canvases not installed (e.g. the matrix-fit dialog) keep
+  local undo. A new undo stack in the main window must journal its pushes, or Ctrl+Z only reaches it after the journal is
   empty (fallback chain).
 - Full user-facing shortcut list: `docs/SHORTCUTS.md`.
 
