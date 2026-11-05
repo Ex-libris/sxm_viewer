@@ -103,6 +103,7 @@ STYLE_DEFAULTS = {
     "mol_scope": "all",        # all panels | first (first channel row only)
     "mol_size": 1.0,           # atom/bond size x the automatic panel-width size
     "mol_palette": "preview",  # atom colours: preview (= the preview's palette) | a palette key
+    "equal_scale": False,      # every image at the same nm per mm (not for overview + zooms)
 }
 
 # Keys whose sensible default depends on the recipe (a zoom figure shows
@@ -982,6 +983,31 @@ def cbar_dims(st, orient="v"):
     return bar, extra
 
 
+def equal_scale_factor(panels, layout):
+    """nm per inch that fits the largest frame into a panel cell, or None
+    when a frame has no physical size."""
+    pw, ph = layout["panel"]
+    w_max = h_max = 0.0
+    for p in panels.values():
+        w, h = _finite(p.get("width_nm")), _finite(p.get("height_nm"))
+        if not (w and h):
+            return None
+        w_max, h_max = max(w_max, w), max(h_max, h)
+    if not (w_max and pw and ph):
+        return None
+    return max(w_max / pw, h_max / ph)
+
+
+def equal_scale_box(cell, p, nm_per_in):
+    """The image's box inside its cell at ``nm_per_in``: centred across,
+    top-aligned (headers stay next to the images)."""
+    x0, y0, x1, y1 = cell
+    w = _finite(p.get("width_nm")) / nm_per_in
+    h = _finite(p.get("height_nm")) / nm_per_in
+    cx = 0.5 * (x0 + x1)
+    return (cx - 0.5 * w, y0, cx + 0.5 * w, y0 + h)
+
+
 def figure_layout(spec, panels, style=None):
     """Element boxes in inches, ``(x0, y0, x1, y1)`` from the figure's
     *top-left*; deterministic so the GUI hit-tests without matplotlib.
@@ -1414,7 +1440,7 @@ def _letter_region(pos, cell, size_pt, n_chars, inset=0.04):
     return (left, left + fw, bottom, bottom + fh)
 
 
-def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
+def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None, crops=None,
            text_color="black", letter_colors=None, draw_molecules=None):
     """Draw the figure (see ``_render``) in the style's font family.
     ``letter_colors``: per-letter overrides ``{letter_key(row_label,
@@ -1424,7 +1450,45 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     with matplotlib.rc_context(font_rc(resolve_style(style))):
         return _render(fig, spec, panels, style=style, clims=clims, get_cmap=get_cmap,
                        text_color=text_color, letter_colors=letter_colors,
-                       draw_molecules=draw_molecules)
+                       draw_molecules=draw_molecules, crops=crops)
+
+
+def panel_letters(layout, n_frames, style):
+    """``{(row, frame): letter}`` as drawn: one per frame (on its first
+    row) or one per panel in on-page reading order. Shared by the renderer
+    and the caption so they always agree."""
+    st = resolve_style(style)
+    cells = layout["cells"]
+    if st["letter_scope"] == "panel":
+        order = sorted(cells, key=lambda rf: (cells[rf][1], cells[rf][0]))
+        return {rf: letter_text(i, st["letter_style"]) for i, rf in enumerate(order)}
+    return {(0, f): letter_text(f, st["letter_style"]) for f in range(n_frames)}
+
+
+def crop_panels(panels, crops):
+    """Panels cut to a region: ``crops`` = ``{frame key | "*": (fx0, fy0,
+    fx1, fy1)}``, fractions of the drawn image (y from the top). Width /
+    height in nm shrink with it."""
+    if not crops:
+        return panels
+    out = {}
+    for (r, k), p in panels.items():
+        box = crops.get(k) or crops.get("*")
+        if p is None or not box:
+            out[(r, k)] = p
+            continue
+        a = np.asarray(p["data"])
+        n, m = a.shape[:2]
+        fx0, fy0, fx1, fy1 = (min(1.0, max(0.0, float(v))) for v in box)
+        r0, r1 = int(math.floor(fy0 * n)), max(int(math.floor(fy0 * n)) + 1, int(math.ceil(fy1 * n)))
+        c0, c1 = int(math.floor(fx0 * m)), max(int(math.floor(fx0 * m)) + 1, int(math.ceil(fx1 * m)))
+        q = dict(p, data=a[r0:r1, c0:c1], crop=(fx0, fy0, fx1, fy1))
+        if _finite(p.get("width_nm")):
+            q["width_nm"] = float(p["width_nm"]) * (c1 - c0) / m
+        if _finite(p.get("height_nm")):
+            q["height_nm"] = float(p["height_nm"]) * (r1 - r0) / n
+        out[(r, k)] = q
+    return out
 
 
 def letter_key(row_label, frame_key):
@@ -1432,7 +1496,7 @@ def letter_key(row_label, frame_key):
 
 
 def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-            text_color="black", letter_colors=None, draw_molecules=None):
+            text_color="black", letter_colors=None, draw_molecules=None, crops=None):
     """Draw the figure into ``fig`` (cleared first).
 
     ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
@@ -1447,7 +1511,8 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     st = resolve_style(style)
     font = float(st["font"])
     clims = dict(clims or {})
-    panels = rotate_tall_panels(panels, st.get("rotate_tall"))
+    # Crops are drawn-frame fractions, so they apply after the turn.
+    panels = crop_panels(rotate_tall_panels(panels, st.get("rotate_tall")), crops)
     layout = figure_layout(spec, panels, st)
     st = dict(st, panel_w=layout["panel_w"])
     size = layout["size"]
@@ -1463,17 +1528,16 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     columns = spec["columns"]
     n_rows = len(spec["rows"])
     is_zoom = spec.get("mode") == "zoom"
+    nm_per_in = equal_scale_factor(panels, layout) if (st.get("equal_scale") and not is_zoom) else None
+    if nm_per_in and st.get("scale_len_nm") is None:
+        # One bar length for all: it must fit the smallest frame.
+        widths = [w for w in (_finite(p.get("width_nm")) for p in panels.values()) if w]
+        if widths:
+            st = dict(st, scale_len_nm=nice_length(0.3 * min(widths)))
 
     # Letter / scale-bar placement in on-page reading order.
     order = sorted(layout["cells"], key=lambda rf: (layout["cells"][rf][1], layout["cells"][rf][0]))
-    letter_of = {}
-    if st["letters"]:
-        if st["letter_scope"] == "panel":
-            for i, rf in enumerate(order):
-                letter_of[rf] = letter_text(i, st["letter_style"])
-        else:
-            for f in range(len(columns)):
-                letter_of[(0, f)] = letter_text(f, st["letter_style"])
+    letter_of = panel_letters(layout, len(columns), st) if st["letters"] else {}
     frame_letter = {f: letter_text(f, st["letter_style"]) for f in range(len(columns))}
     scale_cells = set()
     if st["scale_bar"] == "all":
@@ -1563,6 +1627,9 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             box = layout["cells"].get((r, f))
             if box is None:
                 continue
+            p_cell = panels.get((r, col["key"]))
+            if nm_per_in and p_cell is not None:
+                box = equal_scale_box(box, p_cell, nm_per_in)
             ax = fig.add_axes(_ax_rect(box, size))
             ax.set_axis_off()
             ax.set_gid(f"panel_{r}_{f}")

@@ -711,6 +711,78 @@ class FigureController:
         except Exception:
             pass
 
+    # Named formats ("My Nature style", "Group style"): a full style dict
+    # each, in config ``figure_named_styles``; files share them in a group.
+    STYLE_FILE_KIND = "sxm_figure_styles"
+
+    def named_styles(self):
+        styles = self.viewer.config.get("figure_named_styles")
+        return {str(k): dict(v) for k, v in (styles or {}).items() if isinstance(v, dict)}
+
+    def save_named_style(self, name, style):
+        styles = self.named_styles()
+        styles[str(name)] = {k: v for k, v in dict(style).items() if not str(k).startswith("_")}
+        self.viewer.config["figure_named_styles"] = styles
+        self._save()
+
+    def delete_named_style(self, name):
+        styles = self.named_styles()
+        styles.pop(str(name), None)
+        self.viewer.config["figure_named_styles"] = styles
+        self._save()
+
+    def export_named_styles(self, path, names=None):
+        styles = self.named_styles()
+        if names:
+            styles = {k: v for k, v in styles.items() if k in names}
+        Path(path).write_text(json.dumps({"kind": self.STYLE_FILE_KIND, "version": 1, "styles": styles},
+                                         indent=1), encoding="utf-8")
+        return len(styles)
+
+    def import_named_styles(self, path):
+        """Merge the styles of a file (same name = replaced). Returns names."""
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("kind") != self.STYLE_FILE_KIND:
+            raise ValueError("not an SXM Viewer figure-styles file")
+        new = {str(k): dict(v) for k, v in (payload.get("styles") or {}).items() if isinstance(v, dict)}
+        styles = self.named_styles()
+        styles.update(new)
+        self.viewer.config["figure_named_styles"] = styles
+        self._save()
+        return list(new)
+
+    def other_figure_styles(self, exclude_fid=None, limit=12):
+        """``[(title, style)]`` of open figures first, then remembered ones -
+        for "Copy format from"."""
+        out, seen = [], set()
+        for fid, win in list(self._windows.items()):
+            if fid == exclude_fid:
+                continue
+            try:
+                title = win.windowTitle()
+                out.append((f"{title}  (open)", dict(win.state.get("style") or {})))
+                seen.add(fid)
+            except RuntimeError:
+                continue
+        for fid, st in reversed(list((self.viewer.figure_states or {}).items())):
+            if fid == exclude_fid or fid in seen or not isinstance(st, dict) or not st.get("style"):
+                continue
+            title = st.get("name") or {"height": "Height series", "bias": "Bias series",
+                                       "zoom": "Overview + zooms"}.get(st.get("mode"), "Figure")
+            keys = st.get("keys") or []
+            if keys:
+                title += f"  ({Path(str(keys[0])).stem}{' …' if len(keys) > 1 else ''})"
+            out.append((title, dict(st["style"])))
+            if len(out) >= limit:
+                break
+        return out
+
+    def _save(self):
+        try:
+            save_config(self.viewer.config)
+        except Exception:
+            pass
+
     # Export preferences (dpi, transparent background, PowerPoint mode, ...)
     def export_settings(self):
         st = self.viewer.config.get("figure_export")

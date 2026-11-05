@@ -27,6 +27,18 @@ Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://sem
   thumbnails, the preview and pop-ups can be dragged onto an open figure to
   add frames where the blue line shows - style, colormaps, ranges and edits
   stay. Images added to a series figure are no longer hidden as repeats.
+- **Figures: captions, comparable panels, styles, versions, bundles**:
+  - a draft caption and processing statement written from the data
+    (parameters said once when shared, per letter when they differ; filters,
+    Zero, crops and colour scales stated), editable, copied with Obsidian
+    exports;
+  - "Same scale for every image" (1 nm equally long in every panel) and
+    cropping a frame inside the figure (drag a rectangle; optionally the
+    same region on every frame);
+  - named styles (save, apply, share as a file, copy the format of another
+    figure), versions ("Submitted", "Revision 1"), option search (Ctrl+K);
+  - a submission bundle: PDF, layered SVG, PNG, caption, figure file and
+    the data under every panel (CSV + NPZ).
 - **Fix**: section titles of the figure window's menus were not drawn on
   Windows, and "Colour range & histogram" lost its "&".
 

@@ -37,6 +37,7 @@ from pathlib import Path
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
 from ...cmap_registry import get_cmap as registry_get_cmap
 from ...figures import height_series as hs
+from ...figures import caption as fig_caption
 from ...figures import svg_layers
 from ...molecules import interaction as molecule_interaction
 from ...molecules import render as molecule_render
@@ -189,6 +190,7 @@ class _FigureView(QtWidgets.QWidget):
         self.gizmo = None          # X/Y/Z orientation gizmo of the selected molecule (screen only)
         self.drop_line = None      # (x0, y0, x1, y1) inches: where a dragged frame would land
         self.edit_boxes = []       # inch boxes of panels with their own processing (screen only)
+        self.crop_rect = None      # QRectF (screen): the crop being dragged
         self.drop_items = None     # callable(QMimeData) -> [(key, idx)]: images a drop would add
         self.drop_target = None    # callable(QPoint) -> drop line (inches) or None
         self._drop_hint = False    # a drag with images is over the view
@@ -346,6 +348,10 @@ class _FigureView(QtWidgets.QWidget):
             b = self.inches_rect((x1, y1, x1, y1)).topLeft()
             p.setPen(QtGui.QPen(accent, 3.0, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
             p.drawLine(a, b)
+        if self.crop_rect is not None:
+            p.setPen(QtGui.QPen(accent, 1.6, QtCore.Qt.DashLine))
+            p.setBrush(QtGui.QColor(30, 110, 220, 35))
+            p.drawRect(self.crop_rect)
         if self._drop_hint and not self.drop_line:
             p.setPen(QtGui.QPen(accent, 2.0, QtCore.Qt.DashLine))
             p.setBrush(QtGui.QColor(30, 110, 220, 18))
@@ -554,6 +560,78 @@ class _FigureView(QtWidgets.QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.resized.emit()
+
+
+def _highlight(widget, ms=1400):
+    """Briefly tint a widget (the option the search jumped to)."""
+    try:
+        eff = QtWidgets.QGraphicsColorizeEffect(widget)
+        eff.setColor(widget.palette().color(QtGui.QPalette.Highlight))
+        eff.setStrength(0.75)
+        widget.setGraphicsEffect(eff)
+        widget.setFocus()
+        QtCore.QTimer.singleShot(ms, lambda: widget.setGraphicsEffect(None))
+    except RuntimeError:
+        pass
+
+
+class _SearchPopup(QtWidgets.QFrame):
+    """Type to find any Format option or figure action; Enter / click runs
+    it (an option opens its card with the control highlighted)."""
+
+    def __init__(self, entries, run, parent=None):
+        super().__init__(parent, QtCore.Qt.Popup)
+        self.setObjectName("figureSearch")
+        self.setStyleSheet("QFrame#figureSearch { border: 1px solid palette(mid); border-radius: 6px; "
+                           "background: palette(window); }")
+        self._entries = list(entries)
+        self._run = run
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        self.edit = QtWidgets.QLineEdit(self)
+        self.edit.setPlaceholderText("Find an option or action - e.g. scale bar, letters, bundle")
+        self.edit.setClearButtonEnabled(True)
+        self.edit.setMinimumWidth(460)
+        lay.addWidget(self.edit)
+        self.list = QtWidgets.QListWidget(self)
+        self.list.setMinimumHeight(260)
+        lay.addWidget(self.list)
+        self.edit.textChanged.connect(self._filter)
+        self.edit.returnPressed.connect(self._run_current)
+        self.edit.installEventFilter(self)
+        self.list.itemActivated.connect(self._run_item)
+        self.list.itemClicked.connect(self._run_item)
+        self._filter("")
+
+    def eventFilter(self, obj, event):
+        if obj is self.edit and event.type() == QtCore.QEvent.KeyPress and \
+                event.key() in (QtCore.Qt.Key_Down, QtCore.Qt.Key_Up):
+            row = self.list.currentRow() + (1 if event.key() == QtCore.Qt.Key_Down else -1)
+            self.list.setCurrentRow(max(0, min(self.list.count() - 1, row)))
+            return True
+        return super().eventFilter(obj, event)
+
+    def _filter(self, text):
+        words = [w for w in text.lower().split() if w]
+        self.list.clear()
+        for label, entry in self._entries:
+            low = label.lower()
+            if all(w in low for w in words):
+                it = QtWidgets.QListWidgetItem(("▸ " if entry[0] == "cmd" else "") + label)
+                it.setData(QtCore.Qt.UserRole, entry)
+                self.list.addItem(it)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _run_current(self):
+        self._run_item(self.list.currentItem())
+
+    def _run_item(self, item):
+        if item is None:
+            return
+        entry = item.data(QtCore.Qt.UserRole)
+        self.close()
+        self._run(entry)
 
 
 class _HistogramStrip(QtWidgets.QWidget):
@@ -885,6 +963,7 @@ class _FormatPanel(QtWidgets.QWidget):
         self._mode = None
         self._last_scale = "all"
         self._closed_at = (None, 0.0)
+        self.search_index = []    # (card kind, card title, row text, widget) for option search
         icon_color = self.palette().color(QtGui.QPalette.WindowText)
         self._icon_color = icon_color
         w = {}
@@ -959,9 +1038,28 @@ class _FormatPanel(QtWidgets.QWidget):
             self._cards[kind] = pop
             state = {"n": 0}
 
+            def index(text, widget):
+                text = str(text or "").replace("&", "").strip()
+                if text:
+                    self.search_index.append((kind, title, text, widget))
+
             def add(label, widget):
                 r = state["n"]
                 state["n"] += 1
+                if label is None:
+                    found = [widget] if isinstance(widget, QtWidgets.QAbstractButton) else []
+                    if isinstance(widget, QtWidgets.QLayout):
+                        for i in range(widget.count()):
+                            wi = widget.itemAt(i).widget()
+                            if isinstance(wi, QtWidgets.QAbstractButton):
+                                found.append(wi)
+                    for b in found:
+                        index(b.text(), b)
+                else:
+                    target = widget
+                    if isinstance(widget, QtWidgets.QLayout) and widget.count():
+                        target = widget.itemAt(0).widget()
+                    index(label, target)
                 if label is None:
                     if isinstance(widget, QtWidgets.QLayout):
                         grid.addLayout(widget, r, 0, 1, 2)
@@ -978,6 +1076,9 @@ class _FormatPanel(QtWidgets.QWidget):
             def section(text_or_widget):
                 r = state["n"]
                 state["n"] += 1
+                index(text_or_widget if isinstance(text_or_widget, str) else
+                      getattr(text_or_widget, "text", lambda: "")(), text_or_widget
+                      if not isinstance(text_or_widget, str) else None)
                 if isinstance(text_or_widget, str):
                     text_or_widget = QtWidgets.QLabel(f"<b>{text_or_widget}</b>")
                 grid.addWidget(text_or_widget, r, 0, 1, 2)
@@ -1059,6 +1160,9 @@ class _FormatPanel(QtWidgets.QWidget):
                        check("_actual", "Actual size (100 %)",
                              "Draw the figure at its printed size on this screen")))
         self._card_keys["page"].remove("_actual")
+        add(None, check("equal_scale", "Same scale for every image (nm per mm)",
+                        "Smaller scans are drawn smaller, so features compare directly "
+                        "across frames; one scale-bar length for all"))
 
         # -- Channels
         add = card("channels")
@@ -1220,6 +1324,9 @@ class _FormatPanel(QtWidgets.QWidget):
         chip = self._chips.get("zoom")
         if chip is not None:
             chip.setVisible(mode == "zoom")
+        if "equal_scale" in self.w:
+            # An overview and its zooms differ in size on purpose.
+            self.w["equal_scale"].setVisible(mode != "zoom")
 
     def set_defaults(self, style):
         """The style the ↺ buttons go back to (and the chips' change dot
@@ -1303,7 +1410,8 @@ class _FormatPanel(QtWidgets.QWidget):
                 txt = f"{float(st.get('page_mm') or 0):.0f} mm"
             else:
                 txt = hs.PAGE_NAMES.get(page, page).replace(" column", " col.")
-            return f"{txt} · {'frames down' if st.get('transpose') else 'frames across'}", False
+            same = " · same scale" if st.get("equal_scale") and self._mode != "zoom" else ""
+            return f"{txt} · {'frames down' if st.get('transpose') else 'frames across'}{same}", False
         if kind == "channels":
             rows = (spec or {}).get("rows") or []
             labels = [hs.channel_text(r.get("display") or r.get("label") or "").split(" (")[0]
@@ -1526,6 +1634,9 @@ class FigureWindow(QtWidgets.QWidget):
         self._frame_drag = None     # header drag that reorders a custom figure
         self._hover_hit = None      # what the cursor is over (panel keys: A / Z / G / T)
         self._live_edit = None      # (cell key, edits) previewed by an open filter dialog
+        self._crop_mode = None      # {"frame": f} while waiting for a crop drag
+        self._crop_drag = None      # {"r", "f", "start", "img"} during the drag
+        self._caption_auto = ""     # last generated caption (to tell user edits apart)
         self._members = None
         self._data_sig = None
         self.spec = None
@@ -1577,6 +1688,10 @@ class FigureWindow(QtWidgets.QWidget):
             "name": str(saved.get("name") or ""),
             "cell_edits": {str(k): dict(v) for k, v in (saved.get("cell_edits") or {}).items()
                            if isinstance(v, dict)},
+            "crops": {str(k): [float(x) for x in v] for k, v in (saved.get("crops") or {}).items()
+                      if isinstance(v, (list, tuple)) and len(v) == 4},
+            "caption_text": saved.get("caption_text"),
+            "versions": [dict(v) for v in (saved.get("versions") or []) if isinstance(v, dict)],
             "reference_key": saved.get("reference_key") or self.source.default_reference(self._keys),
             "dropped": list(saved.get("dropped") or []),
             "forced": list(saved.get("forced") or []),
@@ -1637,7 +1752,7 @@ class FigureWindow(QtWidgets.QWidget):
             "reference_key": self.source.default_reference(self._keys),
             "dropped": [], "forced": [], "rows": None, "row_choices": {},
             "row_cmaps": {}, "clims": {}, "show_repeats": False, "letter_colors": {},
-            "cell_edits": {},
+            "cell_edits": {}, "crops": {},
         })
 
     def reset_format(self):
@@ -1702,6 +1817,16 @@ class FigureWindow(QtWidgets.QWidget):
         strip.addSpacing(12)
         self.format_btn = button("Format", "Channels, letters, scale bar, colour bars, layout "
                                  "(also on right-click)", self._toggle_format, checkable=True)
+        self.caption_btn = button("Caption", "A draft caption and processing statement written from "
+                                  "the data - edit it, copy it; it goes with Obsidian exports and "
+                                  "the submission bundle", self._toggle_caption, checkable=True)
+        self.style_btn = button("Styles", "Named formats: save this figure's look, apply a saved one, "
+                                "copy the format of another figure, share styles as a file", lambda: None)
+        self.style_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        sm = QtWidgets.QMenu(self.style_btn)
+        sm.aboutToShow.connect(lambda m=sm: (m.clear(), self._styles_menu(m)))
+        self.style_btn.setMenu(sm)
+        self.search_btn = button("🔍", "Find an option or action (Ctrl+K)", self.open_search)
         strip.addStretch(1)
 
         self.note_btn = QtWidgets.QToolButton(self)
@@ -1743,6 +1868,8 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.dropped.connect(self._on_drop)
         self.scroll.setWidget(self.view)
         root.addWidget(self.scroll, 1)
+        self.caption_panel = self._build_caption_panel()
+        root.addWidget(self.caption_panel)
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
@@ -1780,11 +1907,320 @@ class FigureWindow(QtWidgets.QWidget):
             act.triggered.connect(self.as_custom_figure)
         menu.addAction("Rename…", self.rename)
         menu.addAction("Save figure file…", self.save_figure_file)
+        menu.addAction("Submission bundle… (PDF, SVG, PNG, caption, source data)", self.export_bundle)
+        self._versions_menu(menu.addMenu("Versions"))
         menu.addSeparator()
         menu.addAction("Reset figure (frames, channels, ranges, image edits)", self.reset_figure)
         menu.addAction("Reset format", self.reset_format)
         menu.addSeparator()
         menu.addAction("Open in canvas (legacy free layout)", self.open_in_canvas)
+
+    # ------------------------------------------------------------------
+    # Named styles / copy format from another figure
+    # ------------------------------------------------------------------
+    # Keys that describe *this* figure's data rather than its look: never
+    # carried by a named style or "copy format".
+    _NOT_FORMAT = ("header", "reverse", "scale_len_nm")
+
+    def _format_of(self, style):
+        return {k: v for k, v in dict(style or {}).items()
+                if k not in self._NOT_FORMAT and not str(k).startswith("_")}
+
+    def apply_format(self, style, label="format"):
+        self._apply_edit(style=self._format_of(style))
+        self._flash(f"Applied {label} - Ctrl+Z to undo")
+
+    def _styles_menu(self, menu):
+        styles = self.source.named_styles()
+        section(menu, "Apply a saved style", first=True)
+        if not styles:
+            hint = menu.addAction("None yet - save this figure's look below")
+            hint.setEnabled(False)
+        for name, st in sorted(styles.items(), key=lambda kv: kv[0].lower()):
+            menu.addAction(name).triggered.connect(lambda _=False, n=name, s_=st: self.apply_format(s_, n))
+        menu.addAction("Save this figure's look as…").triggered.connect(self.save_named_style)
+        others = self.source.other_figure_styles(exclude_fid=self.fid)
+        if others:
+            section(menu, "Copy format from")
+            for title, st in others:
+                menu.addAction(title).triggered.connect(
+                    lambda _=False, s_=st, t=title: self.apply_format(s_, f"the format of {t.split('  (')[0]}"))
+        section(menu, "Share")
+        menu.addAction("Export styles to a file…").triggered.connect(self.export_styles)
+        menu.addAction("Import styles from a file…").triggered.connect(self.import_styles)
+        if styles:
+            menu.addAction("Delete a saved style…").triggered.connect(self.delete_named_style)
+
+    def save_named_style(self):
+        styles = self.source.named_styles()
+        name, ok = QtWidgets.QInputDialog.getText(self, "Save style", "Name of this look (e.g. Nature, "
+                                                  "Group style):")
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in styles and QtWidgets.QMessageBox.question(
+                self, "Save style", f"Replace the saved style '{name}'?") != QtWidgets.QMessageBox.Yes:
+            return
+        self.source.save_named_style(name, self._format_of(self.style))
+        self._flash(f"Saved style '{name}'")
+
+    def delete_named_style(self):
+        names = sorted(self.source.named_styles(), key=str.lower)
+        if not names:
+            return
+        name, ok = QtWidgets.QInputDialog.getItem(self, "Delete style", "Style:", names, 0, False)
+        if ok and name:
+            self.source.delete_named_style(name)
+            self._flash(f"Deleted style '{name}'")
+
+    def export_styles(self):
+        if not self.source.named_styles():
+            self._flash("No saved styles yet")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export figure styles", str(Path(self.source.default_save_dir(self._all_keys()))
+                                              / "figure_styles.sxmstyles.json"),
+            "Figure styles (*.sxmstyles.json *.json)")
+        if path:
+            n = self.source.export_named_styles(path)
+            self._flash(f"Exported {n} style{'s' if n != 1 else ''}")
+
+    def import_styles(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import figure styles", self.source.default_save_dir(self._all_keys()),
+            "Figure styles (*.sxmstyles.json *.json)")
+        if not path:
+            return
+        try:
+            names = self.source.import_named_styles(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Import styles", f"Could not import:\n{exc}")
+            return
+        self._flash(f"Imported {len(names)} style{'s' if len(names) != 1 else ''}: " + ", ".join(names[:3]))
+
+    # ------------------------------------------------------------------
+    # Versions: named snapshots of the whole figure (frames, channels,
+    # ranges, edits, format, caption), e.g. "Submitted", "Revision 1".
+    # ------------------------------------------------------------------
+    _VERSION_LIMIT = 30
+
+    def _versions_menu(self, menu):
+        menu.addAction("Save a version…").triggered.connect(self.save_version)
+        versions = list(self.state.get("versions") or [])
+        if versions:
+            section(menu, "Go back to")
+            for i, v in reversed(list(enumerate(versions))):
+                menu.addAction(f"{v.get('name')}  ({v.get('time', '')})").triggered.connect(
+                    lambda _=False, i_=i: self.restore_version(i_))
+            menu.addSeparator()
+            menu.addAction("Delete a version…").triggered.connect(self.delete_version)
+
+    def _version_payload(self):
+        st = copy.deepcopy(self.state)
+        for k in ("versions", "mode", "root_key", "name"):
+            st.pop(k, None)
+        return st
+
+    def save_version(self, name=None):
+        import datetime
+        versions = list(self.state.get("versions") or [])
+        if name is None:
+            name, ok = QtWidgets.QInputDialog.getText(
+                self, "Save a version", "Name (e.g. Submitted, Revision 1):", text=f"Version {len(versions) + 1}")
+            if not ok:
+                return
+        name = (name or "").strip() or f"Version {len(versions) + 1}"
+        versions.append({"name": name, "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                         "state": self._version_payload()})
+        self.state["versions"] = versions[-self._VERSION_LIMIT:]
+        self.source.set_state(self.fid, self.state)
+        self._flash(f"Saved version '{name}'")
+
+    def restore_version(self, i):
+        versions = list(self.state.get("versions") or [])
+        if not (0 <= i < len(versions)):
+            return
+        target = copy.deepcopy(versions[i].get("state") or {})
+        target["style"] = hs.resolve_style(target.get("style") or {})
+        self._apply_edit(target, reload_data=True)
+        self._flash(f"Back to '{versions[i].get('name')}' - Ctrl+Z returns")
+
+    def delete_version(self):
+        versions = list(self.state.get("versions") or [])
+        if not versions:
+            return
+        labels = [f"{v.get('name')}  ({v.get('time', '')})" for v in versions]
+        label, ok = QtWidgets.QInputDialog.getItem(self, "Delete a version", "Version:", labels, 0, False)
+        if ok and label in labels:
+            versions.pop(labels.index(label))
+            self.state["versions"] = versions
+            self.source.set_state(self.fid, self.state)
+
+    # ------------------------------------------------------------------
+    # Submission bundle: everything a journal asks for in one folder -
+    # PDF + layered SVG + PNG, caption.txt, the figure file, and the data
+    # under every panel (one CSV per panel + one NPZ), as drawn.
+    # ------------------------------------------------------------------
+    def export_bundle(self, folder=None):
+        if not self._ready():
+            return None
+        if folder is None:
+            start = self.source.export_settings().get("save_dir") or self.source.default_save_dir(self._keys)
+            folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Submission bundle - choose a folder", start)
+            if not folder:
+                return None
+        name = self._default_name() or "figure"
+        out = Path(folder) / f"{name}_bundle"
+        n = 1
+        while out.exists():
+            n += 1
+            out = Path(folder) / f"{name}_bundle_{n}"
+        try:
+            out.mkdir(parents=True)
+            fig = self._export_figure()
+            self._vector_save(fig, str(out / f"{name}.pdf"))
+            (out / f"{name}.svg").write_bytes(self._svg_bytes(fig, layered=True))
+            dpi, raised = self._raster_dpi(fig)
+            fig.savefig(str(out / f"{name}.png"), dpi=dpi, facecolor=self._face())
+            self.source.set_state(self.fid, self.state)
+            from ..controllers.figures import FIGURE_FILE_SUFFIX
+            self.source.save_figure_file(self.fid, str(out / f"{name}{FIGURE_FILE_SUFFIX}"))
+            n_data = self._write_source_data(out / "source_data")
+            (out / "caption.txt").write_text(self._bundle_text(dpi), encoding="utf-8")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Submission bundle", f"Could not write the bundle:\n{exc}")
+            return None
+        self._flash(f"Bundle written: {out.name} ({n_data} panels of source data)")
+        return out
+
+    def _drawn_panels(self):
+        st = self.style
+        return hs.crop_panels(hs.rotate_tall_panels(self._panel_map(), st.get("rotate_tall")), self._crops())
+
+    def _panel_refs(self):
+        """``[(r, f, ref text, file stem)]`` for every drawn panel."""
+        letters = hs.panel_letters(self.layout_info, len(self.spec["columns"]), self.style) \
+            if self.style.get("letters") and self.layout_info else {}
+        out = []
+        for f, col in enumerate(self.spec["columns"]):
+            frame_letter = next((letters[(r, f)] for r in range(len(self.spec["rows"])) if (r, f) in letters), None)
+            for r, row in enumerate(self.spec["rows"]):
+                lt = letters.get((r, f)) or frame_letter or str(f + 1)
+                lt = lt.strip("().") or str(f + 1)
+                chan = row.get("display") or row.get("label")
+                stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in f"{lt}_{chan}")
+                out.append((r, f, f"({lt}) {chan}", stem))
+        return out
+
+    def _write_source_data(self, folder):
+        """One CSV per panel (values as drawn, base SI unit, header lines
+        with the source file and processing) + ``source_data.npz``."""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        drawn = self._drawn_panels()
+        arrays, written = {}, 0
+        for r, f, ref, stem in self._panel_refs():
+            col = self.spec["columns"][f]
+            row = self.spec["rows"][r]
+            p = drawn.get((r, col["key"]))
+            if not p or col["key"] not in row["cells"]:
+                continue
+            data = np.asarray(p["data"], dtype=float)
+            rel = (row.get("cell_kind") or {}).get(col["key"]) == "z" if row.get("kind") == "mixed" \
+                else row.get("kind") == "z"
+            if rel:
+                data = hs._relative(data)
+            steps, _own = self._cell_filters(r, f)
+            idx = row["cells"][col["key"]]
+            header = [
+                f"panel {ref}",
+                f"source file: {col['key']}",
+                f"channel: {self.source.channel_label(col['key'], idx)} (index {idx})",
+                f"unit: {p.get('unit') or ''}" + ("  (relative: minus the 1st percentile)" if rel else ""),
+                f"size: {p.get('width_nm') or '?'} x {p.get('height_nm') or '?'} nm, "
+                f"{data.shape[1]} x {data.shape[0]} px, row 0 = top",
+                f"filters: {self.source.filter_label(steps) if steps else 'none'}",
+                f"zero: {'yes' if self._cell_zero(r, f)[0] else 'no'}",
+            ]
+            crop = p.get("crop")
+            if crop:
+                header.append("crop (fractions x0, y0, x1, y1): " + ", ".join(f"{v:.4f}" for v in crop))
+            np.savetxt(str(folder / f"{stem}.csv"), data, delimiter=",", fmt="%.6g", header="\n".join(header))
+            arrays[stem] = data
+            written += 1
+        if arrays:
+            np.savez_compressed(str(folder / "source_data.npz"), **arrays)
+        return written
+
+    def _bundle_text(self, dpi):
+        lines = [self.current_caption(), "", "-" * 60, "Panels and source files:"]
+        for r, f, ref, stem in self._panel_refs():
+            col = self.spec["columns"][f]
+            if col["key"] in self.spec["rows"][r]["cells"]:
+                lines.append(f"{ref}: {col['key']}  ->  source_data/{stem}.csv")
+        page = self.style.get("page") or "free"
+        size = (self.layout_info or {}).get("size") or (0, 0)
+        lines += ["", f"Figure size: {size[0] * 25.4:.0f} x {size[1] * 25.4:.0f} mm "
+                      f"({hs.PAGE_NAMES.get(page, page)}); PNG at {dpi} dpi; font "
+                      f"{self.style.get('font_family') or hs.default_font()} {float(self.style.get('font') or 0):g} pt.",
+                  "Made with SXM Viewer."]
+        return "\n".join(lines) + "\n"
+
+    # ------------------------------------------------------------------
+    # Find an option or action (Ctrl+K)
+    # ------------------------------------------------------------------
+    def _search_entries(self):
+        entries = []
+        for kind, title, text, widget in self.format_panel.search_index:
+            if kind == "zoom" and self.mode != "zoom":
+                continue
+            entries.append((f"{title} › {text}", ("card", kind, widget)))
+        for kind, title, blurb in _FORMAT_CARDS:
+            if kind == "zoom" and self.mode != "zoom":
+                continue
+            entries.append((f"{title} - {blurb}", ("card", kind, None)))
+        commands = [
+            ("Copy the figure (PNG + SVG)", self.copy_to_clipboard),
+            ("Save as PDF / SVG / PNG / TIFF…", self.save_as),
+            ("Send to PowerPoint", self.send_to_powerpoint),
+            ("Open in Inkscape", self.open_in_inkscape),
+            ("Submission bundle (PDF, SVG, PNG, caption, source data)…", self.export_bundle),
+            ("Caption: show the draft caption", lambda: self.caption_btn.setChecked(True)),
+            ("Caption: copy", self.copy_caption),
+            ("Styles: save this figure's look…", self.save_named_style),
+            ("Styles: import from a file…", self.import_styles),
+            ("Versions: save a version…", self.save_version),
+            ("Rename the figure…", self.rename),
+            ("Save the figure file…", self.save_figure_file),
+            ("Add the selected images", lambda: self.add_frames(
+                [k for k in self.source.selection_keys() if k not in self._all_keys()])),
+            ("Reset the format", self.reset_format),
+            ("Reset the figure (frames, channels, ranges, image edits)", self.reset_figure),
+            ("Undo", self.undo),
+            ("Redo", self.redo),
+        ]
+        for name, st in sorted(self.source.named_styles().items()):
+            commands.append((f"Styles: apply '{name}'", lambda s_=st, n=name: self.apply_format(s_, n)))
+        entries += [(text, ("cmd", fn)) for text, fn in commands]
+        return entries
+
+    def open_search(self):
+        pop = _SearchPopup(self._search_entries(), self._run_search_entry, self)
+        g = self.mapToGlobal(QtCore.QPoint(self.width() // 2 - 230, 60))
+        pop.move(g)
+        pop.show()
+        pop.edit.setFocus()
+        return pop
+
+    def _run_search_entry(self, entry):
+        what = entry[0]
+        if what == "cmd":
+            entry[1]()
+            return
+        _what, kind, widget = entry
+        self.open_format_card(kind)
+        if widget is not None:
+            QtCore.QTimer.singleShot(80, lambda w=widget: _highlight(w))
 
     def add_frames(self, keys, at=None, move_existing=False):
         """Add images as frames. Custom figure: at display index ``at``
@@ -1870,6 +2306,7 @@ class FigureWindow(QtWidgets.QWidget):
             (QtGui.QKeySequence.Undo, self.undo),
             (QtGui.QKeySequence.Redo, self.redo),
             (QtGui.QKeySequence("Ctrl+Shift+Z"), self.redo),
+            (QtGui.QKeySequence("Ctrl+K"), self.open_search),
         ):
             sc = QtWidgets.QShortcut(seq, self)
             sc.setContext(QtCore.Qt.WindowShortcut)
@@ -2055,6 +2492,16 @@ class FigureWindow(QtWidgets.QWidget):
             section(menu, "Repeats")
             menu.addAction("Hide repeats (keep the latest)").triggered.connect(
                 lambda: self._apply_edit({"show_repeats": False}))
+        if self.style.get("equal_scale") and self.mode != "zoom":
+            widths = [p.get("width_nm") for p in self._drawn_panels().values() if p and p.get("width_nm")]
+            if widths and max(widths) > 5 * min(widths):
+                ratio = max(widths) / min(widths)
+                parts.append(f"same scale: sizes differ {ratio:.0f}×")
+                section(menu, f"Same scale - the largest frame is {ratio:.0f}× the smallest")
+                menu.addAction("Turn same scale off").triggered.connect(
+                    lambda: self._apply_edit(style={"equal_scale": False}))
+                hint = menu.addAction("Or crop the large frame (right-click it) to the area of interest")
+                hint.setEnabled(False)
         edited = self._edited_cells()
         if edited:
             parts.append(f"{len(edited)} with own processing")
@@ -2118,7 +2565,7 @@ class FigureWindow(QtWidgets.QWidget):
         return hs.render(
             fig, self.spec, self._panel_map(), style=self.style, clims=self.state["clims"],
             letter_colors=self.state.get("letter_colors"), draw_molecules=draw,
-            get_cmap=lambda name: registry_get_cmap(name, "gray"))
+            get_cmap=lambda name: registry_get_cmap(name, "gray"), crops=self._crops())
 
     def _render_screen(self):
         if not self._ready():
@@ -2131,6 +2578,7 @@ class FigureWindow(QtWidgets.QWidget):
         self.layout_info = self._draw_into(self._fig, screen=True)
         self.view.add_row_box = self._add_row_box()
         self.view.edit_boxes = self._edit_boxes()
+        self._update_caption()
         self.view.sel_boxes = self._mol_sel_boxes()
         mols = self._molecules()
         self.view.gizmo = ({"vectors": _gizmo_vectors(mols[self._mol_sel])}
@@ -2439,6 +2887,9 @@ class FigureWindow(QtWidgets.QWidget):
         self._set_molecules(mols)
 
     def keyPressEvent(self, event):
+        if self._crop_mode is not None and event.key() == QtCore.Qt.Key_Escape:
+            self._end_crop_mode("Crop cancelled")
+            return
         i = self._mol_sel
         if i is not None and i < len(self._molecules()):
             key = event.key()
@@ -2647,6 +3098,9 @@ class FigureWindow(QtWidgets.QWidget):
     # Clicks and drags
     # ------------------------------------------------------------------
     def _on_press(self, hit, event):
+        if self._crop_mode is not None:
+            self._crop_press(hit, event)
+            return
         if not hit:
             if self._mol_sel is not None:
                 self._mol_sel = None
@@ -2749,6 +3203,257 @@ class FigureWindow(QtWidgets.QWidget):
         if cols + rest != list(self.state["keys"]):
             self._apply_edit({"keys": cols + rest})
 
+    # ------------------------------------------------------------------
+    # Crop a frame inside the figure (no virtual copy): drag a rectangle on
+    # any of its panels; every channel of the frame is cut the same way.
+    # "Same crop for every frame" keeps one region for all (series of the
+    # same footprint). Not for overview + zooms (the outlines need the
+    # whole overview).
+    # ------------------------------------------------------------------
+    def _crops(self):
+        if self.mode == "zoom":
+            return {}
+        return {k: tuple(v) for k, v in (self.state.get("crops") or {}).items()}
+
+    def _crop_of(self, f):
+        crops = self.state.get("crops") or {}
+        key = self.spec["columns"][f]["key"]
+        return crops.get(key) or crops.get("*")
+
+    def _crop_actions(self, menu, f):
+        if self.mode == "zoom":
+            return
+        menu.addAction("Crop this frame… (drag a rectangle)").triggered.connect(
+            lambda: self._start_crop_mode(f))
+        crops = self.state.get("crops") or {}
+        if self._crop_of(f) is None:
+            return
+        key = self.spec["columns"][f]["key"]
+        same = "*" in crops
+        a = menu.addAction("Same crop for every frame")
+        a.setCheckable(True)
+        a.setChecked(same)
+        a.setToolTip("One region for all frames - for frames of the same area (a series)")
+        a.triggered.connect(lambda on: self._set_same_crop(f, on))
+        a = menu.addAction("Remove crop" if not same else "Remove crop (every frame)")
+        a.triggered.connect(lambda: self._remove_crop(key, same))
+
+    def _start_crop_mode(self, f):
+        self._crop_mode = {"frame": f}
+        self.view.setCursor(QtCore.Qt.CrossCursor)
+        self._flash(f"Drag a rectangle on {self.spec['columns'][f]['name']} to crop it "
+                    "(Shift: square, Esc: cancel)")
+
+    def _end_crop_mode(self, text=None):
+        self._crop_mode = None
+        self._crop_drag = None
+        self.view.crop_rect = None
+        self.view.setCursor(QtCore.Qt.ArrowCursor)
+        self.view.update()
+        if text:
+            self._flash(text)
+
+    def _crop_press(self, hit, event):
+        f = self._crop_mode["frame"]
+        if not hit or hit.get("kind") != "panel" or hit.get("frame") != f or event is None:
+            self._end_crop_mode("Crop cancelled - drag inside the frame's image")
+            return
+        entry = ((self.layout_info or {}).get("data_boxes") or {}).get((hit["row"], f))
+        if not entry:
+            self._end_crop_mode()
+            return
+        img = self.view.inches_rect(entry[0])
+        self._crop_drag = {"r": hit["row"], "f": f, "start": QtCore.QPointF(event.pos()), "img": img}
+
+    def _crop_move(self, event):
+        d = self._crop_drag
+        img = d["img"]
+        a = d["start"]
+        b = QtCore.QPointF(event.pos())
+        b.setX(min(max(b.x(), img.left()), img.right()))
+        b.setY(min(max(b.y(), img.top()), img.bottom()))
+        if event.modifiers() & QtCore.Qt.ShiftModifier:
+            side = max(abs(b.x() - a.x()), abs(b.y() - a.y()))
+            b = QtCore.QPointF(a.x() + math.copysign(side, (b.x() - a.x()) or 1.0),
+                               a.y() + math.copysign(side, (b.y() - a.y()) or 1.0))
+        self.view.crop_rect = QtCore.QRectF(a, b).normalized().intersected(img)
+        self.view.update()
+
+    def _crop_release(self, _event):
+        d = self._crop_drag
+        rect = self.view.crop_rect
+        f = d["f"]
+        if rect is None or rect.width() < 6 or rect.height() < 6:
+            self._end_crop_mode("Crop cancelled (too small)")
+            return
+        img = d["img"]
+        fx0 = (rect.left() - img.left()) / img.width()
+        fx1 = (rect.right() - img.left()) / img.width()
+        fy0 = (rect.top() - img.top()) / img.height()
+        fy1 = (rect.bottom() - img.top()) / img.height()
+        # The drawn image may already be a crop: compose with it.
+        ox0, oy0, ox1, oy1 = self._crop_of(f) or (0.0, 0.0, 1.0, 1.0)
+        box = [ox0 + fx0 * (ox1 - ox0), oy0 + fy0 * (oy1 - oy0),
+               ox0 + fx1 * (ox1 - ox0), oy0 + fy1 * (oy1 - oy0)]
+        crops = dict(self.state.get("crops") or {})
+        key = self.spec["columns"][f]["key"]
+        crops["*" if "*" in crops and key not in crops else key] = box
+        name = self.spec["columns"][f]["name"]
+        self._end_crop_mode()
+        self._apply_edit({"crops": crops})
+        self._flash(f"Cropped {name} - right-click it to remove the crop or use it for every frame")
+
+    def _set_same_crop(self, f, on):
+        crops = dict(self.state.get("crops") or {})
+        box = self._crop_of(f)
+        if on and box is not None:
+            crops = {"*": list(box)}
+        elif not on and "*" in crops:
+            box = crops.pop("*")
+            for c in self.spec["columns"]:
+                crops.setdefault(c["key"], list(box))
+        self._apply_edit({"crops": crops})
+
+    def _remove_crop(self, key, every):
+        crops = dict(self.state.get("crops") or {})
+        if every:
+            crops = {}
+        else:
+            crops.pop(key, None)
+        self._apply_edit({"crops": crops})
+
+    # ------------------------------------------------------------------
+    # Caption: a draft written from the data (figures/caption.py). Follows
+    # the figure until the user edits it; "Regenerate" goes back to auto.
+    # ------------------------------------------------------------------
+    def _build_caption_panel(self):
+        box = QtWidgets.QFrame(self)
+        box.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        lay = QtWidgets.QHBoxLayout(box)
+        lay.setContentsMargins(6, 4, 6, 4)
+        self.caption_edit = QtWidgets.QPlainTextEdit(box)
+        self.caption_edit.setPlaceholderText("Caption")
+        self.caption_edit.setMaximumHeight(110)
+        self.caption_edit.textChanged.connect(self._caption_edited)
+        lay.addWidget(self.caption_edit, 1)
+        side = QtWidgets.QVBoxLayout()
+        self.caption_state = QtWidgets.QLabel("", box)
+        self.caption_state.setStyleSheet("color: palette(mid);")
+        side.addWidget(self.caption_state)
+        copy_b = QtWidgets.QPushButton("Copy", box)
+        copy_b.setToolTip("Copy the caption and processing text")
+        copy_b.clicked.connect(self.copy_caption)
+        side.addWidget(copy_b)
+        self.caption_regen = QtWidgets.QPushButton("Regenerate", box)
+        self.caption_regen.setToolTip("Discard your edits and write the caption from the figure again")
+        self.caption_regen.clicked.connect(self._regenerate_caption)
+        side.addWidget(self.caption_regen)
+        side.addStretch(1)
+        lay.addLayout(side)
+        open_cap = bool(self.source.export_settings().get("caption_open", False))
+        box.setVisible(open_cap)
+        self.caption_btn.blockSignals(True)
+        self.caption_btn.setChecked(open_cap)
+        self.caption_btn.blockSignals(False)
+        return box
+
+    def _toggle_caption(self, on):
+        self.caption_panel.setVisible(bool(on))
+        self.source.set_export_settings(caption_open=bool(on))
+        self._update_caption()
+
+    def caption_texts(self):
+        """``{"caption", "processing"}`` drafted from the current figure."""
+        if not self.spec or not self.layout_info:
+            return {"caption": "", "processing": ""}
+        st = self.style
+        n_f = len(self.spec["columns"])
+        letters = hs.panel_letters(self.layout_info, n_f, st) if st.get("letters") else {}
+        members = {str(m["key"]): m for m in (self._members or [])}
+        drawn = hs.crop_panels(hs.rotate_tall_panels(self._panel_map(), st.get("rotate_tall")), self._crops())
+        own = (self.layout_info or {}).get("own_scale") or {}
+        processing = {}
+        for r in range(len(self.spec["rows"])):
+            for f, col in enumerate(self.spec["columns"]):
+                if col["key"] not in self.spec["rows"][r]["cells"]:
+                    continue
+                steps, _own = self._cell_filters(r, f)
+                processing[(r, f)] = {"filters": self.source.filter_label(steps) if steps else "",
+                                      "zero": self._cell_zero(r, f)[0],
+                                      "own_range": own.get((r, col["key"])) == "user"}
+        return fig_caption.build_caption(
+            self.spec, letters=letters, members=members, panels=drawn, style=st,
+            processing=processing, crops=self._crops(), scale_lengths=self._scale_lengths(drawn))
+
+    def _scale_lengths(self, drawn):
+        """``{frame: nm}`` of the scale bars as the renderer draws them."""
+        st = self.style
+        where = st.get("scale_bar") or "all"
+        if where == "off" or not self.layout_info:
+            return {}
+        widths = {}
+        for f, col in enumerate(self.spec["columns"]):
+            p = next((drawn.get((r, col["key"])) for r in range(len(self.spec["rows"]))
+                      if drawn.get((r, col["key"]))), None)
+            w = p.get("width_nm") if p else None
+            if w:
+                widths[f] = float(w)
+        if not widths:
+            return {}
+        fixed = st.get("scale_len_nm")
+        if fixed is None and st.get("equal_scale") and self.mode != "zoom":
+            fixed = hs.nice_length(0.3 * min(widths.values()))
+        frames = list(widths)
+        if where == "one" and self.mode != "zoom":
+            cells = self.layout_info["cells"]
+            r, f = max(cells, key=lambda rf: (cells[rf][1], -cells[rf][0]))
+            frames = [f] if f in widths else []
+        return {f: (fixed or hs.nice_length(0.3 * widths[f])) for f in frames
+                if (fixed or hs.nice_length(0.3 * widths[f])) <= widths[f]}
+
+    def _caption_full(self):
+        t = self.caption_texts()
+        return (t["caption"] + "\n\n" + t["processing"]).strip()
+
+    def current_caption(self):
+        """What the user sees in the caption box (their edits, else auto)."""
+        own = self.state.get("caption_text")
+        return own if own else self._caption_full()
+
+    def _update_caption(self):
+        # isHidden, not isVisible: the first render runs before show().
+        if getattr(self, "caption_panel", None) is None or self.caption_panel.isHidden():
+            return
+        auto = self._caption_full()
+        self._caption_auto = auto
+        own = self.state.get("caption_text")
+        text = own if own else auto
+        if self.caption_edit.toPlainText() != text:
+            self.caption_edit.blockSignals(True)
+            self.caption_edit.setPlainText(text)
+            self.caption_edit.blockSignals(False)
+        self.caption_state.setText("Edited" if own else "Automatic")
+        self.caption_regen.setEnabled(bool(own))
+
+    def _caption_edited(self):
+        text = self.caption_edit.toPlainText()
+        own = None if text == self._caption_auto else text
+        if own != self.state.get("caption_text"):
+            # Typing is not an undo step and does not re-render the figure.
+            self.state["caption_text"] = own
+            self.source.set_state(self.fid, self.state)
+        self.caption_state.setText("Edited" if own else "Automatic")
+        self.caption_regen.setEnabled(bool(own))
+
+    def _regenerate_caption(self):
+        self.state["caption_text"] = None
+        self.source.set_state(self.fid, self.state)
+        self._update_caption()
+
+    def copy_caption(self):
+        QtWidgets.QApplication.clipboard().setText(self.current_caption())
+        self._flash("Caption copied")
+
     def open_format_card(self, kind, global_pos=None):
         """Show one Format card (the bar is turned on if it was hidden)."""
         if self.format_panel.isHidden():
@@ -2791,6 +3496,9 @@ class FigureWindow(QtWidgets.QWidget):
         if self._mol_drag is not None:
             self._mol_drag_move(event)
             return
+        if self._crop_drag is not None:
+            self._crop_move(event)
+            return
         fd = self._frame_drag
         if fd is not None:
             if (event.pos() - fd["start"]).manhattanLength() >= 2 * _CLICK_SLOP_PX:
@@ -2832,6 +3540,9 @@ class FigureWindow(QtWidgets.QWidget):
     def _on_release(self, _event):
         if self._mol_drag is not None:
             self._mol_drag_end()
+            return
+        if self._crop_drag is not None:
+            self._crop_release(_event)
             return
         fd, self._frame_drag = self._frame_drag, None
         if fd is not None:
@@ -2956,6 +3667,7 @@ class FigureWindow(QtWidgets.QWidget):
                 self._cell_menu(menu, hit["row"], hit["frame"], gpos)
                 section(menu, "Frame")
                 self._frame_actions(menu, col)
+                self._crop_actions(menu, hit["frame"])
                 section(menu, "Figure")
                 self._letters_menu(menu.addMenu("Panel letters"))
                 self._scale_menu(menu.addMenu("Scale bar"))
@@ -3718,6 +4430,7 @@ class FigureWindow(QtWidgets.QWidget):
         menu.addAction("PNG + SVG (paste anywhere)").triggered.connect(lambda: self.copy_to_clipboard("both"))
         menu.addAction("PNG only").triggered.connect(lambda: self.copy_to_clipboard("png"))
         menu.addAction("SVG only (vector)").triggered.connect(lambda: self.copy_to_clipboard("svg"))
+        menu.addAction("Caption text").triggered.connect(self.copy_caption)
         menu.addSeparator()
         self._options_menu(menu)
 
@@ -3745,6 +4458,9 @@ class FigureWindow(QtWidgets.QWidget):
         for text, ext in (("PDF (vector)", ".pdf"), ("SVG (vector, layered)", ".svg"),
                           ("PNG", ".png"), ("TIFF", ".tif"), ("EPS (vector)", ".eps")):
             menu.addAction(text).triggered.connect(lambda _=False, e=ext: self.save_as(ext=e))
+        menu.addSeparator()
+        menu.addAction("Submission bundle… (PDF, SVG, PNG, caption, source data)").triggered.connect(
+            self.export_bundle)
         menu.addSeparator()
         self._options_menu(menu)
 
@@ -3902,9 +4618,7 @@ class FigureWindow(QtWidgets.QWidget):
             path = img_dir / f"{stem}_{n}.png"
         path.write_bytes(self._png_bytes())
         cols = self.spec["columns"]
-        rows = ", ".join(r["display"] for r in self.spec["rows"])
-        caption = (f"*{_MODE_TITLES.get(self.mode, 'Figure')}* · {len(cols)} frames · {rows} · "
-                   + " / ".join(c["header"] for c in cols[:8]) + (" …" if len(cols) > 8 else ""))
+        caption = self.current_caption().replace("\n\n", " ")
         key = cols[0]["key"] if cols else ""
         idx = next(iter(self.spec["rows"][0]["cells"].values()), 0) if self.spec["rows"] else 0
         return [{"path": path, "file_key": key, "channel_idx": idx, "caption": caption}], [], False

@@ -547,6 +547,18 @@ On the figure:
   the series (ordered by its recipe).
 - Drag a frame header - move the frame (custom figures); right-click it for
   `Move left` / `Move right`.
+- Right-click an image > `Crop this frame…` - drag a rectangle (`Shift`
+  square, `Esc` cancels); every channel of the frame is cut alike; `Same
+  crop for every frame` for a series.
+- `Ctrl+K` (or 🔍) - find any option or action by name.
+- Toolbar `Caption` - the draft caption + processing statement (edit, copy,
+  regenerate); `Styles` - save / apply / share named looks, copy the format
+  of another figure.
+- `⋯` > `Versions` - save named versions and go back to one; `⋯` or `Save ▸`
+  > `Submission bundle…` - PDF, SVG, PNG, caption, figure file and source
+  data in one folder.
+- Format > Page & layout > `Same scale for every image` - 1 nm is equally
+  long in every panel.
 - Right-click an image - its own filters, Zero, colour range and histogram;
   only that image (one channel of one frame) changes.
 - Keys on the image under the cursor: `A` automatic range, `Z` Zero,

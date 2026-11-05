@@ -1082,6 +1082,48 @@ with an existing bias used to vanish). Drops: `_FigureView` accepts
 the insertion line reuses `_frame_drop_target`, and a dropped channel that
 is not a row is reported (not added - the figure keeps its rows).
 
+**Composition tools** (all undoable figure state unless noted):
+- *Same scale* (`style["equal_scale"]`, Page card): `equal_scale_factor` =
+  nm per inch fitting the largest frame into a cell; `equal_scale_box`
+  draws each image top-aligned at that scale inside its cell; one scale-bar
+  length (fits the smallest frame). Not for zoom figures. The ⓘ note warns
+  when sizes differ > 5x.
+- *Crop* (`state["crops"]`, `{frame key | "*": (fx0, fy0, fx1, fy1)}`,
+  fractions of the *drawn* image, y from the top): `hs.crop_panels`, applied
+  in `_render` **after** `rotate_tall_panels`; every channel of the frame is
+  cut alike; "*" = same region for every frame. Drawn with a rubber band
+  (`_start_crop_mode` / `_crop_press|move|release`, Shift = square, Esc
+  cancels); a crop of a crop composes. Not for zoom figures (the outlines
+  need the whole overview). Molecule offsets are panel nm of the *cropped*
+  panel.
+- *Caption* (`figures/caption.py`, Qt-free `build_caption`): caption +
+  processing statement from spec, members, drawn panels, per-panel
+  processing, crops and scale-bar lengths; letters from
+  `hs.panel_letters` (shared with the renderer, so they always agree).
+  Caption panel (toolbar "Caption"): automatic until edited
+  (`state["caption_text"]`, typing is saved without an undo step or a
+  re-render), "Regenerate" returns to automatic. Used by Copy > Caption,
+  Obsidian and the bundle.
+- *Named styles* (toolbar "Styles"): config `figure_named_styles`; apply =
+  one undo step through `apply_format`, which never carries the data-bound
+  keys `_NOT_FORMAT` (header, reverse, scale length); "Copy format from"
+  lists open and remembered figures (`other_figure_styles`); export /
+  import `*.sxmstyles.json` (`kind: sxm_figure_styles`).
+- *Versions* (⋯ > Versions): `state["versions"]` = named snapshots of the
+  state without versions / mode / name; restore is one undo step; kept in
+  the figure file.
+- *Submission bundle* (⋯ or Save ▸): `<name>_bundle/` with PDF, layered SVG,
+  PNG (dpi raised to keep scan pixels), `.sxmfig.json`, `caption.txt` (caption
+  + panel -> source file list + size/font), `source_data/<letter>_<channel>.csv`
+  (values as drawn in base SI units, z rows relative as plotted, header
+  lines with file, channel, filters, Zero, crop) + `source_data.npz`.
+- *Option search* (Ctrl+K / 🔍): `_SearchPopup` over
+  `_FormatPanel.search_index` (every card row, collected by the card
+  builder's `add` / `section`) plus window commands; an option opens its
+  card and tints the control (`_highlight`).
+- Plot panels (profiles, spectra) are designed, not built:
+  `docs/design/figure_plot_panels.md`.
+
 **Per-image processing** (`state["cell_edits"]`, keyed by
 `clim_key(row_label, frame_key)` = one channel of one frame): optional
 `filters` (a full step list, `[]` = none) and `zero`; an absent key follows
