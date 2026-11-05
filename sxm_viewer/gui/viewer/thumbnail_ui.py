@@ -645,12 +645,35 @@ def populate_thumbnails_for_channel(viewer, channel_idx:int):
     except Exception:
         pass
 
+    # Rebuilding deletes the focused thumbnail and Qt hands focus to the next
+    # widget in the tab chain (a toolbar button / combo): every grid key after
+    # the first (G, T, R, Z, A, S...) was then ignored, and Ctrl+Z could land
+    # in a text box. Park focus on the persistent scroll area and give it back
+    # to the selected thumbnail afterwards.
+    keep_grid_focus = False
+    try:
+        keep_grid_focus = viewer._is_widget_in_thumbnail_area(QtWidgets.QApplication.focusWidget())
+        if keep_grid_focus and scroll_widget is not None:
+            scroll_widget.setFocus(QtCore.Qt.OtherFocusReason)
+    except Exception:
+        keep_grid_focus = False
+
     def _finish_populate():
         try:
             if preserve_scroll_state and hasattr(viewer, "_restore_thumbnail_scroll_state"):
                 viewer._restore_thumbnail_scroll_state(preserve_scroll_state, delayed=True)
         except Exception:
             pass
+        if keep_grid_focus:
+            try:
+                selected = str(getattr(viewer, "selected_file_for_thumbs", "") or "")
+                card = (getattr(viewer, "thumb_widgets", {}) or {}).get(selected)
+                if card is not None and card.focusPolicy() != QtCore.Qt.NoFocus:
+                    card.setFocus(QtCore.Qt.OtherFocusReason)
+                elif scroll_widget is not None:
+                    scroll_widget.setFocus(QtCore.Qt.OtherFocusReason)
+            except Exception:
+                pass
         try:
             if preserve_scroll_state and scroll_widget is not None:
                 scroll_widget.setUpdatesEnabled(True)
