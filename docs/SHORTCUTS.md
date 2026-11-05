@@ -131,6 +131,9 @@ Thumbnail actions:
   thumbnails 90° clockwise / anticlockwise (see "Image orientation" below).
 - `Z` while focus is in the thumbnail area - zero / un-zero the selected
   thumbnails (see "Zero" below).
+- `G` / `T` while focus is in the thumbnail area - add global plane (2nd order)
+  / tilt correction (1st-order plane) to the selected thumbnails' filter
+  pipeline; `Shift+G` / `Shift+T` remove it. Ctrl+Z undoes.
 - `H` while focus is in the thumbnail area - hide / restore all overlays on
   the main preview (see `H` under the preview shortcuts below).
 - `A` while focus is in the thumbnail area - auto contrast the main preview
@@ -273,6 +276,8 @@ Overlay toggles:
 
 Contrast:
 - `A` - auto contrast using the 1st to 99th percentile of the active image.
+- `G` / `T` - add global plane / tilt correction to the previewed image's
+  filter pipeline (main preview only); `Shift+G` / `Shift+T` remove it.
 
 Popup / preview context menu:
 - Quick tools: profile tool, angle tool, crop frame editor, apply crop,

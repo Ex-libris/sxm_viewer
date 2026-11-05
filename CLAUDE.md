@@ -256,7 +256,10 @@ re-grep the method name to confirm before relying on an exact line.
   display-time only - overlay artists on image axes are hidden inside
   `draw()`/copy and restored, so per-overlay state is untouched; blit
   fast-paths check `_overlays_hidden` too; from the thumbnail grid the main
-  window forwards `H` and `A` to the preview), otherwise `Z` toggles per-image Zero
+  window forwards `H` and `A` to the preview), `G`/`T` add the `plane2`/`tilt`
+  filter step (Shift removes; `set_level_filter` ->
+  `FilterController.set_quick_filter_step`, undo entry `("filters", old_specs)`,
+  also from the thumbnail grid), otherwise `Z` toggles per-image Zero
   (`_zero_image_callback` → `toggle_zero_images`; popups use their own
   `_popup_relative_zero_setter`), Enter/Esc apply/cancel crop-transform mode.
 - Per-image Zero: `viewer.image_zero` (`file_key -> bool`, only overrides of

@@ -5494,6 +5494,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 rotate(-1 if shift else 1)
                 return True
             return False
+        if key in (QtCore.Qt.Key_G, QtCore.Qt.Key_T):
+            # G / T add global plane / tilt correction, Shift removes it.
+            # Filter pipelines are per-file viewer state: main preview only.
+            level = getattr(self, "_level_filter_callback", None)
+            if callable(level):
+                level("plane2" if key == QtCore.Qt.Key_G else "tilt", not shift)
+                return True
+            return False
         if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
             setter = getattr(self, "_popup_relative_zero_setter", None)
             if callable(setter):

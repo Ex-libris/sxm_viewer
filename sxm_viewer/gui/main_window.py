@@ -1308,6 +1308,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Z on the main preview zeroes the selection/previewed image (popups
         # keep their own canvas-local zero setter).
         self.preview_canvas._zero_image_callback = lambda: self.toggle_zero_images()
+        # G / T (Shift+G / Shift+T remove): global plane / tilt correction.
+        self.preview_canvas._level_filter_callback = lambda key, on: self.set_level_filter(key, on)
         self.preview_canvas.set_relative_axes_menu_callback(self.on_relative_axes_toggled)
         self.preview_canvas.set_compare_menu_callback(
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
@@ -3585,6 +3587,14 @@ QLabel:hover {{
             focus_widget = QtWidgets.QApplication.focusWidget()
             if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
                 if self.preview_canvas.toggle_overlays_hidden():
+                    event.accept()
+                    return
+        if key in (QtCore.Qt.Key_G, QtCore.Qt.Key_T) and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+            # G = global plane, T = tilt correction; Shift removes it.
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                filter_key = "plane2" if key == QtCore.Qt.Key_G else "tilt"
+                if self.set_level_filter(filter_key, not (mods & QtCore.Qt.ShiftModifier)):
                     event.accept()
                     return
         if key == QtCore.Qt.Key_A and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
@@ -7545,6 +7555,29 @@ QLabel:hover {{
             log_status(f"[Orientation] Rotated {what} {abs(int(quarter_turns)) * 90}° {direction} (Ctrl+Z undoes)")
         return changed
 
+    # G / T (Shift = remove): global 2nd-order plane / tilt (1st-order plane)
+    _LEVEL_FILTER_NAMES = {"plane2": "Global plane", "tilt": "Tilt correction"}
+
+    def set_level_filter(self, filter_key, enabled, paths=None):
+        """Add/remove the ``plane2`` (G) or ``tilt`` (T) step in the filter
+        pipeline of the targets (thumbnail selection, else the previewed
+        image). Ctrl+Z undoes."""
+        targets = self._orientation_targets(paths)
+        if not targets and paths is None and self.last_preview:
+            targets = [str(self.last_preview[0])]
+        if not targets:
+            return False
+        old_specs = self.filter_controller.set_quick_filter_step(targets, filter_key, bool(enabled))
+        name = self._LEVEL_FILTER_NAMES.get(filter_key, filter_key)
+        if not old_specs:
+            state = "already applied to" if enabled else "not applied to"
+            log_status(f"[Filters] {name} {state} the selected image(s)")
+            return True
+        self._adjustment_undo_stack.append(("filters", old_specs))
+        what = Path(next(iter(old_specs))).name if len(old_specs) == 1 else f"{len(old_specs)} images"
+        log_status(f"[Filters] {name} {'applied to' if enabled else 'removed from'} {what} (Ctrl+Z undoes)")
+        return True
+
     def reset_image_orientation(self, paths=None):
         targets = [key for key in self._orientation_targets(paths) if self._get_image_orientation(key)]
         if not targets:
@@ -8081,6 +8114,10 @@ QLabel:hover {{
             if entry[0] == "zero":
                 self._restore_zero_state(entry[1], entry[2])
                 log_status("[Zero] Zero state restored")
+                return True
+            if entry[0] == "filters":
+                self.filter_controller.restore_thumbnail_filters(entry[1])
+                log_status("[Filters] Filter pipeline restored")
                 return True
             if entry[0] == "chref":
                 viewer_ch_height.restore_state(self, entry[1], entry[2])

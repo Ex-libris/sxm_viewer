@@ -701,23 +701,64 @@ class FilterController:
             if self.viewer.thumbnail_filters.pop(key, None) is not None:
                 changed = True
         if changed:
-            self.viewer._invalidate_thumbnail_cache(path_keys)
-            self.viewer._invalidate_filtered_cache(path_keys)
-            # Clear stored clim overrides for affected files so that
-            # _resolve_preview_clim falls back to _auto_preview_clim
-            # instead of returning a clim that was computed for the
-            # now-removed filter.
-            clim_map = getattr(self.viewer, "per_file_channel_clim", None) or {}
-            for clim_key in list(clim_map.keys()):
-                try:
-                    file_key = str(clim_key[0]) if isinstance(clim_key, tuple) else ""
-                except Exception:
-                    continue
-                if file_key in path_keys:
-                    clim_map.pop(clim_key, None)
-            self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
-            if self.viewer.last_preview and str(self.viewer.last_preview[0]) in path_keys:
-                self.viewer.show_file_channel(self.viewer.last_preview[0], self.viewer.last_preview[1])
+            self._refresh_after_filter_change(path_keys)
+
+    def _refresh_after_filter_change(self, path_keys):
+        """Re-render thumbnails/preview after their filter pipelines changed."""
+        self.viewer._invalidate_thumbnail_cache(path_keys)
+        self.viewer._invalidate_filtered_cache(path_keys)
+        # Clear stored clim overrides for affected files so that
+        # _resolve_preview_clim falls back to _auto_preview_clim instead of
+        # returning a clim computed for the previous pipeline (levelling
+        # moves the data from e.g. -60 nm to ~0).
+        clim_map = getattr(self.viewer, "per_file_channel_clim", None) or {}
+        for clim_key in list(clim_map.keys()):
+            try:
+                file_key = str(clim_key[0]) if isinstance(clim_key, tuple) else ""
+            except Exception:
+                continue
+            if file_key in path_keys:
+                clim_map.pop(clim_key, None)
+        self.viewer.populate_thumbnails_for_channel(self.viewer.channel_dropdown.currentIndex())
+        if self.viewer.last_preview and str(self.viewer.last_preview[0]) in path_keys:
+            self.viewer.show_file_channel(self.viewer.last_preview[0], self.viewer.last_preview[1])
+
+    def set_quick_filter_step(self, paths, filter_key, enabled):
+        """Add (``enabled``) or remove one parameter-free step - ``tilt`` /
+        ``plane2`` (G / T keys) - in each path's pipeline, no dialog. Adding
+        is idempotent. Returns {path: previous spec or None} for the paths
+        that changed (the undo record), {} when nothing changed."""
+        store = self.viewer.thumbnail_filters
+        old_specs = {}
+        for key in {str(Path(p)) for p in paths if p}:
+            spec = store.get(key)
+            steps = self._thumbnail_filter_steps(key)
+            present = any(step.get("key") == filter_key for step in steps)
+            if enabled == present:
+                continue
+            if enabled:
+                steps.append({"key": filter_key, "params": {}})
+            else:
+                steps = [step for step in steps if step.get("key") != filter_key]
+            old_specs[key] = copy.deepcopy(spec) if spec is not None else None
+            if steps:
+                store[key] = {"steps": steps, "label": self._filter_pipeline_label_from_steps(steps)}
+            else:
+                store.pop(key, None)
+        if old_specs:
+            self._refresh_after_filter_change(set(old_specs))
+        return old_specs
+
+    def restore_thumbnail_filters(self, specs):
+        """Undo for set_quick_filter_step: {path: spec or None}."""
+        store = self.viewer.thumbnail_filters
+        for key, spec in (specs or {}).items():
+            if spec:
+                store[key] = copy.deepcopy(spec)
+            else:
+                store.pop(key, None)
+        if specs:
+            self._refresh_after_filter_change(set(specs))
 
     def _open_custom_filter_dialog(self, paths, focus_path):
         base_arr, preview_callback, original_views, preview_target, preview_cmap_name, preview_clim = self._filter_preview_context_for_path(focus_path)
