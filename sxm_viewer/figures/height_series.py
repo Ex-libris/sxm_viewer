@@ -97,6 +97,7 @@ STYLE_DEFAULTS = {
     "zoom_labels": True,       # letter of each zoom next to its outline
     "zoom_lw": 1.0,            # outline width (pt)
     "cbar_label_pos": "inside",  # channel name: centred inside the bar | outside
+    "cbar_label_text": "both",   # what the bar's label says: both ("I (pA)") | unit ("pA")
     "cbar_outline": True,      # thin frame around colour bars
     "rotate_tall": "off",      # turn tall images to landscape: off | cw | ccw
     "molecules_on": True,      # show the figure's molecular model(s)
@@ -1735,9 +1736,15 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
             if (st["colorbars"] and not shared and st.get("cbar_scope") != "row"
                     and own_scale.get((r, col["key"])) != "flat"):
+                # Each bar has its own range and may have its own unit (4 pA
+                # next to 0.4 nA): it says the unit; the channel name too
+                # when the row's name is not shown beside it.
+                bar_label = None
+                if st["cbar_label"]:
+                    bar_label = cbar_label_text(st, None if mixed else row.get("display"), c_unit)
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] == f:
-                        cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, None, c_unit)
+                        cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, bar_label, c_unit)
                         cbar_artists.append((entry, cb))
         generic_bar = st["colorbars"] and not row_shared and st.get("cbar_scope") == "row"
         if st["colorbars"] and (row_shared or generic_bar):
@@ -1751,15 +1758,15 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                         if generic_bar:
                             # Each image has its own range: one bar for the
                             # channel says only where min and max sit.
-                            if st["cbar_label"]:
-                                label = row["display"] or None
+                            if st["cbar_label"] and st.get("cbar_label_text") != "unit":
+                                label = row["display"] or None   # min / max: no unit to give
                             cb = _colorbar(fig, ref_im, entry, size, 0.0, 1.0,
                                            dict(st, cbar_style="minmax_in" if st.get("cbar_style") in
                                                 ("inside", "minmax_in") else "minmax"),
                                            text_color, label, "")
                         else:
                             if st["cbar_label"]:
-                                label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
+                                label = cbar_label_text(st, row["display"], d_unit)
                             cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, text_color, label, d_unit)
                         cbar_artists.append((entry, cb))
 
@@ -1896,23 +1903,52 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     if label:
         x0, y0, x1, y1 = entry["box"]
         length_in = (x1 - x0) if horizontal else (y1 - y0)
-        fs_in = pt(font - 0.5) / 72.0 * 0.62
-        ends = 0 if int(st.get("cbar_ticks", 2) or 0) == 0 or style in ("outside", "minmax") else 10
-        # A short bar can't hold the name and both end values: name outside.
-        fits = (len(label) + ends) * fs_in * 1.25 <= length_in
-        if (st.get("cbar_label_pos") or "inside") == "inside" and fits:
-            # The channel name sits centred *in* the bar - along it for a
-            # vertical bar, flat for a horizontal one - in a colour that
-            # reads on the middle of the colormap.
-            cax.text(0.5, 0.5, label, transform=cax.transAxes, ha="center", va="center",
-                     rotation=0 if horizontal else 90, fontsize=pt(font - 0.5),
-                     color=_contrast_text_color(im.get_cmap(), 0.5), zorder=5,
-                     gid=f"cbarlabel_{entry['row']}")
+        if (st.get("cbar_label_pos") or "inside") == "inside":
+            # Centred *in* the bar, between the end values when they are
+            # inside too. The layout keeps no room outside for it, so when
+            # it doesn't fit it shrinks, then drops the channel name - it
+            # never moves outside (where it ran into the next image).
+            ends = [t for t in getattr(cb, "_sxm_inside", []) if t is not None]
+            value_in = sum(0.6 * len(t.get_text()) * t.get_fontsize() / 72.0 for t in ends)
+            text, size = _inside_label_fit(length_in, value_in, label, unit, pt(font - 0.5))
+            if text:
+                cax.text(0.5, 0.5, text, transform=cax.transAxes, ha="center", va="center",
+                         rotation=0 if horizontal else 90, fontsize=size,
+                         color=_contrast_text_color(im.get_cmap(), 0.5), zorder=5,
+                         gid=f"cbarlabel_{entry['row']}")
         elif horizontal or rotated:
             cb.set_label(label, fontsize=font, labelpad=1.0, color=text_color)
         else:
             cax.set_title(label, fontsize=font, color=text_color, loc="left", pad=2.0)
     return cb
+
+
+def cbar_label_text(st, name, unit):
+    """A colour bar's label: "I (pA)", or just "pA" with the unit-only
+    option (compact, the channel is named beside the row)."""
+    unit = unit or ""
+    if st.get("cbar_label_text") == "unit":
+        return unit or None
+    if name and unit:
+        return f"{name} ({unit})"
+    return name or unit or None
+
+
+def _inside_label_fit(length_in, values_in, label, unit, size):
+    """(text, font size) for a label centred inside a bar of ``length_in``
+    whose end values take ``values_in`` inches: the full label, smaller if
+    needed (not below ``_INSIDE_MIN_PT``), else the unit alone; (None,
+    None) when even that doesn't fit."""
+    if not length_in or length_in <= 0:
+        return None, None
+    gaps = 2 * 0.5 * size / 72.0 if values_in else 0.0
+    room = float(length_in) * 0.94 - values_in - gaps
+    for text in dict.fromkeys(t for t in (label, unit) if t):
+        need_per_pt = 0.6 * len(text) / 72.0
+        fit = room / need_per_pt if need_per_pt else size
+        if fit >= _INSIDE_MIN_PT:
+            return text, min(size, fit)
+    return None, None
 
 
 class _MinMax:

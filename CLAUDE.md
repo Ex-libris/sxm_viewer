@@ -1248,7 +1248,12 @@ card row + the matching right-click menu. Notable ones:
   (from the height, tall frames got slabs).
 - Colour bars: `cbar_style` outside (ticks) / inside (values in the bar,
   contrast-coloured) / minmax (gradient labelled "min"/"max");
-  `cbar_label_pos` inside = channel name centred in the bar; `cbar_scope`
+  `cbar_label_pos` inside = channel name centred in the bar (between the
+  end values; `_inside_label_fit` measures the drawn values, shrinks the
+  text, then falls back to the unit alone - it never moves outside, where
+  the layout kept no room); `cbar_label_text` both ("I (pA)") / unit ("pA"),
+  via `cbar_label_text()` for shared and per-image bars alike (per-image
+  bars used to get no label at all); `cbar_scope`
   row = one bar per channel even with per-image ranges (min/max, not
   draggable). `cbar_dims` is shared by layout and renderer; end labels are
   aligned inside their bar so stacked bars never overlap.

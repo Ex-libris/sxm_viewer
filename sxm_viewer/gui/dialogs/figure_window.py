@@ -81,6 +81,7 @@ _QUICK_STEPS = (("tilt", "Plane fit (tilt)", QtCore.Qt.Key_T),
 _SCALE_NAMES = {"all": "Every image", "one": "One image", "off": "Off"}
 _SCALE_LABELS = {"first": "First image only (once per length)", "all": "Every image", "none": "None"}
 _CBAR_LABEL_POS = {"inside": "Centred inside the bar", "outside": "Outside the bar"}
+_CBAR_LABEL_TEXT = {"both": "Channel + unit", "unit": "Unit only"}
 _ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)",
                 "ccw": "Turn to landscape (counter-clockwise)"}
 
@@ -1218,8 +1219,15 @@ class _FormatPanel(QtWidgets.QWidget):
         add("Ticks", w["cbar_ticks"])
         seg("cbar_text", {"rotated": "Rotated", "horizontal": "Horizontal"})
         add("Text", w["cbar_text"])
-        seg("cbar_label_pos", {"inside": "Inside the bar", "outside": "Outside"})
-        add("Name", hrow(check("cbar_label", "Channel and unit"), w["cbar_label_pos"]))
+        seg("cbar_label_text", _CBAR_LABEL_TEXT,
+            {"both": "Channel name and unit, e.g. I (pA)",
+             "unit": "Only the unit, e.g. pA - compact; the channel is named beside the row"})
+        add("Label", hrow(check("cbar_label", "Show"), w["cbar_label_text"]))
+        seg("cbar_label_pos", {"inside": "Inside the bar", "outside": "Outside"},
+            {"inside": "Centred in the bar, between the end values (made smaller, or the unit "
+                       "only, when the bar is short)",
+             "outside": "Along the outer side of the bar"})
+        add("Label at", w["cbar_label_pos"])
         spin("cbar_w", 0.5, 8.0, 0.25, " mm")
         add("Width", hrow(w["cbar_w"], check("cbar_outline", "Frame",
                                              "Thin frame around each colour bar")))
@@ -1566,7 +1574,7 @@ class _FormatPanel(QtWidgets.QWidget):
             w["scale_len_nm"].setEnabled(scale_on and not auto)
             bars_on = bool(style.get("colorbars"))
             for key in ("cbar_scope", "cbar_ticks", "cbar_label", "cbar_style", "cbar_text",
-                        "cbar_w", "cbar_label_pos", "cbar_outline"):
+                        "cbar_w", "cbar_label_pos", "cbar_label_text", "cbar_outline"):
                 w[key].setEnabled(bars_on)
             w["page_mm"].setEnabled(style.get("page") == "custom")
             w["panel_w"].setEnabled((style.get("page") or "free") == "free")
@@ -4035,8 +4043,9 @@ class FigureWindow(QtWidgets.QWidget):
         self._toggle(menu, "Colour bars", "colorbars")
         self._choice(menu, "Ticks", "cbar_ticks", _CBAR_TICKS)
         menu.addSeparator()
-        self._toggle(menu, "Channel and unit label", "cbar_label")
-        self._choice(menu, "Channel name", "cbar_label_pos", _CBAR_LABEL_POS)
+        self._toggle(menu, "Label on the bar", "cbar_label")
+        self._choice(menu, "Label", "cbar_label_text", _CBAR_LABEL_TEXT)
+        self._choice(menu, "Label position", "cbar_label_pos", _CBAR_LABEL_POS)
         self._choice(menu, "Values", "cbar_style", _CBAR_STYLES)
         menu.addSeparator()
         self._toggle(menu, "Frame around the bar", "cbar_outline")

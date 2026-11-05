@@ -39,6 +39,10 @@ Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://sem
     figure), versions ("Submitted", "Revision 1"), option search (Ctrl+K);
   - a submission bundle: PDF, layered SVG, PNG, caption, figure file and
     the data under every panel (CSV + NPZ).
+- **Figures: colour-bar labels**: per-image colour bars now carry their
+  label (they had none); a label set to "inside the bar" stays inside
+  (smaller, or the unit only, on short bars) instead of jumping outside
+  onto the next image; new choice "Channel + unit" / "Unit only".
 - **Fix**: section titles of the figure window's menus were not drawn on
   Windows, and "Colour range & histogram" lost its "&".
 
