@@ -133,6 +133,8 @@ Thumbnail actions:
   thumbnails (see "Zero" below).
 - `H` while focus is in the thumbnail area - hide / restore all overlays on
   the main preview (see `H` under the preview shortcuts below).
+- `A` while focus is in the thumbnail area - auto contrast the main preview
+  (the selected image), same as `A` on the preview.
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.

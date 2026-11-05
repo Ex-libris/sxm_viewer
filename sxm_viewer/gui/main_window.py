@@ -3587,6 +3587,15 @@ QLabel:hover {{
                 if self.preview_canvas.toggle_overlays_hidden():
                     event.accept()
                     return
+        if key == QtCore.Qt.Key_A and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+            # The preview handles A itself when focused; from the thumbnail
+            # grid, A auto-contrasts the main preview (the selected image).
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                if getattr(self.preview_canvas, "views", None):
+                    self._auto_contrast(self.preview_canvas)
+                    event.accept()
+                    return
         if key in (
             QtCore.Qt.Key_Left,
             QtCore.Qt.Key_Right,
