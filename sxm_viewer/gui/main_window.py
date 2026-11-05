@@ -1308,6 +1308,8 @@ class SXMGridViewer(QtWidgets.QWidget):
         # Z on the main preview zeroes the selection/previewed image (popups
         # keep their own canvas-local zero setter).
         self.preview_canvas._zero_image_callback = lambda: self.toggle_zero_images()
+        # G / T (Shift+G / Shift+T remove): global plane / tilt correction.
+        self.preview_canvas._level_filter_callback = lambda key, on: self.set_level_filter(key, on)
         self.preview_canvas.set_relative_axes_menu_callback(self.on_relative_axes_toggled)
         self.preview_canvas.set_compare_menu_callback(
             lambda action, view, c=self.preview_canvas: self.on_compare_menu_action(action, view, c),
@@ -1392,6 +1394,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_undo_shortcut.activated.connect(self._on_global_undo_requested)
+        # Ctrl+Z is one chronological order for the main window: the main
+        # preview journals its pushes and hands Ctrl+Z over. Queued after
+        # the startup preset so restoring the display isn't an undo step.
+        QtCore.QTimer.singleShot(0, self._install_preview_undo_journal)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
@@ -3320,8 +3326,10 @@ QLabel:hover {{
             except Exception:
                 pass
             return
+        preview = getattr(self, "preview_canvas", None)
         canvas = self._focused_canvas_with_undo()
-        if canvas is not None:
+        if canvas is not None and getattr(canvas, "_undo_journal_callback", None) is None:
+            # A canvas with its own local, unjournaled history.
             try:
                 handle_undo = getattr(canvas, "handle_undo_request", None)
                 if callable(handle_undo) and handle_undo():
@@ -3331,6 +3339,27 @@ QLabel:hover {{
                     return
             except Exception:
                 pass
+        # One chronological order: undo the newest action wherever it was
+        # made (main preview or a pop-up's display, quick crop, adjustments,
+        # collection). View/crop tokens carry the canvas that holds them.
+        def _live(c):
+            return c is not None and not sip.isdeleted(c)
+
+        def _undo_crop(c):
+            if c is None or c is preview:
+                return self.quick_crop_controller.undo_last_crop()
+            return _live(c) and c.undo_fixed_crop_entry() is not None
+
+        if self._undo_journal.undo({
+            "view": lambda c: bool(_live(c or preview) and (c or preview).undo_last_action()),
+            "crop": _undo_crop,
+            "adjust": lambda _t: self._undo_last_adjustment(),
+            "collection": lambda _t: self._undo_collection_action(),
+        }):
+            return
+        # Fallback for steps pushed without a journal entry. The preview's
+        # own history is left out: what remains there predates the journal
+        # (startup display restore), which nobody asked to undo.
         try:
             if self.quick_crop_controller.undo_last_crop():
                 return
@@ -3342,12 +3371,38 @@ QLabel:hover {{
         except Exception:
             pass
         try:
-            if self.collection_controller.undo_last_collection_action():
-                self._refresh_collection_tray()
+            if self._undo_collection_action():
                 return
         except Exception:
             pass
         self._restore_last_closed_window()
+
+    def _install_preview_undo_journal(self):
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        self.install_canvas_undo_journal(canvas)
+        canvas._undo_keeps_current_image = True
+
+    def install_canvas_undo_journal(self, canvas, window=None):
+        """Put ``canvas`` (main preview or a pop-up) in the main window's one
+        Ctrl+Z order: its undo pushes are journaled and Ctrl+Z on it - or
+        anywhere in its pop-up ``window`` - runs the global undo."""
+        canvas._undo_journal_callback = lambda source, c=canvas: self._undo_journal.record(source, c)
+        canvas._global_undo_callback = self._on_global_undo_requested
+        if window is not None and window is not self:
+            # The main window's Ctrl+Z shortcut does not reach separate
+            # top-level windows; give the pop-up its own.
+            shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), window)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self._on_global_undo_requested)
+            window._global_undo_shortcut = shortcut
+
+    def _undo_collection_action(self):
+        if self.collection_controller.undo_last_collection_action():
+            self._refresh_collection_tray()
+            return True
+        return False
 
     def _handle_local_file_mime_drop(self, mime):
         if mime is None or not mime.hasUrls():
@@ -3585,6 +3640,23 @@ QLabel:hover {{
             focus_widget = QtWidgets.QApplication.focusWidget()
             if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
                 if self.preview_canvas.toggle_overlays_hidden():
+                    event.accept()
+                    return
+        if key in (QtCore.Qt.Key_G, QtCore.Qt.Key_T) and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+            # G = global plane, T = tilt correction; Shift removes it.
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                filter_key = "plane2" if key == QtCore.Qt.Key_G else "tilt"
+                if self.set_level_filter(filter_key, not (mods & QtCore.Qt.ShiftModifier)):
+                    event.accept()
+                    return
+        if key == QtCore.Qt.Key_A and not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
+            # The preview handles A itself when focused; from the thumbnail
+            # grid, A auto-contrasts the main preview (the selected image).
+            focus_widget = QtWidgets.QApplication.focusWidget()
+            if focus_widget is None or self._is_widget_in_thumbnail_area(focus_widget):
+                if getattr(self.preview_canvas, "views", None):
+                    self._auto_contrast(self.preview_canvas)
                     event.accept()
                     return
         if key in (
@@ -7536,6 +7608,29 @@ QLabel:hover {{
             log_status(f"[Orientation] Rotated {what} {abs(int(quarter_turns)) * 90}° {direction} (Ctrl+Z undoes)")
         return changed
 
+    # G / T (Shift = remove): global 2nd-order plane / tilt (1st-order plane)
+    _LEVEL_FILTER_NAMES = {"plane2": "Global plane", "tilt": "Tilt correction"}
+
+    def set_level_filter(self, filter_key, enabled, paths=None):
+        """Add/remove the ``plane2`` (G) or ``tilt`` (T) step in the filter
+        pipeline of the targets (thumbnail selection, else the previewed
+        image). Ctrl+Z undoes."""
+        targets = self._orientation_targets(paths)
+        if not targets and paths is None and self.last_preview:
+            targets = [str(self.last_preview[0])]
+        if not targets:
+            return False
+        old_specs = self.filter_controller.set_quick_filter_step(targets, filter_key, bool(enabled))
+        name = self._LEVEL_FILTER_NAMES.get(filter_key, filter_key)
+        if not old_specs:
+            state = "already applied to" if enabled else "not applied to"
+            log_status(f"[Filters] {name} {state} the selected image(s)")
+            return True
+        self._adjustment_undo_stack.append(("filters", old_specs))
+        what = Path(next(iter(old_specs))).name if len(old_specs) == 1 else f"{len(old_specs)} images"
+        log_status(f"[Filters] {name} {'applied to' if enabled else 'removed from'} {what} (Ctrl+Z undoes)")
+        return True
+
     def reset_image_orientation(self, paths=None):
         targets = [key for key in self._orientation_targets(paths) if self._get_image_orientation(key)]
         if not targets:
@@ -7696,12 +7791,21 @@ QLabel:hover {{
         arr_np = np.asarray(arr, dtype=float)
         unit_label = unit or ""
         factor = 1.0
-        range_probe = arr_np
+        # Pick the unit from the robust range actually displayed (the auto
+        # colour range), not the array's absolute max: Anfatec keeps the
+        # unscanned rows of a stopped frame as literal 0 (Nanonis: NaN), so
+        # after Zero those rows sat ~150 nm off the surface and pinned the
+        # unit at nm while the colour range spanned only pm.
+        lim = self._auto_preview_clim(arr_np)
+        range_probe = np.asarray(lim, dtype=float) if lim is not None else arr_np
         zeroed = self._is_image_zeroed(file_key)
         if zeroed:
-            ref = self._zero_reference(arr_np)
+            ref = float(lim[0]) if lim is not None else self._zero_reference(arr_np)
             if ref is not None:
-                range_probe = arr_np - ref
+                shifted = range_probe - ref
+                # A flat channel zeroes to all 0: keep the unit of its level.
+                if np.any(np.abs(shifted[np.isfinite(shifted)]) > 0):
+                    range_probe = shifted
         if unit_label:
             if getattr(self, 'display_units_si', False):
                 target = _SI_BASE_UNITS.get(unit_label, (unit_label, 1.0))
@@ -8063,6 +8167,10 @@ QLabel:hover {{
             if entry[0] == "zero":
                 self._restore_zero_state(entry[1], entry[2])
                 log_status("[Zero] Zero state restored")
+                return True
+            if entry[0] == "filters":
+                self.filter_controller.restore_thumbnail_filters(entry[1])
+                log_status("[Filters] Filter pipeline restored")
                 return True
             if entry[0] == "chref":
                 viewer_ch_height.restore_state(self, entry[1], entry[2])
@@ -10318,10 +10426,16 @@ QLabel:hover {{
         canvas = getattr(self, "preview_canvas", None)
         if canvas is None:
             return
+        # Not a user action: keep it out of the Ctrl+Z order (its snapshot
+        # stays in the canvas history for "Back to ...").
+        journal = getattr(canvas, "_undo_journal_callback", None)
+        canvas._undo_journal_callback = None
         try:
             canvas.apply_display_preset(canvas.default_display_preset(), announce=False)
         except Exception:
             pass
+        finally:
+            canvas._undo_journal_callback = journal
 
     def _on_canvas_display_options_changed(self, canvas):
         if self._canvas_display_syncing:
@@ -10349,6 +10463,7 @@ QLabel:hover {{
         if transient_preset:
             persist = False
         self._canvas_display_syncing = True
+        suspended = []
         try:
             normalized = {
                 "show_ticks": bool(options.get("show_ticks", True)),
@@ -10416,6 +10531,15 @@ QLabel:hover {{
                         pass
 
             canvases = [getattr(self, "preview_canvas", None)] + list(getattr(self, "_popup_canvases", []))
+            # Mirroring the change onto the other canvases is not an undo
+            # step of its own: only the canvas the user changed records one
+            # (its undo re-syncs the rest). Otherwise one click took several
+            # Ctrl+Z presses in the global undo order.
+            recorder = source_canvas or getattr(self, "preview_canvas", None)  # toolbar: the preview
+            mirrored = [c for c in canvases if c is not None and c is not recorder]
+            for canv in mirrored:
+                canv._undo_suspend_depth = getattr(canv, "_undo_suspend_depth", 0) + 1
+            suspended.extend(mirrored)
             for canv in canvases:
                 if canv is None:
                     continue
@@ -10506,6 +10630,8 @@ QLabel:hover {{
                     self.config["relative_axes"] = bool(rel)
                 save_config(self.config)
         finally:
+            for canv in suspended:
+                canv._undo_suspend_depth = max(0, getattr(canv, "_undo_suspend_depth", 1) - 1)
             self._canvas_display_syncing = False
 
     def on_show_molecules_toggled(self, checked: bool):

@@ -2070,7 +2070,27 @@ class MultiPreviewCanvas(FigureCanvas):
         self._undo_history.append(state)
         if len(self._undo_history) > _UNDO_HISTORY_LIMIT:
             self._undo_history.pop(0)
+        self._journal_undo("view")
         return True
+
+    def _journal_undo(self, source):
+        """Tell the owner (main window's chronological undo order) that an
+        undoable step of ``source`` was pushed. Pop-ups have no journal."""
+        journal = getattr(self, "_undo_journal_callback", None)
+        if callable(journal):
+            try:
+                journal(source)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _undo_image_keys(views):
+        """Which images (file, channel) a set of views shows."""
+        keys = []
+        for view in views or []:
+            if isinstance(view, dict):
+                keys.append((str(view.get("path") or ""), view.get("channel_idx")))
+        return keys
 
     def handle_undo_request(self):
         if self.undo_last_action():
@@ -2118,17 +2138,24 @@ class MultiPreviewCanvas(FigureCanvas):
         state = self._undo_history.pop()
         if not isinstance(state, dict):
             return False
+        # The main preview shows whatever image is selected: a snapshot taken
+        # on another image (or before any was shown) restores its display
+        # settings only, never that image and its overlays.
+        same_image = True
+        if getattr(self, "_undo_keeps_current_image", False):
+            same_image = self._undo_image_keys(state.get("views")) == self._undo_image_keys(self.views)
         self._undo_restore_in_progress = True
         self._undo_suspend_depth += 1
         try:
-            try:
-                self.enable_profile(False)
-            except Exception:
-                pass
-            try:
-                self.enable_angle(False)
-            except Exception:
-                pass
+            if same_image:
+                try:
+                    self.enable_profile(False)
+                except Exception:
+                    pass
+                try:
+                    self.enable_angle(False)
+                except Exception:
+                    pass
 
             self._show_title = bool(state.get("show_title", self._show_title))
             self._show_filter_summary_overlay = bool(state.get("show_filter_summary_overlay", self._show_filter_summary_overlay))
@@ -2166,24 +2193,27 @@ class MultiPreviewCanvas(FigureCanvas):
                 else:
                     self._disconnect_scale_bar_events()
 
-            self.molecules = []
-            for entry in state.get("molecule_state", []) or []:
-                try:
-                    self.molecules.append(Molecule.from_dict(entry))
-                except Exception:
-                    continue
-            self.svg_molecules = []
-            for entry in state.get("svg_molecule_state", []) or []:
-                try:
-                    self.svg_molecules.append(SvgMoleculeOverlay.from_dict(entry))
-                except Exception:
-                    continue
-            if self._active_svg_molecule_idx is not None and self._active_svg_molecule_idx >= len(self.svg_molecules):
-                self._active_svg_molecule_idx = None
-            self.import_outline_state(state.get("outline_state"))
-
-            views = [self._clone_undo_view(v) for v in (state.get("views") or [])]
-            self.set_views(views, preserve_profiles=False)
+            if same_image:
+                self.molecules = []
+                for entry in state.get("molecule_state", []) or []:
+                    try:
+                        self.molecules.append(Molecule.from_dict(entry))
+                    except Exception:
+                        continue
+                self.svg_molecules = []
+                for entry in state.get("svg_molecule_state", []) or []:
+                    try:
+                        self.svg_molecules.append(SvgMoleculeOverlay.from_dict(entry))
+                    except Exception:
+                        continue
+                if self._active_svg_molecule_idx is not None and self._active_svg_molecule_idx >= len(self.svg_molecules):
+                    self._active_svg_molecule_idx = None
+                self.import_outline_state(state.get("outline_state"))
+                views = [self._clone_undo_view(v) for v in (state.get("views") or [])]
+                self.set_views(views, preserve_profiles=False)
+            else:
+                views = [self._clone_undo_view(v) for v in (self.views or [])]
+                self.set_views(views, preserve_profiles=True)
 
             self._active_profile_color = state.get("active_profile_color", self._active_profile_color) or self._active_profile_color
             try:
@@ -2210,12 +2240,14 @@ class MultiPreviewCanvas(FigureCanvas):
                 mode = "length"
             self._profile_label_mode = mode
             self._profile_user_enabled = bool(state.get("profile_user_enabled", getattr(self, "_profile_user_enabled", False)))
-            profile_state = state.get("profile_state")
+            profile_state = state.get("profile_state") if same_image else None
             if isinstance(profile_state, dict):
                 self.import_profile_state(self._clone_undo_value(profile_state), emit=False)
 
             angle_state = state.get("angle_state")
-            if bool(state.get("angle_enabled", False)):
+            if not same_image:
+                pass  # keep the current image's angle frames
+            elif bool(state.get("angle_enabled", False)):
                 self.angle_enabled = True
                 self._connect_angle_events()
                 if isinstance(angle_state, dict):
@@ -5463,6 +5495,12 @@ class MultiPreviewCanvas(FigureCanvas):
                     if self._nudge_active_svg_molecule(key, fine=bool(mods & QtCore.Qt.ShiftModifier)):
                         return
             if (mods & QtCore.Qt.ControlModifier) and key == QtCore.Qt.Key_Z:
+                # The main preview hands Ctrl+Z to the window's one
+                # chronological undo order; pop-ups undo locally.
+                global_undo = getattr(self, "_global_undo_callback", None)
+                if callable(global_undo):
+                    global_undo()
+                    return
                 if self.handle_undo_request():
                     return
             if not (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier | QtCore.Qt.MetaModifier)):
@@ -5492,6 +5530,14 @@ class MultiPreviewCanvas(FigureCanvas):
             rotate = getattr(self, "_rotate_image_callback", None)
             if callable(rotate):
                 rotate(-1 if shift else 1)
+                return True
+            return False
+        if key in (QtCore.Qt.Key_G, QtCore.Qt.Key_T):
+            # G / T add global plane / tilt correction, Shift removes it.
+            # Filter pipelines are per-file viewer state: main preview only.
+            level = getattr(self, "_level_filter_callback", None)
+            if callable(level):
+                level("plane2" if key == QtCore.Qt.Key_G else "tilt", not shift)
                 return True
             return False
         if key in (QtCore.Qt.Key_0, QtCore.Qt.Key_Z):
@@ -12440,6 +12486,7 @@ class MultiPreviewCanvas(FigureCanvas):
             "color": self._crop_color_for_seq(seq),
         }
         self._fixed_crop_history.append(entry)
+        self._journal_undo("crop")
         self._fixed_crop_sequence = seq + 1
         if update_size or self._fixed_crop_template is None:
             self._update_template_from_entry(entry)

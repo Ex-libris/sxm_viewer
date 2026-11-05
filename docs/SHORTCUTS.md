@@ -95,8 +95,13 @@ show all images):
 
 General:
 - `Ctrl+S` - save the current session (prompts once if no session file exists yet).
-- `Ctrl+Z` - undo the focused canvas action; if no focused canvas action is
-  available, fall back to quick-crop undo.
+- `Ctrl+Z` - undo the most recent action in the main window, wherever it was
+  made (preview display/contrast/overlays, quick crop, Crop/Rotate, R, Z, G/T,
+  CH reference, collection edits, changes in preview pop-ups), newest first,
+  from the thumbnail grid, the preview or any pop-up alike. A display change
+  made on another image restores the display settings only and keeps the
+  current image; steps of a closed pop-up are skipped. With nothing left to
+  undo it reopens the last closed window.
 - `Ctrl+D` - duplicate the current preview into a popup.
 - Arrow keys - move thumbnail selection if focus is not in a text-editing
   widget.
@@ -131,8 +136,13 @@ Thumbnail actions:
   thumbnails 90° clockwise / anticlockwise (see "Image orientation" below).
 - `Z` while focus is in the thumbnail area - zero / un-zero the selected
   thumbnails (see "Zero" below).
+- `G` / `T` while focus is in the thumbnail area - add global plane (2nd order)
+  / tilt correction (1st-order plane) to the selected thumbnails' filter
+  pipeline; `Shift+G` / `Shift+T` remove it. Ctrl+Z undoes.
 - `H` while focus is in the thumbnail area - hide / restore all overlays on
   the main preview (see `H` under the preview shortcuts below).
+- `A` while focus is in the thumbnail area - auto contrast the main preview
+  (the selected image), same as `A` on the preview.
 - `Ctrl+Wheel` over thumbnails - resize thumbnail previews.
 - `Ctrl+C` while focus is in the thumbnail area - export the selected thumbnails
   to temporary image files and place those file paths on the clipboard.
@@ -248,7 +258,8 @@ with a custom contrast range, that range's low end becomes 0):
 
 Clipboard and undo:
 - `Ctrl+C` - copy the displayed canvas as PNG, including overlays.
-- `Ctrl+Z` - undo the last canvas-side action when possible.
+- `Ctrl+Z` - undo the most recent action anywhere (see General), also from a
+  pop-up.
 
 Overlay toggles:
 - `Ctrl+1` - show / hide saved profile overlays.
@@ -271,6 +282,8 @@ Overlay toggles:
 
 Contrast:
 - `A` - auto contrast using the 1st to 99th percentile of the active image.
+- `G` / `T` - add global plane / tilt correction to the previewed image's
+  filter pipeline (main preview only); `Shift+G` / `Shift+T` remove it.
 
 Popup / preview context menu:
 - Quick tools: profile tool, angle tool, crop frame editor, apply crop,

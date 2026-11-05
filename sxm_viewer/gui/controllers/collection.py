@@ -392,6 +392,9 @@ class CollectionController:
                     "description": str(description or ""),
                 }
             )
+            journal = getattr(self.viewer, "_undo_journal", None)
+            if journal is not None:
+                journal.record("collection")
         except Exception:
             pass
 
