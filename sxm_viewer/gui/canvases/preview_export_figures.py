@@ -25,7 +25,6 @@ from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
-from ... import cmap_registry
 from ..plot_typography import apply_text_style
 from . import colorbar_fit
 

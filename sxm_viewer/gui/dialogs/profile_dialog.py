@@ -56,7 +56,6 @@ import hashlib
 import json
 
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoMinorLocator, EngFormatter, MaxNLocator, ScalarFormatter
 from matplotlib.widgets import SpanSelector

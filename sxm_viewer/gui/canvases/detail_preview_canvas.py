@@ -17,14 +17,11 @@ import numpy as np
 from matplotlib import patches
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
-from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.transforms import Affine2D
 import matplotlib
-from matplotlib.collections import EllipseCollection, LineCollection
+from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status
@@ -36,10 +33,7 @@ from .molecular_overlay import (
     MoleculePropertiesDialog,
     get_atom_color,
     get_atom_radius,
-    resolve_atom_color,
-    effective_bond_color_mode,
     element_color_override,
-    atom_marker_area_factor,
     available_atom_palettes,
     palette_label,
     normalize_molecule_render_style,

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .._shared import QtCore, QtWidgets, np
+from .._shared import QtWidgets, np
 from ..data.io import parse_header
 from .canvases.detail_preview import MultiPreviewCanvas
 

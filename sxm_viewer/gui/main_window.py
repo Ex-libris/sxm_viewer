@@ -5,7 +5,6 @@ import math
 import time
 import re
 import json
-import os
 import copy
 import shutil
 import tempfile
@@ -16,53 +15,41 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import io
-from matplotlib import colormaps
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5 import QtCore, QtGui, QtWidgets
 import sip
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
+from PyQt5.QtWidgets import QListWidgetItem
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
 from .. import cmap_registry
 from .qt_helpers import set_silent, set_many_silent
 from .activity_log import ActivityLog
-from . import drift_animation
 from . import virtual_copies
 from .virtual_copies import VIRTUAL_COPY_INSERT_START
 from . import main_window_state
-from .debounce import ACCUMULATE, LATEST, Debouncer
 from ..geometry import orientation, spec_mapping
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
     CH_EQUALITY_TOL_NM,
-    CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    load_config,
     save_config,
     flush_pending_config_save,
     open_header_cache,
     load_collections_index,
 )
-from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
 
 from ..data.spectroscopy import is_matrix_file_entry
 from ..processing.filters import (
-    FILTER_DEFINITIONS,
-    _gaussian_available,
     _filter_signature,
 )
 from ..processing import auto_enhance as _auto_enhance
 from ..processing.detection import _find_topography_channel
 from ..utils.units import (
-    _NUMERIC_RE,
-    _UNIT_DISPLAY_CHOICES,
     _SI_BASE_UNITS,
     _auto_display_unit,
     _safe_float,
@@ -72,40 +59,32 @@ from .colormap_gallery import ColormapGalleryDialog
 from .colormap_manager import ColormapManager
 from ..cmap_sorting import ColormapSorter, DEFAULT_STRATEGY
 from .minimap import FrameMiniMap
-from .workers.batch_export import BatchExportSignals, BatchExportWorker
+from .workers.batch_export import BatchExportWorker
 from .dialogs.collection_browser import CollectionBrowserDialog
-from .dialogs.image_adjust import ImageAdjustDialog, ImageAdjustPreviewPanel
-from .dialogs.matrix_fit import MatrixFitDialog, MatrixFitWorker
-from .dialogs.profile_dialog import ProfileDialog
+from .dialogs.image_adjust import ImageAdjustDialog
 from .dialogs.spectroscopy_dialogs import (
     MatrixSpectroViewer,
     SpectroscopyCompareDialog,
     SpectroscopyPopup,
-    _SpectroFitWorker,
 )
-from .canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
+from .canvases.detail_preview import MultiPreviewCanvas
 from .spectroscopy.summary_dialog import SpectroSummaryDialog
 from .viewer import measurement as viewer_measurement
 from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
-from .controllers.collection import CollectionController, RECENT_COLLECTION_LIMIT
+from .controllers.collection import RECENT_COLLECTION_LIMIT
 from .controllers.thumbnail_controller import ThumbnailController
-from .controllers.spectro_compare import SpectroCompareController
-from .controllers.session import SessionController
-from .controllers.filter_controller import FilterController
-from .controllers.recent_files_controller import RecentFilesController
-from .controllers.report import ReportController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer import ch_height as viewer_ch_height
 from .viewer import thumb_menu as viewer_thumb_menu
 from .viewer import spectro_menu as viewer_spectro_menu
 from .viewer import export_routes as viewer_export_routes
-from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
+from .plot_typography import normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes, palette_label
-from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
+from .ppt_bridge import send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import details as spectro_details
 from .spectroscopy import loading as spectro_loading
@@ -116,7 +95,6 @@ from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
-from .system_open import add_source_file_menu
 from . import theme as ui_theme
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
@@ -319,7 +297,6 @@ from .constants import (
     THUMB_LAYOUT_SPACING,
     UI_FONT_BOLD_SIZE,
     UI_FONT_FAMILY,
-    UI_FONT_SIZE,
 )
 
 

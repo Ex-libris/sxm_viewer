@@ -2760,7 +2760,6 @@ class FigureWindow(QtWidgets.QWidget):
         return "none" if self._export_opts()[1] else "white"
 
     def _svg_bytes(self, fig=None, layered=False):
-        import matplotlib
         fig = fig or self._export_figure()
         buf = io.BytesIO()
         self._vector_save(fig, buf, format="svg")

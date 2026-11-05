@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 
-from common import Report, iter_functions, iter_source_files, parse, read_text, rel
+from common import Report, iter_functions, iter_source_files, parse, rel
 
 # Names that are called by the framework, not by our code.
 QT_LIFECYCLE = {

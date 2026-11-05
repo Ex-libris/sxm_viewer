@@ -6,7 +6,7 @@ import io
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from ... import cmap_registry
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame, safe_default_filename
-from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color, palette_label
+from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, palette_label
 
 
 def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):

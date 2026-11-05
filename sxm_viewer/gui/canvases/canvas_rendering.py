@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ..._shared import QtGui, colormaps, np
+from ..._shared import QtGui, np
 from ... import cmap_registry
 
 

@@ -8,7 +8,6 @@ import time
 import re
 
 import numpy as np
-from matplotlib import patches
 from matplotlib import patheffects as mpatheffects
 from matplotlib.backend_bases import MouseButton
 from matplotlib import colors as mcolors
@@ -16,41 +15,24 @@ from matplotlib import cm as mcm
 from matplotlib import colormaps as mpl_colormaps
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter, AutoMinorLocator, MultipleLocator, MaxNLocator
-from matplotlib.widgets import RectangleSelector
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from matplotlib.ticker import AutoMinorLocator, MultipleLocator, MaxNLocator
 
 from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
     QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
     FigureCanvas,
     Figure,
-    Line2D,
-    colormaps,
     np,
     Path,
     defaultdict,
     OrderedDict,
     datetime,
-    hashlib,
-    itertools,
-    io,
     json,
     math,
-    os,
-    sys,
-    threading,
     _scipy_ndimage,
     log_status,
-    matplotlib,
 )
 from ..plot_typography import add_font_menu_action, normalize_font_family, apply_text_style, apply_qfont_style
 from ..system_open import add_source_file_menu
@@ -72,72 +54,19 @@ except Exception:  # pragma: no cover
     _scipy_signal = None
 from ... import cmap_registry
 from ...config import (
-    CONFIG_PATH,
-    HEADER_CACHE_PATH,
-    HEADER_CACHE_VERSION,
-    CH_EQUALITY_TOL_NM,
-    CH_SAMPLE_POINTS,
-    CHANNEL_DATA_CACHE_LIMIT,
-    FILTERED_CACHE_LIMIT,
     load_config,
     save_config,
 )
 from ...data.io import (
-    parse_header,
-    read_channel_file,
     normalize_unit_and_data,
-    _split_key_value,
-    _coerce_value,
-    _canonical_header_key,
-    _parse_inline_channels,
-    _trailing_digits,
-    _load_ascii_grid,
-    _load_binary_grid,
-    _load_tokenized_grid,
-    _load_binary_with_inference,
-    _binary_dtype_candidates,
 )
 from ...data.spectroscopy import (
-    parse_spectroscopy_file,
     fit_parabola_bias,
-    find_last_image_for_spec,
-    _matrix_base_name,
-    _rows_to_spec,
-    _clean_channel_label,
-    _normalize_bias_axis,
-    _extract_meta,
-    _guess_index_from_name,
-    _extract_section_value,
-    _parse_section_metadata,
-    _split_key_value,
-    _split_tokens,
-    _split_header_columns,
-    _row_is_numeric,
-    _normalize_meta_key,
-    _coerce_value,
-    _maybe_float,
-    _maybe_int,
-    _parse_datetime,
-    _parse_date_and_time,
-    _mtime,
-    _read_text,
 )
 from ...data.channel_units import guess_channel_unit
 from ..palettes import list_color_cycles, get_color_cycle, DEFAULT_COLOR_CYCLE
 from ..thumbnail_render import (
-    array_to_qimage,
-    _ThumbnailJobSignals,
-    _ThumbnailJob,
     _colormap_icon,
-    convert_to_si,
-    _unit_to_nm_factor,
-    _value_in_nm,
-    robust_limits,
-    _interp_index,
-    sample_array_value,
-    apply_adjustment_spec,
-    _rotate_extent_box,
-    _trim_nan_border,
     save_wsxm_xyz,
 )
 from .matrix_fit import MatrixFitDialog

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import CH_SAMPLE_POINTS, CH_EQUALITY_TOL_NM
+from ..config import CH_SAMPLE_POINTS
 
 
 def _detect_dtype_for_file(path, expected_pixels):

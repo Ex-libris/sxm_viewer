@@ -5,33 +5,11 @@ from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
-    QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
-    FigureCanvas,
-    Figure,
-    Line2D,
-    colormaps,
     Path,
     defaultdict,
     OrderedDict,
-    datetime,
-    hashlib,
-    itertools,
-    io,
-    json,
     math,
-    os,
-    sys,
-    threading,
-    _scipy_ndimage,
-    log_status,
-    matplotlib,
 )
-from ...data.spectroscopy import is_matrix_file_entry
 from ...geometry import orientation
 
 _MARKER_SYMBOLS = {"circle", "square", "triangle", "diamond"}

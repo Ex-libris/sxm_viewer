@@ -9,7 +9,7 @@ ever become a reason to add a dependency.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 

@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from pathlib import Path
 from ..._shared import QtWidgets, QtCore, QtGui
-from ... import cmap_registry
 from ...molecules.model import (  # noqa: F401 - re-exported for existing importers
     CPK_COLORS,
     PYMOL_COLORS,

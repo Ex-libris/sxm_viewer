@@ -1,24 +1,12 @@
 """UI construction helpers for the canvas window."""
 from __future__ import annotations
 
-from ..._shared import QtCore, QtGui, QtWidgets, colormaps
+from ..._shared import QtCore, QtGui, QtWidgets
 from ... import cmap_registry
 from ..styles import (
     CANVAS_DIALOG_STYLE,
     CANVAS_DIALOG_STYLE_LIGHT,
-    CANVAS_HEADER_STYLE,
-    CANVAS_LABEL_STYLE,
-    CANVAS_LABEL_VALUE_STYLE,
-    CANVAS_RANGE_LABEL_STYLE,
-    CANVAS_RANGE_TO_LABEL_STYLE,
-    CANVAS_REMOVE_BUTTON_STYLE,
-    CANVAS_SECTION_STYLE,
-    CANVAS_STATUS_LABEL_STYLE,
-    CANVAS_STATS_LABEL_STYLE,
-    CANVAS_TOOLBAR_GROUP_LABEL_STYLE,
-    CANVAS_TOOLBAR_GROUP_STYLE,
     CANVAS_TOOLBAR_SEPARATOR_STYLE,
-    CANVAS_TOOLBAR_WIDGET_STYLE,
 )
 from ..thumbnail_render import _colormap_icon
 from .. import theme as ui_theme
@@ -27,7 +15,6 @@ from ..text import (
     CANVAS_CHECKBOX_TEXT,
     CANVAS_LABEL_TEXT,
     CANVAS_PLACEHOLDER_TEXT,
-    CANVAS_TOOLBAR_GROUP_TITLES,
     CANVAS_TOOLTIPS,
 )
 

@@ -7,9 +7,7 @@ import re
 from pathlib import Path
 
 import matplotlib
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from ..._shared import QtCore, QtGui, QtWidgets, np
-from ..thumbnail_render import array_to_qimage
+from ..._shared import QtCore, QtGui, QtWidgets
 from .canvas_items import CanvasImageItem, AlignmentGuide, RubberBandSelection, _append_canvas_menu_actions
 
 _CANVAS_MIME = "application/x-sxm-view"
