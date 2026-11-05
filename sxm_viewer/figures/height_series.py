@@ -499,8 +499,10 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     ``pick_image_channels``.
 
     ``mode``: ``"height"`` (frames by tip height), ``"bias"`` (frames by
-    sample bias) or ``"selection"`` (by z when every member has one, else by
-    bias when it varies, else by time). ``reverse`` flips the frame order.
+    sample bias), ``"selection"`` (by z when every member has one, else by
+    bias when it varies, else by time) or ``"custom"`` (a user-built figure:
+    the frames stay in the order given, nothing is collapsed - headers are
+    chosen like a selection's). ``reverse`` flips the frame order.
     ``reference_key``: Δz zero (default: lowest z = closest approach).
     ``dropped``: frame keys removed by the user.
     ``rows``: channel labels to show, in order (None = defaults);
@@ -524,7 +526,7 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         if reverse:
             zooms.reverse()
         cols_in = ([root] if root is not None else []) + zooms
-    elif mode != "selection" and not show_repeats:
+    elif mode not in ("selection", "custom") and not show_repeats:
         # Re-scans under identical conditions add columns, not information:
         # keep the latest of each (``show_repeats`` brings them back).
         cols_in, hidden_repeats = collapse_repeats(cols_in)
@@ -539,6 +541,8 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
 
     if mode == "zoom":
         axis = "zoom"
+    elif mode == "custom":
+        axis = "order"     # the user's own order (members arrive in it)
     elif mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
         cols_in.sort(key=by_value("bias_v"))
         axis = "bias"
@@ -1519,6 +1523,12 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 if k not in outliers and _flat_row_level({k: panels[(r, k)]["data"]}) is not None:
                     outliers[k] = "flat"
                     row_data[k] = np.asarray(panels[(r, k)]["data"], dtype=float)  # its real level
+        if shared and not mixed:
+            # A panel the user gave its own range leaves the shared scale
+            # (and does not pull the row's automatic range either).
+            for k in row_data:
+                if k not in outliers and clims.get(clim_key(row["label"], k)):
+                    outliers[k] = "user"
         for k, why in outliers.items():
             own_scale[(r, k)] = why
         inliers = [a for k, a in row_data.items() if k not in outliers] or list(row_data.values())
@@ -1592,7 +1602,11 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 taken.add(st["letter_pos"])
             if (r, f) in scale_cells:
                 taken.add(st["scale_pos"])
-            if own:
+            if own and own_scale[(r, col["key"])] == "user" and not st["colorbars"]:
+                # Own range by the user's choice and no shared bar it would
+                # contradict: nothing to say on the image.
+                pass
+            elif own:
                 tag = "own scale"
                 if own_scale[(r, col["key"])] == "flat":
                     im.set_alpha(0.35)

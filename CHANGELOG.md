@@ -2,6 +2,19 @@
 
 Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Figures replace the canvas as the way to build a figure**: the toolbar's
+  `New Figure` turns the selected images into a figure in grid order (the
+  canvas stays reachable from its menu, marked legacy). Custom figures keep
+  their identity and name when frames are added, removed or dragged into a
+  new order, are listed under Recent figures and can be saved / opened as
+  `*.sxmfig.json` files. A series figure can be copied into a custom one.
+- **Per-image processing in figures**: each image of a figure (one channel
+  of one frame) can have its own filters, Zero and colour range (with a
+  histogram) without touching the other images, the other channels of the
+  same frame or the viewer. Keys on the image under the cursor: A, Z, G, T.
+
 ## 0.1.0 - 2026-11-05
 
 First public release, archived on Zenodo.

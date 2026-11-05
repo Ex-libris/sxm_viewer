@@ -212,9 +212,9 @@ def _add_figure_actions(viewer, menu, fp, targets):
         act.triggered.connect(lambda _, key=fp: fc.open_zoom(key))
     if len(real) >= 2 and (series is None or set(real) != set(series["keys"])):
         act = menu.addAction(f"Figure from selection ({len(real)} images)")
-        act.setToolTip("The selected images side by side, one row per channel kind, ordered by "
-                       "tip height when every image has one, else by bias when it varies, "
-                       "else by time")
+        act.setToolTip("The selected images side by side in grid order, one row per channel - "
+                       "drag a header to reorder, right-click an image for its own filters, "
+                       "Zero and range (same as the toolbar's New Figure)")
         act.triggered.connect(lambda _, keys=list(real): fc.open_selection(keys))
 
 

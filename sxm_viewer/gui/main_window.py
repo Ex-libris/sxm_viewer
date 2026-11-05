@@ -1955,13 +1955,14 @@ class SXMGridViewer(QtWidgets.QWidget):
     def _apply_main_toolbar_theme(self):
         """Re-style main-toolbar accents that are set once at creation time."""
         amber = ui_theme.is_amber(self)
-        btn = getattr(self, "toolbar_canvas_btn", None)
+        btn = getattr(self, "toolbar_figure_btn", None)
         if btn is not None:
             try:
                 from .styles import MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
-                btn.setStyleSheet(
+                from .main_window_toolbar import figure_button_qss
+                btn.setStyleSheet(figure_button_qss(
                     ui_theme.amber_canvas_button_qss() if amber else MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
-                )
+                ))
             except Exception:
                 pass
         panel = getattr(self, "shortcuts_panel", None)

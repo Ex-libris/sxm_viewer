@@ -1001,8 +1001,10 @@ The successor to the publication canvas for the figures SPM users actually
 make. Design goal (from the user): **one click from data to a finished,
 publication-ready figure** - no dialog, no settings up front; every
 adjustment made in place on the figure or in the always-visible Format bar.
-The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") for
-free layout, but is no longer the starting point.
+The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") and
+the New Figure button's menu, marked legacy: it is frozen (no new
+features) and planned for removal once custom figures cover it (next:
+dropping thumbnails onto a figure, per-cell channel choice).
 
 **Three recipes, one window.** Thumbnails carry clickable chips (painted in
 `_decorate_thumbnail_pixmap`, hit-tested in `thumbnail_ui._handle_series_chip_click`
@@ -1017,6 +1019,43 @@ the same plus *Figure from selection* for anything else:
   with smaller frames inside it; overview left, zoom grid right, each zoom
   outlined + lettered on the overview in its own colour.
 N counts distinct acquisition conditions (`levels`), not files.
+
+**Custom figures** (mode `"custom"`, replacing the canvas as the way to
+start a free selection): the toolbar's **New Figure** split button
+(`main_window_toolbar.new_figure_from_selection` / `populate_figure_menu`;
+the old "Open Canvas" button, now only in its menu as legacy) and
+*Figure from selection* call `FigureController.open_selection` -> a selection
+that is exactly one series opens that series, anything else `open_custom`.
+A custom figure has a stable id `custom-<hex>` and keeps `mode`, `keys`
+(its frames **in the user's order** - `build_spec` mode `custom` never
+sorts or collapses) and `name` in its state, so adding (`add_frames`),
+dropping and reordering frames (`_move_frame`; drag a header,
+`_frame_drop_target` draws the insertion line) never loses its edits.
+`_rebuild` re-orders the cached `_members` from `state["keys"]` - they are
+not re-read on a reorder. `recent_custom_figures` lists them (toolbar
+menu); `open_saved` reopens by id, offering to load the folder if frames
+are missing; `save_figure_file` / `open_figure_file` write / read
+`*.sxmfig.json` (`{kind: "sxm_figure", fid, mode, keys, root_key, state}`;
+the file wins over the remembered state). Series figures can be copied
+into one (⋯ > "Edit as a custom figure"). The legacy `"sel-<hash>"` ids
+are no longer created.
+
+**Per-image processing** (`state["cell_edits"]`, keyed by
+`clim_key(row_label, frame_key)` = one channel of one frame): optional
+`filters` (a full step list, `[]` = none) and `zero`; an absent key follows
+the viewer (per-file `thumbnail_filters` / `_is_image_zeroed`) - the viewer
+itself is never changed. `FigureController.panel(key, idx, edits)` runs own
+filters on `raw_array` (normalised, unfiltered); the window's panel cache is
+keyed `(key, idx, repr(edits))`, so two rows showing the same channel stay
+independent. A per-panel colour range in *shared* (`row`) mode detaches
+that panel from the row (`own_scale` reason `"user"`, excluded from the ⓘ
+"different baseline" list, no tag when colour bars are off). UI: the
+panel's right-click section (`_cell_menu`: Filters… = `CustomFilterDialog`
+live on that panel via `_live_edit`, quick tilt/plane2/flatten/line
+toggles, Zero, range editor with `_HistogramStrip`, copy to row, reset),
+keys on the hovered panel (`_cell_key_press`: A / Z / G / T, Shift removes,
+a selected molecule keeps X/Y/Z), a screen-only `fx` badge
+(`view.edit_boxes`) and ⓘ entries per edited panel.
 
 **Layers** (same split as the folder report - Qt-free core, GUI gathers):
 - `figures/height_series.py` (Qt-free; despite the name it hosts all

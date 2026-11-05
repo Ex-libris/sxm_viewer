@@ -6,7 +6,7 @@ from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import QIcon
 from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtWidgets import QToolBar, QPushButton
+from PyQt5.QtWidgets import QToolBar
 
 from .._shared import log_status
 from .constants import TOOLBAR_CANVAS_MIN_HEIGHT, TOOLBAR_CANVAS_MIN_WIDTH
@@ -59,6 +59,67 @@ def _load_molecule_pixmap(size: QtCore.QSize, color: QtGui.QColor | None = None)
             
     except Exception:
         return QtGui.QPixmap()
+
+
+def figure_button_qss(push_button_qss: str) -> str:
+    """The accent push-button style, for the Figure split tool button."""
+    return (push_button_qss.replace("QPushButton", "QToolButton")
+            + "QToolButton { padding-right: 22px; }"
+            "QToolButton::menu-button { border: none; width: 18px; }")
+
+
+def new_figure_from_selection(viewer):
+    """A new custom figure of the thumbnail selection (else the previewed
+    image). A selection that is exactly one detected series opens that."""
+    fc = getattr(viewer, "figure_controller", None)
+    if fc is None:
+        return None
+    keys = fc.selection_keys()
+    if not keys:
+        QtWidgets.QMessageBox.information(
+            viewer, "New figure", "Select the images for the figure in the thumbnail grid "
+            "(or preview one), then click New Figure.")
+        return None
+    return fc.open_selection(keys) if len(keys) >= 2 else fc.open_custom(keys)
+
+
+def populate_figure_menu(viewer, menu):
+    fc = getattr(viewer, "figure_controller", None)
+    if fc is None:
+        return
+    keys = fc.selection_keys()
+    act = menu.addAction(f"New figure from the selection ({len(keys)})" if keys else "New figure")
+    act.setEnabled(bool(keys))
+    act.triggered.connect(lambda _=False: new_figure_from_selection(viewer))
+    recent = fc.recent_custom_figures()
+    if recent:
+        menu.addSection("Recent figures")
+        for item in recent:
+            n = len(item["keys"])
+            text = f"{item['name']}  ({n} image{'s' if n != 1 else ''})"
+            if item["missing"]:
+                text += "  - folder not loaded"
+            a = menu.addAction(text)
+            a.setToolTip("\n".join(Path(k).name for k in item["keys"][:12]))
+            a.triggered.connect(lambda _=False, fid=item["fid"]: fc.open_saved(fid))
+    menu.addSeparator()
+    menu.addAction("Open figure file…").triggered.connect(lambda _=False: open_figure_file(viewer))
+    menu.addSeparator()
+    legacy = menu.addAction("Canvas (legacy free layout)…")
+    legacy.setToolTip("The old free-layout canvas; it will be retired - figures do grids, and "
+                      "Inkscape (figure > Inkscape) takes any free layout")
+    legacy.triggered.connect(lambda _=False: viewer._on_open_canvas())
+
+
+def open_figure_file(viewer):
+    from .controllers.figures import FIGURE_FILE_SUFFIX
+    fc = getattr(viewer, "figure_controller", None)
+    if fc is None:
+        return None
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        viewer, "Open figure file", str(getattr(viewer, "last_dir", "") or ""),
+        f"SXM figure (*{FIGURE_FILE_SUFFIX});;All files (*)")
+    return fc.open_figure_file(path) if path else None
 
 
 def create_main_toolbar(viewer):
@@ -137,13 +198,24 @@ def create_main_toolbar(viewer):
     toolbar.addWidget(viewer.toolbar_popups_btn)
     toolbar.addSeparator()
 
-    viewer.toolbar_canvas_btn = QPushButton("Open Canvas")
-    viewer.toolbar_canvas_btn.setToolTip("Open the publication canvas for layout/export")
-    viewer.toolbar_canvas_btn.setMinimumHeight(TOOLBAR_CANVAS_MIN_HEIGHT)
-    viewer.toolbar_canvas_btn.setMinimumWidth(TOOLBAR_CANVAS_MIN_WIDTH)
-    viewer.toolbar_canvas_btn.setStyleSheet(MAIN_TOOLBAR_CANVAS_BUTTON_STYLE)
-    viewer.toolbar_canvas_btn.clicked.connect(viewer._on_open_canvas)
-    toolbar.addWidget(viewer.toolbar_canvas_btn)
+    # Figure: the selected images (else the previewed one) as a publication
+    # figure; the arrow lists recent figures, figure files and the legacy
+    # free-layout canvas.
+    viewer.toolbar_figure_btn = QtWidgets.QToolButton(toolbar)
+    viewer.toolbar_figure_btn.setText("New Figure")
+    viewer.toolbar_figure_btn.setToolTip(
+        "Make a publication figure of the selected images (else the previewed image) - "
+        "one row per channel; drag headers to reorder, right-click an image for its own "
+        "filters / Zero / range. Arrow: recent figures, open a figure file")
+    viewer.toolbar_figure_btn.setMinimumHeight(TOOLBAR_CANVAS_MIN_HEIGHT)
+    viewer.toolbar_figure_btn.setMinimumWidth(TOOLBAR_CANVAS_MIN_WIDTH)
+    viewer.toolbar_figure_btn.setPopupMode(QtWidgets.QToolButton.MenuButtonPopup)
+    viewer.toolbar_figure_btn.setStyleSheet(figure_button_qss(MAIN_TOOLBAR_CANVAS_BUTTON_STYLE))
+    viewer.toolbar_figure_btn.clicked.connect(lambda _=False: new_figure_from_selection(viewer))
+    figure_menu = QtWidgets.QMenu(viewer.toolbar_figure_btn)
+    figure_menu.aboutToShow.connect(lambda m=figure_menu: (m.clear(), populate_figure_menu(viewer, m)))
+    viewer.toolbar_figure_btn.setMenu(figure_menu)
+    toolbar.addWidget(viewer.toolbar_figure_btn)
     toolbar.addSeparator()
 
     viewer.toolbar_export_png_act = toolbar.addAction(_icon("image-x-generic"), "Export PNGs")
