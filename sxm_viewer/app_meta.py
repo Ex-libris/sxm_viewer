@@ -12,8 +12,8 @@ APP_DISPLAY_NAME = APP_NAME
 # Qt stores QSettings under HKCU\Software\<organization>\<application>
 # (only the Profile dialog's remembered options use it); must not be empty,
 # or QSettings refuses to save. The model ID groups windows on the taskbar.
-APP_ORGANIZATION_NAME = "Ben Mallada"
-APP_USER_MODEL_ID = "BenMallada.SXMViewer"
+APP_ORGANIZATION_NAME = "SPM"
+APP_USER_MODEL_ID = "SPM.SXMViewer"
 
 _ICON_BASE_NAMES = (
     "app_icon",
