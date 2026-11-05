@@ -85,10 +85,6 @@ def _molecule_elements(root):
     return found
 
 
-def has_molecule_layers(svg_bytes: bytes) -> bool:
-    return f'id="{MOLECULE_GID_PREFIX}'.encode() in (svg_bytes or b"")
-
-
 def _ordered_roles(roles: dict) -> list[str]:
     known = [role for role in MOLECULE_ROLES if role in roles]
     return known + sorted(role for role in roles if role not in MOLECULE_ROLES)

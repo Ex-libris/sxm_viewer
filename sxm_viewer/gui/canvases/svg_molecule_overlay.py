@@ -9,7 +9,6 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-_SVG_NS = "{http://www.w3.org/2000/svg}"
 _PERIODIC_SYMBOLS = {
     "H", "He",
     "Li", "Be", "B", "C", "N", "O", "F", "Ne",

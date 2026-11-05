@@ -2290,22 +2290,6 @@ QLabel:hover {{
             y = min(max(avail.top(), y), avail.bottom() - 200)
         return QtCore.QPoint(x, y)
 
-    def reveal_points_for_file(self, file_key):
-        """Temporarily reveal point markers for a given file and repaint thumbnails."""
-        if not hasattr(self, '_temp_reveal'):
-            self._temp_reveal = set()
-        key = str(file_key)
-        self._temp_reveal.add(key)
-        try:
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        except Exception:
-            pass
-        # auto-revert after 8 seconds
-        try:
-            QtCore.QTimer.singleShot(8000, lambda: (self._temp_reveal.discard(key), self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())))
-        except Exception:
-            pass
-
     def _open_single_spectro_popup(self, spectro):
         return main_window_spectro.open_single_spectro_popup(self, spectro)
 
@@ -3263,14 +3247,6 @@ QLabel:hover {{
             except Exception:
                 continue
             set_silent(act, checked=is_current)
-
-    # NOTE: implemented but NOT wired to any menu, toolbar or
-    # shortcut - 'Save session' (Ctrl+S) and 'Load session' are,
-    # this is not. Kept deliberately: SessionController.
-    # save_session_as() works, it just has no way to be invoked.
-    # See docs/refactor/SHIM_CENSUS_SXMGridViewer.md.
-    def on_save_session_as(self):
-        self.session_controller.save_session_as()
 
     def _focused_canvas_with_undo(self):
         widget = QtWidgets.QApplication.focusWidget()
@@ -7809,11 +7785,6 @@ QLabel:hover {{
         y_unit = (header.get('YPhysUnit') or header.get('PhysUnit') or 'px') if header else 'px'
         return x_vals, y_vals, x_unit, y_unit
 
-    def _xyz_filename(self, header_path, caption):
-        base = f"{header_path.stem} {caption}".strip()
-        safe = re.sub(r'[<>:\"/\\|?*]+', '_', base)
-        return f"{safe}.xyz"
-
     def _write_xyz_file(self, path, x_vals, y_vals, z_vals, x_unit, y_unit, z_unit, metadata_lines):
         log_status(f"Writing XYZ: {path}")
         with open(path, 'w', encoding='utf-8') as f:
@@ -9580,11 +9551,6 @@ QLabel:hover {{
         if controller:
             return controller.toggle_multi_spec_selection(spec)
 
-    def _update_spec_selection_label(self):
-        controller = getattr(self, "spectro_compare_controller", None)
-        if controller:
-            return controller.update_spec_selection_label()
-
     def _clear_multi_spec_selection(self):
         controller = getattr(self, "spectro_compare_controller", None)
         if controller:
@@ -9621,23 +9587,6 @@ QLabel:hover {{
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups.on_show_matrix_spectro_viewer(self)
-
-    def on_spec_coord_mode_changed(self, idx):
-        try:
-            self.spec_coord_mode = self.spec_coord_combo.currentText()
-        except Exception:
-            self.spec_coord_mode = 'Auto'
-        self.config['spec_coord_mode'] = self.spec_coord_mode; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
-
-    def on_spec_invert_changed(self, checked: bool):
-        self.spec_invert_y = bool(checked)
-        self.config['spectro_invert_y'] = self.spec_invert_y; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def on_pick_spectro_single_color(self):
         col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_single, self, "Select Single Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
@@ -10660,19 +10609,6 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(self.show_crop_template_overlay)
             act.blockSignals(False)
-
-    def on_show_crop_history_overlay_toggled(self, checked: bool):
-        self.show_crop_history_overlay = True
-        self.config['show_crop_history_overlay'] = True; save_config(self.config)
-        act = getattr(self, 'crop_history_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(True)
-            act.blockSignals(False)
-        if hasattr(self, "quick_crop_controller"):
-            self.quick_crop_controller.update_hint()
-            self.quick_crop_controller.refresh_history_panel()
-            self.quick_crop_controller.update_active_sequence_from_stack()
 
     def _set_quick_crop_mode(self, enabled: bool, save: bool = True):
         controller = getattr(self, "quick_crop_controller", None)

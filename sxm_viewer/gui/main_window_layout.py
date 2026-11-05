@@ -17,13 +17,6 @@ def _configure_compact_control(widget):
     return widget
 
 
-def _add_menu_widget(menu, widget):
-    action = QtWidgets.QWidgetAction(menu)
-    action.setDefaultWidget(widget)
-    menu.addAction(action)
-    return action
-
-
 def create_lower_controls(viewer):
     frame = QtWidgets.QFrame()
     frame.setObjectName("lowerControlFrame")

@@ -21,7 +21,6 @@ from .channels import classify_channel
 
 PAGE_W, PAGE_H = 11.69, 8.27  # A4 landscape, inches
 _FALLBACK_CYCLE = [matplotlib.colors.to_hex(matplotlib.colormaps["tab10"](i)) for i in range(10)]
-_MAP_CMAP = "viridis"
 # Default colormap per channel class (user convention): current -> Blues,
 # frequency shift -> gray, topography -> Blues; anything else gray.
 _CLASS_CMAPS = {"current": "Blues", "freq": "gray", "z": "Blues", "other": "gray"}

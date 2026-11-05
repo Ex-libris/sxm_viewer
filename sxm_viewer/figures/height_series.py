@@ -114,9 +114,6 @@ RECIPE_DEFAULTS = {
     "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "all"},
 }
 
-# Which style keys are meaningful in each range mode (for the UI).
-LETTER_STYLES = ("a", "A", "(a)", "a)", "a.")
-CORNERS = ("tl", "tr", "bl", "br")
 
 
 def resolve_style(style):

@@ -51,12 +51,6 @@ _SPECTRO_MANIFEST_FILE = "manifest_v2.json"
 # indistinguishable after the fact - gets re-verified against the file once
 # instead of being trusted forever.
 _SPECTRO_DISK_CACHE_VERSION = 2
-_SPECTRO_METADATA_ARRAY_KEYS = {
-    "channels",
-    "V",
-    "data",
-    "AltAxis",
-}
 _SPECTRO_METADATA_KEYS = {
     "path",
     "time",

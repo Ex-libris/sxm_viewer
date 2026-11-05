@@ -38,12 +38,6 @@ class FrameMiniMap(QtWidgets.QWidget):
         self._hidden_keys = set(keys or [])
         self.update()
 
-    def hide_entry(self, key):
-        if key is None:
-            return
-        self._hidden_keys.add(str(key))
-        self.update()
-
     def clear_hidden_entries(self):
         if not self._hidden_keys:
             return

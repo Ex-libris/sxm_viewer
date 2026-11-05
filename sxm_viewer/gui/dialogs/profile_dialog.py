@@ -1105,13 +1105,6 @@ class ProfileDialog(QtWidgets.QDialog):
             return self._saved[idx]
         return None
 
-    @staticmethod
-    def _profile_id_sort_value(dataset):
-        try:
-            return str(dataset.get('profile_id') or '')
-        except Exception:
-            return ''
-
     def _ordered_profile_entries(self, active_profile, saved_profiles):
         entries = []
         if active_profile:

@@ -131,37 +131,6 @@ def _near_resize_handle(bbox, x, y):
         return False
 
 
-def _resize_inset_bbox(parent_ax, resize_start, event_x, event_y):
-    """Compute a new [x0, y0, w, h] inset bbox (axes-fraction units) from a
-    bottom-right-corner drag. `resize_start` is (corner_offset_x,
-    corner_offset_y, start_bbox): the pixel-space offset between the press
-    point and the inset's true bottom-right corner (captured on mouse press,
-    so grabbing slightly off-corner doesn't snap), plus the bbox at press
-    time.
-
-    The inset's top-left corner (x0, y0+h0) is held fixed and the
-    bottom-right corner is made to track the cursor directly (1:1, modulo
-    the captured offset) - matching where the visible resize-grip glyph
-    actually sits, so dragging it down/right grows the box toward the
-    cursor and dragging up/left shrinks it, instead of the box growing away
-    from the corner being dragged.
-    """
-    if not resize_start:
-        return None
-    offset_x, offset_y, start_bbox = resize_start
-    try:
-        inv = parent_ax.transAxes.inverted()
-        corner = inv.transform((event_x - offset_x, event_y - offset_y))
-    except Exception:
-        return None
-    x0, y0, w0, h0 = start_bbox
-    y_top = y0 + h0
-    new_w = min(max(corner[0] - x0, _INSET_MIN_SIZE), _INSET_MAX_SIZE, 1.0 - x0)
-    new_h = min(max(y_top - corner[1], _INSET_MIN_SIZE), _INSET_MAX_SIZE, y_top)
-    new_y0 = y_top - new_h
-    return [x0, new_y0, new_w, new_h]
-
-
 def _begin_inset_resize(parent_ax, inset_ax, inset_bbox, event_x, event_y):
     """Capture the state a scale-based inset resize needs (see
     ``_resize_inset_bbox_scaled``).

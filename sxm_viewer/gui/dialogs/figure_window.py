@@ -51,9 +51,7 @@ _MODE_TITLES = {"height": "Height series", "bias": "Bias series", "zoom": "Overv
 _CBAR_STYLES = {"outside": "Numbers outside", "inside": "Numbers inside the bar",
                 "minmax": "min / max outside", "minmax_in": "min / max inside the bar"}
 _CBAR_TICKS = {0: "None", 2: "2 (ends)", 3: "3", 5: "5"}
-_CBAR_TEXT = {"rotated": "Rotated text", "horizontal": "Horizontal text"}
 _AUTO_COLORS = {"auto": "Automatic (contrast)", "white": "White", "black": "Black"}
-_ZOOM_COLORS = {"color": "One colour per zoom", "white": "White", "black": "Black"}
 _DPI_CHOICES = (300, 600, 1200)
 _WHEEL_COALESCE_S = 1.0
 _MODE_HINTS = {
@@ -171,11 +169,6 @@ class _FigureView(QtWidgets.QWidget):
         self.ruler_text = ""       # page-width ruler under the paper (screen only)
         self.sel_boxes = []        # inch boxes of the selected molecule (screen only)
         self.gizmo = None          # X/Y/Z orientation gizmo of the selected molecule (screen only)
-
-    # geometry -----------------------------------------------------------
-    def available_px(self):
-        return (max(50, self.width() - 2 * _PAPER_MARGIN),
-                max(50, self.height() - 2 * _PAPER_MARGIN))
 
     def set_image(self, image, fig_in, layout):
         self._image = image

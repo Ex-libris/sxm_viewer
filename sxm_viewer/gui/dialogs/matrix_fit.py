@@ -737,9 +737,6 @@ class MatrixFitDialog(QtWidgets.QDialog):
         save_wsxm_xyz(folder, maps['rmse'], x_axis, y_axis, "rmse", z_unit="Hz")
         self.logs.append(f"WSxM XYZ exports saved to {folder}")
 
-    def get_result_maps(self):
-        return self._result_payload
-
     def _on_map_value(self, value, x, y, view):
         """Wired to the canvas's set_value_callback - mirrors
         gui/viewer/preview.py's _on_preview_value exactly, but writes to

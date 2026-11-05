@@ -47,38 +47,6 @@ def _resolve_view_clim(viewer, file_key, channel_idx, arr, *, relative_zero: boo
             pass
     return _auto_preview_clim(arr, relative_zero=relative_zero)
 
-def _build_spec_transform(header, xpix, ypix):
-    if not header:
-        return None
-    try:
-        xc = float(header.get('xCenter'))
-        yc = float(header.get('yCenter'))
-        xr = float(header.get('XScanRange'))
-        yr = float(header.get('YScanRange'))
-    except Exception:
-        return None
-    if xr == 0.0 or yr == 0.0:
-        return None
-    try:
-        xp = int(xpix)
-        yp = int(ypix)
-    except Exception:
-        xp = yp = None
-    try:
-        angle = float(header.get('Angle', 0.0))
-    except Exception:
-        angle = 0.0
-    return {
-        'x_center': xc,
-        'y_center': yc,
-        'x_range': xr,
-        'y_range': yr,
-        'angle': angle,
-        'xpix': xp,
-        'ypix': yp,
-    }
-
-
 def _turn_spec_pixel(viewer, file_key, coords, xpix, ypix):
     """Carry a raster-frame (col, row) from _map_spec_to_pixels onto the
     image as displayed, i.e. through the file's quarter-turn orientation."""

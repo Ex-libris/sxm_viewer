@@ -597,10 +597,6 @@ class MultiPreviewCanvas(FigureCanvas):
     def set_angle_tool_enabled(self, enabled: bool):
         self.enable_angle(bool(enabled))
 
-    def set_measurement_shortcuts_enabled(self, enabled: bool):
-        """Enable or disable Ctrl-based quick profile/angle shortcuts for this canvas."""
-        self._measurement_shortcuts_enabled = bool(enabled)
-
     def clear_measurement_overlays(self):
         try:
             self.push_undo_state("clear_measurements")
@@ -1472,10 +1468,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if summary:
             return f"Filter: {summary}"
         return title
-
-    def clear_views(self):
-        self.views = []
-        self._redraw()
 
     def set_views_callback(self, cb):
         self._views_callback = cb
@@ -3222,9 +3214,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return True
         return (time.perf_counter() * 1000.0) < float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0)
 
-    def _molecule_orientation_matrix(self, mol):
-        return molecule_interaction.orientation_matrix(mol)
-
     def _molecule_axis_screen_vectors(self, mol):
         return molecule_interaction.axis_screen_vectors(mol)
 
@@ -3805,14 +3794,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return json.dumps(identity, sort_keys=True, default=str, separators=(",", ":"))
         except Exception:
             return str(identity)
-
-    def _scale_bar_view_for_key(self, key):
-        if not key:
-            return None
-        for view in list(getattr(self, "views", []) or []):
-            if self._scale_bar_view_key(view) == key:
-                return view
-        return None
 
     def _scale_bar_setting(self, name, view=None, default=None):
         settings = getattr(self, '_scale_bar_settings', {}) or {}
@@ -6865,18 +6846,6 @@ class MultiPreviewCanvas(FigureCanvas):
         x0, y0, x1, y1 = pts
         self.profile_pts = self._clamp_profile_pts(x0, y0, x1, y1)
 
-    def _shift_pressed(self, event):
-        key = getattr(event, 'key', None)
-        if key and 'shift' in str(key).lower():
-            return True
-        gui = getattr(event, 'guiEvent', None)
-        try:
-            if gui is not None and gui.modifiers() & QtCore.Qt.ShiftModifier:
-                return True
-        except Exception:
-            pass
-        return False
-
     def _snapshot_active_profile(self):
         if self.profile_pts is None or self.main_ax is None:
             return
@@ -7392,15 +7361,6 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return
 
-    def _show_profile_context_menu_at(self, x, y, overlay_idx=None, active=False, global_pos=None):
-        """Resolve a profile under data coordinates and show its properties."""
-        if overlay_idx is None:
-            overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
-        if overlay_idx is not None:
-            self._show_profile_context_menu(None, overlay_idx=overlay_idx, global_pos=global_pos)
-        elif active and self.profile_pts is not None:
-            self._show_profile_context_menu(None, active=True, global_pos=global_pos)
-
     def _on_press(self, event):
         if event.inaxes is None or event.inaxes is not self.main_ax:
             return
@@ -7529,87 +7489,6 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_profile_overlays(True)
         finally:
             self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
-
-    def _show_profile_context_menu(self, event, overlay_idx=None, active=False, global_pos=None):
-        menu = QtWidgets.QMenu(self)
-        profile_title = menu.addAction("Profile properties")
-        profile_title.setEnabled(False)
-        menu.addSeparator()
-        color_act = menu.addAction("Change Color")
-        thicker_act = menu.addAction("Thicker")
-        thinner_act = menu.addAction("Thinner")
-        menu.addSeparator()
-        label_menu = menu.addMenu("Label detail")
-        label_modes = [
-            ("Length only", "length"),
-            ("Full (L, dx, dy)", "full"),
-            ("Hidden", "hidden"),
-        ]
-        label_actions = {}
-        current_mode = getattr(self, "_profile_label_mode", "length")
-        for label_txt, mode_key in label_modes:
-            act = label_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(current_mode == mode_key)
-            label_actions[act] = mode_key
-
-        size_menu = menu.addMenu("Label size")
-        size_actions = {}
-        for px in (8, 10, 12, 14, 16, 20, 24):
-            act = size_menu.addAction(f"{px} px")
-            act.setCheckable(True)
-            act.setChecked(abs(12.0 * self._profile_label_scale - px) < 0.5)
-            size_actions[act] = px
-
-        placement_menu = menu.addMenu("Label placement")
-        placement_actions = {}
-        for label_txt, key in (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")):
-            act = placement_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_placement == key)
-            placement_actions[act] = key
-        orientation_menu = menu.addMenu("Label orientation")
-        orientation_actions = {}
-        for label_txt, key in (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")):
-            act = orientation_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_orientation == key)
-            orientation_actions[act] = key
-        opacity_menu = menu.addMenu("Label background")
-        opacity_actions = {}
-        for label_txt, alpha in (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)):
-            act = opacity_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(abs(self._profile_label_bg_alpha - alpha) < 0.02)
-            opacity_actions[act] = alpha
-        
-        if overlay_idx is not None:
-            menu.addSeparator()
-            delete_act = menu.addAction("Delete Profile")
-        
-        if global_pos is None:
-            gui_event = getattr(event, "guiEvent", None) if event is not None else None
-            global_pos = gui_event.globalPos() if gui_event is not None else QtGui.QCursor.pos()
-        action = menu.exec_(global_pos)
-        
-        if action == color_act:
-            self._change_profile_color(overlay_idx, active)
-        elif action == thicker_act:
-            self._change_profile_width(overlay_idx, active, 0.5)
-        elif action == thinner_act:
-            self._change_profile_width(overlay_idx, active, -0.5)
-        elif action in label_actions:
-            self.set_profile_label_mode(label_actions[action])
-        elif action in size_actions:
-            self.set_profile_label_scale(size_actions[action] / 12.0)
-        elif action in placement_actions:
-            self.set_profile_label_placement(placement_actions[action])
-        elif action in orientation_actions:
-            self.set_profile_label_orientation(orientation_actions[action])
-        elif action in opacity_actions:
-            self.set_profile_label_bg_alpha(opacity_actions[action])
-        elif overlay_idx is not None and action == delete_act:
-            self._remove_saved_profile(overlay_idx)
 
     def _apply_active_profile_style(self):
         color = self._active_profile_color
@@ -7798,25 +7677,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         self._emit_profile()
         return True
-
-    def _change_profile_color(self, overlay_idx, active):
-        current_color = self._active_profile_color
-        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
-            current_color = self._saved_profiles[overlay_idx].get('color', current_color)
-        
-        col = QtWidgets.QColorDialog.getColor(QtGui.QColor(current_color), self, "Select Profile Color")
-        if not col.isValid(): return
-        self.set_profile_style(None if active else overlay_idx, color=col.name())
-
-    def _change_profile_width(self, overlay_idx, active, delta):
-        has_overlay = overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles)
-        if not active and not has_overlay:
-            return
-        if active:
-            self.set_profile_style(None, lw=max(0.5, self._active_profile_lw + delta))
-        elif has_overlay:
-            entry = self._saved_profiles[overlay_idx]
-            self.set_profile_style(overlay_idx, lw=max(0.5, float(entry.get('lw', 1.5) or 1.5) + delta))
 
     def _on_motion(self, event):
         if (not self.profile_enabled and not self._profile_move_only) or event.inaxes is None or event.inaxes is not self.main_ax:
@@ -11016,10 +10876,6 @@ class MultiPreviewCanvas(FigureCanvas):
             if changed:
                 self._set_shortcut_hint_artist_visibility(True)
                 self.draw_idle()
-
-    def _style_export_figure(self, fig, ax, cbar):
-        return preview_export_figures.style_export_figure(self, fig, ax, cbar)
-
 
     # ------------------------------------------------------------------ #
     # Outlines                                                           #

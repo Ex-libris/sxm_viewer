@@ -420,16 +420,6 @@ def _rows_to_spec(
     return entry
 
 
-def _channel_labels(header_tokens: Optional[List[str]], n_cols: int) -> List[str]:
-    labels: List[str] = []
-    tokens = header_tokens or []
-    for idx in range(1, n_cols):
-        label = tokens[idx] if idx < len(tokens) else ""
-        label = _clean_channel_label(label) or f"channel{idx}"
-        labels.append(label)
-    return labels
-
-
 def _clean_channel_label(label: str) -> str:
     label = str(label or "").strip()
     label = label.replace("/", "_").replace("(", "").replace(")", "")

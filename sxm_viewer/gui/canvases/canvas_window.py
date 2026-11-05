@@ -158,25 +158,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             return QtGui.QColor("#14100a")
         return QtGui.QColor("#1f2328" if dark else "#f3efe8")
 
-    def _create_icon_button(self, text: str, icon_text: str = "", tooltip: str = "") -> QtWidgets.QPushButton:
-        """Create a button with optional icon."""
-        display_text = f"{icon_text} {text}" if icon_text else text
-        btn = QtWidgets.QPushButton(display_text)
-        if tooltip:
-            btn.setToolTip(tooltip)
-        return btn
-
-    def _create_toolbar_section(self, title: str, widgets: list) -> QtWidgets.QWidget:
-        return canvas_window_ui.create_toolbar_section(title, widgets)
-
     def _build_toolbar(self):
         return canvas_window_ui.build_toolbar(self)
-
-    def _create_toolbar_group(self, title):
-        return canvas_window_ui.create_toolbar_group(title)
-
-    def _create_separator(self):
-        return canvas_window_ui.create_separator()
 
     def set_dark_mode(self, dark: bool):
         """Update the canvas theme to match the main viewer mode."""

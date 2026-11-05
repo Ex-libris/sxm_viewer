@@ -158,15 +158,6 @@ def _format_scale_bar_label(length: float, unit: str) -> str:
     return f"{length:.1f} {unit}".strip()
 
 
-def _normalized_value(norm, value):
-    try:
-        norm_val = norm(value)
-        norm_val = float(norm_val)
-    except Exception:
-        return 0.5
-    return float(np.clip(norm_val, 0.0, 1.0))
-
-
 def _text_color_for_frame(frame_color):
     color = QtGui.QColor(frame_color or "#070707")
     if not color.isValid():

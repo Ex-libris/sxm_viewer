@@ -645,9 +645,6 @@ class FigureController:
         except Exception:
             pass
 
-    def theme_is_dark(self):
-        return bool(getattr(self.viewer, "dark_mode", False))
-
     def default_save_dir(self, keys):
         for k in keys:
             try:
