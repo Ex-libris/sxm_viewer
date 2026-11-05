@@ -15,10 +15,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 VENV_DIR = PROJECT_ROOT / ".venv"
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
-MIN_PY = (3, 8)
+MIN_PY = (3, 10)  # keep in sync with requires-python in pyproject.toml
 MAX_PY = (3, 13)
 
-# Fallback pip installer URL (works without SSL)
+# Official pip bootstrap script, used only when the venv has no pip.
+# Always downloaded over verified HTTPS - never without certificate checks.
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 
@@ -91,7 +92,7 @@ def find_system_python() -> Path | None:
         program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
         
         # 1. Check python.org installations (most likely to have SSL)
-        for version in ["313", "312", "311", "310", "39"]:
+        for version in ["313", "312", "311", "310"]:
             # Per-user install
             candidates.append(Path(local_appdata) / "Programs" / "Python" / f"Python{version}" / "python.exe")
             # All users install
@@ -138,7 +139,7 @@ def find_system_python() -> Path | None:
         
     else:
         # Unix-like systems
-        for cmd in ["python3.13", "python3.12", "python3.11", "python3.10", "python3.9", "python3", "python"]:
+        for cmd in ["python3.13", "python3.12", "python3.11", "python3.10", "python3", "python"]:
             exe = shutil.which(cmd)
             if exe:
                 candidates.append(Path(exe))
@@ -168,9 +169,9 @@ def find_system_python() -> Path | None:
                 return cand
             else:
                 print(f"[install] Skipping {cand} (no SSL support)")
-        except Exception as e:
+        except Exception:
             continue
-    
+
     print("[install] No Python with SSL support found")
     return None
 
@@ -285,28 +286,20 @@ def assert_supported_external_python(py_path: Path):
 
 
 def download_file(url: str, dest: Path) -> bool:
-    """Download a file, trying both with and without SSL verification."""
-    import ssl
-    
+    """Download a file over verified HTTPS.
+
+    There is deliberately no fallback without certificate verification: the
+    downloaded script is executed afterwards, so an unverified download would
+    let anyone on the network path run code on this machine.
+    """
     print(f"[install] Downloading {url}")
-    
-    # Try with SSL first
     try:
         urllib.request.urlretrieve(url, dest)
         return True
     except Exception as e:
-        print(f"[install] SSL download failed: {e}")
-    
-    # Try without SSL verification
-    try:
-        print("[install] Retrying without SSL verification...")
-        context = ssl._create_unverified_context()
-        with urllib.request.urlopen(url, context=context) as response:
-            with open(dest, 'wb') as out_file:
-                out_file.write(response.read())
-        return True
-    except Exception as e:
         print(f"[install] Download failed: {e}")
+        print("[install] Check your internet connection / proxy, or install pip "
+              "into the base Python and re-run with --reset.")
         return False
 
 
@@ -352,16 +345,6 @@ def pip_executable() -> Path:
     return VENV_DIR / "bin" / "pip"
 
 
-def test_pip_ssl(py: Path) -> bool:
-    """Test if pip can access PyPI."""
-    result = _run(
-        [str(py), "-m", "pip", "search", "pip", "--index-url", "https://pypi.org/simple"],
-        check=False,
-        capture_output=True
-    )
-    return result.returncode == 0
-
-
 def install_requirements():
     if not REQUIREMENTS.exists():
         raise FileNotFoundError("requirements.txt is missing; cannot install dependencies")
@@ -374,63 +357,37 @@ def install_requirements():
         print("[install] pip not found in venv, installing manually...")
         install_pip_manually(py)
     
-    # Check if we have SSL issues
-    has_ssl = check_ssl_support(py)
-    
-    if not has_ssl:
+    # Packages are only ever installed over verified HTTPS. A venv without
+    # SSL cannot do that, so stop here instead of disabling verification
+    # (pip --trusted-host would accept tampered downloads).
+    if not check_ssl_support(py):
         print("\n" + "="*70)
-        print("WARNING: Virtual environment has no SSL support!")
-        print("This happens when the base Python lacks SSL libraries.")
+        print("ERROR: The virtual environment has no SSL support.")
         print("="*70)
-        print("\nAttempting to install packages anyway...")
-        print("If this fails, you'll need to:")
-        print("1. Install Python from python.org (includes SSL)")
-        print("2. Or fix your current Python's SSL support")
+        print("\nThis happens when the base Python lacks SSL libraries.")
+        print("1. Install Python from https://www.python.org/downloads/")
+        print("2. Point the installer at it:")
+        print("   set PYTHON=C:\\Python313\\python.exe")
+        print("3. Re-run:  python install.py --reset")
         print("="*70 + "\n")
-    
-    # Try to upgrade pip first
+        raise RuntimeError("Installation failed: no SSL support")
+
     print("[install] Upgrading pip...")
-    result = _run(
+    _run(
         [str(py), "-m", "pip", "install", "--upgrade", "pip"],
         check=False,
         capture_output=True
     )
-    
-    if result.returncode != 0 and not has_ssl:
-        # pip upgrade failed due to SSL, try manual installation
-        print("[install] pip upgrade failed, installing manually...")
-        install_pip_manually(py)
-    
-    # Install requirements
+
     print("[install] Installing requirements...")
-    runner = [str(py), "-m", "pip", "install", "-r", str(REQUIREMENTS)]
-    
-    # If no SSL, try with trusted host flag
-    if not has_ssl:
-        runner.extend(["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org"])
-    
-    result = _run(runner, check=False)
-    
+    result = _run([str(py), "-m", "pip", "install", "-r", str(REQUIREMENTS)], check=False)
+
     if result.returncode != 0:
         print("\n" + "="*70)
         print("ERROR: Package installation failed!")
         print("="*70)
-        
-        if not has_ssl:
-            print("\nYour Python installation lacks SSL support.")
-            print("\nRECOMMENDED SOLUTIONS:")
-            print("1. Download Python from https://www.python.org/downloads/")
-            print("   (Make sure to check 'Add Python to PATH' during installation)")
-            print("2. Set PYTHON environment variable to point to the new Python:")
-            print("   set PYTHON=C:\\Python313\\python.exe")
-            print("3. Re-run this installer with --reset")
-            print("\nExample:")
-            print("   set PYTHON=C:\\Python313\\python.exe")
-            print("   python install.py --reset")
-        else:
-            print("\nTry running with --reset to start fresh:")
-            print("   python install.py --reset")
-        
+        print("\nTry running with --reset to start fresh:")
+        print("   python install.py --reset")
         print("="*70 + "\n")
         raise RuntimeError("Installation failed")
 
@@ -460,9 +417,9 @@ def main():
         # Try to find alternative
         alt_python = find_system_python()
         if alt_python and alt_python != base_python:
-            print(f"\nOption 1: Use alternative Python found on your system")
+            print("\nOption 1: Use alternative Python found on your system")
             print(f"  Found: {alt_python}")
-            response = input(f"\nUse this Python instead? [Y/n]: ").strip().lower()
+            response = input("\nUse this Python instead? [Y/n]: ").strip().lower()
             if response != 'n':
                 base_python = alt_python
                 has_ssl = True  # We found working Python
@@ -511,10 +468,10 @@ def main():
         print("\n" + "="*70)
         print("Installation complete!")
         print("="*70)
-        print(f"\nActivate the environment with:")
+        print("\nActivate the environment with:")
         print(f"    {activate_cmd}")
-        print(f"\nThen run:")
-        print(f"    python -m sxm_viewer")
+        print("\nThen run:")
+        print("    python -m sxm_viewer")
         print("\nOr use the run_sxm_viewer.bat shortcut")
         print("="*70 + "\n")
 
