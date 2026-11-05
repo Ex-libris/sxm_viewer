@@ -14,6 +14,21 @@ Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://sem
   of one frame) can have its own filters, Zero and colour range (with a
   histogram) without touching the other images, the other channels of the
   same frame or the viewer. Keys on the image under the cursor: A, Z, G, T.
+- **One colormap menu everywhere** (figures, thumbnails, preview and
+  pop-ups): "Colormap: <name>" with a swatch, a search field over every
+  colormap, Reversed, favourites (☆), recently used, suggested maps with
+  full-width gradient swatches, and the gallery. In figures it sits at the
+  top of an image's right-click menu and in the Format bar's Colour card
+  (one button per channel); "best channel per frame" rows now take a
+  colormap per image (picks used to be ignored there).
+- **Figures: add and remove frames and channels in place**: hovering a
+  header, a channel name or an image shows red − / green + tabs (remove the
+  frame / channel row; add images or another channel right after it), and
+  thumbnails, the preview and pop-ups can be dragged onto an open figure to
+  add frames where the blue line shows - style, colormaps, ranges and edits
+  stay. Images added to a series figure are no longer hidden as repeats.
+- **Fix**: section titles of the figure window's menus were not drawn on
+  Windows, and "Colour range & histogram" lost its "&".
 
 ## 0.1.0 - 2026-11-05
 

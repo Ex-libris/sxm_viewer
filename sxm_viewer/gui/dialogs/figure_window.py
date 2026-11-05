@@ -6,9 +6,13 @@ PowerPoint / PDF produce - one matplotlib renderer, ``figures.height_series
 Every adjustment can also be made directly on the figure:
 
 * click a frame's Δz header        -> that frame becomes the Δz reference
-* hover a header, click its ×      -> drop the frame (Ctrl+Z restores)
+* hover a header / channel label   -> red − removes that frame / channel
+  (or an image)                        row, green + adds images / a channel
+                                       after it (Ctrl+Z restores)
 * click a channel label (I, Δf)    -> switch / recolour / move / remove it
 * click "+ channel"                -> add any other channel the frames have
+* drop thumbnails / the preview    -> add them as frames (where the blue
+                                      line shows; style and edits kept)
 * drag a colourbar                 -> contrast (upper half = top, lower half
   = bottom, Shift = both); click it to type exact Min/Max; double-click =
   automatic. Per-image colourbars edit just that panel.
@@ -36,9 +40,12 @@ from ...figures import height_series as hs
 from ...figures import svg_layers
 from ...molecules import interaction as molecule_interaction
 from ...molecules import render as molecule_render
+from .. import cmap_menu
+from ..menu_kit import section
 
 _PAPER_MARGIN = 14       # px around the paper inside the view
-_CLOSE_SIZE = 14         # px, hover × on frame headers
+_TAB = 20               # px, the green + / red − tabs on headers and channel labels
+_FIGURE_MIMES = ("application/x-sxm-thumb-selection", "application/x-sxm-view")
 _LIVE_POLL_MS = 1200     # source-change check while the window is visible
 _DRAG_THROTTLE_MS = 30
 _CLICK_SLOP_PX = 3
@@ -163,6 +170,7 @@ class _FigureView(QtWidgets.QWidget):
     context = QtCore.pyqtSignal(object, object)    # hit, global QPoint
     wheel = QtCore.pyqtSignal(object, object)      # hit, QWheelEvent (Ctrl held)
     resized = QtCore.pyqtSignal()
+    dropped = QtCore.pyqtSignal(object, object)    # [(key, channel idx | None)], QPoint
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -181,6 +189,10 @@ class _FigureView(QtWidgets.QWidget):
         self.gizmo = None          # X/Y/Z orientation gizmo of the selected molecule (screen only)
         self.drop_line = None      # (x0, y0, x1, y1) inches: where a dragged frame would land
         self.edit_boxes = []       # inch boxes of panels with their own processing (screen only)
+        self.drop_items = None     # callable(QMimeData) -> [(key, idx)]: images a drop would add
+        self.drop_target = None    # callable(QPoint) -> drop line (inches) or None
+        self._drop_hint = False    # a drag with images is over the view
+        self.setAcceptDrops(True)
 
     def set_image(self, image, fig_in, layout):
         self._image = image
@@ -214,9 +226,45 @@ class _FigureView(QtWidgets.QWidget):
         return QtCore.QRectF(rect.left() + x0 * sx, rect.top() + y0 * sy,
                              (x1 - x0) * sx, (y1 - y0) * sy)
 
-    def close_rect(self, header_box):
-        r = self.inches_rect(header_box)
-        return QtCore.QRectF(r.right() - _CLOSE_SIZE - 2, r.top() + 3, _CLOSE_SIZE, _CLOSE_SIZE)
+    def tab_rects(self, box):
+        """(minus, plus) screen rects of the tabs on a header / label box:
+        side by side at its top-right corner, or stacked at the top when the
+        box is too narrow (rotated channel names left of the rows)."""
+        r = self.inches_rect(box)
+        s = float(_TAB)
+        if r.width() >= 2 * s + 10:
+            minus = QtCore.QRectF(r.right() - s - 2, r.top() + 2, s, s)
+            plus = QtCore.QRectF(minus.left() - s - 3, minus.top(), s, s)
+        else:
+            minus = QtCore.QRectF(r.center().x() - s / 2, r.top() + 2, s, s)
+            plus = QtCore.QRectF(minus.left(), minus.bottom() + 3, s, s)
+        return minus, plus
+
+    def _paint_tabs(self, p, box, *, minus=True, plus=True, hot=None, dim=False):
+        m_rect, p_rect = self.tab_rects(box)
+        for which, rect, rgb, on in (("minus", m_rect, (205, 50, 50), minus),
+                                     ("plus", p_rect, (30, 150, 70), plus)):
+            if not on:
+                continue
+            col = QtGui.QColor(*rgb)
+            if hot == which:
+                col = col.lighter(118)
+            col.setAlpha(150 if dim else 255)
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 200 if not dim else 120), 1.0))
+            p.setBrush(col)
+            p.drawEllipse(rect)
+            p.setPen(QtGui.QPen(QtGui.QColor("white"), 2.0, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
+            c = rect.center()
+            k = rect.width() * 0.27
+            p.drawLine(QtCore.QPointF(c.x() - k, c.y()), QtCore.QPointF(c.x() + k, c.y()))
+            if which == "plus":
+                p.drawLine(QtCore.QPointF(c.x(), c.y() - k), QtCore.QPointF(c.x(), c.y() + k))
+
+    def _box_of(self, key, index):
+        for i, box in (self._layout or {}).get(key) or []:
+            if i == index:
+                return box
+        return None
 
     def add_rect(self):
         if not self.add_row_box or self._image is None:
@@ -261,11 +309,12 @@ class _FigureView(QtWidgets.QWidget):
         # "+ channel" handle: screen-only (never exported).
         ar = self.add_rect()
         if not ar.isEmpty():
-            hot = bool(hit and hit.get("kind") == "add_row")
-            p.setPen(QtGui.QPen(accent, 1.0, QtCore.Qt.SolidLine if hot else QtCore.Qt.DashLine))
-            p.setBrush(QtGui.QColor(30, 110, 220, 40 if hot else 0))
+            green = QtGui.QColor(30, 150, 70)
+            hot = bool(hit and hit.get("kind") == "add_row" and hit.get("row") is None)
+            p.setPen(QtGui.QPen(green, 1.2, QtCore.Qt.SolidLine if hot else QtCore.Qt.DashLine))
+            p.setBrush(QtGui.QColor(30, 150, 70, 45 if hot else 15))
             p.drawRoundedRect(ar, 6, 6)
-            p.setPen(accent)
+            p.setPen(green)
             f = p.font()
             f.setPointSizeF(8.0)
             p.setFont(f)
@@ -297,10 +346,14 @@ class _FigureView(QtWidgets.QWidget):
             b = self.inches_rect((x1, y1, x1, y1)).topLeft()
             p.setPen(QtGui.QPen(accent, 3.0, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap))
             p.drawLine(a, b)
+        if self._drop_hint and not self.drop_line:
+            p.setPen(QtGui.QPen(accent, 2.0, QtCore.Qt.DashLine))
+            p.setBrush(QtGui.QColor(30, 110, 220, 18))
+            p.drawRoundedRect(rect.adjusted(-4, -4, 4, 4), 4, 4)
         if not hit or not self._layout:
             return
         kind = hit.get("kind")
-        if kind in ("frame", "close"):
+        if kind in ("frame", "close", "add_frame"):
             r = self.inches_rect(hit["box"])
             p.setPen(QtGui.QPen(accent, 1.4))
             p.setBrush(QtCore.Qt.NoBrush)
@@ -310,18 +363,7 @@ class _FigureView(QtWidgets.QWidget):
             else:
                 p.drawLine(QtCore.QPointF(r.left() + 6, r.bottom() - 3),
                            QtCore.QPointF(r.right() - 6, r.bottom() - 3))
-            if hit.get("can_close"):
-                cr = self.close_rect(hit["box"])
-                p.setPen(QtCore.Qt.NoPen)
-                p.setBrush(QtGui.QColor(200, 50, 50) if kind == "close" else QtGui.QColor(120, 120, 120, 200))
-                p.drawEllipse(cr)
-                p.setPen(QtGui.QPen(QtGui.QColor("white"), 1.6))
-                m = 4.0
-                p.drawLine(QtCore.QPointF(cr.left() + m, cr.top() + m),
-                           QtCore.QPointF(cr.right() - m, cr.bottom() - m))
-                p.drawLine(QtCore.QPointF(cr.right() - m, cr.top() + m),
-                           QtCore.QPointF(cr.left() + m, cr.bottom() - m))
-        elif kind == "channel":
+        elif kind in ("channel", "remove_row") or (kind == "add_row" and hit.get("row") is not None):
             r = self.inches_rect(hit["box"])
             p.setPen(QtGui.QPen(accent, 1.2, QtCore.Qt.DashLine))
             p.setBrush(QtCore.Qt.NoBrush)
@@ -331,6 +373,69 @@ class _FigureView(QtWidgets.QWidget):
             p.setPen(QtGui.QPen(accent, 1.4))
             p.setBrush(QtCore.Qt.NoBrush)
             p.drawRect(r.adjusted(-2, -2, 2, 2))
+        self._paint_hover_tabs(p, hit)   # last: on top of the outlines
+
+    def _paint_hover_tabs(self, p, hit):
+        """The − / + tabs of what is under the cursor: a header or channel
+        label gets its own; an image shows them on its frame's header and its
+        channel's label (fainter), so they are found without hunting."""
+        kind = hit.get("kind")
+        hot = {"close": "minus", "remove_row": "minus", "add_frame": "plus", "add_row": "plus"}.get(kind)
+        if kind in ("frame", "close", "add_frame"):
+            self._paint_tabs(p, hit["box"], minus=hit.get("can_close", False),
+                             plus=hit.get("can_add", True), hot=hot)
+        elif kind in ("channel", "remove_row") or (kind == "add_row" and hit.get("row") is not None):
+            self._paint_tabs(p, hit["box"], minus=hit.get("can_close", False),
+                             plus=hit.get("can_add", False), hot=hot)
+        elif kind == "panel":
+            fbox = self._box_of("frame_labels", hit.get("frame"))
+            if fbox is not None:
+                self._paint_tabs(p, fbox, minus=hit.get("frame_can_close", False), dim=True)
+            rbox = self._box_of("channel_labels", hit.get("row"))
+            if rbox is not None:
+                self._paint_tabs(p, rbox, minus=hit.get("row_can_close", False),
+                                 plus=hit.get("row_can_add", False), dim=True)
+
+    # drag and drop: images from the thumbnails / preview ----------------------
+    def _drop_list(self, event):
+        if not callable(self.drop_items):
+            return []
+        try:
+            return list(self.drop_items(event.mimeData()) or [])
+        except Exception:
+            return []
+
+    def dragEnterEvent(self, event):
+        if self._drop_list(event):
+            self._drop_hint = True
+            event.acceptProposedAction()
+            self.update()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if not self._drop_hint:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        line = self.drop_target(event.pos()) if callable(self.drop_target) else None
+        if line != self.drop_line:
+            self.drop_line = line
+            self.update()
+
+    def dragLeaveEvent(self, _event):
+        self._drop_hint = False
+        self.drop_line = None
+        self.update()
+
+    def dropEvent(self, event):
+        items = self._drop_list(event)
+        self._drop_hint = False
+        self.drop_line = None
+        self.update()
+        if items:
+            event.acceptProposedAction()
+            self.dropped.emit(items, event.pos())
 
     def gizmo_center(self):
         return QtCore.QPointF(_GIZMO_R + 10.0, _GIZMO_R + 10.0)
@@ -392,9 +497,14 @@ class _FigureView(QtWidgets.QWidget):
         if inch is None:
             return None
         hit = self.hit_test(*inch)
-        if hit and hit.get("kind") == "frame" and hit.get("can_close"):
-            if self.close_rect(hit["box"]).contains(QtCore.QPointF(pos)):
-                hit = dict(hit, kind="close")
+        kind = (hit or {}).get("kind")
+        if kind in ("frame", "channel"):
+            minus, plus = self.tab_rects(hit["box"])
+            at = QtCore.QPointF(pos)
+            if hit.get("can_close") and minus.contains(at):
+                hit = dict(hit, kind="close" if kind == "frame" else "remove_row")
+            elif hit.get("can_add", kind == "frame") and plus.contains(at):
+                hit = dict(hit, kind="add_frame" if kind == "frame" else "add_row")
         return hit
 
     def mouseMoveEvent(self, event):
@@ -757,6 +867,7 @@ class _FormatPanel(QtWidgets.QWidget):
 
     changed = QtCore.pyqtSignal(dict)
     mol_action = QtCore.pyqtSignal(str)   # load | preview | props | remove
+    cmap_requested = QtCore.pyqtSignal(int, object)   # row index, global QPoint
 
     CARDS = _FORMAT_CARDS
 
@@ -978,6 +1089,11 @@ class _FormatPanel(QtWidgets.QWidget):
 
         # -- Colour
         add = card("colour")
+        add.section("Colormaps")
+        self._cmap_box = QtWidgets.QWidget()
+        QtWidgets.QVBoxLayout(self._cmap_box).setContentsMargins(0, 0, 0, 0)
+        self._cmap_box.layout().setSpacing(2)
+        add(None, self._cmap_box)
         seg("range_mode", {"row": "Shared per channel", "image": "Each image its own"},
             {"row": "One colour range per channel, the same on every frame",
              "image": "Every image scaled to its own range"})
@@ -1201,7 +1317,11 @@ class _FormatPanel(QtWidgets.QWidget):
             return f"{fam} {float(st.get('font') or 0):g} pt", False
         if kind == "colour":
             rng = "Shared range" if st.get("range_mode") == "row" else "Own ranges"
-            return f"{rng} · {'bars' if st.get('colorbars') else 'no bars'}", False
+            cms = list(dict.fromkeys(r.get("cmap") for r in (spec or {}).get("rows") or []
+                                     if r.get("kind") != "mixed"))
+            cm = (cms[0] if len(cms) == 1 else f"{len(cms)} colormaps") if cms else ""
+            bars = "bars" if st.get("colorbars") else "no bars"
+            return f"{cm + ' · ' if cm else ''}{rng} · {bars}", False
         if kind == "letters":
             if not st.get("letters"):
                 return "Letters off", True
@@ -1327,6 +1447,7 @@ class _FormatPanel(QtWidgets.QWidget):
                 it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsDragEnabled)
                 it.setCheckState(QtCore.Qt.Checked if label in shown else QtCore.Qt.Unchecked)
                 lst.addItem(it)
+            self._sync_cmap_buttons(spec)
             letters_on = bool(style.get("letters"))
             for key in ("letter_style", "letter_scope", "letter_pos", "letter_color",
                         "letter_size", "letter_bold", "letter_outline"):
@@ -1349,6 +1470,37 @@ class _FormatPanel(QtWidgets.QWidget):
             self._update_chips(spec, n_molecules)
         finally:
             self._syncing = False
+
+
+    def _sync_cmap_buttons(self, spec):
+        """One button per channel row: its colormap's gradient + name; click
+        = the shared colormap menu (search, favourites, gallery)."""
+        lay = self._cmap_box.layout()
+        while lay.count():
+            item = lay.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for r, row in enumerate((spec or {}).get("rows") or []):
+            name = hs.channel_text(row.get("display") or row.get("label") or "").split(" (")[0]
+            b = QtWidgets.QToolButton(self._cmap_box)
+            b.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            b.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            b.setIconSize(QtCore.QSize(64, 12))
+            if row.get("kind") == "mixed":
+                b.setText(f"{name}:  per image")
+                b.setToolTip("Each frame shows its own kind of channel - right-click an image "
+                             "to choose its colormap")
+                b.setEnabled(False)
+            else:
+                cm = row.get("cmap") or "gray"
+                b.setText(f"{name}:  {cm}  \u25be")
+                icon = cmap_menu._icon(cm, 64, 12)
+                if icon is not None:
+                    b.setIcon(icon)
+                b.setToolTip("Colormap of this channel (every frame) - search, favourites, gallery")
+            b.clicked.connect(lambda _=False, rr=r, btn=b: self.cmap_requested.emit(
+                rr, btn.mapToGlobal(QtCore.QPoint(0, btn.height()))))
+            lay.addWidget(b)
 
 
 class FigureWindow(QtWidgets.QWidget):
@@ -1585,12 +1737,18 @@ class FigureWindow(QtWidgets.QWidget):
         self.view.context.connect(self._on_context)
         self.view.wheel.connect(self._on_wheel)
         self.view.resized.connect(lambda: self._render_timer.start() if not self._actual else None)
+        self.view.drop_items = self._drop_items
+        self.view.drop_target = lambda pos: (self._frame_drop_target(pos)[1]
+                                             if self.mode == "custom" else None)
+        self.view.dropped.connect(self._on_drop)
         self.scroll.setWidget(self.view)
         root.addWidget(self.scroll, 1)
         self.format_panel = _FormatPanel(self)
         self.format_panel.changed.connect(self._on_format_changed)
         self.format_panel.reset_btn.clicked.connect(self.reset_format)
         self.format_panel.mol_action.connect(self._on_mol_action)
+        self.format_panel.cmap_requested.connect(
+            lambda r, gpos: self._cmap_popup(r, None).exec_(gpos))
         self.format_panel.set_mode(self.mode)
         self.format_panel.set_defaults(hs.resolve_style(hs.RECIPE_DEFAULTS.get(self.mode, {})))
         root.addWidget(self.format_panel)
@@ -1603,20 +1761,19 @@ class FigureWindow(QtWidgets.QWidget):
         self.hint = QtWidgets.QLabel(self)
         self.hint.setStyleSheet("color: palette(mid);")
         self.hint.setWordWrap(True)
-        self.hint.setText(_MODE_HINTS.get(self.mode, "") + "hover a header, ×: drop  ·  click a channel "
-                          "label: switch / remove  ·  drag a colourbar: contrast, click it: exact values  ·  "
+        self.hint.setText(_MODE_HINTS.get(self.mode, "") + "hover a header or channel: − remove, + add  ·  "
+                          "drop thumbnails here: add frames  ·  click a channel label: switch  ·  drag a colourbar: contrast, click it: exact values  ·  "
                           "right-click anything: its options  ·  Ctrl+Z undo")
         root.addWidget(self.hint)
 
     def _more_menu(self, menu):
-        if self.mode == "custom":
-            sel = [k for k in self.source.selection_keys() if k not in self.state["keys"]]
-            act = menu.addAction(f"Add the selected images ({len(sel)})" if sel
-                                 else "Add the selected images")
-            act.setToolTip("Select thumbnails in the main window, then add them here as new frames")
-            act.setEnabled(bool(sel))
-            act.triggered.connect(lambda: self.add_frames(sel))
-        else:
+        sel = [k for k in self.source.selection_keys() if k not in self._all_keys()]
+        act = menu.addAction(f"Add the selected images ({len(sel)})" if sel else "Add the selected images")
+        act.setToolTip("Select thumbnails in the main window (or drag them onto the figure) to add "
+                       "them as frames")
+        act.setEnabled(bool(sel))
+        act.triggered.connect(lambda: self.add_frames(sel))
+        if self.mode != "custom":
             act = menu.addAction("Edit as a custom figure (own order, add images)")
             act.setToolTip("A copy of this figure, with its edits, whose frames you can reorder "
                            "and extend - the series figure stays as it is")
@@ -1629,13 +1786,42 @@ class FigureWindow(QtWidgets.QWidget):
         menu.addSeparator()
         menu.addAction("Open in canvas (legacy free layout)", self.open_in_canvas)
 
-    def add_frames(self, keys):
-        keys = [str(k) for k in keys if str(k) not in self.state["keys"]]
+    def add_frames(self, keys, at=None, move_existing=False):
+        """Add images as frames. Custom figure: at display index ``at``
+        (None = end); with ``move_existing`` frames already in it move there
+        instead of being skipped. Series figure: included in the series (its
+        recipe orders them). Style, channels, ranges and edits are kept."""
+        keys = [str(k) for k in dict.fromkeys(keys or [])]
         if not keys:
             return
+        shown = [c["key"] for c in (self.spec or {}).get("columns", [])]
+        new = [k for k in keys if k not in self._all_keys()]
+        restored = [k for k in keys if k in self.state["dropped"]]
         dropped = [d for d in self.state["dropped"] if d not in keys]
-        self._apply_edit({"keys": list(self.state["keys"]) + keys, "dropped": dropped}, reload_data=True)
-        self._flash(f"Added {len(keys)} image{'s' if len(keys) != 1 else ''}")
+        if self.mode != "custom":
+            forced = list(self.state["forced"]) + [k for k in new if k not in self.state["forced"]]
+            if not new and not restored:
+                self._flash("Already in the figure")
+                return
+            self._apply_edit({"forced": forced, "dropped": dropped}, reload_data=True)
+            self._flash(f"Added {len(new) + len(restored)} to the series (ordered by its recipe)")
+            return
+        moving = [k for k in keys if k in shown] if move_existing else []
+        if not new and not restored and not moving:
+            self._flash("Already in the figure")
+            return
+        order = list(shown)
+        at = len(order) if at is None else max(0, min(len(order), int(at)))
+        at -= sum(1 for k in moving if order.index(k) < at)
+        order = [k for k in order if k not in moving]
+        inserted = [k for k in keys if k in new or k in restored or k in moving]
+        order[at:at] = inserted
+        if self.style.get("reverse"):
+            order.reverse()
+        rest = [k for k in self.state["keys"] if k not in order]
+        self._apply_edit({"keys": order + rest, "dropped": dropped}, reload_data=bool(new))
+        n = len(new) + len(restored)
+        self._flash(f"Added {n} image{'s' if n != 1 else ''}" if n else "Moved")
 
     def as_custom_figure(self):
         keys = [c["key"] for c in (self.spec or {}).get("columns", [])]
@@ -1762,7 +1948,8 @@ class FigureWindow(QtWidgets.QWidget):
             row_choices=self.state["row_choices"],
             header=st["header"], header_name=st["header_name"], reverse=st["reverse"],
             show_repeats=self.state["show_repeats"],
-            row_cmaps=self.state["row_cmaps"])
+            row_cmaps=self.state["row_cmaps"],
+            keep=self.state["forced"])
         self._update_title()
         self._render_screen()
         self._update_note()
@@ -1827,14 +2014,14 @@ class FigureWindow(QtWidgets.QWidget):
         parts = []
         if aborted:
             parts.append(f"{len(aborted)} left out (scan stopped early)")
-            menu.addSection("Scan stopped early - mostly empty frame")
+            section(menu, "Scan stopped early - mostly empty frame")
             for a in aborted:
                 act = menu.addAction(f"Include {Path(a['key']).stem} anyway  ({a['frac'] * 100:.0f} % scanned)")
                 act.triggered.connect(lambda _=False, k=a["key"]: self._apply_edit(
                     {"forced": self.state["forced"] + [k]}))
         if left_out:
             parts.append(f"{len(left_out)} left out (Z not flat)")
-            menu.addSection("Z changes within the frame - no single Δz")
+            section(menu, "Z changes within the frame - no single Δz")
             for e in left_out:
                 rng = e.get("z_range_nm")
                 extra = f"  (Z range {rng * 1e3:.0f} pm)" if rng else ""
@@ -1843,7 +2030,7 @@ class FigureWindow(QtWidgets.QWidget):
                     {"forced": self.state["forced"] + [k]}, reload_data=True))
         if dropped:
             parts.append(f"{len(dropped)} removed")
-            menu.addSection("Removed frames")
+            section(menu, "Removed frames")
             for k in dropped:
                 act = menu.addAction(f"Restore {Path(k).stem}")
                 act.triggered.connect(lambda _=False, key=k: self._apply_edit(
@@ -1853,25 +2040,25 @@ class FigureWindow(QtWidgets.QWidget):
                      key=lambda k: self._all_keys().index(k) if k in self._all_keys() else 0)
         if own:
             parts.append(f"{len(own)} on own scale")
-            menu.addSection("Different baseline (or no signal) - not on the shared range")
+            section(menu, "Different baseline (or no signal) - not on the shared range")
             for k in own:
                 act = menu.addAction(f"{Path(k).stem}: show in viewer")
                 act.triggered.connect(lambda _=False, key=k: self._show_key(key))
         repeats = list((self.spec or {}).get("hidden_repeats") or [])
         if repeats:
             parts.append(f"{len(repeats)} repeat{'s' if len(repeats) != 1 else ''} hidden")
-            menu.addSection("Re-scans under identical conditions - the latest is shown")
+            section(menu, "Re-scans under identical conditions - the latest is shown")
             menu.addAction("Show the repeats too").triggered.connect(
                 lambda: self._apply_edit({"show_repeats": True}))
         elif self.state["show_repeats"] and self.mode not in ("selection", "custom"):
             parts.append("repeats shown")
-            menu.addSection("Repeats")
+            section(menu, "Repeats")
             menu.addAction("Hide repeats (keep the latest)").triggered.connect(
                 lambda: self._apply_edit({"show_repeats": False}))
         edited = self._edited_cells()
         if edited:
             parts.append(f"{len(edited)} with own processing")
-            menu.addSection("Images with their own filters / Zero / range")
+            section(menu, "Images with their own filters / Zero / range")
             for (r, f), text in edited:
                 col = self.spec["columns"][f]
                 row = self.spec["rows"][r]
@@ -1880,7 +2067,7 @@ class FigureWindow(QtWidgets.QWidget):
             menu.addAction("Reset all images to follow the viewer").triggered.connect(self._reset_all_cells)
         forced = list(self.state["forced"])
         if forced:
-            menu.addSection("Included anyway")
+            section(menu, "Included anyway")
             for k in forced:
                 act = menu.addAction(f"Leave out {Path(k).stem} again")
                 act.triggered.connect(lambda _=False, key=k: self._apply_edit(
@@ -2062,12 +2249,16 @@ class FigureWindow(QtWidgets.QWidget):
         if not lay or not self.spec:
             return None
         n_cols = len(self.spec["columns"])
+        n_rows = len(self.spec["rows"])
+        can_add_row = any(c["label"] not in {r_["label"] for r_ in self.spec["rows"]}
+                          for c in self.spec.get("channels") or [])
         for f, box in lay["frame_labels"]:
             if _inside(box, x, y):
-                return {"kind": "frame", "frame": f, "box": box, "can_close": n_cols > 1}
+                return {"kind": "frame", "frame": f, "box": box, "can_close": n_cols > 1, "can_add": True}
         for r, box in lay["channel_labels"]:
             if _inside(box, x, y):
-                return {"kind": "channel", "row": r, "box": box}
+                return {"kind": "channel", "row": r, "box": box, "can_close": n_rows > 1,
+                        "can_add": can_add_row}
         for entry in lay["colorbars"]:
             if _inside(entry["box"], x, y, pad=0.05):
                 return {"kind": "colorbar", "row": entry["row"], "frame": entry["frame"],
@@ -2083,7 +2274,9 @@ class FigureWindow(QtWidgets.QWidget):
             return {"kind": "molecule", "index": mi[0], "row": mi[1], "frame": mi[2], "box": mi[3]}
         for (r, f), box in lay["cells"].items():
             if _inside(box, x, y):
-                return {"kind": "panel", "row": r, "frame": f, "box": box}
+                return {"kind": "panel", "row": r, "frame": f, "box": box,
+                        "frame_can_close": n_cols > 1, "row_can_close": n_rows > 1,
+                        "row_can_add": can_add_row}
         return None
 
     # ------------------------------------------------------------------
@@ -2397,6 +2590,14 @@ class FigureWindow(QtWidgets.QWidget):
             if kind == "close":
                 cursor = QtCore.Qt.PointingHandCursor
                 tip = "Remove this frame from the figure (Ctrl+Z restores)"
+            elif kind == "add_frame":
+                cursor = QtCore.Qt.PointingHandCursor
+                tip = ("Add images after this frame: the selected thumbnails or the previewed image "
+                       "(or drag them onto the figure)")
+            elif kind == "remove_row":
+                cursor = QtCore.Qt.PointingHandCursor
+                tip = (f"Remove the {hs.channel_text(self.spec['rows'][hit['row']]['label'])} row "
+                       "(Ctrl+Z restores)")
             elif kind == "frame":
                 col = self.spec["columns"][hit["frame"]]
                 if self.spec["has_z"] and self.spec["header"] == "dz":
@@ -2424,7 +2625,8 @@ class FigureWindow(QtWidgets.QWidget):
                 tip = f"Channel: {hs.channel_text(row['label'])}\nClick: switch, recolour, move or remove"
             elif kind == "add_row":
                 cursor = QtCore.Qt.PointingHandCursor
-                tip = "Add another channel of these frames"
+                tip = ("Add another channel of these frames" if hit.get("row") is None
+                       else "Add another channel after this one")
             elif kind == "colorbar":
                 cursor = QtCore.Qt.SizeHorCursor if hit["orient"] == "h" else QtCore.Qt.SizeVerCursor
                 tip = ("Drag: contrast (one end, Shift = both)  ·  Click: type Min/Max  ·  "
@@ -2485,7 +2687,12 @@ class FigureWindow(QtWidgets.QWidget):
             self._channel_menu(hit["row"]).exec_(gpos)
         elif kind == "add_row":
             self.view._pressed = False
-            self._add_channel_menu().exec_(gpos)
+            self._add_channel_menu(after=hit.get("row")).exec_(gpos)
+        elif kind == "remove_row":
+            self._remove_row(hit["row"])
+        elif kind == "add_frame":
+            self.view._pressed = False
+            self._add_frames_menu(after=hit["frame"]).exec_(gpos)
         elif kind == "colorbar":
             self._begin_cbar_drag(hit, event)
         elif kind in ("letter", "scalebar"):
@@ -2691,6 +2898,10 @@ class FigureWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     def _on_context(self, hit, gpos):
         kind = (hit or {}).get("kind")
+        if kind in ("remove_row",) or (kind == "add_row" and hit.get("row") is not None):
+            kind = "channel"
+        elif kind == "add_frame":
+            kind = "frame"
         if kind == "channel":
             menu = self._channel_menu(hit["row"])
         elif kind == "add_row":
@@ -2703,7 +2914,7 @@ class FigureWindow(QtWidgets.QWidget):
             self._mol_sel = i
             menu = QtWidgets.QMenu(self)
             mol = self._molecules()[i]
-            menu.addSection(Path(str(mol.filepath or "Molecule")).name)
+            section(menu, Path(str(mol.filepath or "Molecule")).name)
             menu.addAction("Appearance, rotation, scale…").triggered.connect(lambda: self._mol_properties(i))
             for text, rot in (("Rotate +90° (in plane)", [0, 0, 90]), ("Flip over (X 180°)", [180, 0, 0])):
                 menu.addAction(text).triggered.connect(lambda _=False, r_=rot: self._mol_transform(i, rot=r_))
@@ -2729,7 +2940,7 @@ class FigureWindow(QtWidgets.QWidget):
             menu = QtWidgets.QMenu(self)
             if kind in ("frame", "close"):
                 col = self.spec["columns"][hit["frame"]]
-                menu.addSection(col["name"])
+                section(menu, col["name"])
                 if self.spec["has_z"]:
                     act = menu.addAction("Make this the Δz reference")
                     act.setEnabled(not col["is_ref"])
@@ -2740,11 +2951,12 @@ class FigureWindow(QtWidgets.QWidget):
             elif kind == "panel":
                 col = self.spec["columns"][hit["frame"]]
                 row = self.spec["rows"][hit["row"]]
-                menu.addSection(f"{col['name']}  ·  {row['display']}")
+                section(menu, f"{col['name']}  ·  {row['display']}", first=True)
+                self._cmap_entry(menu, hit["row"], hit["frame"])
                 self._cell_menu(menu, hit["row"], hit["frame"], gpos)
-                menu.addSection("Frame")
+                section(menu, "Frame")
                 self._frame_actions(menu, col)
-                menu.addSection("Figure")
+                section(menu, "Figure")
                 self._letters_menu(menu.addMenu("Panel letters"))
                 self._scale_menu(menu.addMenu("Scale bar"))
                 self._colour_menu(hit["row"], None, menu.addMenu("Colour"))
@@ -2948,7 +3160,7 @@ class FigureWindow(QtWidgets.QWidget):
         a.triggered.connect(lambda _=False: self._toggle_cell_zero(r, f))
         per_image = self.style["range_mode"] == "image" or \
             (r, self.spec["columns"][f]["key"]) in (self.layout_info or {}).get("own_scale", {})
-        text = "Colour range & histogram…" if per_image else "Own colour range & histogram…"
+        text = "Colour range && histogram…" if per_image else "Own colour range && histogram…"
         a = menu.addAction(text)
         a.setToolTip("Min / max of this image" + ("" if per_image else
                      " - it leaves the channel's shared range"))
@@ -2966,7 +3178,7 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _choice(self, menu, title, key, options):
         if title:
-            menu.addSection(title)
+            section(menu, title)
         group = QtWidgets.QActionGroup(menu)
         for value, text in options.items():
             act = menu.addAction(text)
@@ -2988,7 +3200,7 @@ class FigureWindow(QtWidgets.QWidget):
         menu.addSeparator()
         self._toggle(menu, "Reverse the frame order", "reverse")
         self._choice(menu, "Tall images", "rotate_tall", _ROTATE_TALL)
-        menu.addSection("Page")
+        section(menu, "Page")
         group = QtWidgets.QActionGroup(menu)
         for key, text in hs.PAGE_NAMES.items():
             if key == "custom":
@@ -3007,7 +3219,7 @@ class FigureWindow(QtWidgets.QWidget):
         col = self.spec["columns"][f]
         key = hs.letter_key(row["label"], col["key"])
         cur = (self.state.get("letter_colors") or {}).get(key)
-        menu.addSection("This letter")
+        section(menu, "This letter")
         group = QtWidgets.QActionGroup(menu)
         for value, text in ((None, "Like the others"), ("white", "White"), ("black", "Black")):
             act = menu.addAction(text)
@@ -3044,7 +3256,7 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "On", "letter_scope", {"frame": "One per frame", "panel": "Every panel"})
         self._choice(menu, "Place", "letter_pos", _LETTER_PLACES)
         self._choice(menu, "Colour (all letters)", "letter_color", _AUTO_COLORS)
-        menu.addSection("Size")
+        section(menu, "Size")
         group = QtWidgets.QActionGroup(menu)
         for pt in (7, 9, 11, 14):
             act = menu.addAction(f"{pt} pt")
@@ -3058,7 +3270,7 @@ class FigureWindow(QtWidgets.QWidget):
 
     def _scale_menu(self, menu):
         self._choice(menu, "Show on", "scale_bar", _SCALE_NAMES)
-        menu.addSection("Length")
+        section(menu, "Length")
         act = menu.addAction("Automatic")
         act.setCheckable(True)
         act.setChecked(self.style.get("scale_len_nm") is None)
@@ -3067,7 +3279,7 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Corner", "scale_pos", _CORNER_NAMES)
         self._choice(menu, "Colour", "scale_color", _AUTO_COLORS)
         self._choice(menu, "Length label", "scale_label", _SCALE_LABELS)
-        menu.addSection("Label size")
+        section(menu, "Label size")
         group = QtWidgets.QActionGroup(menu)
         for size in (None, 6.0, 7.0, 8.0, 10.0):
             act = menu.addAction("Text size" if size is None else f"{size:g} pt")
@@ -3096,7 +3308,7 @@ class FigureWindow(QtWidgets.QWidget):
     def _colour_menu(self, r, f, menu=None):
         menu = menu or QtWidgets.QMenu(self)
         row = self.spec["rows"][r]
-        menu.addSection(f"{row['display']} colour")
+        section(menu, f"{row['display']} colour")
         shared = self.style["range_mode"] == "row"
         target = f if not shared else None
         if shared or target is not None:
@@ -3116,23 +3328,69 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Values", "cbar_style", _CBAR_STYLES)
         menu.addSeparator()
         self._toggle(menu, "Frame around the bar", "cbar_outline")
-        self._cmap_menu(menu.addMenu("Colormap"), r)
+        self._cmap_entry(menu, r, f)
         return menu
 
-    def _cmap_menu(self, menu, r):
+    # Colormaps: the app's one colormap menu (gui/cmap_menu.py) - search,
+    # favourites, recent, suggested, gallery. A channel row has one
+    # colormap (one colour bar); a mixed row ("best channel per frame")
+    # one per image.
+    def _cmap_target(self, r, f):
+        """(key in row_cmaps, current name, what it applies to)."""
         row = self.spec["rows"][r]
-        group = QtWidgets.QActionGroup(menu)
-        for name in self.source.featured_cmaps():
-            act = menu.addAction(name)
-            act.setCheckable(True)
-            act.setChecked(name == row["cmap"])
-            group.addAction(act)
-            act.triggered.connect(lambda _=False, n=name: self._set_row_cmap(r, n))
+        if row.get("kind") == "mixed":
+            if f is None:
+                return None, None, None
+            key = self.spec["columns"][f]["key"]
+            return (hs.clim_key(row["label"], key), (row.get("cell_cmap") or {}).get(key) or "gray",
+                    "this image")
+        return row["label"], row.get("cmap") or "gray", f"the whole {row['display']} row"
 
-    def _set_row_cmap(self, r, name):
+    def _cmap_entry(self, menu, r, f):
+        key, current, scope = self._cmap_target(r, f)
+        if key is None:
+            return None
+        sub = cmap_menu.add_cmap_submenu(
+            menu, current, lambda n, k=key: self._set_cmap(k, n),
+            prefs=self.source.cmap_prefs(),
+            on_gallery=lambda k=key, c=current: self._cmap_gallery(k, c),
+            note=f"Applies to {scope}")
+        sub.menuAction().setToolTip(f"Colormap of {scope}")
+        return sub
+
+    def _cmap_popup(self, r, f):
+        menu = QtWidgets.QMenu(self)
+        key, current, scope = self._cmap_target(r, f)
+        if key is not None:
+            cmap_menu.populate_cmap_menu(
+                menu, current, lambda n, k=key: self._set_cmap(k, n), prefs=self.source.cmap_prefs(),
+                on_gallery=lambda k=key, c=current: self._cmap_gallery(k, c),
+                note=f"Applies to {scope}")
+        return menu
+
+    def _set_cmap(self, key, name):
         cmaps = dict(self.state["row_cmaps"])
-        cmaps[self.spec["rows"][r]["label"]] = name
+        cmaps[key] = name
         self._apply_edit({"row_cmaps": cmaps})
+
+    def _cmap_gallery(self, key, current):
+        """Full gallery; cards recolour the figure live, Apply keeps the
+        pick (one undo step), Cancel restores."""
+        before = self._snapshot()
+
+        def preview(name):
+            cmaps = dict(self.state["row_cmaps"])
+            cmaps[key] = name
+            self.state = dict(self.state, row_cmaps=cmaps)
+            self._rebuild()
+
+        chosen = cmap_menu.pick_from_gallery(self, current, prefs=self.source.cmap_prefs(),
+                                             on_preview=preview)
+        self.state = before
+        if chosen:
+            self._set_cmap(key, chosen)
+        else:
+            self._rebuild()
 
     def _current_rows(self):
         return [row["label"] for row in self.spec["rows"]]
@@ -3146,7 +3404,7 @@ class FigureWindow(QtWidgets.QWidget):
     def _channel_submenu(self, menu, r):
         row = self.spec["rows"][r]
         rows = self._current_rows()
-        menu.addSection("Show channel")
+        section(menu, "Show channel")
         group = QtWidgets.QActionGroup(menu)
         same_kind = [c for c in self.spec["channels"] if c["kind"] == row["kind"]]
         other = [c for c in self.spec["channels"] if c["kind"] != row["kind"]]
@@ -3189,15 +3447,86 @@ class FigureWindow(QtWidgets.QWidget):
         add = self._add_channel_menu(menu.addMenu("Add channel"))
         add.setEnabled(not add.isEmpty())
 
-    def _add_channel_menu(self, menu=None):
+    def _add_channel_menu(self, menu=None, after=None):
+        """Channels not shown yet; the pick goes after row ``after`` (None =
+        last)."""
         menu = menu or QtWidgets.QMenu(self)
         rows = self._current_rows()
+        section(menu, "Add a channel row", first=True)
+        at = len(rows) if after is None else int(after) + 1
+
+        def add(lab):
+            new = self._current_rows()
+            new.insert(min(at, len(new)), lab)
+            self._apply_edit({"rows": new})
+            self._flash(f"Added {hs.channel_text(lab)}")
+
         for c in self.spec["channels"]:
             if c["label"] in rows:
                 continue
             menu.addAction(hs.channel_text(c["label"])).triggered.connect(
-                lambda _=False, lab=c["label"]: self._apply_edit({"rows": self._current_rows() + [lab]}))
+                lambda _=False, lab=c["label"]: add(lab))
         return menu
+
+    def _remove_row(self, r):
+        rows = self._current_rows()
+        if len(rows) <= 1 or not (0 <= r < len(rows)):
+            return
+        lab = rows.pop(r)
+        self._apply_edit({"rows": rows})
+        self._flash(f"Removed {hs.channel_text(lab)} - Ctrl+Z to restore")
+
+    # Adding images: + tab on a header, ⋯ menu, or a drop from the thumbnails
+    # / preview. The figure keeps its style, channels, ranges and edits.
+    def _add_frames_menu(self, after=None):
+        menu = QtWidgets.QMenu(self)
+        section(menu, "Add images", first=True)
+        shown = set(self._all_keys())
+        sel = [k for k in self.source.selection_keys() if k not in shown]
+        prev = self.source.previewed_key()
+        at = None if after is None else int(after) + 1
+        a = menu.addAction(f"The selected thumbnails ({len(sel)})" if sel else "The selected thumbnails")
+        a.setEnabled(bool(sel))
+        a.triggered.connect(lambda: self.add_frames(sel, at=at))
+        a = menu.addAction(f"The previewed image ({Path(prev).stem})" if prev else "The previewed image")
+        a.setEnabled(bool(prev) and prev not in shown)
+        a.triggered.connect(lambda: self.add_frames([prev], at=at))
+        hint = menu.addAction("Tip: drag thumbnails or the preview onto the figure")
+        hint.setEnabled(False)
+        return menu
+
+    def _drop_items(self, mime):
+        """[(key, channel idx | None)] of loaded images carried by a drag."""
+        import json
+        out = []
+        try:
+            if mime.hasFormat(_FIGURE_MIMES[0]):
+                payload = json.loads(bytes(mime.data(_FIGURE_MIMES[0])).decode("utf-8"))
+                out = [(e.get("file_path"), e.get("channel_index")) for e in payload.get("entries") or []]
+            elif mime.hasFormat(_FIGURE_MIMES[1]):
+                payload = json.loads(bytes(mime.data(_FIGURE_MIMES[1])).decode("utf-8"))
+                out = [(payload.get("file_path"), payload.get("channel_index"))]
+            elif mime.hasUrls():
+                out = [(u.toLocalFile(), None) for u in mime.urls() if u.isLocalFile()]
+        except Exception:
+            return []
+        known = self.source.known_keys([k for k, _i in out if k])
+        return [(known[str(k)], i) for k, i in out if k and str(k) in known]
+
+    def _on_drop(self, items, pos):
+        keys = list(dict.fromkeys(k for k, _i in items))
+        at = self._frame_drop_target(pos)[0] if self.mode == "custom" else None
+        self.raise_()
+        self.activateWindow()
+        self.add_frames(keys, at=at, move_existing=True)
+        # A dropped channel the figure has no row for: say how to show it.
+        rows = {r["label"] for r in self.spec["rows"]}
+        if hs.BEST not in rows:
+            missing = sorted({lab for lab in (self.source.channel_label(k, i) for k, i in items
+                                              if i is not None) if lab and lab not in rows})
+            if missing:
+                self._flash(f"Added - {', '.join(hs.channel_text(m) for m in missing[:2])} is not a row "
+                            "here: + on a channel label adds it")
 
     def _replace_row(self, r, label):
         rows = self._current_rows()

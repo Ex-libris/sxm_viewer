@@ -243,6 +243,24 @@ re-grep the method name to confirm before relying on an exact line.
     `paths`/`out_dir` and return the destination on success for this.
   New per-image actions go into the right section of these builders, not
   as new top-level items.
+- **Colormap pickers in menus share one builder, `gui/cmap_menu.py`**
+  (viewer-agnostic): `add_cmap_submenu` = "Colormap: <name>" (square
+  gradient icon) filled lazily by `populate_cmap_menu` - search field
+  (`_SearchBox`, all registered maps), Reversed, ☆ favourite, sections
+  Favourites / Recent / Suggested (`featured_cmap_names(context)`), "All
+  colormaps…" (gallery), host `extras`. Entries are `_CmapRow` widget
+  actions: a QAction icon is squeezed into 16 px and the gradient came out
+  as a hairline. `CmapPrefs` stores `colormap_favourites` and
+  `colormap_recent` (exact names, `X_r` kept) and updates `colormap_usage`
+  (per base, the gallery's usage sort) - always on the viewer's *live*
+  config dict (`CmapPrefs(viewer.config, save_config)`), never a reloaded
+  copy. `pick_from_gallery` runs the gallery for one pick with live preview.
+  Used by the thumbnail menu (`thumb_menu._add_cmap_menu`), the preview /
+  pop-up image menu (`_add_context_cmap_menu`; prefs via
+  `set_context_menu_support(cmap_prefs_factory=...)`, in-memory fallback)
+  and the figure window. Also: `QMenu.addSection` text is not drawn by the
+  native Windows style - use `menu_kit.section`; a literal `&` in a menu
+  text must be `&&`.
 - The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
   and its tabbed side panel are built independently of the main window's.
 - Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
@@ -1039,6 +1057,30 @@ are missing; `save_figure_file` / `open_figure_file` write / read
 the file wins over the remembered state). Series figures can be copied
 into one (⋯ > "Edit as a custom figure"). The legacy `"sel-<hash>"` ids
 are no longer created.
+
+**Colormaps in figures**: a channel row has one colormap (`row_cmaps[label]`,
+one colour bar); a mixed row (`hs.BEST`) one per image
+(`row_cmaps["@best|<frame key>"]`, read by `build_spec` into `cell_cmap`).
+Shown as "Colormap: <name>" at the top of an image's right-click menu
+(`_cmap_entry`, note says what it applies to), in the colour-bar menu, and
+as one button per row in the Format bar's Colour card
+(`_FormatPanel._sync_cmap_buttons` -> `cmap_requested` -> `_cmap_popup`);
+the Colour chip names the colormap. Gallery picks preview live and commit
+as one undo step (`_cmap_gallery`).
+
+**Adding / removing frames and channels**: hovering a header, a channel
+label or an image paints red − / green + tabs (`_FigureView.tab_rects` /
+`_paint_hover_tabs`, screen only; `_hit` turns a click on them into
+`close` / `add_frame` / `remove_row` / `add_row`). `add_frames(keys, at=,
+move_existing=)` is the one way in: custom = insert at a display index
+(frames already there move), series = `state["forced"]`, which
+`build_spec(keep=...)` never hides as a repeat (a dropped bias-series image
+with an existing bias used to vanish). Drops: `_FigureView` accepts
+`application/x-sxm-thumb-selection` (thumbnail drag, the whole selection),
+`application/x-sxm-view` (preview / pop-up drag) and local file URLs;
+`_drop_items` maps them to loaded keys via `FigureController.known_keys`,
+the insertion line reuses `_frame_drop_target`, and a dropped channel that
+is not a row is reported (not added - the figure keeps its rows).
 
 **Per-image processing** (`state["cell_edits"]`, keyed by
 `clim_key(row_label, frame_key)` = one channel of one frame): optional

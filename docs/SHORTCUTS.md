@@ -537,6 +537,14 @@ Entry:
   overview + zooms figures; thumbnail right-click `Figure from selection`.
 
 On the figure:
+- Hover a frame header, a channel name or an image - red `−` / green `+`
+  tabs appear on the header and the channel name: `−` removes the frame /
+  channel row, `+` adds images (selected thumbnails, previewed image) after
+  that frame, or another channel after that row. `Ctrl+Z` restores.
+- Drag thumbnails (the whole selection), the preview or a pop-up onto the
+  figure - they are added as frames where the blue line shows; the figure
+  keeps its style, colormaps, ranges and edits. In a series figure they join
+  the series (ordered by its recipe).
 - Drag a frame header - move the frame (custom figures); right-click it for
   `Move left` / `Move right`.
 - Right-click an image - its own filters, Zero, colour range and histogram;

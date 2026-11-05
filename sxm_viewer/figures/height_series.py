@@ -490,7 +490,7 @@ def resolve_header(header, mode, has_z, bias_varies):
 
 def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                rows=None, row_choices=None, header="auto", header_name=False,
-               row_cmaps=None, reverse=False, show_repeats=False, root_key=None):
+               row_cmaps=None, reverse=False, show_repeats=False, root_key=None, keep=()):
     """Frames (``columns``) and channels (``rows``) for the figure.
 
     ``members``: dicts ``{key, name, time, z_nm, bias_v, setpoint,
@@ -509,7 +509,8 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     ``row_choices`` (legacy ``{kind: label}``) is only used for defaults.
     ``header``: ``"auto"`` | ``"dz"`` | ``"zabs"`` | ``"bias"`` | ``"name"``;
     ``header_name`` adds the file name as an extra line.
-    ``row_cmaps``: ``{label: cmap}``.
+    ``row_cmaps``: ``{label: cmap}``. ``keep``: frame keys never hidden as
+    repeats (added by the user).
     """
     dropped = {str(k) for k in (dropped or ())}
     row_choices = dict(row_choices or {})
@@ -529,7 +530,14 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     elif mode not in ("selection", "custom") and not show_repeats:
         # Re-scans under identical conditions add columns, not information:
         # keep the latest of each (``show_repeats`` brings them back).
-        cols_in, hidden_repeats = collapse_repeats(cols_in)
+        kept, hidden_repeats = collapse_repeats(cols_in)
+        # Frames the user added on purpose are never hidden as repeats.
+        keep = {str(k) for k in keep or ()}
+        if keep:
+            kept_keys = {str(m["key"]) for m in kept} | (keep & {str(k) for k in hidden_repeats})
+            kept = [m for m in cols_in if str(m["key"]) in kept_keys]
+            hidden_repeats = [k for k in hidden_repeats if str(k) not in keep]
+        cols_in = kept
     has_z = bool(cols_in) and all(_finite(m.get("z_nm")) is not None for m in cols_in)
     biases = [_finite(m.get("bias_v")) for m in cols_in]
     bias_varies = _varies(biases, rel=0.0, abs_tol=2e-3)
@@ -649,7 +657,10 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                 key = str(m["key"])
                 cells[key] = int(idx)
                 cell_kind[key] = row_kind_for(cls)
-                cell_cmap[key] = _CLASS_CMAPS.get(cls) or ROW_CMAPS.get(row_kind_for(cls), "viridis")
+                # Each frame shows its own kind of channel: the colormap is
+                # chosen per image (row_cmaps keyed "BEST|frame").
+                cell_cmap[key] = (row_cmaps.get(clim_key(BEST, key)) or _CLASS_CMAPS.get(cls)
+                                  or ROW_CMAPS.get(row_kind_for(cls), "viridis"))
             if cells:
                 out_rows.append({"label": BEST, "kind": "mixed", "cls": "mixed", "symbol": "",
                                  "cmap": "gray", "alternatives": [], "cells": cells,

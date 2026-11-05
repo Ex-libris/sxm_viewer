@@ -502,6 +502,38 @@ class FigureController:
                                   excluded=series.get("excluded"))
         return self.open_custom(keys)
 
+    def known_keys(self, keys):
+        """``{given: image key}`` for the given paths that are loaded images
+        (drag payloads, dropped files - a path spelled with / still maps)."""
+        headers = self.viewer.headers or {}
+        out = {}
+        for k in keys:
+            k = str(k)
+            if k in headers:
+                out[k] = k
+                continue
+            try:
+                norm = str(Path(k))
+            except Exception:
+                continue
+            if norm in headers:
+                out[k] = norm
+        return out
+
+    def previewed_key(self):
+        last = getattr(self.viewer, "last_preview", None)
+        key = str(last[0]) if last else ""
+        return key if key in (self.viewer.headers or {}) else None
+
+    def channel_label(self, key, idx):
+        """Caption of channel ``idx`` of an image (how figure rows name it)."""
+        _header, fds = (self.viewer.headers or {}).get(str(key), (None, None))
+        try:
+            fd = list(fds or [])[int(idx)]
+        except Exception:
+            return None
+        return str(fd.get("Caption") or fd.get("FileName") or f"Channel {idx}")
+
     def selection_keys(self):
         """The thumbnail selection in grid order, else the previewed image."""
         from ..viewer import export as viewer_export
@@ -727,18 +759,10 @@ class FigureController:
             lambda _=False: viewer_export.export_to_obsidian(self.viewer, None, None, render=render,
                                                              parent=parent))
 
-    def featured_cmaps(self):
-        try:
-            from ...cmap_registry import featured_cmap_names
-            names = list(featured_cmap_names("preview"))
-        except Exception:
-            names = []
-        base = ["Blues_r", "gray", "afmhot", "viridis", "inferno", "RdBu_r", "bwr",
-                "cividis", "magma", "twilight"]
-        for n in base:
-            if n not in names:
-                names.append(n)
-        return names[:24]
+    def cmap_prefs(self):
+        """Colormap favourites / recent (the viewer's live config)."""
+        from ..cmap_menu import CmapPrefs
+        return CmapPrefs(self.viewer.config, save_config)
 
     # ------------------------------------------------------------------
     # Molecular models (shared with the preview / pop-ups)

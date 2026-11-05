@@ -54,7 +54,7 @@ from ...reporting.channels import classify_channel
 from ...utils.units import format_ch_height_label
 from ..ppt_bridge import powerpoint_support_status, send_rendered_to_ppt
 from .. import vector_export
-from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
+from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 from ..system_open import add_source_file_menu
 from ..menu_kit import (
     MenuPrefs, Route, add_export_section, again_folder, checkable, choice_group, section,
@@ -9822,11 +9822,13 @@ class MultiPreviewCanvas(FigureCanvas):
     # set_context_menu_support; in-memory defaults otherwise).
     _VIEW_DEFAULT_PINNED = ("copy_png", "ppt_new")
 
-    def set_context_menu_support(self, prefs_factory=None, extra_routes=None):
-        """Owner-provided menu prefs factory (-> menu_kit.MenuPrefs) and extra
-        export routes (menu_kit.Route, ctx = {"canvas", "view"})."""
+    def set_context_menu_support(self, prefs_factory=None, extra_routes=None, cmap_prefs_factory=None):
+        """Owner-provided menu prefs factory (-> menu_kit.MenuPrefs), extra
+        export routes (menu_kit.Route, ctx = {"canvas", "view"}) and colormap
+        favourites / recent (-> cmap_menu.CmapPrefs)."""
         self._menu_prefs_factory = prefs_factory
         self._extra_export_routes = list(extra_routes or [])
+        self._cmap_prefs_factory = cmap_prefs_factory
 
     def _context_menu_prefs(self):
         factory = getattr(self, "_menu_prefs_factory", None)
@@ -10068,36 +10070,30 @@ class MultiPreviewCanvas(FigureCanvas):
 
     # ----- context-menu submenus ---------------------------------------
     def _add_context_cmap_menu(self, menu, view):
-        cmap_menu = menu.addMenu("Colormap")
-        group = QtWidgets.QActionGroup(cmap_menu)
-        group.setExclusive(True)
-        # A short featured list inline; the full catalogue (~1000 maps with
-        # the extras package) is browsed in the gallery.
+        # The app's one colormap menu (gui/cmap_menu.py): search, favourites,
+        # recent, suggested and the gallery, "Colormap: <name>" on top.
+        from .. import cmap_menu
         current = str((view or {}).get("cmap") or "viridis")
-        shown = []
-        for name in cmap_registry.featured_cmap_names("general"):
-            if name not in shown:
-                shown.append(name)
-        shown = shown[:12]
-        if current not in shown:
-            shown.append(current)
-        for name in shown:
-            act = cmap_menu.addAction(name)
-            act.setCheckable(True)
-            act.setChecked(name == current)
+        extras = []
+        if callable(self._apply_popup_style_callback):
+            extras.append(("Apply this colormap to all pop-ups", self._safe(self._apply_popup_style_callback)))
+        cmap_menu.add_cmap_submenu(
+            menu, current, lambda n: self._apply_context_cmap(n, view),
+            prefs=self._context_cmap_prefs(),
+            on_gallery=lambda: self.open_view_colormap_gallery(view), extras=extras)
+
+    def _context_cmap_prefs(self):
+        from .. import cmap_menu
+        factory = getattr(self, "_cmap_prefs_factory", None)
+        if callable(factory):
             try:
-                act.setIcon(_colormap_icon(name, width=96, height=14))
+                return factory()
             except Exception:
                 pass
-            group.addAction(act)
-            act.triggered.connect(lambda _=False, n=name: self._apply_context_cmap(n, view))
-        cmap_menu.addSeparator()
-        cmap_menu.addAction("\U0001F3A8 Colormap gallery...").triggered.connect(
-            lambda _=False: self.open_view_colormap_gallery(view))
-        if callable(self._apply_popup_style_callback):
-            cmap_menu.addSeparator()
-            cmap_menu.addAction("Apply this colormap to all pop-ups").triggered.connect(
-                self._safe(self._apply_popup_style_callback))
+        prefs = getattr(self, "_fallback_cmap_prefs", None)
+        if prefs is None:
+            prefs = self._fallback_cmap_prefs = cmap_menu.CmapPrefs()
+        return prefs
 
     def _apply_context_cmap(self, name, view):
         try:
