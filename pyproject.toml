@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,18 @@ name = "sxm-viewer"
 dynamic = ["version"]
 description = "Desktop viewer and analysis tool for scanning probe microscopy (SPM) data: Anfatec/Omicron and Nanonis."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]  # nanonispy2's LICENSE ships inside its vendored folder
 authors = [{ name = "Benjamin Mallada", email = "etellion@gmail.com" }]
 requires-python = ">=3.10"
 keywords = ["scanning probe microscopy", "SPM", "STM", "AFM", "KPFM", "Nanonis", "Omicron"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Visualization",
@@ -41,6 +46,8 @@ sxm-viewer = "sxm_viewer.cli:main"
 [project.urls]
 Homepage = "https://github.com/Ex-libris/sxm_viewer"
 Documentation = "https://ex-libris.github.io/sxm_viewer/"
+Changelog = "https://github.com/Ex-libris/sxm_viewer/blob/master/CHANGELOG.md"
+Issues = "https://github.com/Ex-libris/sxm_viewer/issues"
 
 [tool.setuptools.dynamic]
 version = { attr = "sxm_viewer.__version__" }
@@ -49,4 +56,25 @@ version = { attr = "sxm_viewer.__version__" }
 include = ["sxm_viewer*"]
 
 [tool.setuptools.package-data]
-sxm_viewer = ["*.svg", "providers/nanonis/vendor/**/*"]
+# Explicit patterns (not vendor/**/*): a catch-all also picked up
+# __pycache__/*.pyc from a local run, which shipped bytecode and broke the
+# wheel build on Windows' path-length limit.
+sxm_viewer = [
+    "*.svg",
+    "assets/*.ico",
+    "providers/nanonis/vendor/*/*/nanonispy2/*.py",
+    "providers/nanonis/vendor/*/*/LICENSE",
+    "providers/nanonis/vendor/*/*/README.rst",
+    "providers/nanonis/vendor/*/*/PKG-INFO",
+]
+
+[tool.ruff]
+extend-exclude = ["sxm_viewer/providers/nanonis/vendor"]
+
+[tool.ruff.lint]
+# Syntax errors, undefined names, unused imports. Kept narrow on purpose:
+# it is the CI gate (.github/workflows/tests.yml), not a style guide.
+select = ["E9", "F63", "F7", "F82", "F401"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

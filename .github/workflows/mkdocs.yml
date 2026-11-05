@@ -1,10 +1,19 @@
 name: Deploy MkDocs
 
+# The published site is what the README and the Zenodo record link to, so it
+# is built from master only. (It used to deploy on a push to any branch, so
+# the site showed whichever branch had been pushed last.)
 on:
   push:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -22,4 +31,6 @@ jobs:
         run: pip install mkdocs mkdocs-material pymdown-extensions
 
       - name: Deploy
-        run: mkdocs gh-deploy --force
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+        run: mkdocs gh-deploy --force --strict

@@ -32,14 +32,22 @@ def samples_dir() -> Path:
     return project_root() / "samples"
 
 
+def assets_dir() -> Path:
+    """Icon shipped inside the package (present in a pip-installed copy too)."""
+    return Path(__file__).resolve().parent / "assets"
+
+
 def _icon_candidate_paths(base_dir: Path | None = None):
-    directory = Path(base_dir) if base_dir else samples_dir()
+    # An icon dropped into samples/ (or an explicit base_dir) overrides the
+    # packaged default.
+    directories = [Path(base_dir)] if base_dir else [samples_dir(), assets_dir()]
     suffixes = _ICON_EXTENSIONS_BY_PLATFORM.get(QtCore.QSysInfo.productType(), None)
     if not suffixes:
         suffixes = _ICON_EXTENSIONS_BY_PLATFORM.get(sys.platform, _ICON_EXTENSIONS_BY_PLATFORM["default"])
-    for stem in _ICON_BASE_NAMES:
-        for suffix in suffixes:
-            yield directory / f"{stem}{suffix}"
+    for directory in directories:
+        for stem in _ICON_BASE_NAMES:
+            for suffix in suffixes:
+                yield directory / f"{stem}{suffix}"
 
 
 def find_app_icon_path(base_dir: Path | None = None) -> Path | None:

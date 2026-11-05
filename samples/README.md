@@ -6,8 +6,9 @@ Personal `.sxm`/`.dat` files should stay outside the repository (e.g., `data_loc
 
 ## Optional app icon drop-in
 
-The viewer now checks this folder at startup for a branding asset and will use
-it for the application/window icon when available.
+The default icon ships inside the package (`sxm_viewer/assets/app_icon.ico`).
+When running from a source checkout, an icon placed in this folder overrides
+it for the application/window icon.
 
 Supported filenames:
 
