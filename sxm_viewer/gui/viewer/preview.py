@@ -895,8 +895,6 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     current_path_str = str(header_path_str)
     prev_preview = getattr(viewer, "last_preview", None)
     viewer.last_preview = (current_path_str, int(channel_idx))
-    if hasattr(viewer, 'adjust_image_btn'):
-        viewer.adjust_image_btn.setEnabled(True)
     viewer._update_toolbar_actions(True)
     header_path = Path(header_path_str)
     # track selected file for thumbnail highlighting

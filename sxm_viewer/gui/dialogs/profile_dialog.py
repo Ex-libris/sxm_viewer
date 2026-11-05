@@ -401,7 +401,7 @@ class ProfileDialog(QtWidgets.QDialog):
                  label_scale_callback=None, delete_overlay_callback=None,
                  marker_update_callback=None, marker_select_callback=None,
                  add_overlay_callback=None, style_update_callback=None,
-                 palette_callback=None, profile_display_callback=None, dark_mode=False):
+                 palette_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
         self.setAcceptDrops(True)
@@ -500,7 +500,6 @@ class ProfileDialog(QtWidgets.QDialog):
         self._add_overlay_cb = add_overlay_callback
         self._style_update_cb = style_update_callback
         self._palette_cb = palette_callback
-        self._profile_display_cb = profile_display_callback
         self._profile_palette_name = DEFAULT_COLOR_CYCLE
         self._preserve_cb = None
         self._context_source = None

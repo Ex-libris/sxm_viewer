@@ -2201,9 +2201,6 @@ QLabel:hover {{
     def _reset_display_options(self):
         defaults = getattr(self, '_display_defaults', {})
         action_pairs = [
-            (getattr(self, 'matrix_markers_act', None), defaults.get('show_matrix_markers', True)),
-            (getattr(self, 'single_markers_act', None), defaults.get('show_single_markers', True)),
-            (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
@@ -10645,12 +10642,6 @@ QLabel:hover {{
                 canv.set_profile_label_mode(mode)
             except Exception:
                 continue
-        for key, action in (getattr(self, "profile_label_actions", {}) or {}).items():
-            if action is None:
-                continue
-            action.blockSignals(True)
-            action.setChecked(key == mode)
-            action.blockSignals(False)
 
     def on_fixed_crop_quick_toggled(self, checked: bool):
         self._set_quick_crop_mode(checked)
@@ -10678,11 +10669,6 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(True)
             act.blockSignals(False)
-        cb = getattr(self, 'crop_history_overlay_cb', None)
-        if cb is not None:
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
         if hasattr(self, "quick_crop_controller"):
             self.quick_crop_controller.update_hint()
             self.quick_crop_controller.refresh_history_panel()

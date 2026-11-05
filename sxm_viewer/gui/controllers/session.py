@@ -940,8 +940,6 @@ class SessionController:
             ("filter_summary_act", viewer.show_filter_summary),
         ):
             self._set_checked_silent(getattr(viewer, action_name, None), value)
-        for key, action in (getattr(viewer, "profile_label_actions", {}) or {}).items():
-            self._set_checked_silent(action, key == profile_label_mode)
         try:
             if hasattr(viewer, "preview_detach_btn"):
                 viewer.preview_detach_btn.setEnabled(not viewer.preview_locked)
@@ -1218,11 +1216,6 @@ class SessionController:
                 file_path = built_views[0].get("path") or meta.get("file_path")
                 ch_idx = built_views[0].get("channel_idx", meta.get("channel_index", 0))
                 viewer.last_preview = (str(file_path), int(ch_idx))
-        except Exception:
-            pass
-        try:
-            if hasattr(viewer, "adjust_image_btn"):
-                viewer.adjust_image_btn.setEnabled(False)
         except Exception:
             pass
         try:

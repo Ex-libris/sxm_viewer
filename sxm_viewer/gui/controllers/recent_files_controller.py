@@ -67,7 +67,6 @@ class RecentFilesController:
 
     def _refresh_recent_session_dirs_menu(self):
         menus = [
-            getattr(self.viewer, "load_session_recent_menu", None),
             getattr(self.viewer, "toolbar_load_session_menu", None),
         ]
         for menu in menus:
