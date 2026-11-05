@@ -28,6 +28,7 @@ from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 from .._shared import QtCore, QtGui, QtWidgets, log_status, np
+from .undo_journal import JournaledList, UndoJournal
 from .. import cmap_registry
 from ..config import load_config, save_config
 from . import theme as ui_theme
@@ -439,8 +440,10 @@ def init_state(self):
     # old_spec) restores a display spec, ("copy", key) removes an
     # [edit] virtual copy, ("orient", {key: old_turns}) restores
     # orientations, ("zero", default, overrides) restores zero state.
-    # Consumed by _undo_last_adjustment.
-    self._adjustment_undo_stack = []
+    # Consumed by _undo_last_adjustment. Every push is also recorded in
+    # _undo_journal, the one chronological Ctrl+Z order of the main window.
+    self._undo_journal = UndoJournal()
+    self._adjustment_undo_stack = JournaledList(self._undo_journal, "adjust")
     self._last_base_array = None
     self._last_base_extent = None
     self._last_base_unit = None

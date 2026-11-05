@@ -1394,6 +1394,10 @@ class SXMGridViewer(QtWidgets.QWidget):
         self.quick_crop_undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
         self.quick_crop_undo_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_undo_shortcut.activated.connect(self._on_global_undo_requested)
+        # Ctrl+Z is one chronological order for the main window: the main
+        # preview journals its pushes and hands Ctrl+Z over. Queued after
+        # the startup preset so restoring the display isn't an undo step.
+        QtCore.QTimer.singleShot(0, self._install_preview_undo_journal)
         self.quick_crop_close_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+W"), self)
         self.quick_crop_close_shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
         self.quick_crop_close_shortcut.activated.connect(self.quick_crop_controller.close_latest_popup)
@@ -3322,8 +3326,10 @@ QLabel:hover {{
             except Exception:
                 pass
             return
+        preview = getattr(self, "preview_canvas", None)
         canvas = self._focused_canvas_with_undo()
-        if canvas is not None:
+        if canvas is not None and canvas is not preview:
+            # Another canvas with its own local history (not journaled).
             try:
                 handle_undo = getattr(canvas, "handle_undo_request", None)
                 if callable(handle_undo) and handle_undo():
@@ -3333,6 +3339,18 @@ QLabel:hover {{
                     return
             except Exception:
                 pass
+        # One chronological order: undo the newest action wherever it was
+        # made (preview display, quick crop, adjustments, collection).
+        if self._undo_journal.undo({
+            "view": lambda: bool(preview is not None and preview.undo_last_action()),
+            "crop": self.quick_crop_controller.undo_last_crop,
+            "adjust": self._undo_last_adjustment,
+            "collection": self._undo_collection_action,
+        }):
+            return
+        # Fallback for steps pushed without a journal entry. The preview's
+        # own history is left out: what remains there predates the journal
+        # (startup display restore), which nobody asked to undo.
         try:
             if self.quick_crop_controller.undo_last_crop():
                 return
@@ -3344,12 +3362,25 @@ QLabel:hover {{
         except Exception:
             pass
         try:
-            if self.collection_controller.undo_last_collection_action():
-                self._refresh_collection_tray()
+            if self._undo_collection_action():
                 return
         except Exception:
             pass
         self._restore_last_closed_window()
+
+    def _install_preview_undo_journal(self):
+        canvas = getattr(self, "preview_canvas", None)
+        if canvas is None:
+            return
+        canvas._undo_journal_callback = self._undo_journal.record
+        canvas._undo_keeps_current_image = True
+        canvas._global_undo_callback = self._on_global_undo_requested
+
+    def _undo_collection_action(self):
+        if self.collection_controller.undo_last_collection_action():
+            self._refresh_collection_tray()
+            return True
+        return False
 
     def _handle_local_file_mime_drop(self, mime):
         if mime is None or not mime.hasUrls():
@@ -10373,10 +10404,16 @@ QLabel:hover {{
         canvas = getattr(self, "preview_canvas", None)
         if canvas is None:
             return
+        # Not a user action: keep it out of the Ctrl+Z order (its snapshot
+        # stays in the canvas history for "Back to ...").
+        journal = getattr(canvas, "_undo_journal_callback", None)
+        canvas._undo_journal_callback = None
         try:
             canvas.apply_display_preset(canvas.default_display_preset(), announce=False)
         except Exception:
             pass
+        finally:
+            canvas._undo_journal_callback = journal
 
     def _on_canvas_display_options_changed(self, canvas):
         if self._canvas_display_syncing:

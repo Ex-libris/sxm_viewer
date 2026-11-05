@@ -95,8 +95,12 @@ show all images):
 
 General:
 - `Ctrl+S` - save the current session (prompts once if no session file exists yet).
-- `Ctrl+Z` - undo the focused canvas action; if no focused canvas action is
-  available, fall back to quick-crop undo.
+- `Ctrl+Z` - undo the most recent action in the main window, wherever it was
+  made (preview display/contrast/overlays, quick crop, Crop/Rotate, R, Z, G/T,
+  CH reference, collection edits), newest first, from the thumbnail grid or the
+  preview alike. A display change made on another image restores the display
+  settings only and keeps the current image. Pop-up windows undo their own
+  changes. With nothing left to undo it reopens the last closed window.
 - `Ctrl+D` - duplicate the current preview into a popup.
 - Arrow keys - move thumbnail selection if focus is not in a text-editing
   widget.
@@ -253,7 +257,8 @@ with a custom contrast range, that range's low end becomes 0):
 
 Clipboard and undo:
 - `Ctrl+C` - copy the displayed canvas as PNG, including overlays.
-- `Ctrl+Z` - undo the last canvas-side action when possible.
+- `Ctrl+Z` - main preview: undo the most recent main-window action (see
+  General); pop-ups: undo the pop-up's last change.
 
 Overlay toggles:
 - `Ctrl+1` - show / hide saved profile overlays.

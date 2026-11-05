@@ -272,6 +272,20 @@ re-grep the method name to confirm before relying on an exact line.
   in `gui/canvases/canvas_view.py` / `canvas_window.py`): arrows nudge
   selected items, Ctrl+A selects all, Escape clears selection,
   Delete/Backspace deletes, Ctrl+Z/Ctrl+Y undo/redo.
+- **Global undo** (`gui/undo_journal.py`): Ctrl+Z in the main window is one
+  chronological order. Each undo stack records its pushes in
+  `viewer._undo_journal` (sources `view` = main preview `push_undo_state`,
+  `crop` = quick-crop entries, `adjust` = `_adjustment_undo_stack`, a
+  `JournaledList`, `collection`); `_on_global_undo_requested` pops the newest
+  token and runs that source's undo, skipping tokens whose entry is gone.
+  The main preview hands Ctrl+Z to it (`_global_undo_callback`) and, with
+  `_undo_keeps_current_image`, restores only display settings from a
+  snapshot taken on another image (snapshots carry `views`; restoring them
+  used to swap the image or blank the preview). Startup/session-load preset
+  snapshots are kept out of the journal but stay in the canvas history for
+  "Back to ...". Pop-ups keep local undo. A new undo stack in the main window
+  must journal its pushes, or Ctrl+Z only reaches it after the journal is
+  empty (fallback chain).
 - Full user-facing shortcut list: `docs/SHORTCUTS.md`.
 
 ### Mouse events & drag-drop
@@ -1312,7 +1326,7 @@ data is never altered.
   thumbnail; Image > "Reset display adjustments" (and the thumbnail
   context menu) clears the spec. All these actions push onto
   `viewer._adjustment_undo_stack`, consumed by `_undo_last_adjustment` in
-  the global Ctrl+Z chain (between quick-crop undo and collection undo).
+  the global Ctrl+Z order (see "Global undo" under Keyboard shortcuts).
   **Legacy sessions**: `apply_adjustment_spec` keeps full geometry
   support forever so old geometry specs render unchanged; opening the
   dialog on one seeds its controls (migration-on-touch) and Accept
