@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import copy
+import weakref
 
 _PROFILE_DIALOGS = {}
-_PROFILE_CANVASES = {}
+# Weak values: a canvas registers itself whenever a profile is drawn on it,
+# and nothing unregisters it when its pop-up closes. A plain dict kept every
+# closed pop-up canvas (figure + image arrays) alive for the whole session.
+_PROFILE_CANVASES = weakref.WeakValueDictionary()
 
 
 def _profile_source_id(canvas):
