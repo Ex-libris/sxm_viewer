@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status, np
@@ -745,7 +745,7 @@ class CollectionController:
             return False
         self._push_collection_undo_state(collection_path, payload, description="remove_items")
         payload["items"] = kept
-        payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        payload["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
         try:
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
@@ -821,7 +821,7 @@ class CollectionController:
             return False
         self._push_collection_undo_state(collection_path, payload, description="remove_thumbnails")
         payload["items"] = remaining
-        payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        payload["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
         try:
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
@@ -1122,13 +1122,13 @@ class CollectionController:
                 {
                     "filename": source_path.name,
                     "channel_index": item.get("channel_index"),
-                    "added_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+                    "added_at": item.get("created_at") or (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"),
                 }
             )
         if not by_folder:
             return
         collection_key = str(collection_path)
-        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
         index = load_collections_index()
         for folder_key, new_items in by_folder.items():
             folder_entry = index.setdefault(folder_key, {})
@@ -1184,7 +1184,7 @@ class CollectionController:
                             "source_kind": item.get("source_kind") or "view",
                             "storage_mode": mode,
                             "restore_as_popup": bool(item.get("restore_as_popup", False)),
-                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z",
                             "source_file": primary.get("source_file"),
                             "source_folder": primary.get("source_folder"),
                             "channel_index": primary.get("channel_index"),
@@ -1207,7 +1207,7 @@ class CollectionController:
                             "id": item_id,
                             "label": item.get("label") or Path(source_file).name,
                             "source_kind": item.get("source_kind") or "thumbnail",
-                            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z",
                             "source_file": source_file,
                             "channel_index": channel_index,
                             "channel_name": item.get("channel_name") or "",
@@ -1225,7 +1225,7 @@ class CollectionController:
             payload.setdefault("items", []).extend(appended)
             payload["next_item_id"] = next_id
             payload["version"] = self.VERSION
-            payload["updated_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            payload["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
             collection_path.parent.mkdir(parents=True, exist_ok=True)
             with open(collection_path, "w", encoding="utf-8") as fh:
                 json.dump(self.viewer.session_controller._jsonify(payload), fh, indent=2)
@@ -1302,8 +1302,8 @@ class CollectionController:
         return {
             "kind": self.KIND,
             "version": self.VERSION,
-            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z",
+            "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z",
             "data_dir": f"{collection_path.stem}_collection_data",
             "default_mode": mode,
             "items": [],
@@ -1776,7 +1776,7 @@ class CollectionController:
             "channel_index": channel_index,
             "channel_name": item.get("channel_name") or self._snapshot_channel_name(first_view),
             "spectro_file_paths": spectro_paths,
-            "created_at": item.get("created_at") or (datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+            "created_at": item.get("created_at") or (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"),
         }
 
     # ------------------------------------------------------------------
@@ -2072,7 +2072,6 @@ class CollectionController:
         except Exception:
             arr_by_channel = {}
             fds_new = []
-        meta = view.get("meta") or {}
         caption = (
             self._snapshot_channel_name(view)
             or str(item.get("channel_name") or "").strip()

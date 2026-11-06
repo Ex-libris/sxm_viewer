@@ -2,39 +2,18 @@
 from __future__ import annotations
 
 import re
-import sip
+from PyQt5 import sip
 import time
 
 from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
-    QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
-    FigureCanvas,
-    Figure,
-    Line2D,
-    colormaps,
     np,
     Path,
-    defaultdict,
     OrderedDict,
-    datetime,
-    hashlib,
-    itertools,
-    io,
     json,
-    math,
-    os,
-    sys,
-    threading,
-    _scipy_ndimage,
     log_status,
-    matplotlib,
 )
 from ...config import save_config
 from ..palettes import get_color_cycle, DEFAULT_COLOR_CYCLE

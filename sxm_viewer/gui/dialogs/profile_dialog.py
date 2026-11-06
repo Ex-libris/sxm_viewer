@@ -56,7 +56,6 @@ import hashlib
 import json
 
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoMinorLocator, EngFormatter, MaxNLocator, ScalarFormatter
 from matplotlib.widgets import SpanSelector
@@ -402,7 +401,7 @@ class ProfileDialog(QtWidgets.QDialog):
                  label_scale_callback=None, delete_overlay_callback=None,
                  marker_update_callback=None, marker_select_callback=None,
                  add_overlay_callback=None, style_update_callback=None,
-                 palette_callback=None, profile_display_callback=None, dark_mode=False):
+                 palette_callback=None, dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle('Profile measurement')
         self.setAcceptDrops(True)
@@ -501,7 +500,6 @@ class ProfileDialog(QtWidgets.QDialog):
         self._add_overlay_cb = add_overlay_callback
         self._style_update_cb = style_update_callback
         self._palette_cb = palette_callback
-        self._profile_display_cb = profile_display_callback
         self._profile_palette_name = DEFAULT_COLOR_CYCLE
         self._preserve_cb = None
         self._context_source = None
@@ -1106,13 +1104,6 @@ class ProfileDialog(QtWidgets.QDialog):
         if 0 <= idx < len(self._saved):
             return self._saved[idx]
         return None
-
-    @staticmethod
-    def _profile_id_sort_value(dataset):
-        try:
-            return str(dataset.get('profile_id') or '')
-        except Exception:
-            return ''
 
     def _ordered_profile_entries(self, active_profile, saved_profiles):
         entries = []

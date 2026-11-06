@@ -7,32 +7,9 @@ from ..._shared import (
     QtCore,
     QtGui,
     QtWidgets,
-    QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
-    FigureCanvas,
-    Figure,
-    Line2D,
-    colormaps,
     np,
     Path,
-    defaultdict,
-    OrderedDict,
-    datetime,
-    hashlib,
-    itertools,
-    io,
-    json,
-    math,
-    os,
-    sys,
-    threading,
-    _scipy_ndimage,
     log_status,
-    matplotlib,
 )
 from ...config import save_config, CH_EQUALITY_TOL_NM, CH_SAMPLE_POINTS
 from ...data.io import parse_header
@@ -69,38 +46,6 @@ def _resolve_view_clim(viewer, file_key, channel_idx, arr, *, relative_zero: boo
         except Exception:
             pass
     return _auto_preview_clim(arr, relative_zero=relative_zero)
-
-def _build_spec_transform(header, xpix, ypix):
-    if not header:
-        return None
-    try:
-        xc = float(header.get('xCenter'))
-        yc = float(header.get('yCenter'))
-        xr = float(header.get('XScanRange'))
-        yr = float(header.get('YScanRange'))
-    except Exception:
-        return None
-    if xr == 0.0 or yr == 0.0:
-        return None
-    try:
-        xp = int(xpix)
-        yp = int(ypix)
-    except Exception:
-        xp = yp = None
-    try:
-        angle = float(header.get('Angle', 0.0))
-    except Exception:
-        angle = 0.0
-    return {
-        'x_center': xc,
-        'y_center': yc,
-        'x_range': xr,
-        'y_range': yr,
-        'angle': angle,
-        'xpix': xp,
-        'ypix': yp,
-    }
-
 
 def _turn_spec_pixel(viewer, file_key, coords, xpix, ypix):
     """Carry a raster-frame (col, row) from _map_spec_to_pixels onto the
@@ -918,8 +863,6 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     current_path_str = str(header_path_str)
     prev_preview = getattr(viewer, "last_preview", None)
     viewer.last_preview = (current_path_str, int(channel_idx))
-    if hasattr(viewer, 'adjust_image_btn'):
-        viewer.adjust_image_btn.setEnabled(True)
     viewer._update_toolbar_actions(True)
     header_path = Path(header_path_str)
     # track selected file for thumbnail highlighting
@@ -932,7 +875,7 @@ def show_file_channel(viewer, header_path_str, channel_idx:int, use_local_cmap=F
     file_key = str(header_path)
     header, fds = viewer.headers.get(file_key, (None,None))
     if header is None or channel_idx < 0 or channel_idx >= len(fds): return
-    fd = fds[channel_idx]; fname = fd.get("FileName")
+    fd = fds[channel_idx]
     axis_unit = 'px'
     try:
         xpix = int(header.get('xPixel', 128)); ypix = int(header.get('yPixel', xpix))

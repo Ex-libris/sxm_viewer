@@ -1,4 +1,4 @@
-﻿"""Histogram & range dialog helpers for preview canvases."""
+"""Histogram & range dialog helpers for preview canvases."""
 from __future__ import annotations
 
 from pathlib import Path

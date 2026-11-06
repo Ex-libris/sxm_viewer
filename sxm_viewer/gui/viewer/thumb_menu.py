@@ -23,12 +23,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..._shared import QtWidgets, log_status
-from ... import cmap_registry
 from ...processing.filters import FILTER_DEFINITIONS, _gaussian_available
-from .. import drift_animation
+from ...config import save_config
+from .. import cmap_menu, drift_animation
 from ..menu_kit import add_export_section, section
 from ..system_open import add_source_file_menu
-from ..thumbnail_render import _colormap_icon
 from . import ch_height as viewer_ch_height
 from . import export_routes
 
@@ -69,34 +68,26 @@ def _add_filters_menu(viewer, menu, fp, targets):
 
 
 def _add_cmap_menu(viewer, menu, label_widget, cmap_targets):
-    cmap_menu = menu.addMenu("Colormap")
     try:
         ch_for_cmap = int(label_widget.property("channel_index"))
     except Exception:
         ch_for_cmap = None
-    current_cmaps = {(viewer.per_file_channel_cmap or {}).get((p, ch_for_cmap)) for p in cmap_targets}
-    current_cmap = next(iter(current_cmaps)) if len(current_cmaps) == 1 else None
-    cmap_names = cmap_registry.all_cmap_names()
-    featured = [n for n in ["viridis", "cividis", "Blues_r", "gray", "inferno", "magma", "plasma",
-                            "coolwarm", "turbo"] if n in cmap_names]
-    if current_cmap and current_cmap not in featured:
-        featured.insert(0, current_cmap)
-    for cmap_name in featured:
-        act = cmap_menu.addAction(cmap_name)
-        try:
-            act.setIcon(_colormap_icon(cmap_name, width=96, height=14))
-        except Exception:
-            pass
-        act.setCheckable(True)
-        act.setChecked(cmap_name == current_cmap)
-        act.triggered.connect(lambda _, paths=list(cmap_targets), name=cmap_name:
-                              viewer._set_thumbnail_entry_cmap(paths, name))
-    cmap_menu.addSeparator()
-    gallery = cmap_menu.addAction("\U0001F3A8 Colormap gallery...")
-    gallery.triggered.connect(lambda _, paths=list(cmap_targets): viewer._pick_thumbnail_cmap_from_gallery(paths))
-    reset = cmap_menu.addAction("Use global thumbnail/preview cmap")
-    reset.setEnabled(any(c for c in current_cmaps))
-    reset.triggered.connect(lambda _, paths=list(cmap_targets): viewer._set_thumbnail_entry_cmap(paths, None))
+    paths = list(cmap_targets)
+    current_cmaps = {(viewer.per_file_channel_cmap or {}).get((p, ch_for_cmap)) for p in paths}
+    own = next(iter(current_cmaps)) if len(current_cmaps) == 1 else None
+    # What the image shows when it has no colormap of its own.
+    current = own if len(current_cmaps) == 1 and own else (
+        None if len(current_cmaps) > 1 else str(getattr(viewer, "thumb_cmap", "") or "") or None)
+    extras = []
+    if any(c for c in current_cmaps):
+        extras.append(("Use the global thumbnail / preview colormap",
+                       lambda: viewer._set_thumbnail_entry_cmap(paths, None)))
+    n = len(paths)
+    cmap_menu.add_cmap_submenu(
+        menu, current, lambda name: viewer._set_thumbnail_entry_cmap(paths, name),
+        prefs=cmap_menu.CmapPrefs(viewer.config, save_config),
+        on_gallery=lambda: viewer._pick_thumbnail_cmap_from_gallery(paths),
+        extras=extras, note=f"Applies to {n} selected image{'s' if n != 1 else ''}" if n > 1 else None)
 
 
 def _add_orientation_menu(viewer, menu, targets):
@@ -212,9 +203,9 @@ def _add_figure_actions(viewer, menu, fp, targets):
         act.triggered.connect(lambda _, key=fp: fc.open_zoom(key))
     if len(real) >= 2 and (series is None or set(real) != set(series["keys"])):
         act = menu.addAction(f"Figure from selection ({len(real)} images)")
-        act.setToolTip("The selected images side by side, one row per channel kind, ordered by "
-                       "tip height when every image has one, else by bias when it varies, "
-                       "else by time")
+        act.setToolTip("The selected images side by side in grid order, one row per channel - "
+                       "drag a header to reorder, right-click an image for its own filters, "
+                       "Zero and range (same as the toolbar's New Figure)")
         act.triggered.connect(lambda _, keys=list(real): fc.open_selection(keys))
 
 

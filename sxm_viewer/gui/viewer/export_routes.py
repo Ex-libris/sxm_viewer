@@ -171,7 +171,9 @@ def install_canvas_menu_support(viewer, canvas):
     viewer-backed export routes."""
     if not hasattr(canvas, "set_context_menu_support"):
         return
+    from ..cmap_menu import CmapPrefs
     canvas.set_context_menu_support(
         prefs_factory=lambda: menu_prefs(viewer, "view"),
         extra_routes=view_extra_routes(viewer),
+        cmap_prefs_factory=lambda: CmapPrefs(getattr(viewer, "config", None), save_config),
     )

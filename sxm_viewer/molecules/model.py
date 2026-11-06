@@ -8,10 +8,14 @@ dialog and the element colour editor), so existing imports keep working.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from pathlib import Path
 
 from .. import cmap_registry
+
+_log = logging.getLogger(__name__)
 
 
 # Atom palettes (simplified, hex)
@@ -400,7 +404,7 @@ class Molecule:
             self.coordinates = np.array(coords)
             self.elements = elems
         except Exception as e:
-            print(f"Error loading XYZ: {e}")
+            _log.warning("Error loading XYZ %s: %s", path, e)
 
     def _load_pdb(self, path):
         coords = []
@@ -426,7 +430,7 @@ class Molecule:
             self.coordinates = np.array(coords)
             self.elements = elems
         except Exception as e:
-            print(f"Error loading PDB: {e}")
+            _log.warning("Error loading PDB %s: %s", path, e)
 
     def _load_mol(self, path):
         coords = []
@@ -464,7 +468,7 @@ class Molecule:
             self.coordinates = np.array(coords)
             self.elements = elems
         except Exception as e:
-            print(f"Error loading MOL: {e}")
+            _log.warning("Error loading MOL %s: %s", path, e)
 
     def recalculate_bonds(self):
         self.bonds = []

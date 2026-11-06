@@ -6,7 +6,7 @@ import io
 from ..._shared import QtCore, QtGui, QtWidgets, np, matplotlib
 from ... import cmap_registry
 from .canvas_rendering import render_tile_mpl, render_tile_figure_mpl, _text_color_for_frame, safe_default_filename
-from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, get_atom_color, palette_label
+from .molecular_overlay import Molecule, MoleculePropertiesDialog, available_atom_palettes, palette_label
 
 
 def _append_canvas_menu_actions(menu: QtWidgets.QMenu, parent, view):
@@ -316,15 +316,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
         if unit in ("a", "å", "angstrom", "angstroms"):
             return [val * 10.0 for val in base_nm]
         return base_nm
-
-    def _scale_bar_width(self) -> float | None:
-        if not self._extent or not self._axis_unit or self._axis_unit == "px":
-            return None
-        try:
-            x0, x1, y1, y0 = self._extent
-            return abs(float(x1) - float(x0))
-        except Exception:
-            return None
 
     def _update_rendered_pixmap(self):
         self._render_pending = True
@@ -894,13 +885,6 @@ class CanvasImageItem(QtWidgets.QGraphicsObject):
             right_parts.append(self._overlay_file_text)
         self._metadata_left_text = ""
         self._metadata_right_text = " | ".join(right_parts)
-
-    def _text_scale_factor(self, img_rect: QtCore.QRectF) -> float:
-        if self._locked_text_scale is not None:
-            return self._locked_text_scale
-        width = max(40.0, img_rect.width())
-        ratio = width / max(self._base_image_width, 1.0)
-        return max(0.6, min(2.4, ratio * 1.1))
 
     def _text_scale_for_width(self, width: float) -> float:
         ratio = width / max(self._base_image_width, 1.0)

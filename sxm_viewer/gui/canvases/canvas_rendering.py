@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ..._shared import QtGui, colormaps, np
+from ..._shared import QtGui, np
 from ... import cmap_registry
 
 
@@ -158,15 +158,6 @@ def _format_scale_bar_label(length: float, unit: str) -> str:
     return f"{length:.1f} {unit}".strip()
 
 
-def _normalized_value(norm, value):
-    try:
-        norm_val = norm(value)
-        norm_val = float(norm_val)
-    except Exception:
-        return 0.5
-    return float(np.clip(norm_val, 0.0, 1.0))
-
-
 def _text_color_for_frame(frame_color):
     color = QtGui.QColor(frame_color or "#070707")
     if not color.isValid():
@@ -298,13 +289,11 @@ def render_tile_figure_mpl(
     text_color = text_color or _text_color_for_frame(frame_color)
     cbar_label_text = _normalize_cbar_label(colorbar_label or "")
 
-    min_title_px = 2.0
     min_tick_px = 2.0
     min_label_px = 2.0
     min_overlay_px = 2.0
     min_meta_px = 2.0
 
-    title_fs = max(min_title_px, 11.0 * text_scale)
     tick_fs = max(min_tick_px, 9.5 * text_scale)
     label_fs = max(min_label_px, 9.5 * text_scale)
     overlay_fs = max(min_overlay_px, 8.5 * text_scale)

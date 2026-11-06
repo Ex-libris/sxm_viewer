@@ -22,11 +22,23 @@ cd ..
 python -m sxm_viewer
 ```
 
-- Legacy launch shim: `python sxm_grid_viewer.py` (forwards to `python -m sxm_viewer`).
-- There is no lint/format/test tooling configured for the main package (no
-  `pyproject.toml`, `setup.cfg`, `pytest.ini`, or CI test workflow) — verify
-  changes by running the app manually. The one exception is the vendored
-  `nanonispy2` reader (see below), which ships its own `tests/test_read.py`.
+- Installed as a package: `python -m pip install .` then `sxm-viewer`
+  (`pyproject.toml`; version from `sxm_viewer.__version__`).
+- Legacy launch shim: `python scripts/sxm_grid_viewer.py` (forwards to `sxm_viewer.cli.main`).
+- Checks (all run in CI, `.github/workflows/tests.yml`, Windows, Python
+  3.10 + 3.12) - see `docs/TESTING.md` for what each catches:
+  - `ruff check sxm_viewer scripts` - narrow gate configured in
+    `pyproject.toml`: syntax errors, undefined names, unused imports.
+  - `python -m pytest sxm_viewer/tests` - unit tests (profile measuring/units).
+  - `python scripts/check_imports.py` - imports every package module offscreen.
+  - `python scripts/smoke_test.py [--folder DATA --report]` - drives the
+    real viewer offscreen; with a data folder it also loads, previews and
+    renders a PDF report. Isolates config to a temp dir.
+  - `python scripts/render_fingerprint.py` - pixel fingerprints of preview
+    renders, compared across revisions (needs a data folder; not in CI).
+  The vendored `nanonispy2` tests (`providers/nanonis/vendor/.../tests`) are
+  upstream's and import the upstream name `nanonispy`, so they do not run
+  as shipped; leave them untouched like the rest of the vendor folder.
 - Headless smoke tests work with `$env:QT_QPA_PLATFORM = "offscreen"` before
   constructing `SXMGridViewer` in a script. **Trap**: the offscreen viewer is
   the real app — anything that persists config (e.g. `set_ui_theme`, toggle
@@ -70,7 +82,8 @@ python -m sxm_viewer
   layer, plus a process-wide patch of `FigureCanvasQTAgg.resizeEvent` to guard
   against non-finite/zero resize events. `matplotlib.use("Agg")` is set here.
 - `app_meta.py` — app name/org constants and window-icon discovery
-  (`samples/app_icon.*`).
+  (packaged `assets/app_icon.ico`; an `app_icon.*` in `samples/` overrides
+  it in a source checkout).
 - `cli.py` — the real entry point (`python -m sxm_viewer` → `__main__.py` →
   `cli.main()`), which builds the `QApplication` and shows `SXMGridViewer`.
 - `data/` — format-agnostic parsing: `io.py` (Omicron/Anfatec header + channel
@@ -230,6 +243,24 @@ re-grep the method name to confirm before relying on an exact line.
     `paths`/`out_dir` and return the destination on success for this.
   New per-image actions go into the right section of these builders, not
   as new top-level items.
+- **Colormap pickers in menus share one builder, `gui/cmap_menu.py`**
+  (viewer-agnostic): `add_cmap_submenu` = "Colormap: <name>" (square
+  gradient icon) filled lazily by `populate_cmap_menu` - search field
+  (`_SearchBox`, all registered maps), Reversed, ☆ favourite, sections
+  Favourites / Recent / Suggested (`featured_cmap_names(context)`), "All
+  colormaps…" (gallery), host `extras`. Entries are `_CmapRow` widget
+  actions: a QAction icon is squeezed into 16 px and the gradient came out
+  as a hairline. `CmapPrefs` stores `colormap_favourites` and
+  `colormap_recent` (exact names, `X_r` kept) and updates `colormap_usage`
+  (per base, the gallery's usage sort) - always on the viewer's *live*
+  config dict (`CmapPrefs(viewer.config, save_config)`), never a reloaded
+  copy. `pick_from_gallery` runs the gallery for one pick with live preview.
+  Used by the thumbnail menu (`thumb_menu._add_cmap_menu`), the preview /
+  pop-up image menu (`_add_context_cmap_menu`; prefs via
+  `set_context_menu_support(cmap_prefs_factory=...)`, in-memory fallback)
+  and the figure window. Also: `QMenu.addSection` text is not drawn by the
+  native Windows style - use `menu_kit.section`; a literal `&` in a menu
+  text must be `&&`.
 - The publication-canvas toolbar (`gui/canvases/canvas_window_ui.py:build_toolbar`)
   and its tabbed side panel are built independently of the main window's.
 - Spectroscopy dialogs (`gui/dialogs/spectroscopy_dialogs.py`) each build their
@@ -988,8 +1019,10 @@ The successor to the publication canvas for the figures SPM users actually
 make. Design goal (from the user): **one click from data to a finished,
 publication-ready figure** - no dialog, no settings up front; every
 adjustment made in place on the figure or in the always-visible Format bar.
-The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") for
-free layout, but is no longer the starting point.
+The canvas stays reachable from a figure's ⋯ menu ("Open in canvas") and
+the New Figure button's menu, marked legacy: it is frozen (no new
+features) and planned for removal once custom figures cover it (next:
+dropping thumbnails onto a figure, per-cell channel choice).
 
 **Three recipes, one window.** Thumbnails carry clickable chips (painted in
 `_decorate_thumbnail_pixmap`, hit-tested in `thumbnail_ui._handle_series_chip_click`
@@ -1004,6 +1037,109 @@ the same plus *Figure from selection* for anything else:
   with smaller frames inside it; overview left, zoom grid right, each zoom
   outlined + lettered on the overview in its own colour.
 N counts distinct acquisition conditions (`levels`), not files.
+
+**Custom figures** (mode `"custom"`, replacing the canvas as the way to
+start a free selection): the toolbar's **New Figure** split button
+(`main_window_toolbar.new_figure_from_selection` / `populate_figure_menu`;
+the old "Open Canvas" button, now only in its menu as legacy) and
+*Figure from selection* call `FigureController.open_selection` -> a selection
+that is exactly one series opens that series, anything else `open_custom`.
+A custom figure has a stable id `custom-<hex>` and keeps `mode`, `keys`
+(its frames **in the user's order** - `build_spec` mode `custom` never
+sorts or collapses) and `name` in its state, so adding (`add_frames`),
+dropping and reordering frames (`_move_frame`; drag a header,
+`_frame_drop_target` draws the insertion line) never loses its edits.
+`_rebuild` re-orders the cached `_members` from `state["keys"]` - they are
+not re-read on a reorder. `recent_custom_figures` lists them (toolbar
+menu); `open_saved` reopens by id, offering to load the folder if frames
+are missing; `save_figure_file` / `open_figure_file` write / read
+`*.sxmfig.json` (`{kind: "sxm_figure", fid, mode, keys, root_key, state}`;
+the file wins over the remembered state). Series figures can be copied
+into one (⋯ > "Edit as a custom figure"). The legacy `"sel-<hash>"` ids
+are no longer created.
+
+**Colormaps in figures**: a channel row has one colormap (`row_cmaps[label]`,
+one colour bar); a mixed row (`hs.BEST`) one per image
+(`row_cmaps["@best|<frame key>"]`, read by `build_spec` into `cell_cmap`).
+Shown as "Colormap: <name>" at the top of an image's right-click menu
+(`_cmap_entry`, note says what it applies to), in the colour-bar menu, and
+as one button per row in the Format bar's Colour card
+(`_FormatPanel._sync_cmap_buttons` -> `cmap_requested` -> `_cmap_popup`);
+the Colour chip names the colormap. Gallery picks preview live and commit
+as one undo step (`_cmap_gallery`).
+
+**Adding / removing frames and channels**: hovering a header, a channel
+label or an image paints red − / green + tabs (`_FigureView.tab_rects` /
+`_paint_hover_tabs`, screen only; `_hit` turns a click on them into
+`close` / `add_frame` / `remove_row` / `add_row`). `add_frames(keys, at=,
+move_existing=)` is the one way in: custom = insert at a display index
+(frames already there move), series = `state["forced"]`, which
+`build_spec(keep=...)` never hides as a repeat (a dropped bias-series image
+with an existing bias used to vanish). Drops: `_FigureView` accepts
+`application/x-sxm-thumb-selection` (thumbnail drag, the whole selection),
+`application/x-sxm-view` (preview / pop-up drag) and local file URLs;
+`_drop_items` maps them to loaded keys via `FigureController.known_keys`,
+the insertion line reuses `_frame_drop_target`, and a dropped channel that
+is not a row is reported (not added - the figure keeps its rows).
+
+**Composition tools** (all undoable figure state unless noted):
+- *Same scale* (`style["equal_scale"]`, Page card): `equal_scale_factor` =
+  nm per inch fitting the largest frame into a cell; `equal_scale_box`
+  draws each image top-aligned at that scale inside its cell; one scale-bar
+  length (fits the smallest frame). Not for zoom figures. The ⓘ note warns
+  when sizes differ > 5x.
+- *Crop* (`state["crops"]`, `{frame key | "*": (fx0, fy0, fx1, fy1)}`,
+  fractions of the *drawn* image, y from the top): `hs.crop_panels`, applied
+  in `_render` **after** `rotate_tall_panels`; every channel of the frame is
+  cut alike; "*" = same region for every frame. Drawn with a rubber band
+  (`_start_crop_mode` / `_crop_press|move|release`, Shift = square, Esc
+  cancels); a crop of a crop composes. Not for zoom figures (the outlines
+  need the whole overview). Molecule offsets are panel nm of the *cropped*
+  panel.
+- *Caption* (`figures/caption.py`, Qt-free `build_caption`): caption +
+  processing statement from spec, members, drawn panels, per-panel
+  processing, crops and scale-bar lengths; letters from
+  `hs.panel_letters` (shared with the renderer, so they always agree).
+  Caption panel (toolbar "Caption"): automatic until edited
+  (`state["caption_text"]`, typing is saved without an undo step or a
+  re-render), "Regenerate" returns to automatic. Used by Copy > Caption,
+  Obsidian and the bundle.
+- *Named styles* (toolbar "Styles"): config `figure_named_styles`; apply =
+  one undo step through `apply_format`, which never carries the data-bound
+  keys `_NOT_FORMAT` (header, reverse, scale length); "Copy format from"
+  lists open and remembered figures (`other_figure_styles`); export /
+  import `*.sxmstyles.json` (`kind: sxm_figure_styles`).
+- *Versions* (⋯ > Versions): `state["versions"]` = named snapshots of the
+  state without versions / mode / name; restore is one undo step; kept in
+  the figure file.
+- *Submission bundle* (⋯ or Save ▸): `<name>_bundle/` with PDF, layered SVG,
+  PNG (dpi raised to keep scan pixels), `.sxmfig.json`, `caption.txt` (caption
+  + panel -> source file list + size/font), `source_data/<letter>_<channel>.csv`
+  (values as drawn in base SI units, z rows relative as plotted, header
+  lines with file, channel, filters, Zero, crop) + `source_data.npz`.
+- *Option search* (Ctrl+K / 🔍): `_SearchPopup` over
+  `_FormatPanel.search_index` (every card row, collected by the card
+  builder's `add` / `section`) plus window commands; an option opens its
+  card and tints the control (`_highlight`).
+- Plot panels (profiles, spectra) are designed, not built:
+  `docs/design/figure_plot_panels.md`.
+
+**Per-image processing** (`state["cell_edits"]`, keyed by
+`clim_key(row_label, frame_key)` = one channel of one frame): optional
+`filters` (a full step list, `[]` = none) and `zero`; an absent key follows
+the viewer (per-file `thumbnail_filters` / `_is_image_zeroed`) - the viewer
+itself is never changed. `FigureController.panel(key, idx, edits)` runs own
+filters on `raw_array` (normalised, unfiltered); the window's panel cache is
+keyed `(key, idx, repr(edits))`, so two rows showing the same channel stay
+independent. A per-panel colour range in *shared* (`row`) mode detaches
+that panel from the row (`own_scale` reason `"user"`, excluded from the ⓘ
+"different baseline" list, no tag when colour bars are off). UI: the
+panel's right-click section (`_cell_menu`: Filters… = `CustomFilterDialog`
+live on that panel via `_live_edit`, quick tilt/plane2/flatten/line
+toggles, Zero, range editor with `_HistogramStrip`, copy to row, reset),
+keys on the hovered panel (`_cell_key_press`: A / Z / G / T, Shift removes,
+a selected molecule keeps X/Y/Z), a screen-only `fx` badge
+(`view.edit_boxes`) and ⓘ entries per edited panel.
 
 **Layers** (same split as the folder report - Qt-free core, GUI gathers):
 - `figures/height_series.py` (Qt-free; despite the name it hosts all
@@ -1112,7 +1248,12 @@ card row + the matching right-click menu. Notable ones:
   (from the height, tall frames got slabs).
 - Colour bars: `cbar_style` outside (ticks) / inside (values in the bar,
   contrast-coloured) / minmax (gradient labelled "min"/"max");
-  `cbar_label_pos` inside = channel name centred in the bar; `cbar_scope`
+  `cbar_label_pos` inside = channel name centred in the bar (between the
+  end values; `_inside_label_fit` measures the drawn values, shrinks the
+  text, then falls back to the unit alone - it never moves outside, where
+  the layout kept no room); `cbar_label_text` both ("I (pA)") / unit ("pA"),
+  via `cbar_label_text()` for shared and per-image bars alike (per-image
+  bars used to get no label at all); `cbar_scope`
   row = one bar per channel even with per-image ranges (min/max, not
   draggable). `cbar_dims` is shared by layout and renderer; end labels are
   aligned inside their bar so stacked bars never overlap.

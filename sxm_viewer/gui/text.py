@@ -1,16 +1,5 @@
 """UI strings for the canvas and main window."""
 
-CANVAS_TOOLBAR_GROUP_TITLES = {
-    "file": "FILE",
-    "layout": "LAYOUT",
-    "view": "VIEW",
-    "annotate": "ANNOTATE",
-    "sync": "SYNC",
-    "overlay": "OVERLAY",
-    "colorbar": "COLORBAR",
-    "align": "ALIGN",
-}
-
 CANVAS_BUTTON_TEXT = {
     "save": "Save",
     "load": "Load",

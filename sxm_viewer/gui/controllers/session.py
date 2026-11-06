@@ -940,8 +940,6 @@ class SessionController:
             ("filter_summary_act", viewer.show_filter_summary),
         ):
             self._set_checked_silent(getattr(viewer, action_name, None), value)
-        for key, action in (getattr(viewer, "profile_label_actions", {}) or {}).items():
-            self._set_checked_silent(action, key == profile_label_mode)
         try:
             if hasattr(viewer, "preview_detach_btn"):
                 viewer.preview_detach_btn.setEnabled(not viewer.preview_locked)
@@ -1218,11 +1216,6 @@ class SessionController:
                 file_path = built_views[0].get("path") or meta.get("file_path")
                 ch_idx = built_views[0].get("channel_idx", meta.get("channel_index", 0))
                 viewer.last_preview = (str(file_path), int(ch_idx))
-        except Exception:
-            pass
-        try:
-            if hasattr(viewer, "adjust_image_btn"):
-                viewer.adjust_image_btn.setEnabled(False)
         except Exception:
             pass
         try:
@@ -2238,155 +2231,6 @@ class SessionController:
             hide_delay_ms=2200,
         )
         return restored
-
-    def _spawn_lazy_popup_shell(self, snapshot: dict, views_dir: Path):
-        viewer = self.viewer
-        dlg = QtWidgets.QDialog(viewer)
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        dlg.setWindowFlags(
-            dlg.windowFlags()
-            | QtCore.Qt.WindowMinimizeButtonHint
-            | QtCore.Qt.WindowMaximizeButtonHint
-            | QtCore.Qt.WindowSystemMenuHint
-        )
-        dlg.setMinimumSize(220, 140)
-        dlg.setWindowTitle(snapshot.get("window_title") or "Preview")
-        layout = QtWidgets.QVBoxLayout(dlg)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        title = QtWidgets.QLabel("Preview pending", dlg)
-        title_font = title.font()
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
-        body = QtWidgets.QLabel(
-            "This pop-out will be restored when you focus or click it.",
-            dlg,
-        )
-        body.setWordWrap(True)
-        layout.addWidget(body, 1)
-        restore_btn = QtWidgets.QPushButton("Restore now", dlg)
-        layout.addWidget(restore_btn)
-
-        dlg._lazy_popup_snapshot = copy.deepcopy(snapshot)
-        dlg._lazy_popup_views_dir = Path(views_dir)
-        dlg._lazy_popup_ready = False
-        dlg._lazy_popup_hydrating = False
-        dlg._lazy_popup_message_label = body
-        dlg._lazy_popup_restore_btn = restore_btn
-
-        def _queue_hydrate():
-            if not getattr(dlg, "_lazy_popup_ready", False):
-                return
-            if getattr(dlg, "_lazy_popup_hydrating", False):
-                return
-            dlg._lazy_popup_hydrating = True
-            try:
-                restore_btn.setEnabled(False)
-            except Exception:
-                pass
-            try:
-                body.setText("Restoring preview...")
-            except Exception:
-                pass
-            QtCore.QTimer.singleShot(0, lambda: self._hydrate_lazy_popup_shell(dlg))
-
-        restore_btn.clicked.connect(_queue_hydrate)
-
-        class _LazyPopupShellFilter(QtCore.QObject):
-            def eventFilter(self, obj, event):
-                if not getattr(dlg, "_lazy_popup_ready", False):
-                    return False
-                etype = event.type()
-                if etype in (
-                    QtCore.QEvent.MouseButtonPress,
-                    QtCore.QEvent.MouseButtonDblClick,
-                    QtCore.QEvent.FocusIn,
-                    QtCore.QEvent.WindowActivate,
-                ):
-                    _queue_hydrate()
-                elif etype == QtCore.QEvent.KeyPress:
-                    _queue_hydrate()
-                    return True
-                return False
-
-        dlg._lazy_popup_filter = _LazyPopupShellFilter(dlg)
-        dlg.installEventFilter(dlg._lazy_popup_filter)
-        body.installEventFilter(dlg._lazy_popup_filter)
-        title.installEventFilter(dlg._lazy_popup_filter)
-
-        viewer._popup_refs.append(dlg)
-        if hasattr(viewer, "quick_crop_controller"):
-            viewer.quick_crop_controller.update_popup_actions()
-
-        def _on_popup_closed(_=None):
-            if dlg in getattr(viewer, "_popup_refs", []):
-                viewer._popup_refs.remove(dlg)
-            if hasattr(viewer, "quick_crop_controller"):
-                viewer.quick_crop_controller.update_popup_actions()
-            if hasattr(viewer, "_clear_active_preview_popup"):
-                try:
-                    viewer._clear_active_preview_popup(dlg)
-                except Exception:
-                    pass
-
-        dlg.finished.connect(_on_popup_closed)
-        QtCore.QTimer.singleShot(0, lambda: setattr(dlg, "_lazy_popup_ready", True))
-        return dlg
-
-    def _hydrate_lazy_popup_shell(self, shell):
-        if shell is None:
-            return None
-        snapshot = getattr(shell, "_lazy_popup_snapshot", None)
-        views_dir = getattr(shell, "_lazy_popup_views_dir", None)
-        message = getattr(shell, "_lazy_popup_message_label", None)
-        button = getattr(shell, "_lazy_popup_restore_btn", None)
-        if not snapshot or not views_dir:
-            return None
-        try:
-            try:
-                shell_geom = shell.geometry()
-            except Exception:
-                shell_geom = None
-            try:
-                shell_state = shell.windowState()
-            except Exception:
-                shell_state = QtCore.Qt.WindowNoState
-            try:
-                shell_visible = bool(shell.isVisible())
-            except Exception:
-                shell_visible = True
-            try:
-                shell_active = bool(shell.isActiveWindow())
-            except Exception:
-                shell_active = False
-            dlg = self._restore_popup_dialog_from_snapshot(
-                snapshot,
-                Path(views_dir),
-                geometry=shell_geom,
-                window_state=shell_state,
-                visible=shell_visible,
-                active=shell_active,
-                title=shell.windowTitle() or snapshot.get("window_title") or "Preview",
-            )
-            try:
-                shell.close()
-            except Exception:
-                pass
-            return dlg
-        except Exception as exc:
-            try:
-                if message is not None:
-                    message.setText(f"Unable to restore popup:\n{exc}")
-            except Exception:
-                pass
-            try:
-                if button is not None:
-                    button.setEnabled(True)
-            except Exception:
-                pass
-            shell._lazy_popup_hydrating = False
-            return None
 
     def _restore_popup_canvases(self, popup_defs, views_dir: Path):
         if not popup_defs:

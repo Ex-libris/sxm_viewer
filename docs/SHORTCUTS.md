@@ -527,10 +527,53 @@ Context menus:
 - Add / clear point labels.
 - Reset plot style.
 
-## Publication canvas workspace
+## Figures (publication figures)
 
 Entry:
-- Open from the top toolbar `Open Canvas`.
+- Top toolbar `New Figure`: the selected thumbnails (else the previewed
+  image) as one figure, frames in grid order, one row per channel. The arrow
+  lists recent figures and `Open figure file…`.
+- Thumbnail chips `z×N` / `V×N` / `⊡N` open height / bias series and
+  overview + zooms figures; thumbnail right-click `Figure from selection`.
+
+On the figure:
+- Hover a frame header, a channel name or an image - red `−` / green `+`
+  tabs appear on the header and the channel name: `−` removes the frame /
+  channel row, `+` adds images (selected thumbnails, previewed image) after
+  that frame, or another channel after that row. `Ctrl+Z` restores.
+- Drag thumbnails (the whole selection), the preview or a pop-up onto the
+  figure - they are added as frames where the blue line shows; the figure
+  keeps its style, colormaps, ranges and edits. In a series figure they join
+  the series (ordered by its recipe).
+- Drag a frame header - move the frame (custom figures); right-click it for
+  `Move left` / `Move right`.
+- Right-click an image > `Crop this frame…` - drag a rectangle (`Shift`
+  square, `Esc` cancels); every channel of the frame is cut alike; `Same
+  crop for every frame` for a series.
+- `Ctrl+K` (or 🔍) - find any option or action by name.
+- Toolbar `Caption` - the draft caption + processing statement (edit, copy,
+  regenerate); `Styles` - save / apply / share named looks, copy the format
+  of another figure.
+- `⋯` > `Versions` - save named versions and go back to one; `⋯` or `Save ▸`
+  > `Submission bundle…` - PDF, SVG, PNG, caption, figure file and source
+  data in one folder.
+- Format > Page & layout > `Same scale for every image` - 1 nm is equally
+  long in every panel.
+- Right-click an image - its own filters, Zero, colour range and histogram;
+  only that image (one channel of one frame) changes.
+- Keys on the image under the cursor: `A` automatic range, `Z` Zero,
+  `G` / `T` add a 2nd-order / plane fit (`Shift` removes it).
+- An `fx` badge (screen only) marks images with their own processing; the
+  `ⓘ` note lists them with a reset for each.
+- `⋯` menu: add the selected images, rename, save a figure file
+  (`*.sxmfig.json`), edit a series as a custom figure.
+- `Ctrl+Z` / `Ctrl+Y` undo / redo, `Ctrl+C` copy, `Ctrl+S` save.
+
+## Publication canvas workspace (legacy)
+
+Entry:
+- Top toolbar `New Figure` arrow > `Canvas (legacy free layout)…`, or a
+  figure's `⋯` > `Open in canvas`. Figures replace it; it will be retired.
 - Or drag thumbnails into the canvas to create tiles.
 
 Canvas view gestures:

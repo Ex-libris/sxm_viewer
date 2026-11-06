@@ -137,23 +137,6 @@ class ThumbnailController:
         self.scroll_to_thumbnail(file_key)
         return True
 
-    # ------------------------------------------------------------------
-    def focus_first_matrix_dataset(self):
-        viewer = self.viewer
-        matrix_files = list(getattr(viewer, "files_with_matrix", set()) or [])
-        if not matrix_files:
-            return
-        target = None
-        for path in getattr(viewer, "current_thumb_files", []):
-            if path in matrix_files:
-                target = path
-                break
-        if target is None:
-            target = matrix_files[0]
-        self.scroll_to_thumbnail(target)
-        viewer.selected_file_for_thumbs = target
-        viewer._refresh_thumb_selection_styles()
-
     def update_matrix_summary_banner(self):
         """Always-on presence banner: as soon as a folder is scanned, it shows
         what spectroscopy exists ("N spectra · M grid maps") without the user

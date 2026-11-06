@@ -1,4 +1,4 @@
-﻿"""Quick crop control helpers."""
+"""Quick crop control helpers."""
 from __future__ import annotations
 
 import math
@@ -767,20 +767,6 @@ class QuickCropController:
         except Exception:
             pass
         return popups
-
-    def restore_popups(self):
-        self.raise_popups()
-
-    def close_tracked_popups(self):
-        popups = list(self._tracked_popups())
-        if not popups:
-            return
-        for dlg in popups:
-            try:
-                dlg.close()
-            except Exception:
-                continue
-        self.update_popup_actions()
 
     # ------------------------------------------------------------------
     def export_selected_crops(self):

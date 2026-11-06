@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -164,7 +164,7 @@ def _convert_scan_file(reader, scan_path: Path, cache_root: Path) -> Optional[Pa
         "source": str(scan_path),
         "mtime": src_stat.st_mtime,
         "size": src_stat.st_size,
-        "generated": datetime.utcnow().isoformat(timespec="seconds"),
+        "generated": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
         "channels": len(channels),
         "header_name": header_path.name,
         "version": NANONIS_CACHE_VERSION,
@@ -310,7 +310,7 @@ def _write_sxm_style_header(
     lines = [
         f"# Converted from {source.name} via Nanonis adapter",
         f"ConvertedSource = {source}",
-        f"ConvertedTimestamp = {datetime.utcnow().isoformat(timespec='seconds')}",
+        f"ConvertedTimestamp = {datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}",
     ]
     for key, value in header.items():
         formatted = _format_meta_value(value)

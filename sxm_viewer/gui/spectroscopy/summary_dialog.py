@@ -4,57 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QTreeWidget, QTreeWidgetItem
+from PyQt5.QtWidgets import QVBoxLayout, QCheckBox, QPushButton, QLabel, QTreeWidget, QTreeWidgetItem
 
 from ..._shared import (
-    QtCore,
-    QtGui,
-    QtWidgets,
-    QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
-    FigureCanvas,
-    Figure,
-    Line2D,
-    colormaps,
-    np,
-    Path,
-    defaultdict,
     OrderedDict,
-    datetime,
-    hashlib,
-    itertools,
-    io,
-    json,
-    math,
-    os,
-    sys,
-    threading,
-    _scipy_ndimage,
-    log_status,
-    matplotlib,
 )
 from ... import cmap_registry
 from ..ppt_mixin import PPTContextMenuMixin
 from ..system_open import add_source_file_menu
 from ..thumbnail_render import (
     array_to_qimage,
-    _ThumbnailJobSignals,
-    _ThumbnailJob,
-    _colormap_icon,
-    convert_to_si,
-    _unit_to_nm_factor,
-    _value_in_nm,
-    robust_limits,
-    _interp_index,
-    sample_array_value,
-    apply_adjustment_spec,
-    _rotate_extent_box,
-    _trim_nan_border,
-    save_wsxm_xyz,
 )
 
 class SpectroSummaryDialog(QtWidgets.QDialog):
@@ -258,11 +217,6 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
             pass
         self.accept()
 
-    def _open_single(self, spectro):
-        try:
-            self.viewer._open_single_spectro_popup(spectro)
-        except Exception:
-            pass
         # keep dialog open for quick browsing
 
     def _open_site(self, spec):
@@ -323,33 +277,6 @@ class SpectroSummaryDialog(QtWidgets.QDialog):
                 return
         except Exception:
             pass
-
-    def _current_selected_spec(self):
-        current = self.list_w.currentItem()
-        if current is None:
-            return None
-        payload = current.data(0, QtCore.Qt.UserRole)
-        if not isinstance(payload, dict):
-            return None
-        kind = str(payload.get("kind") or "")
-        if kind in {"site", "spec"}:
-            return payload.get("spec")
-        return None
-
-    def _current_visible_entries(self):
-        current = self.list_w.currentItem()
-        if current is None:
-            return list(self._active_entries)
-        payload = current.data(0, QtCore.Qt.UserRole)
-        if not isinstance(payload, dict):
-            return list(self._active_entries)
-        kind = str(payload.get("kind") or "")
-        if kind == "site":
-            return list(payload.get("specs") or [])
-        if kind == "spec":
-            spec = payload.get("spec")
-            return [spec] if spec is not None else list(self._active_entries)
-        return list(self._active_entries)
 
     def _payload_specs(self, payload):
         if not isinstance(payload, dict):

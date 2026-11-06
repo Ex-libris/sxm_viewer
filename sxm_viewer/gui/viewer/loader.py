@@ -1,91 +1,34 @@
 """Loader helpers for SXMGridViewer."""
 from __future__ import annotations
 
+from datetime import timezone
+
 import copy
 import time
 from functools import lru_cache
 from ..._shared import (
     QtCore,
-    QtGui,
-    QtWidgets,
-    QIcon,
-    QPixmap,
-    QImage,
-    QPainter,
-    QPen,
-    QBrush,
-    FigureCanvas,
-    Figure,
-    Line2D,
-    colormaps,
     np,
     Path,
     defaultdict,
     OrderedDict,
     datetime,
     hashlib,
-    itertools,
-    io,
     json,
     math,
     os,
-    sys,
-    threading,
-    _scipy_ndimage,
     log_status,
-    matplotlib,
 )
 from ...data.io import (
     parse_header,
-    read_channel_file,
-    normalize_unit_and_data,
-    _split_key_value,
-    _coerce_value,
-    _canonical_header_key,
-    _parse_inline_channels,
-    _trailing_digits,
-    _load_ascii_grid,
-    _load_binary_grid,
-    _load_tokenized_grid,
-    _load_binary_with_inference,
-    _binary_dtype_candidates,
 )
 from ...config import save_config
 from ...data.spectroscopy import (
     parse_spectroscopy_file,
     SpectroscopyParseError,
-    fit_parabola_bias,
-    find_last_image_for_spec,
     _matrix_base_name,
-    _rows_to_spec,
-    _channel_labels,
-    _clean_channel_label,
-    _normalize_bias_axis,
-    _extract_meta,
-    _guess_index_from_name,
-    _extract_section_value,
-    _parse_section_metadata,
-    _split_key_value,
-    _split_tokens,
-    _split_header_columns,
-    _row_is_numeric,
-    _normalize_meta_key,
-    _coerce_value,
-    _maybe_float,
-    _maybe_int,
-    _parse_datetime,
-    _parse_date_and_time,
-    _mtime,
-    _read_text,
 )
 from ...data.matrix import MatrixDataset, parse_matrix_filename, matrix_dataset_key
-from ...processing.detection import (
-    _detect_dtype_for_file,
-    _sample_channel_values_for_tagging,
-    header_indicates_constant,
-    _find_topography_channel,
-    filedesc_indicates_current_or_topo,
-)
 from ...providers import (
     convert_nanonis,
     convert_nanonis_files,
@@ -94,7 +37,6 @@ from ...providers import (
     convert_wsxm,
     convert_wsxm_files,
 )
-from ..dialogs.spectroscopy_dialogs import SpectroscopyPopup, SpectroscopyCompareDialog
 
 
 _SPECTRO_MANIFEST_VERSION = 5
@@ -109,12 +51,6 @@ _SPECTRO_MANIFEST_FILE = "manifest_v2.json"
 # indistinguishable after the fact - gets re-verified against the file once
 # instead of being trusted forever.
 _SPECTRO_DISK_CACHE_VERSION = 2
-_SPECTRO_METADATA_ARRAY_KEYS = {
-    "channels",
-    "V",
-    "data",
-    "AltAxis",
-}
 _SPECTRO_METADATA_KEYS = {
     "path",
     "time",
@@ -755,7 +691,7 @@ def _save_spectro_manifest(cache_dir: Path | None, manifest_entries: dict):
         manifest_path = cache_dir / _SPECTRO_MANIFEST_FILE
         payload = {
             "version": _SPECTRO_MANIFEST_VERSION,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "entries": manifest_entries,
         }
         with open(manifest_path, "w", encoding="utf-8") as handle:
@@ -1367,7 +1303,7 @@ def _store_spectro_disk_payload(cache_dir: Path | None, base_folder: Path | None
             "filename": filepath.name,
             "mtime": float(mtime),
             "size": int(fsize),
-            "cached_at": datetime.utcnow().isoformat(),
+            "cached_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "spec_count": len(specs or []),
             # Recorded so cache reads can tell "this file genuinely has no
             # drawable data" (serve from cache) apart from "a usable payload

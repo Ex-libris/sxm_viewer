@@ -2,9 +2,72 @@
 
 Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 - 2026-11-06
 
-First public release archived on Zenodo.
+First public release, archived on Zenodo.
+
+Figures (new since the last development snapshot):
+
+- **Figures replace the canvas as the way to build a figure**: the toolbar's
+  `New Figure` turns the selected images into a figure in grid order (the
+  canvas stays reachable from its menu, marked legacy). Custom figures keep
+  their identity and name when frames are added, removed or dragged into a
+  new order, are listed under Recent figures and can be saved / opened as
+  `*.sxmfig.json` files. A series figure can be copied into a custom one.
+- **Per-image processing in figures**: each image of a figure (one channel
+  of one frame) can have its own filters, Zero and colour range (with a
+  histogram) without touching the other images, the other channels of the
+  same frame or the viewer. Keys on the image under the cursor: A, Z, G, T.
+- **One colormap menu everywhere** (figures, thumbnails, preview and
+  pop-ups): "Colormap: <name>" with a swatch, a search field over every
+  colormap, Reversed, favourites (☆), recently used, suggested maps with
+  full-width gradient swatches, and the gallery. In figures it sits at the
+  top of an image's right-click menu and in the Format bar's Colour card
+  (one button per channel); "best channel per frame" rows now take a
+  colormap per image (picks used to be ignored there).
+- **Figures: add and remove frames and channels in place**: hovering a
+  header, a channel name or an image shows red − / green + tabs (remove the
+  frame / channel row; add images or another channel right after it), and
+  thumbnails, the preview and pop-ups can be dragged onto an open figure to
+  add frames where the blue line shows - style, colormaps, ranges and edits
+  stay. Images added to a series figure are no longer hidden as repeats.
+- **Figures: captions, comparable panels, styles, versions, bundles**:
+  - a draft caption and processing statement written from the data
+    (parameters said once when shared, per letter when they differ; filters,
+    Zero, crops and colour scales stated), editable, copied with Obsidian
+    exports;
+  - "Same scale for every image" (1 nm equally long in every panel) and
+    cropping a frame inside the figure (drag a rectangle; optionally the
+    same region on every frame);
+  - named styles (save, apply, share as a file, copy the format of another
+    figure), versions ("Submitted", "Revision 1"), option search (Ctrl+K);
+  - a submission bundle: PDF, layered SVG, PNG, caption, figure file and
+    the data under every panel (CSV + NPZ).
+- **Figures: colour-bar labels**: per-image colour bars now carry their
+  label (they had none); a label set to "inside the bar" stays inside
+  (smaller, or the unit only, on short bars) instead of jumping outside
+  onto the next image; new choice "Channel + unit" / "Unit only".
+- **Fix**: section titles of the figure window's menus were not drawn on
+  Windows, and "Colour range & histogram" lost its "&".
+
+Release preparation (no change to how images, spectra or figures look - the
+preview renders were checked pixel for pixel against the previous version on
+Anfatec and Nanonis data):
+
+- **Fix**: pop-up windows that had a profile line drawn on them stayed in
+  memory after being closed (figure and image data included).
+- **Fix**: pressing Esc on the recent-molecules menu opened a file dialog.
+- **Installer**: `scripts/install.py` no longer downloads or installs without
+  HTTPS certificate verification; it needs Python 3.10-3.13, as the package
+  does.
+- **Packaging**: `pip install .` gives a complete installation, application
+  icon included; the wheel no longer picks up compiled `.pyc` files.
+- **Cleanup**: about 1,900 lines of unused imports, unreachable code and
+  leftovers of earlier UI versions removed; deprecated calls updated for
+  current Python.
+- **Continuous integration**: every push runs the unit tests, an import of
+  every module and a headless start of the application on Windows (Python
+  3.10 and 3.12). The documentation site is built from `master` only.
 
 ## Development history (pre-release)
 

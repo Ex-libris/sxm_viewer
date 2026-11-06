@@ -250,13 +250,6 @@ class FilterController:
         except Exception:
             return None
 
-    # ---- canvas pipeline application (reads/writes viewer state via self.viewer) ----
-    def _apply_filters_to_array(self, file_path, arr):
-        spec = self.viewer.thumbnail_filters.get(str(file_path))
-        if not spec:
-            return arr
-        return self._apply_filter_pipeline(arr, spec.get('steps', []))
-
     def _set_filter_pipeline_on_canvas(self, canvas, steps, label=None, source_views=None, push_undo=False):
         if canvas is None:
             return

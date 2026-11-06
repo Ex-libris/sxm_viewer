@@ -316,20 +316,6 @@ def _alignment_metrics(reference, moving):
     }
 
 
-def _alignment_score(reference, moving):
-    """Collapse compare metrics into a single score for local rigid-refinement searches."""
-    metrics = _alignment_metrics(reference, moving)
-    corr = metrics.get("corr")
-    coverage = float(metrics.get("coverage", 0.0) or 0.0)
-    rmse = metrics.get("rmse")
-    if corr is None or not np.isfinite(corr):
-        corr = -1.0
-    if rmse is None or not np.isfinite(rmse):
-        rmse = 1e9
-    score = float(corr) + (0.25 * coverage) - (0.05 * float(rmse))
-    return score, metrics
-
-
 def _image_center_xy(shape):
     """Return the pixel-space center used by scipy-style in-place rotations."""
     height = int(shape[0]) if shape else 0

@@ -97,12 +97,14 @@ STYLE_DEFAULTS = {
     "zoom_labels": True,       # letter of each zoom next to its outline
     "zoom_lw": 1.0,            # outline width (pt)
     "cbar_label_pos": "inside",  # channel name: centred inside the bar | outside
+    "cbar_label_text": "both",   # what the bar's label says: both ("I (pA)") | unit ("pA")
     "cbar_outline": True,      # thin frame around colour bars
     "rotate_tall": "off",      # turn tall images to landscape: off | cw | ccw
     "molecules_on": True,      # show the figure's molecular model(s)
     "mol_scope": "all",        # all panels | first (first channel row only)
     "mol_size": 1.0,           # atom/bond size x the automatic panel-width size
     "mol_palette": "preview",  # atom colours: preview (= the preview's palette) | a palette key
+    "equal_scale": False,      # every image at the same nm per mm (not for overview + zooms)
 }
 
 # Keys whose sensible default depends on the recipe (a zoom figure shows
@@ -114,9 +116,6 @@ RECIPE_DEFAULTS = {
     "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "all"},
 }
 
-# Which style keys are meaningful in each range mode (for the UI).
-LETTER_STYLES = ("a", "A", "(a)", "a)", "a.")
-CORNERS = ("tl", "tr", "bl", "br")
 
 
 def resolve_style(style):
@@ -493,7 +492,7 @@ def resolve_header(header, mode, has_z, bias_varies):
 
 def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                rows=None, row_choices=None, header="auto", header_name=False,
-               row_cmaps=None, reverse=False, show_repeats=False, root_key=None):
+               row_cmaps=None, reverse=False, show_repeats=False, root_key=None, keep=()):
     """Frames (``columns``) and channels (``rows``) for the figure.
 
     ``members``: dicts ``{key, name, time, z_nm, bias_v, setpoint,
@@ -502,15 +501,18 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     ``pick_image_channels``.
 
     ``mode``: ``"height"`` (frames by tip height), ``"bias"`` (frames by
-    sample bias) or ``"selection"`` (by z when every member has one, else by
-    bias when it varies, else by time). ``reverse`` flips the frame order.
+    sample bias), ``"selection"`` (by z when every member has one, else by
+    bias when it varies, else by time) or ``"custom"`` (a user-built figure:
+    the frames stay in the order given, nothing is collapsed - headers are
+    chosen like a selection's). ``reverse`` flips the frame order.
     ``reference_key``: Δz zero (default: lowest z = closest approach).
     ``dropped``: frame keys removed by the user.
     ``rows``: channel labels to show, in order (None = defaults);
     ``row_choices`` (legacy ``{kind: label}``) is only used for defaults.
     ``header``: ``"auto"`` | ``"dz"`` | ``"zabs"`` | ``"bias"`` | ``"name"``;
     ``header_name`` adds the file name as an extra line.
-    ``row_cmaps``: ``{label: cmap}``.
+    ``row_cmaps``: ``{label: cmap}``. ``keep``: frame keys never hidden as
+    repeats (added by the user).
     """
     dropped = {str(k) for k in (dropped or ())}
     row_choices = dict(row_choices or {})
@@ -527,10 +529,17 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         if reverse:
             zooms.reverse()
         cols_in = ([root] if root is not None else []) + zooms
-    elif mode != "selection" and not show_repeats:
+    elif mode not in ("selection", "custom") and not show_repeats:
         # Re-scans under identical conditions add columns, not information:
         # keep the latest of each (``show_repeats`` brings them back).
-        cols_in, hidden_repeats = collapse_repeats(cols_in)
+        kept, hidden_repeats = collapse_repeats(cols_in)
+        # Frames the user added on purpose are never hidden as repeats.
+        keep = {str(k) for k in keep or ()}
+        if keep:
+            kept_keys = {str(m["key"]) for m in kept} | (keep & {str(k) for k in hidden_repeats})
+            kept = [m for m in cols_in if str(m["key"]) in kept_keys]
+            hidden_repeats = [k for k in hidden_repeats if str(k) not in keep]
+        cols_in = kept
     has_z = bool(cols_in) and all(_finite(m.get("z_nm")) is not None for m in cols_in)
     biases = [_finite(m.get("bias_v")) for m in cols_in]
     bias_varies = _varies(biases, rel=0.0, abs_tol=2e-3)
@@ -542,6 +551,8 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
 
     if mode == "zoom":
         axis = "zoom"
+    elif mode == "custom":
+        axis = "order"     # the user's own order (members arrive in it)
     elif mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
         cols_in.sort(key=by_value("bias_v"))
         axis = "bias"
@@ -648,7 +659,10 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                 key = str(m["key"])
                 cells[key] = int(idx)
                 cell_kind[key] = row_kind_for(cls)
-                cell_cmap[key] = _CLASS_CMAPS.get(cls) or ROW_CMAPS.get(row_kind_for(cls), "viridis")
+                # Each frame shows its own kind of channel: the colormap is
+                # chosen per image (row_cmaps keyed "BEST|frame").
+                cell_cmap[key] = (row_cmaps.get(clim_key(BEST, key)) or _CLASS_CMAPS.get(cls)
+                                  or ROW_CMAPS.get(row_kind_for(cls), "viridis"))
             if cells:
                 out_rows.append({"label": BEST, "kind": "mixed", "cls": "mixed", "symbol": "",
                                  "cmap": "gray", "alternatives": [], "cells": cells,
@@ -968,6 +982,31 @@ def cbar_dims(st, orient="v"):
         else:
             extra += (1.5 * pt if rotated else 0.0) if orient == "v" else 1.5 * pt
     return bar, extra
+
+
+def equal_scale_factor(panels, layout):
+    """nm per inch that fits the largest frame into a panel cell, or None
+    when a frame has no physical size."""
+    pw, ph = layout["panel"]
+    w_max = h_max = 0.0
+    for p in panels.values():
+        w, h = _finite(p.get("width_nm")), _finite(p.get("height_nm"))
+        if not (w and h):
+            return None
+        w_max, h_max = max(w_max, w), max(h_max, h)
+    if not (w_max and pw and ph):
+        return None
+    return max(w_max / pw, h_max / ph)
+
+
+def equal_scale_box(cell, p, nm_per_in):
+    """The image's box inside its cell at ``nm_per_in``: centred across,
+    top-aligned (headers stay next to the images)."""
+    x0, y0, x1, y1 = cell
+    w = _finite(p.get("width_nm")) / nm_per_in
+    h = _finite(p.get("height_nm")) / nm_per_in
+    cx = 0.5 * (x0 + x1)
+    return (cx - 0.5 * w, y0, cx + 0.5 * w, y0 + h)
 
 
 def figure_layout(spec, panels, style=None):
@@ -1402,7 +1441,7 @@ def _letter_region(pos, cell, size_pt, n_chars, inset=0.04):
     return (left, left + fw, bottom, bottom + fh)
 
 
-def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
+def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None, crops=None,
            text_color="black", letter_colors=None, draw_molecules=None):
     """Draw the figure (see ``_render``) in the style's font family.
     ``letter_colors``: per-letter overrides ``{letter_key(row_label,
@@ -1412,7 +1451,45 @@ def render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     with matplotlib.rc_context(font_rc(resolve_style(style))):
         return _render(fig, spec, panels, style=style, clims=clims, get_cmap=get_cmap,
                        text_color=text_color, letter_colors=letter_colors,
-                       draw_molecules=draw_molecules)
+                       draw_molecules=draw_molecules, crops=crops)
+
+
+def panel_letters(layout, n_frames, style):
+    """``{(row, frame): letter}`` as drawn: one per frame (on its first
+    row) or one per panel in on-page reading order. Shared by the renderer
+    and the caption so they always agree."""
+    st = resolve_style(style)
+    cells = layout["cells"]
+    if st["letter_scope"] == "panel":
+        order = sorted(cells, key=lambda rf: (cells[rf][1], cells[rf][0]))
+        return {rf: letter_text(i, st["letter_style"]) for i, rf in enumerate(order)}
+    return {(0, f): letter_text(f, st["letter_style"]) for f in range(n_frames)}
+
+
+def crop_panels(panels, crops):
+    """Panels cut to a region: ``crops`` = ``{frame key | "*": (fx0, fy0,
+    fx1, fy1)}``, fractions of the drawn image (y from the top). Width /
+    height in nm shrink with it."""
+    if not crops:
+        return panels
+    out = {}
+    for (r, k), p in panels.items():
+        box = crops.get(k) or crops.get("*")
+        if p is None or not box:
+            out[(r, k)] = p
+            continue
+        a = np.asarray(p["data"])
+        n, m = a.shape[:2]
+        fx0, fy0, fx1, fy1 = (min(1.0, max(0.0, float(v))) for v in box)
+        r0, r1 = int(math.floor(fy0 * n)), max(int(math.floor(fy0 * n)) + 1, int(math.ceil(fy1 * n)))
+        c0, c1 = int(math.floor(fx0 * m)), max(int(math.floor(fx0 * m)) + 1, int(math.ceil(fx1 * m)))
+        q = dict(p, data=a[r0:r1, c0:c1], crop=(fx0, fy0, fx1, fy1))
+        if _finite(p.get("width_nm")):
+            q["width_nm"] = float(p["width_nm"]) * (c1 - c0) / m
+        if _finite(p.get("height_nm")):
+            q["height_nm"] = float(p["height_nm"]) * (r1 - r0) / n
+        out[(r, k)] = q
+    return out
 
 
 def letter_key(row_label, frame_key):
@@ -1420,7 +1497,7 @@ def letter_key(row_label, frame_key):
 
 
 def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
-            text_color="black", letter_colors=None, draw_molecules=None):
+            text_color="black", letter_colors=None, draw_molecules=None, crops=None):
     """Draw the figure into ``fig`` (cleared first).
 
     ``panels``: ``{(row_index, key): {data, unit, width_nm, height_nm,
@@ -1435,7 +1512,8 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     st = resolve_style(style)
     font = float(st["font"])
     clims = dict(clims or {})
-    panels = rotate_tall_panels(panels, st.get("rotate_tall"))
+    # Crops are drawn-frame fractions, so they apply after the turn.
+    panels = crop_panels(rotate_tall_panels(panels, st.get("rotate_tall")), crops)
     layout = figure_layout(spec, panels, st)
     st = dict(st, panel_w=layout["panel_w"])
     size = layout["size"]
@@ -1451,17 +1529,16 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     columns = spec["columns"]
     n_rows = len(spec["rows"])
     is_zoom = spec.get("mode") == "zoom"
+    nm_per_in = equal_scale_factor(panels, layout) if (st.get("equal_scale") and not is_zoom) else None
+    if nm_per_in and st.get("scale_len_nm") is None:
+        # One bar length for all: it must fit the smallest frame.
+        widths = [w for w in (_finite(p.get("width_nm")) for p in panels.values()) if w]
+        if widths:
+            st = dict(st, scale_len_nm=nice_length(0.3 * min(widths)))
 
     # Letter / scale-bar placement in on-page reading order.
     order = sorted(layout["cells"], key=lambda rf: (layout["cells"][rf][1], layout["cells"][rf][0]))
-    letter_of = {}
-    if st["letters"]:
-        if st["letter_scope"] == "panel":
-            for i, rf in enumerate(order):
-                letter_of[rf] = letter_text(i, st["letter_style"])
-        else:
-            for f in range(len(columns)):
-                letter_of[(0, f)] = letter_text(f, st["letter_style"])
+    letter_of = panel_letters(layout, len(columns), st) if st["letters"] else {}
     frame_letter = {f: letter_text(f, st["letter_style"]) for f in range(len(columns))}
     scale_cells = set()
     if st["scale_bar"] == "all":
@@ -1522,6 +1599,12 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 if k not in outliers and _flat_row_level({k: panels[(r, k)]["data"]}) is not None:
                     outliers[k] = "flat"
                     row_data[k] = np.asarray(panels[(r, k)]["data"], dtype=float)  # its real level
+        if shared and not mixed:
+            # A panel the user gave its own range leaves the shared scale
+            # (and does not pull the row's automatic range either).
+            for k in row_data:
+                if k not in outliers and clims.get(clim_key(row["label"], k)):
+                    outliers[k] = "user"
         for k, why in outliers.items():
             own_scale[(r, k)] = why
         inliers = [a for k, a in row_data.items() if k not in outliers] or list(row_data.values())
@@ -1545,6 +1628,9 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
             box = layout["cells"].get((r, f))
             if box is None:
                 continue
+            p_cell = panels.get((r, col["key"]))
+            if nm_per_in and p_cell is not None:
+                box = equal_scale_box(box, p_cell, nm_per_in)
             ax = fig.add_axes(_ax_rect(box, size))
             ax.set_axis_off()
             ax.set_gid(f"panel_{r}_{f}")
@@ -1595,7 +1681,11 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 taken.add(st["letter_pos"])
             if (r, f) in scale_cells:
                 taken.add(st["scale_pos"])
-            if own:
+            if own and own_scale[(r, col["key"])] == "user" and not st["colorbars"]:
+                # Own range by the user's choice and no shared bar it would
+                # contradict: nothing to say on the image.
+                pass
+            elif own:
                 tag = "own scale"
                 if own_scale[(r, col["key"])] == "flat":
                     im.set_alpha(0.35)
@@ -1646,9 +1736,15 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
             if (st["colorbars"] and not shared and st.get("cbar_scope") != "row"
                     and own_scale.get((r, col["key"])) != "flat"):
+                # Each bar has its own range and may have its own unit (4 pA
+                # next to 0.4 nA): it says the unit; the channel name too
+                # when the row's name is not shown beside it.
+                bar_label = None
+                if st["cbar_label"]:
+                    bar_label = cbar_label_text(st, None if mixed else row.get("display"), c_unit)
                 for entry in layout["colorbars"]:
                     if entry["row"] == r and entry["frame"] == f:
-                        cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, None, c_unit)
+                        cb = _colorbar(fig, im, entry, size, lo, hi, st, text_color, bar_label, c_unit)
                         cbar_artists.append((entry, cb))
         generic_bar = st["colorbars"] and not row_shared and st.get("cbar_scope") == "row"
         if st["colorbars"] and (row_shared or generic_bar):
@@ -1662,15 +1758,15 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                         if generic_bar:
                             # Each image has its own range: one bar for the
                             # channel says only where min and max sit.
-                            if st["cbar_label"]:
-                                label = row["display"] or None
+                            if st["cbar_label"] and st.get("cbar_label_text") != "unit":
+                                label = row["display"] or None   # min / max: no unit to give
                             cb = _colorbar(fig, ref_im, entry, size, 0.0, 1.0,
                                            dict(st, cbar_style="minmax_in" if st.get("cbar_style") in
                                                 ("inside", "minmax_in") else "minmax"),
                                            text_color, label, "")
                         else:
                             if st["cbar_label"]:
-                                label = f"{row['display']} ({d_unit})" if d_unit else row["display"]
+                                label = cbar_label_text(st, row["display"], d_unit)
                             cb = _colorbar(fig, ref_im, entry, size, *ranges[r], st, text_color, label, d_unit)
                         cbar_artists.append((entry, cb))
 
@@ -1807,23 +1903,52 @@ def _colorbar(fig, im, entry, size, lo, hi, st, text_color, label, unit):
     if label:
         x0, y0, x1, y1 = entry["box"]
         length_in = (x1 - x0) if horizontal else (y1 - y0)
-        fs_in = pt(font - 0.5) / 72.0 * 0.62
-        ends = 0 if int(st.get("cbar_ticks", 2) or 0) == 0 or style in ("outside", "minmax") else 10
-        # A short bar can't hold the name and both end values: name outside.
-        fits = (len(label) + ends) * fs_in * 1.25 <= length_in
-        if (st.get("cbar_label_pos") or "inside") == "inside" and fits:
-            # The channel name sits centred *in* the bar - along it for a
-            # vertical bar, flat for a horizontal one - in a colour that
-            # reads on the middle of the colormap.
-            cax.text(0.5, 0.5, label, transform=cax.transAxes, ha="center", va="center",
-                     rotation=0 if horizontal else 90, fontsize=pt(font - 0.5),
-                     color=_contrast_text_color(im.get_cmap(), 0.5), zorder=5,
-                     gid=f"cbarlabel_{entry['row']}")
+        if (st.get("cbar_label_pos") or "inside") == "inside":
+            # Centred *in* the bar, between the end values when they are
+            # inside too. The layout keeps no room outside for it, so when
+            # it doesn't fit it shrinks, then drops the channel name - it
+            # never moves outside (where it ran into the next image).
+            ends = [t for t in getattr(cb, "_sxm_inside", []) if t is not None]
+            value_in = sum(0.6 * len(t.get_text()) * t.get_fontsize() / 72.0 for t in ends)
+            text, size = _inside_label_fit(length_in, value_in, label, unit, pt(font - 0.5))
+            if text:
+                cax.text(0.5, 0.5, text, transform=cax.transAxes, ha="center", va="center",
+                         rotation=0 if horizontal else 90, fontsize=size,
+                         color=_contrast_text_color(im.get_cmap(), 0.5), zorder=5,
+                         gid=f"cbarlabel_{entry['row']}")
         elif horizontal or rotated:
             cb.set_label(label, fontsize=font, labelpad=1.0, color=text_color)
         else:
             cax.set_title(label, fontsize=font, color=text_color, loc="left", pad=2.0)
     return cb
+
+
+def cbar_label_text(st, name, unit):
+    """A colour bar's label: "I (pA)", or just "pA" with the unit-only
+    option (compact, the channel is named beside the row)."""
+    unit = unit or ""
+    if st.get("cbar_label_text") == "unit":
+        return unit or None
+    if name and unit:
+        return f"{name} ({unit})"
+    return name or unit or None
+
+
+def _inside_label_fit(length_in, values_in, label, unit, size):
+    """(text, font size) for a label centred inside a bar of ``length_in``
+    whose end values take ``values_in`` inches: the full label, smaller if
+    needed (not below ``_INSIDE_MIN_PT``), else the unit alone; (None,
+    None) when even that doesn't fit."""
+    if not length_in or length_in <= 0:
+        return None, None
+    gaps = 2 * 0.5 * size / 72.0 if values_in else 0.0
+    room = float(length_in) * 0.94 - values_in - gaps
+    for text in dict.fromkeys(t for t in (label, unit) if t):
+        need_per_pt = 0.6 * len(text) / 72.0
+        fit = room / need_per_pt if need_per_pt else size
+        if fit >= _INSIDE_MIN_PT:
+            return text, min(size, fit)
+    return None, None
 
 
 class _MinMax:

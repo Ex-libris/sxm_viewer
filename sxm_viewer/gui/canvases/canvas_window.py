@@ -158,25 +158,8 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
             return QtGui.QColor("#14100a")
         return QtGui.QColor("#1f2328" if dark else "#f3efe8")
 
-    def _create_icon_button(self, text: str, icon_text: str = "", tooltip: str = "") -> QtWidgets.QPushButton:
-        """Create a button with optional icon."""
-        display_text = f"{icon_text} {text}" if icon_text else text
-        btn = QtWidgets.QPushButton(display_text)
-        if tooltip:
-            btn.setToolTip(tooltip)
-        return btn
-
-    def _create_toolbar_section(self, title: str, widgets: list) -> QtWidgets.QWidget:
-        return canvas_window_ui.create_toolbar_section(title, widgets)
-
     def _build_toolbar(self):
         return canvas_window_ui.build_toolbar(self)
-
-    def _create_toolbar_group(self, title):
-        return canvas_window_ui.create_toolbar_group(title)
-
-    def _create_separator(self):
-        return canvas_window_ui.create_separator()
 
     def set_dark_mode(self, dark: bool):
         """Update the canvas theme to match the main viewer mode."""
@@ -1444,40 +1427,6 @@ class ExperimentalCanvasWindow(QtWidgets.QDialog):
         self._grid_locked = True
         self._reflow_items_in_grid(items, target_width)
         self.status_label.setText("Polished layout: normalized tile sizes and annotations")
-        self._push_undo_state()
-        return
-        kinds = ["topo", "current", "df"]
-        columns = []
-        for file_path, group in groups.items():
-            min_x = min((item.pos().x() for item in group.values()), default=0.0)
-            columns.append((min_x, file_path, group))
-        columns.sort(key=lambda entry: entry[0])
-        margin = CANVAS_ALIGN_MARGIN
-        gap_x = CANVAS_ALIGN_GAP
-        gap_y = CANVAS_ALIGN_GAP
-        col_widths = []
-        for _, _, group in columns:
-            width = max((item.boundingRect().width() for item in group.values()), default=200.0)
-            col_widths.append(max(width, 200.0))
-        row_heights = []
-        for kind in kinds:
-            height = 0.0
-            for _, _, group in columns:
-                item = group.get(kind)
-                if item is not None:
-                    height = max(height, item.boundingRect().height())
-            row_heights.append(max(height, 0.0))
-        for col_idx, (_, _, group) in enumerate(columns):
-            x = margin + sum(col_widths[:col_idx]) + gap_x * col_idx
-            for row_idx, kind in enumerate(kinds):
-                item = group.get(kind)
-                if item is None:
-                    continue
-                y = margin + sum(row_heights[:row_idx]) + gap_y * row_idx
-                item.setPos(x, y)
-        self.status_label.setText(
-            f"🔒 Grid locked at {target_width:.0f}px width - click Reset alignment to unlock"
-        )
         self._push_undo_state()
 
     def _infer_kind_for_item(self, item: CanvasImageItem) -> str | None:

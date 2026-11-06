@@ -1,11 +1,10 @@
-﻿"""Main Qt widget implementing the SXM Viewer."""
+"""Main Qt widget implementing the SXM Viewer."""
 from __future__ import annotations
 
 import math
 import time
 import re
 import json
-import os
 import copy
 import shutil
 import tempfile
@@ -16,53 +15,41 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import io
-from matplotlib import colormaps
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5 import QtCore, QtGui, QtWidgets
-import sip
+from PyQt5 import sip
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QPushButton, QLabel, QListWidget, QListWidgetItem
+from PyQt5.QtWidgets import QListWidgetItem
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from .._shared import log_status, log_emitter
 from .. import cmap_registry
 from .qt_helpers import set_silent, set_many_silent
 from .activity_log import ActivityLog
-from . import drift_animation
 from . import virtual_copies
 from .virtual_copies import VIRTUAL_COPY_INSERT_START
 from . import main_window_state
-from .debounce import ACCUMULATE, LATEST, Debouncer
 from ..geometry import orientation, spec_mapping
 from ..app_meta import APP_NAME, apply_window_icon
 from ..config import (
     CONFIG_PATH,
     CH_EQUALITY_TOL_NM,
-    CH_SAMPLE_POINTS,
     CHANNEL_DATA_CACHE_LIMIT,
     FILTERED_CACHE_LIMIT,
-    load_config,
     save_config,
     flush_pending_config_save,
     open_header_cache,
     load_collections_index,
 )
-from ..data.matrix import MatrixDataset, parse_matrix_filename
 from ..data.io import parse_header, read_channel_file, normalize_unit_and_data
 
 from ..data.spectroscopy import is_matrix_file_entry
 from ..processing.filters import (
-    FILTER_DEFINITIONS,
-    _gaussian_available,
     _filter_signature,
 )
 from ..processing import auto_enhance as _auto_enhance
 from ..processing.detection import _find_topography_channel
 from ..utils.units import (
-    _NUMERIC_RE,
-    _UNIT_DISPLAY_CHOICES,
     _SI_BASE_UNITS,
     _auto_display_unit,
     _safe_float,
@@ -72,40 +59,32 @@ from .colormap_gallery import ColormapGalleryDialog
 from .colormap_manager import ColormapManager
 from ..cmap_sorting import ColormapSorter, DEFAULT_STRATEGY
 from .minimap import FrameMiniMap
-from .workers.batch_export import BatchExportSignals, BatchExportWorker
+from .workers.batch_export import BatchExportWorker
 from .dialogs.collection_browser import CollectionBrowserDialog
-from .dialogs.image_adjust import ImageAdjustDialog, ImageAdjustPreviewPanel
-from .dialogs.matrix_fit import MatrixFitDialog, MatrixFitWorker
-from .dialogs.profile_dialog import ProfileDialog
+from .dialogs.image_adjust import ImageAdjustDialog
 from .dialogs.spectroscopy_dialogs import (
     MatrixSpectroViewer,
     SpectroscopyCompareDialog,
     SpectroscopyPopup,
-    _SpectroFitWorker,
 )
-from .canvases.detail_preview import MultiPreviewCanvas, SafeFigureCanvas
+from .canvases.detail_preview import MultiPreviewCanvas
 from .spectroscopy.summary_dialog import SpectroSummaryDialog
 from .viewer import measurement as viewer_measurement
 from .viewer import thumbnails as viewer_thumbnails
 from .controllers.preview_popup import spawn_preview_popup
 from .controllers.histogram import open_histogram_dialog
 from .controllers.quick_crop import QuickCropController
-from .controllers.collection import CollectionController, RECENT_COLLECTION_LIMIT
+from .controllers.collection import RECENT_COLLECTION_LIMIT
 from .controllers.thumbnail_controller import ThumbnailController
-from .controllers.spectro_compare import SpectroCompareController
-from .controllers.session import SessionController
-from .controllers.filter_controller import FilterController
-from .controllers.recent_files_controller import RecentFilesController
-from .controllers.report import ReportController
 from .viewer import loader as viewer_loader
 from .viewer import preview as viewer_preview
 from .viewer import ch_height as viewer_ch_height
 from .viewer import thumb_menu as viewer_thumb_menu
 from .viewer import spectro_menu as viewer_spectro_menu
 from .viewer import export_routes as viewer_export_routes
-from .plot_typography import add_font_menu_action, normalize_font_family, set_matplotlib_font_family
+from .plot_typography import normalize_font_family, set_matplotlib_font_family
 from .canvases.molecular_overlay import available_atom_palettes, palette_label
-from .ppt_bridge import powerpoint_support_status, send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
+from .ppt_bridge import send_rendered_to_ppt, _bridge as _ppt_bridge, _svg_size_pt
 from .spectroscopy import controller as spectro_controller
 from .spectroscopy import details as spectro_details
 from .spectroscopy import loading as spectro_loading
@@ -116,7 +95,6 @@ from .viewer import thumbnail_ui as viewer_thumb_ui
 from .viewer import export as viewer_export
 from .canvases.canvas_window import ExperimentalCanvasWindow
 from .palettes import DEFAULT_COLOR_CYCLE
-from .system_open import add_source_file_menu
 from . import theme as ui_theme
 
 # Tolerance for deciding constant-height images; allow a slightly larger spread than strict equality
@@ -319,7 +297,6 @@ from .constants import (
     THUMB_LAYOUT_SPACING,
     UI_FONT_BOLD_SIZE,
     UI_FONT_FAMILY,
-    UI_FONT_SIZE,
 )
 
 
@@ -1978,13 +1955,14 @@ class SXMGridViewer(QtWidgets.QWidget):
     def _apply_main_toolbar_theme(self):
         """Re-style main-toolbar accents that are set once at creation time."""
         amber = ui_theme.is_amber(self)
-        btn = getattr(self, "toolbar_canvas_btn", None)
+        btn = getattr(self, "toolbar_figure_btn", None)
         if btn is not None:
             try:
                 from .styles import MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
-                btn.setStyleSheet(
+                from .main_window_toolbar import figure_button_qss
+                btn.setStyleSheet(figure_button_qss(
                     ui_theme.amber_canvas_button_qss() if amber else MAIN_TOOLBAR_CANVAS_BUTTON_STYLE
-                )
+                ))
             except Exception:
                 pass
         panel = getattr(self, "shortcuts_panel", None)
@@ -2224,9 +2202,6 @@ QLabel:hover {{
     def _reset_display_options(self):
         defaults = getattr(self, '_display_defaults', {})
         action_pairs = [
-            (getattr(self, 'matrix_markers_act', None), defaults.get('show_matrix_markers', True)),
-            (getattr(self, 'single_markers_act', None), defaults.get('show_single_markers', True)),
-            (getattr(self, 'compact_markers_act', None), defaults.get('compact_markers', True)),
             (getattr(self, 'detail_dark_act', None), defaults.get('detail_dark_view', bool(self.dark_mode))),
             (getattr(self, 'detail_grid_act', None), defaults.get('detail_grid_view', False)),
             (getattr(self, 'molecules_act', None), defaults.get('show_molecules', True)),
@@ -2315,22 +2290,6 @@ QLabel:hover {{
             x = min(max(avail.left(), x), avail.right() - 240)
             y = min(max(avail.top(), y), avail.bottom() - 200)
         return QtCore.QPoint(x, y)
-
-    def reveal_points_for_file(self, file_key):
-        """Temporarily reveal point markers for a given file and repaint thumbnails."""
-        if not hasattr(self, '_temp_reveal'):
-            self._temp_reveal = set()
-        key = str(file_key)
-        self._temp_reveal.add(key)
-        try:
-            self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        except Exception:
-            pass
-        # auto-revert after 8 seconds
-        try:
-            QtCore.QTimer.singleShot(8000, lambda: (self._temp_reveal.discard(key), self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())))
-        except Exception:
-            pass
 
     def _open_single_spectro_popup(self, spectro):
         return main_window_spectro.open_single_spectro_popup(self, spectro)
@@ -3215,7 +3174,7 @@ QLabel:hover {{
             "Recover it now, ignore it for this launch, or discard it."
         )
         recover_btn = box.addButton("Recover", QtWidgets.QMessageBox.AcceptRole)
-        later_btn = box.addButton("Ignore for now", QtWidgets.QMessageBox.RejectRole)
+        box.addButton("Ignore for now", QtWidgets.QMessageBox.RejectRole)
         discard_btn = box.addButton("Discard", QtWidgets.QMessageBox.DestructiveRole)
         box.exec_()
         clicked = box.clickedButton()
@@ -3289,14 +3248,6 @@ QLabel:hover {{
             except Exception:
                 continue
             set_silent(act, checked=is_current)
-
-    # NOTE: implemented but NOT wired to any menu, toolbar or
-    # shortcut - 'Save session' (Ctrl+S) and 'Load session' are,
-    # this is not. Kept deliberately: SessionController.
-    # save_session_as() works, it just has no way to be invoked.
-    # See docs/refactor/SHIM_CENSUS_SXMGridViewer.md.
-    def on_save_session_as(self):
-        self.session_controller.save_session_as()
 
     def _focused_canvas_with_undo(self):
         widget = QtWidgets.QApplication.focusWidget()
@@ -7835,11 +7786,6 @@ QLabel:hover {{
         y_unit = (header.get('YPhysUnit') or header.get('PhysUnit') or 'px') if header else 'px'
         return x_vals, y_vals, x_unit, y_unit
 
-    def _xyz_filename(self, header_path, caption):
-        base = f"{header_path.stem} {caption}".strip()
-        safe = re.sub(r'[<>:\"/\\|?*]+', '_', base)
-        return f"{safe}.xyz"
-
     def _write_xyz_file(self, path, x_vals, y_vals, z_vals, x_unit, y_unit, z_unit, metadata_lines):
         log_status(f"Writing XYZ: {path}")
         with open(path, 'w', encoding='utf-8') as f:
@@ -8209,7 +8155,6 @@ QLabel:hover {{
             if idx is None or idx < 0 or idx >= len(fds):
                 continue
             fd = fds[idx]
-            fname = fd.get('FileName')
             try:
                 unit_final, arr_conv = self._get_filtered_channel_array(str(header_path), idx, header, fd)
             except Exception:
@@ -8931,7 +8876,9 @@ QLabel:hover {{
                 actions[act] = p
             browse_act = menu.addAction("Browse...")
             chosen = menu.exec_(QtGui.QCursor.pos())
-            if chosen and chosen in actions:
+            if chosen is None:
+                return  # menu dismissed (Esc / click outside): do nothing
+            if chosen is not browse_act and chosen in actions:
                 self.preview_canvas.add_molecule(actions[chosen])
                 self.on_show_molecules_toggled(True)
                 self._on_recent_molecules_updated(self.preview_canvas.get_recent_molecule_paths())
@@ -9605,11 +9552,6 @@ QLabel:hover {{
         if controller:
             return controller.toggle_multi_spec_selection(spec)
 
-    def _update_spec_selection_label(self):
-        controller = getattr(self, "spectro_compare_controller", None)
-        if controller:
-            return controller.update_spec_selection_label()
-
     def _clear_multi_spec_selection(self):
         controller = getattr(self, "spectro_compare_controller", None)
         if controller:
@@ -9646,23 +9588,6 @@ QLabel:hover {{
         if not self._spectros_loaded:
             self.ensure_spectros_loaded(refresh=False)
         return spectro_popups.on_show_matrix_spectro_viewer(self)
-
-    def on_spec_coord_mode_changed(self, idx):
-        try:
-            self.spec_coord_mode = self.spec_coord_combo.currentText()
-        except Exception:
-            self.spec_coord_mode = 'Auto'
-        self.config['spec_coord_mode'] = self.spec_coord_mode; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
-
-    def on_spec_invert_changed(self, checked: bool):
-        self.spec_invert_y = bool(checked)
-        self.config['spectro_invert_y'] = self.spec_invert_y; save_config(self.config)
-        self.populate_thumbnails_for_channel(self.channel_dropdown.currentIndex())
-        if self.last_preview:
-            self.show_file_channel(self.last_preview[0], self.last_preview[1])
 
     def on_pick_spectro_single_color(self):
         col = QtWidgets.QColorDialog.getColor(self.spectro_marker_color_single, self, "Select Single Marker Color", QtWidgets.QColorDialog.ShowAlphaChannel)
@@ -10667,12 +10592,6 @@ QLabel:hover {{
                 canv.set_profile_label_mode(mode)
             except Exception:
                 continue
-        for key, action in (getattr(self, "profile_label_actions", {}) or {}).items():
-            if action is None:
-                continue
-            action.blockSignals(True)
-            action.setChecked(key == mode)
-            action.blockSignals(False)
 
     def on_fixed_crop_quick_toggled(self, checked: bool):
         self._set_quick_crop_mode(checked)
@@ -10691,24 +10610,6 @@ QLabel:hover {{
             act.blockSignals(True)
             act.setChecked(self.show_crop_template_overlay)
             act.blockSignals(False)
-
-    def on_show_crop_history_overlay_toggled(self, checked: bool):
-        self.show_crop_history_overlay = True
-        self.config['show_crop_history_overlay'] = True; save_config(self.config)
-        act = getattr(self, 'crop_history_act', None)
-        if act is not None:
-            act.blockSignals(True)
-            act.setChecked(True)
-            act.blockSignals(False)
-        cb = getattr(self, 'crop_history_overlay_cb', None)
-        if cb is not None:
-            cb.blockSignals(True)
-            cb.setChecked(True)
-            cb.blockSignals(False)
-        if hasattr(self, "quick_crop_controller"):
-            self.quick_crop_controller.update_hint()
-            self.quick_crop_controller.refresh_history_panel()
-            self.quick_crop_controller.update_active_sequence_from_stack()
 
     def _set_quick_crop_mode(self, enabled: bool, save: bool = True):
         controller = getattr(self, "quick_crop_controller", None)

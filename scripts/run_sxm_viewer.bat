@@ -104,7 +104,6 @@ if defined DOTENV_OK (
         "!PYTHON_EXE!" -m dotenv -q run -- "!PYTHON_EXE!" -m sxm_viewer
     )
 ) else (
-    echo Tip: install python-dotenv to auto-load .env ^(pip install python-dotenv^)
     if /i "!PYTHON_EXE!"=="py -3" (
         py -3 -m sxm_viewer
     ) else if /i "!PYTHON_EXE!"=="python" (

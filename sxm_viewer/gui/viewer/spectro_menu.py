@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..._shared import QtCore, QtGui, QtWidgets, log_status
+from ..._shared import QtGui, QtWidgets, log_status
 from ...config import save_config
 from ...data.channel_units import guess_channel_unit
 from ...utils.units import _auto_display_unit

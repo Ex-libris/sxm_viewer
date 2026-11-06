@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 
-from common import Report, iter_functions, iter_source_files, parse, read_text, rel
+from common import Report, iter_functions, iter_source_files, parse, rel
 
 # Names that are called by the framework, not by our code.
 QT_LIFECYCLE = {
@@ -174,6 +174,13 @@ def find_phantom_calls(defs):
     """
     inherited = _inherited_api_names()
     assigned = collect_attribute_assignments()
+    # `self.Helper(...)` instantiating a class nested in the same class (e.g.
+    # ProfileDialog._LightForExport) is a definition, not a phantom.
+    class_names = set()
+    for path in iter_source_files():
+        tree = parse(path)
+        if tree is not None:
+            class_names.update(n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
     true_phantoms = defaultdict(list)
     injected = defaultdict(list)
     for path in iter_source_files():
@@ -188,7 +195,7 @@ def find_phantom_calls(defs):
             if not (isinstance(recv, ast.Name) and recv.id in ("self", "viewer")):
                 continue
             name = node.func.attr
-            if name in defs or name in QT_LIFECYCLE or name in inherited:
+            if name in defs or name in class_names or name in QT_LIFECYCLE or name in inherited:
                 continue
             bucket = injected if name in assigned else true_phantoms
             bucket[name].append((rel(path), node.lineno))

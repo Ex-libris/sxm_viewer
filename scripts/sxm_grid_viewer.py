@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Compatibility wrapper for the sxm_viewer package."""
 
 from sxm_viewer.cli import main

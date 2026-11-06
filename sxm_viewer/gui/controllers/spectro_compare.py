@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from ..._shared import QtCore, QtWidgets
+from ..._shared import QtCore
 from ..spectroscopy import popups as spectro_popups
 from ..spectroscopy.controller import _format_position_nm
 

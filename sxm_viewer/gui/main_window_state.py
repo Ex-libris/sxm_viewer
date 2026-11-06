@@ -27,9 +27,8 @@ import time
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
-from .._shared import QtCore, QtGui, QtWidgets, log_status, np
+from .._shared import QtCore, QtGui, QtWidgets, log_status
 from .undo_journal import JournaledList, UndoJournal
-from .. import cmap_registry
 from ..config import load_config, save_config
 from . import theme as ui_theme
 from .constants import UI_FONT_FAMILY, UI_FONT_SIZE

@@ -1,4 +1,4 @@
-﻿"""Detail canvases and spectroscopy dialogs."""
+"""Detail canvases and spectroscopy dialogs."""
 from __future__ import annotations
 
 import contextlib
@@ -17,14 +17,11 @@ import numpy as np
 from matplotlib import patches
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
-from matplotlib.widgets import RectangleSelector
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.transforms import Affine2D
 import matplotlib
-from matplotlib.collections import EllipseCollection, LineCollection
+from matplotlib.collections import LineCollection
 import matplotlib.patheffects as PathEffects
 
 from ..._shared import QtCore, QtGui, QtWidgets, log_status
@@ -36,10 +33,7 @@ from .molecular_overlay import (
     MoleculePropertiesDialog,
     get_atom_color,
     get_atom_radius,
-    resolve_atom_color,
-    effective_bond_color_mode,
     element_color_override,
-    atom_marker_area_factor,
     available_atom_palettes,
     palette_label,
     normalize_molecule_render_style,
@@ -60,7 +54,7 @@ from ...reporting.channels import classify_channel
 from ...utils.units import format_ch_height_label
 from ..ppt_bridge import powerpoint_support_status, send_rendered_to_ppt
 from .. import vector_export
-from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage, _colormap_icon
+from ..thumbnail_render import _interp_index, sample_array_value, array_to_qimage
 from ..system_open import add_source_file_menu
 from ..menu_kit import (
     MenuPrefs, Route, add_export_section, again_folder, checkable, choice_group, section,
@@ -602,10 +596,6 @@ class MultiPreviewCanvas(FigureCanvas):
 
     def set_angle_tool_enabled(self, enabled: bool):
         self.enable_angle(bool(enabled))
-
-    def set_measurement_shortcuts_enabled(self, enabled: bool):
-        """Enable or disable Ctrl-based quick profile/angle shortcuts for this canvas."""
-        self._measurement_shortcuts_enabled = bool(enabled)
 
     def clear_measurement_overlays(self):
         try:
@@ -1478,10 +1468,6 @@ class MultiPreviewCanvas(FigureCanvas):
         if summary:
             return f"Filter: {summary}"
         return title
-
-    def clear_views(self):
-        self.views = []
-        self._redraw()
 
     def set_views_callback(self, cb):
         self._views_callback = cb
@@ -3228,9 +3214,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return True
         return (time.perf_counter() * 1000.0) < float(getattr(self, "_molecule_gizmo_until", 0.0) or 0.0)
 
-    def _molecule_orientation_matrix(self, mol):
-        return molecule_interaction.orientation_matrix(mol)
-
     def _molecule_axis_screen_vectors(self, mol):
         return molecule_interaction.axis_screen_vectors(mol)
 
@@ -3433,7 +3416,6 @@ class MultiPreviewCanvas(FigureCanvas):
             self._spectra_points[ax] = []
             return
         raw_extent = view.get('extent_raw')
-        rel = self._use_relative_axes(view)
         arr_vals = np.asarray(view.get('arr'))
         try:
             arr_h, arr_w = arr_vals.shape
@@ -3812,14 +3794,6 @@ class MultiPreviewCanvas(FigureCanvas):
             return json.dumps(identity, sort_keys=True, default=str, separators=(",", ":"))
         except Exception:
             return str(identity)
-
-    def _scale_bar_view_for_key(self, key):
-        if not key:
-            return None
-        for view in list(getattr(self, "views", []) or []):
-            if self._scale_bar_view_key(view) == key:
-                return view
-        return None
 
     def _scale_bar_setting(self, name, view=None, default=None):
         settings = getattr(self, '_scale_bar_settings', {}) or {}
@@ -6872,18 +6846,6 @@ class MultiPreviewCanvas(FigureCanvas):
         x0, y0, x1, y1 = pts
         self.profile_pts = self._clamp_profile_pts(x0, y0, x1, y1)
 
-    def _shift_pressed(self, event):
-        key = getattr(event, 'key', None)
-        if key and 'shift' in str(key).lower():
-            return True
-        gui = getattr(event, 'guiEvent', None)
-        try:
-            if gui is not None and gui.modifiers() & QtCore.Qt.ShiftModifier:
-                return True
-        except Exception:
-            pass
-        return False
-
     def _snapshot_active_profile(self):
         if self.profile_pts is None or self.main_ax is None:
             return
@@ -7399,15 +7361,6 @@ class MultiPreviewCanvas(FigureCanvas):
         except Exception:
             return
 
-    def _show_profile_context_menu_at(self, x, y, overlay_idx=None, active=False, global_pos=None):
-        """Resolve a profile under data coordinates and show its properties."""
-        if overlay_idx is None:
-            overlay_idx = self._overlay_index_near(x, y, thresh=15.0)
-        if overlay_idx is not None:
-            self._show_profile_context_menu(None, overlay_idx=overlay_idx, global_pos=global_pos)
-        elif active and self.profile_pts is not None:
-            self._show_profile_context_menu(None, active=True, global_pos=global_pos)
-
     def _on_press(self, event):
         if event.inaxes is None or event.inaxes is not self.main_ax:
             return
@@ -7424,7 +7377,6 @@ class MultiPreviewCanvas(FigureCanvas):
 
         if not self.profile_enabled and not self._profile_move_only:
             return
-        shift_pressed = self._shift_pressed(event)
         mods_qt = self._event_qt_modifiers(event)
         ctrl_pressed = bool(mods_qt & QtCore.Qt.ControlModifier)
         if event.button != 1:
@@ -7537,87 +7489,6 @@ class MultiPreviewCanvas(FigureCanvas):
             self.set_show_profile_overlays(True)
         finally:
             self._undo_suspend_depth = max(0, self._undo_suspend_depth - 1)
-
-    def _show_profile_context_menu(self, event, overlay_idx=None, active=False, global_pos=None):
-        menu = QtWidgets.QMenu(self)
-        profile_title = menu.addAction("Profile properties")
-        profile_title.setEnabled(False)
-        menu.addSeparator()
-        color_act = menu.addAction("Change Color")
-        thicker_act = menu.addAction("Thicker")
-        thinner_act = menu.addAction("Thinner")
-        menu.addSeparator()
-        label_menu = menu.addMenu("Label detail")
-        label_modes = [
-            ("Length only", "length"),
-            ("Full (L, dx, dy)", "full"),
-            ("Hidden", "hidden"),
-        ]
-        label_actions = {}
-        current_mode = getattr(self, "_profile_label_mode", "length")
-        for label_txt, mode_key in label_modes:
-            act = label_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(current_mode == mode_key)
-            label_actions[act] = mode_key
-
-        size_menu = menu.addMenu("Label size")
-        size_actions = {}
-        for px in (8, 10, 12, 14, 16, 20, 24):
-            act = size_menu.addAction(f"{px} px")
-            act.setCheckable(True)
-            act.setChecked(abs(12.0 * self._profile_label_scale - px) < 0.5)
-            size_actions[act] = px
-
-        placement_menu = menu.addMenu("Label placement")
-        placement_actions = {}
-        for label_txt, key in (("Midpoint", "midpoint"), ("Near endpoint", "endpoint"), ("HUD only", "hud")):
-            act = placement_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_placement == key)
-            placement_actions[act] = key
-        orientation_menu = menu.addMenu("Label orientation")
-        orientation_actions = {}
-        for label_txt, key in (("Automatic", "automatic"), ("Parallel", "parallel"), ("Horizontal", "horizontal")):
-            act = orientation_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(self._profile_label_orientation == key)
-            orientation_actions[act] = key
-        opacity_menu = menu.addMenu("Label background")
-        opacity_actions = {}
-        for label_txt, alpha in (("None", 0.0), ("Light", 0.15), ("Medium", 0.28), ("Strong", 0.45)):
-            act = opacity_menu.addAction(label_txt)
-            act.setCheckable(True)
-            act.setChecked(abs(self._profile_label_bg_alpha - alpha) < 0.02)
-            opacity_actions[act] = alpha
-        
-        if overlay_idx is not None:
-            menu.addSeparator()
-            delete_act = menu.addAction("Delete Profile")
-        
-        if global_pos is None:
-            gui_event = getattr(event, "guiEvent", None) if event is not None else None
-            global_pos = gui_event.globalPos() if gui_event is not None else QtGui.QCursor.pos()
-        action = menu.exec_(global_pos)
-        
-        if action == color_act:
-            self._change_profile_color(overlay_idx, active)
-        elif action == thicker_act:
-            self._change_profile_width(overlay_idx, active, 0.5)
-        elif action == thinner_act:
-            self._change_profile_width(overlay_idx, active, -0.5)
-        elif action in label_actions:
-            self.set_profile_label_mode(label_actions[action])
-        elif action in size_actions:
-            self.set_profile_label_scale(size_actions[action] / 12.0)
-        elif action in placement_actions:
-            self.set_profile_label_placement(placement_actions[action])
-        elif action in orientation_actions:
-            self.set_profile_label_orientation(orientation_actions[action])
-        elif action in opacity_actions:
-            self.set_profile_label_bg_alpha(opacity_actions[action])
-        elif overlay_idx is not None and action == delete_act:
-            self._remove_saved_profile(overlay_idx)
 
     def _apply_active_profile_style(self):
         color = self._active_profile_color
@@ -7806,25 +7677,6 @@ class MultiPreviewCanvas(FigureCanvas):
         self.draw_idle()
         self._emit_profile()
         return True
-
-    def _change_profile_color(self, overlay_idx, active):
-        current_color = self._active_profile_color
-        if overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles):
-            current_color = self._saved_profiles[overlay_idx].get('color', current_color)
-        
-        col = QtWidgets.QColorDialog.getColor(QtGui.QColor(current_color), self, "Select Profile Color")
-        if not col.isValid(): return
-        self.set_profile_style(None if active else overlay_idx, color=col.name())
-
-    def _change_profile_width(self, overlay_idx, active, delta):
-        has_overlay = overlay_idx is not None and 0 <= overlay_idx < len(self._saved_profiles)
-        if not active and not has_overlay:
-            return
-        if active:
-            self.set_profile_style(None, lw=max(0.5, self._active_profile_lw + delta))
-        elif has_overlay:
-            entry = self._saved_profiles[overlay_idx]
-            self.set_profile_style(overlay_idx, lw=max(0.5, float(entry.get('lw', 1.5) or 1.5) + delta))
 
     def _on_motion(self, event):
         if (not self.profile_enabled and not self._profile_move_only) or event.inaxes is None or event.inaxes is not self.main_ax:
@@ -8495,10 +8347,7 @@ class MultiPreviewCanvas(FigureCanvas):
         if want_outline and view is not None:
             # Alt+click: outline dominant blob around clicked point (no drag needed)
             if event.xdata is not None and event.ydata is not None:
-                # print(f"Alt detected! xdata={event.xdata}, ydata={event.ydata}")
                 self._outline_from_point(view, ax, event.xdata, event.ydata)
-            else:
-                print("[Outline] Alt detected but coordinates are None; ignoring.")
             return
         overlay_hit = self._interactive_overlay_hit_test(event)
         # Pan start: left/middle drag on the image background when zoomed.
@@ -8725,9 +8574,7 @@ class MultiPreviewCanvas(FigureCanvas):
                 pass
             self._redraw()
         except Exception as e:
-            import traceback
-            print(f"Failed to load molecule: {e}")
-            traceback.print_exc()
+            log_status(f"[Molecule] Failed to load molecule: {e}")
 
     def add_svg_molecule(self, path, reference_bond_length_angstrom: float = 1.54):
         try:
@@ -9224,10 +9071,8 @@ class MultiPreviewCanvas(FigureCanvas):
         if not targets:
             return False
         self.push_undo_state("colormap")
-        changed = False
         for current_view in targets:
             current_view["cmap"] = cmap_name
-            changed = True
         # Mark cmap sync as explicit user intent so the owner can persist
         # a new per-file override key from this action.
         try:
@@ -9977,11 +9822,13 @@ class MultiPreviewCanvas(FigureCanvas):
     # set_context_menu_support; in-memory defaults otherwise).
     _VIEW_DEFAULT_PINNED = ("copy_png", "ppt_new")
 
-    def set_context_menu_support(self, prefs_factory=None, extra_routes=None):
-        """Owner-provided menu prefs factory (-> menu_kit.MenuPrefs) and extra
-        export routes (menu_kit.Route, ctx = {"canvas", "view"})."""
+    def set_context_menu_support(self, prefs_factory=None, extra_routes=None, cmap_prefs_factory=None):
+        """Owner-provided menu prefs factory (-> menu_kit.MenuPrefs), extra
+        export routes (menu_kit.Route, ctx = {"canvas", "view"}) and colormap
+        favourites / recent (-> cmap_menu.CmapPrefs)."""
         self._menu_prefs_factory = prefs_factory
         self._extra_export_routes = list(extra_routes or [])
+        self._cmap_prefs_factory = cmap_prefs_factory
 
     def _context_menu_prefs(self):
         factory = getattr(self, "_menu_prefs_factory", None)
@@ -10223,36 +10070,30 @@ class MultiPreviewCanvas(FigureCanvas):
 
     # ----- context-menu submenus ---------------------------------------
     def _add_context_cmap_menu(self, menu, view):
-        cmap_menu = menu.addMenu("Colormap")
-        group = QtWidgets.QActionGroup(cmap_menu)
-        group.setExclusive(True)
-        # A short featured list inline; the full catalogue (~1000 maps with
-        # the extras package) is browsed in the gallery.
+        # The app's one colormap menu (gui/cmap_menu.py): search, favourites,
+        # recent, suggested and the gallery, "Colormap: <name>" on top.
+        from .. import cmap_menu
         current = str((view or {}).get("cmap") or "viridis")
-        shown = []
-        for name in cmap_registry.featured_cmap_names("general"):
-            if name not in shown:
-                shown.append(name)
-        shown = shown[:12]
-        if current not in shown:
-            shown.append(current)
-        for name in shown:
-            act = cmap_menu.addAction(name)
-            act.setCheckable(True)
-            act.setChecked(name == current)
+        extras = []
+        if callable(self._apply_popup_style_callback):
+            extras.append(("Apply this colormap to all pop-ups", self._safe(self._apply_popup_style_callback)))
+        cmap_menu.add_cmap_submenu(
+            menu, current, lambda n: self._apply_context_cmap(n, view),
+            prefs=self._context_cmap_prefs(),
+            on_gallery=lambda: self.open_view_colormap_gallery(view), extras=extras)
+
+    def _context_cmap_prefs(self):
+        from .. import cmap_menu
+        factory = getattr(self, "_cmap_prefs_factory", None)
+        if callable(factory):
             try:
-                act.setIcon(_colormap_icon(name, width=96, height=14))
+                return factory()
             except Exception:
                 pass
-            group.addAction(act)
-            act.triggered.connect(lambda _=False, n=name: self._apply_context_cmap(n, view))
-        cmap_menu.addSeparator()
-        cmap_menu.addAction("\U0001F3A8 Colormap gallery...").triggered.connect(
-            lambda _=False: self.open_view_colormap_gallery(view))
-        if callable(self._apply_popup_style_callback):
-            cmap_menu.addSeparator()
-            cmap_menu.addAction("Apply this colormap to all pop-ups").triggered.connect(
-                self._safe(self._apply_popup_style_callback))
+        prefs = getattr(self, "_fallback_cmap_prefs", None)
+        if prefs is None:
+            prefs = self._fallback_cmap_prefs = cmap_menu.CmapPrefs()
+        return prefs
 
     def _apply_context_cmap(self, name, view):
         try:
@@ -11031,10 +10872,6 @@ class MultiPreviewCanvas(FigureCanvas):
             if changed:
                 self._set_shortcut_hint_artist_visibility(True)
                 self.draw_idle()
-
-    def _style_export_figure(self, fig, ax, cbar):
-        return preview_export_figures.style_export_figure(self, fig, ax, cbar)
-
 
     # ------------------------------------------------------------------ #
     # Outlines                                                           #
@@ -12464,9 +12301,6 @@ class MultiPreviewCanvas(FigureCanvas):
         key = self._outline_key(view)
         if key is None:
             return None
-        c0, c1, r0, r1 = pixel_bounds
-        width = max(1, int(abs(c1 - c0) + 1))
-        height = max(1, int(abs(r1 - r0) + 1))
         seq = self._fixed_crop_sequence
         real_unit = self._guess_view_unit(view)
         real_size = (0.0, 0.0)
@@ -12509,12 +12343,6 @@ class MultiPreviewCanvas(FigureCanvas):
         geom = self._history_entry_geometry(entry)
         if geom is None:
             return
-        left = geom["left"]
-        right = geom["right"]
-        bottom = geom["bottom"]
-        top = geom["top"]
-        width = geom["width"]
-        height = geom["height"]
         corners = geom["corners"]
         seq = entry.get("sequence")
         is_active = seq is not None and seq == self._fixed_crop_history_highlight_seq

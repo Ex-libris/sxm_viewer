@@ -1,4 +1,4 @@
-﻿"""Profile dialog coordination helpers for preview pop-outs."""
+"""Profile dialog coordination helpers for preview pop-outs."""
 from __future__ import annotations
 
 from typing import Optional, Tuple, List
@@ -63,28 +63,6 @@ class PopupProfileController:
             or getattr(canvas, "profile_enabled", False)
             or getattr(canvas, "_profile_move_only", False)
         )
-
-    # ------------------------------------------------------------------
-    def toggle_measure(self, checked: bool):
-        def _force_dialog():
-            active, saved = self._compute_profiles_from_canvas()
-            if active or saved:
-                self._ensure_profile_dialog(active, saved)
-
-        try:
-            self.canvas.enable_profile(bool(checked))
-            self.canvas._profile_user_enabled = bool(checked)
-        except Exception:
-            pass
-        if not checked:
-            self.dispose()
-            return
-        self.refresh_from_canvas()
-        try:
-            self.canvas._emit_profile()
-        except Exception:
-            pass
-        _force_dialog()
 
     # ------------------------------------------------------------------
     def dispatch_dialog(self, active=None, saved=None):

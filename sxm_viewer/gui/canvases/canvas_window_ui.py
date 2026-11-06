@@ -1,24 +1,11 @@
 """UI construction helpers for the canvas window."""
 from __future__ import annotations
 
-from ..._shared import QtCore, QtGui, QtWidgets, colormaps
+from ..._shared import QtCore, QtGui, QtWidgets
 from ... import cmap_registry
 from ..styles import (
     CANVAS_DIALOG_STYLE,
     CANVAS_DIALOG_STYLE_LIGHT,
-    CANVAS_HEADER_STYLE,
-    CANVAS_LABEL_STYLE,
-    CANVAS_LABEL_VALUE_STYLE,
-    CANVAS_RANGE_LABEL_STYLE,
-    CANVAS_RANGE_TO_LABEL_STYLE,
-    CANVAS_REMOVE_BUTTON_STYLE,
-    CANVAS_SECTION_STYLE,
-    CANVAS_STATUS_LABEL_STYLE,
-    CANVAS_STATS_LABEL_STYLE,
-    CANVAS_TOOLBAR_GROUP_LABEL_STYLE,
-    CANVAS_TOOLBAR_GROUP_STYLE,
-    CANVAS_TOOLBAR_SEPARATOR_STYLE,
-    CANVAS_TOOLBAR_WIDGET_STYLE,
 )
 from ..thumbnail_render import _colormap_icon
 from .. import theme as ui_theme
@@ -27,43 +14,8 @@ from ..text import (
     CANVAS_CHECKBOX_TEXT,
     CANVAS_LABEL_TEXT,
     CANVAS_PLACEHOLDER_TEXT,
-    CANVAS_TOOLBAR_GROUP_TITLES,
     CANVAS_TOOLTIPS,
 )
-
-
-def create_toolbar_group(title):
-    """Create a visually grouped section in toolbar."""
-    container = QtWidgets.QWidget()
-    container.setProperty("toolbarGroup", True)
-    container_layout = QtWidgets.QVBoxLayout(container)
-    container_layout.setContentsMargins(0, 0, 0, 0)
-    container_layout.setSpacing(2)
-
-    label = QtWidgets.QLabel(title)
-    label.setProperty("toolbarLabel", True)
-    # Style via global stylesheet; avoid hardcoded palette.
-    label.setStyleSheet("")
-    label.setAlignment(QtCore.Qt.AlignLeft)
-    container_layout.addWidget(label)
-
-    group = QtWidgets.QWidget()
-    # Styling comes from the theme; avoid fixed colors.
-    group.setStyleSheet("")
-    group_layout = QtWidgets.QHBoxLayout(group)
-    group_layout.setContentsMargins(8, 4, 8, 4)
-    group_layout.setSpacing(4)
-    container_layout.addWidget(group)
-    return container, group_layout
-
-
-def create_separator():
-    """Create a vertical separator line."""
-    separator = QtWidgets.QFrame()
-    separator.setFrameShape(QtWidgets.QFrame.VLine)
-    separator.setFrameShadow(QtWidgets.QFrame.Sunken)
-    separator.setStyleSheet(CANVAS_TOOLBAR_SEPARATOR_STYLE)
-    return separator
 
 
 def create_toolbar_section(title: str, widgets: list) -> QtWidgets.QWidget:
