@@ -1,5 +1,7 @@
 # SXM Viewer
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24005636.svg)](https://doi.org/10.5281/zenodo.24005636)
+
 SXM Viewer is a Python desktop application for browsing, analysing and visualising scanning probe microscopy (SPM) data. It reads Anfatec/Omicron data natively and Nanonis `.sxm`, `.dat` and `.3ds` files through a conversion adapter.
 
 <p align="center">
@@ -61,9 +63,9 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## How to cite
 
-If SXM Viewer contributes to work you publish, please cite it. Citation metadata is in [CITATION.cff](CITATION.cff); GitHub's "Cite this repository" button generates APA and BibTeX from it. Each release is archived on Zenodo with its own DOI.
+If SXM Viewer contributes to work you publish, please cite it. Citation metadata is in [CITATION.cff](CITATION.cff); GitHub's "Cite this repository" button generates APA and BibTeX from it. Each release is archived on Zenodo with its own DOI; [10.5281/zenodo.24005636](https://doi.org/10.5281/zenodo.24005636) always resolves to the latest version. To cite the exact version you used, take its DOI from the Zenodo record (0.1.0: [10.5281/zenodo.24005637](https://doi.org/10.5281/zenodo.24005637)).
 
-> Mallada, B., Rauschenbach, S. *SXM Viewer* [Computer software]. https://github.com/Ex-libris/sxm_viewer
+> Mallada, B., Rauschenbach, S. (2026). *SXM Viewer* (Version 0.1.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24005637
 
 ## License
 
