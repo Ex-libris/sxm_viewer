@@ -2,7 +2,11 @@
 
 Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 - 2026-11-06
+
+First public release, archived on Zenodo.
+
+Figures (new since the last development snapshot):
 
 - **Figures replace the canvas as the way to build a figure**: the toolbar's
   `New Figure` turns the selected images into a figure in grid order (the
@@ -45,10 +49,6 @@ Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://sem
   onto the next image; new choice "Channel + unit" / "Unit only".
 - **Fix**: section titles of the figure window's menus were not drawn on
   Windows, and "Colour range & histogram" lost its "&".
-
-## 0.1.0 - 2026-11-05
-
-First public release, archived on Zenodo.
 
 Release preparation (no change to how images, spectra or figures look - the
 preview renders were checked pixel for pixel against the previous version on

@@ -19,7 +19,7 @@ authors:
     orcid: "https://orcid.org/0000-0001-9382-1948"
     affiliation: "Department of Chemistry, University of Oxford"
 version: "0.1.0"
-date-released: "2026-11-05"
+date-released: "2026-11-06"
 repository-code: "https://github.com/Ex-libris/sxm_viewer"
 url: "https://ex-libris.github.io/sxm_viewer/"
 license: MIT
