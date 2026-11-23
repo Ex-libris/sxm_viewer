@@ -547,6 +547,10 @@ On the figure:
   the series (ordered by its recipe).
 - Drag a frame header - move the frame (custom figures); right-click it for
   `Move left` / `Move right`.
+- Click a frame header - the Headers card (a Δz header: makes that frame the
+  reference); `Ctrl+Wheel` over it - header size. Format > Headers > Place
+  `On the image` draws the header as a label in a corner / top or bottom
+  centre of the image (default top right); the same works on such a label.
 - Right-click an image > `Crop this frame…` - drag a rectangle (`Shift`
   square, `Esc` cancels); every channel of the frame is cut alike; `Same
   crop for every frame` for a series.

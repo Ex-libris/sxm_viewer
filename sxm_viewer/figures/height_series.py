@@ -80,7 +80,18 @@ STYLE_DEFAULTS = {
     "header": "auto",          # "auto" | "dz" | "zabs" | "bias" | "name"
     "header_name": False,      # file name as an extra header line
     "ref_bold": False,         # bold header for the Δz = 0 reference frame
+    "header_place": "above",   # above (a band over the frame) | inside (a label on the image)
+    "header_pos": "tr",        # inside: tl | tc | tr | bl | bc | br
+    "header_scope": "frame",   # inside: frame (first channel row only) | panel (every image)
+    "header_param": True,      # name the parameter: "V = +2 V" (True) | "+2 V" (False)
+    "header_size": None,       # pt; None = the text size
+    "header_font": None,       # font family; None = the figure's font
+    "header_color": "auto",    # auto (inside: contrast with the image) | white | black | custom
+    "header_rgb": "#ffd23f",   # the custom colour
+    "header_bold": False,
+    "header_outline": True,    # inside: contrasting outline
     "channel_labels": True,    # channel names (I, Δf ...) beside the rows
+    "channel_label_dir": "auto",  # auto (vertical when long) | horizontal | vertical
     "font": 7.0,
     "font_family": None,       # None = Arial when installed (journal standard), else DejaVu Sans
     "cbar_scope": "auto",      # auto (follows the range) | row (one bar per channel, min/max)
@@ -273,6 +284,48 @@ def letter_text(i, style):
     if style == "a.":
         return f"{ch}."
     return ch
+
+
+_PARAM_RE = re.compile(r"^\s*[^\s=·]{1,6}\s*=\s*")
+_SUB_SEP = "  ·  "
+
+
+def header_value_only(text):
+    """``V = +300 mV`` -> ``+300 mV`` (every ``·``-separated part)."""
+    return _SUB_SEP.join(_PARAM_RE.sub("", part) for part in str(text or "").split(_SUB_SEP))
+
+
+def header_lines(col, style):
+    """``(header, subheader)`` of a frame as drawn (without the parameter
+    names when ``style["header_param"]`` is off)."""
+    head, sub = col.get("header") or "", col.get("subheader") or ""
+    if not (style or {}).get("header_param", True):
+        head, sub = header_value_only(head), header_value_only(sub)
+    return head, sub
+
+
+def header_text_size(st):
+    return pt(_finite(st.get("header_size")) or float(st["font"]))
+
+
+def _header_font_kw(st):
+    fam = st.get("header_font")
+    return {"fontfamily": [fam, "DejaVu Sans"]} if fam else {}
+
+
+def _header_color(st, text_color, inside):
+    c = st.get("header_color") or "auto"
+    if c == "custom":
+        return st.get("header_rgb") or text_color
+    if c == "auto":
+        return "auto" if inside else text_color
+    if c == "white" and not inside:
+        return text_color   # on the white page
+    return c
+
+
+def headers_inside(st):
+    return st.get("header_place") == "inside"
 
 
 def _short(text, n=24):
@@ -1063,12 +1116,23 @@ def _outside_letter_h(st):
 
 
 def _header_height(spec, st):
-    line = float(st["font"]) / 72.0 * 1.45
-    if not any(c.get("header") or c.get("subheader") for c in spec["columns"]):
-        return max(0.04, _outside_letter_h(st))   # headers off: panels start at the top
+    line = max(float(st["font"]), header_text_size(st)) / 72.0 * 1.45
+    if headers_inside(st) or not any(c.get("header") or c.get("subheader") for c in spec["columns"]):
+        # headers off (or drawn on the images): panels start at the top
+        return max(0.04, _outside_letter_h(st))
     has_sub = any(c.get("subheader") for c in spec["columns"])
     # An outside letter sits on its own line above the header text.
     return 0.12 + line * (2 if has_sub else 1) + _outside_letter_h(st)
+
+
+def channel_label_vertical(st, text):
+    """Is this channel name drawn rotated 90°?"""
+    d = st.get("channel_label_dir") or "auto"
+    if d == "vertical":
+        return True
+    if d == "horizontal":
+        return False
+    return len(text or "") > 4
 
 
 def _left_band(spec, st):
@@ -1076,6 +1140,12 @@ def _left_band(spec, st):
     if not st.get("channel_labels", True):
         return 0.06
     longest = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
+    fs = float(st["font"]) + 1.0
+    d = st.get("channel_label_dir") or "auto"
+    if d == "vertical":
+        return max(0.30, 0.14 + 1.45 * fs / 72.0)
+    if d == "horizontal" and longest > 4:
+        return max(0.42, 0.16 + 0.6 * fs / 72.0 * longest)
     return 0.42 if longest <= 4 else 0.30
 
 
@@ -1125,9 +1195,13 @@ def _layout_grid(spec, panels, st):
         bar_h, extra_h = cbar_dims(st, "h")
         slot = pw + ((0.05 + bar_v + extra_v) if per_img_cb else 0.0)
         top = (0.10 + font / 72.0 * 1.45) if st.get("channel_labels", True) else 0.04
-        longest_h = max((max(len(c.get("header") or ""), len(c.get("subheader") or ""))
-                         for c in spec["columns"]), default=0)
-        left = (0.20 + max(0.75, font / 72.0 * 0.62 * longest_h)) if longest_h else 0.06
+        if st.get("channel_labels", True) and st.get("channel_label_dir") == "vertical":
+            longest_c = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
+            top = max(top, 0.12 + 0.6 * (font + 1.0) / 72.0 * longest_c)
+        longest_h = 0 if headers_inside(st) else max(
+            (max(len(t) for t in header_lines(c, st)) for c in spec["columns"]), default=0)
+        h_font = header_text_size(st)
+        left = (0.20 + max(0.75, h_font / 72.0 * 0.62 * longest_h)) if longest_h else 0.06
         bottom = (0.06 + bar_h + extra_h + 0.04) if shared_cb else _BOTTOM
         block_w = left + n_ch * slot + (n_ch - 1) * _GAP + 0.12
         fig_w = len(blocks) * block_w + (len(blocks) - 1) * _BLOCK_GAP
@@ -1570,6 +1644,10 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     ranges, panel_ranges, units, images, panel_images = {}, {}, {}, {}, {}
     own_scale, axes_of, dims_of = {}, {}, {}
     cbar_artists, letter_boxes, scale_boxes = [], [], []
+    # Frame headers drawn on the images (instead of a band above them).
+    hdr_inside = headers_inside(st)
+    hdr_lines = [header_lines(c, st) for c in columns]
+    header_boxes = []   # (frame, inch box) of each header drawn on an image
     data_boxes = {}   # (row, frame) -> (inch box of the drawn image, w_nm, h_nm)
     for r, row in enumerate(spec["rows"]):
         mixed = row["kind"] == "mixed"
@@ -1681,6 +1759,10 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 taken.add(st["letter_pos"])
             if (r, f) in scale_cells:
                 taken.add(st["scale_pos"])
+            hdr_here = (hdr_inside and any(hdr_lines[f])
+                        and (st.get("header_scope") == "panel" or r == 0))
+            if hdr_here and st.get("header_pos") in ("tl", "tr", "bl", "br"):
+                taken.add(st["header_pos"])
             if own and own_scale[(r, col["key"])] == "user" and not st["colorbars"]:
                 # Own range by the user's choice and no shared bar it would
                 # contradict: nothing to say on the image.
@@ -1729,11 +1811,20 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
                 t.set_gid(f"letter_{r}_{f}")
                 letter_boxes.append({"row": r, "frame": f, "box": _corner_box(
                     box, st["letter_pos"], float(st["letter_size"]), len(letter))})
+            sb = None
             if (r, f) in scale_cells and _finite(p.get("width_nm")):
                 sb = _draw_scale_bar(ax, w, h, st, font, None,
                                      gid=f"scalebar_{r}_{f}", show_label=(r, f) in label_cells)
                 if sb:
                     scale_boxes.append({"row": r, "frame": f, "box": _frac_box(box, sb)})
+            if hdr_here:
+                inside_letter = letter and not str(st["letter_pos"]).startswith("out")
+                hb = _draw_inside_header(
+                    fig, ax, hdr_lines[f], st, bool(col.get("is_ref")), text_color,
+                    letter_corner=st["letter_pos"] if inside_letter else None,
+                    scale_frac=sb, gid=f"header_{r}_{f}")
+                if hb:
+                    header_boxes.append((f, hb))
             if (st["colorbars"] and not shared and st.get("cbar_scope") != "row"
                     and own_scale.get((r, col["key"])) != "flat"):
                 # Each bar has its own range and may have its own unit (4 pA
@@ -1776,29 +1867,38 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
     # Frame headers and channel labels as figure text.
     fig_w, fig_h = size
     seen_headers = set()
+    h_size = header_text_size(st)
+    h_color = _header_color(st, text_color, inside=False)
+    h_kw = _header_font_kw(st)
     for f, (x0, y0, x1, y1) in layout["frame_labels"]:
+        if hdr_inside:
+            break   # drawn on the images above
         col = columns[f]
-        weight = "bold" if (col.get("is_ref") and st.get("ref_bold")) else "normal"
-        if not col.get("header") and not col.get("subheader"):
+        head, sub = hdr_lines[f]
+        bold = st.get("header_bold") or (col.get("is_ref") and st.get("ref_bold"))
+        weight = "bold" if bold else "normal"
+        if not head and not sub:
             continue
         if not layout["transpose"]:
             xc = 0.5 * (x0 + x1) / fig_w
-            line = font / 72.0 * 1.45
-            n_lines = 2 if col.get("subheader") else 1
+            line = max(font, h_size) / 72.0 * 1.45
+            n_lines = 2 if sub else 1
             base = y1 - 0.05 - (line if n_lines == 2 else 0.0)
-            fig.text(xc, 1.0 - base / fig_h, col["header"], ha="center", va="bottom",
-                     fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
-            if col.get("subheader"):
-                fig.text(xc, 1.0 - (y1 - 0.05) / fig_h, col["subheader"], ha="center",
-                         va="bottom", fontsize=pt(font - 1), color=text_color, gid=f"header_{f}_sub")
+            fig.text(xc, 1.0 - base / fig_h, head, ha="center", va="bottom",
+                     fontsize=h_size, color=h_color, fontweight=weight, gid=f"header_{f}", **h_kw)
+            if sub:
+                fig.text(xc, 1.0 - (y1 - 0.05) / fig_h, sub, ha="center", va="bottom",
+                         fontsize=pt(h_size - 1), color=h_color, gid=f"header_{f}_sub", **h_kw)
         else:
             yc = 0.5 * (y0 + y1)
-            dy = 0.5 * font / 72.0 * 1.4 if col.get("subheader") else 0.0
-            fig.text(x1 / fig_w, 1.0 - (yc - dy) / fig_h, col["header"], ha="right",
-                     va="center", fontsize=font, color=text_color, fontweight=weight, gid=f"header_{f}")
-            if col.get("subheader"):
-                fig.text(x1 / fig_w, 1.0 - (yc + dy) / fig_h, col["subheader"], ha="right",
-                         va="center", fontsize=pt(font - 1), color=text_color, gid=f"header_{f}_sub")
+            dy = 0.5 * h_size / 72.0 * 1.4 if sub else 0.0
+            fig.text(x1 / fig_w, 1.0 - (yc - dy) / fig_h, head, ha="right",
+                     va="center", fontsize=h_size, color=h_color, fontweight=weight,
+                     gid=f"header_{f}", **h_kw)
+            if sub:
+                fig.text(x1 / fig_w, 1.0 - (yc + dy) / fig_h, sub, ha="right",
+                         va="center", fontsize=pt(h_size - 1), color=h_color,
+                         gid=f"header_{f}_sub", **h_kw)
         seen_headers.add(f)
     for r, (x0, y0, x1, y1) in layout["channel_labels"]:
         if (n_rows < 2 and is_zoom) or not st.get("channel_labels", True):
@@ -1807,19 +1907,102 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
         text = row["display"]
         if not layout["transpose"]:
             fig.text((x1 - 0.08) / fig_w, 1.0 - 0.5 * (y0 + y1) / fig_h, text,
-                     ha="right", va="center", rotation=90 if len(text) > 4 else 0,
+                     ha="right", va="center", rotation=90 if channel_label_vertical(st, text) else 0,
                      fontsize=font + 1, color=text_color, gid=f"channel_{r}")
         else:
+            # Above its column: level unless asked for vertical (the band
+            # then grows to the longest name).
+            vertical = st.get("channel_label_dir") == "vertical"
             fig.text(0.5 * (x0 + x1) / fig_w, 1.0 - (y1 - 0.04) / fig_h, text,
-                     ha="center", va="bottom", fontsize=font + 1, color=text_color, gid=f"channel_{r}")
+                     ha="center", va="bottom", rotation=90 if vertical else 0,
+                     fontsize=font + 1, color=text_color, gid=f"channel_{r}")
 
     layout.update({"ranges": ranges, "panel_ranges": panel_ranges, "units": units,
                    "images": images, "panel_images": panel_images,
                    "colorbar_artists": cbar_artists, "own_scale": own_scale,
                    "letter_boxes": letter_boxes, "scale_boxes": scale_boxes,
+                   "header_boxes": [(f, tuple(float(v) for v in b)) for f, b in header_boxes],
+                   # where a GUI puts a header's − / + tabs: away from the image edge
+                   "header_tab_side": "left" if str(st.get("header_pos") or "tr").endswith("r") else "right",
                    "data_boxes": data_boxes,
                    "style": st, "n_rows": n_rows})
     return layout
+
+
+HEADER_PLACES = ("tl", "tc", "tr", "bl", "bc", "br")
+
+
+def _text_extent_in(fig, artist):
+    """Drawn box of a text in inches from the figure's top-left, or None
+    when the figure has no renderer to measure with."""
+    try:
+        canvas = fig.canvas
+        renderer = canvas.get_renderer() if hasattr(canvas, "get_renderer") else fig._get_renderer()
+        bb = artist.get_window_extent(renderer=renderer)
+    except Exception:
+        return None
+    dpi = float(fig.dpi)
+    _fw, fh = fig.get_size_inches()
+    return (bb.x0 / dpi, fh - bb.y1 / dpi, bb.x1 / dpi, fh - bb.y0 / dpi)
+
+
+def _draw_inside_header(fig, ax, lines, st, is_ref, text_color, *, letter_corner=None,
+                        scale_frac=None, gid="header"):
+    """A frame's header as a label on its image (``style["header_pos"]``:
+    corners or top / bottom centre). Steps clear of a panel letter in the
+    same corner and of a scale bar on the same edge; "auto" colour = white
+    or black from the pixels under it. Returns its inch box (hit-testing)."""
+    lines = [t for t in lines if t]
+    if not lines:
+        return None
+    text = chr(10).join(lines)
+    pos = st.get("header_pos") if st.get("header_pos") in HEADER_PLACES else "tr"
+    top, side = pos[0] == "t", pos[1]
+    size = header_text_size(st)
+    fw, fh = fig.get_size_inches()
+    bpos = ax.get_position()
+    box_w, box_h = max(bpos.width * fw, 1e-6), max(bpos.height * fh, 1e-6)
+    ax_x0, ax_y0 = bpos.x0 * fw, (1.0 - bpos.y1) * fh
+    inset = 0.04
+    fx = {"l": inset, "c": 0.5, "r": 1.0 - inset}[side]
+    ha = {"l": "left", "c": "center", "r": "right"}[side]
+    fy = 1.0 - inset if top else inset
+    if letter_corner == pos:
+        step = 1.3 * float(st.get("letter_size") or 9.0) / 72.0 / box_h
+        fy = fy - step if top else fy + step
+    if scale_frac is not None:
+        sx0, sy0, sx1, sy1 = scale_frac
+        if (0.5 * (sy0 + sy1) >= 0.5) == top:
+            tw = 0.58 * size / 72.0 * max(len(t) for t in lines) / box_w
+            hx0 = fx if side == "l" else (fx - tw if side == "r" else fx - 0.5 * tw)
+            if hx0 < sx1 and hx0 + tw > sx0:
+                fy = min(fy, sy0 - 0.035) if top else max(fy, sy1 + 0.035)
+    bold = st.get("header_bold") or (is_ref and st.get("ref_bold"))
+    color = _header_color(st, text_color, inside=True)
+    t = ax.text(fx, fy, text, transform=ax.transAxes, ha=ha, va="top" if top else "bottom",
+                multialignment=ha, fontsize=size, fontweight="bold" if bold else "normal",
+                color="white" if color == "auto" else color, linespacing=1.15, zorder=7,
+                gid=gid, **_header_font_kw(st))
+    ext = _text_extent_in(fig, t)
+    if ext is None:
+        # No renderer: estimate from the character count.
+        tw = 0.58 * size / 72.0 * max(len(s) for s in lines)
+        th = 1.3 * size / 72.0 * len(lines)
+        x = ax_x0 + fx * box_w
+        y = ax_y0 + (1.0 - fy) * box_h
+        x0 = x if side == "l" else (x - tw if side == "r" else x - 0.5 * tw)
+        y0 = y if top else y - th
+        ext = (x0, y0, x0 + tw, y0 + th)
+    if color == "auto":
+        # Judged on the pixels actually under the text (axes fractions, y up).
+        rx0 = min(1.0, max(0.0, (ext[0] - ax_x0) / box_w))
+        rx1 = min(1.0, max(0.0, (ext[2] - ax_x0) / box_w))
+        ry0 = min(1.0, max(0.0, 1.0 - (ext[3] - ax_y0) / box_h))
+        ry1 = min(1.0, max(0.0, 1.0 - (ext[1] - ax_y0) / box_h))
+        color = auto_color(ax, (rx0, rx1, ry0, ry1)) if (rx1 > rx0 and ry1 > ry0) else "white"
+        t.set_color(color)
+    t.set_path_effects(_effects(st.get("header_outline", True), color))
+    return ext
 
 
 def _draw_zoom_boxes(spec, st, axes_of, dims_of, frame_letter, font):

@@ -1262,7 +1262,22 @@ card row + the matching right-click menu. Notable ones:
   zoom outlines follow). `panel()`'s width/height are already the
   *displayed* (viewer-turned) size - never swap them again for `turns`.
 - Headers can be `none`; `channel_labels` hides the row names (bands
-  shrink); `ref_bold` (off by default).
+  shrink); `ref_bold` (off by default). `channel_label_dir` auto (old rule:
+  vertical when > 4 chars) / horizontal / vertical - `_left_band` and the
+  transposed top band size for it.
+- Headers have their own card (`headers`): `header_place` above (band) /
+  inside (`_draw_inside_header`: an `ax.text` in axes fractions at
+  `header_pos` tl/tc/tr/bl/bc/br, stepping clear of an inside letter in the
+  same corner and of the scale bar on the same edge; "auto" colour measured
+  on the drawn text's real extent via `_text_extent_in`), `header_scope`
+  frame (row 0) / panel, `header_param` (off = `header_value_only` strips
+  "V = " / "Δz = " from header and subheader parts, both placements; done
+  at render, the spec keeps the full text), `header_size` / `header_font`
+  (None = figure's), `header_color` + `header_rgb`, `header_bold`,
+  `header_outline`. Inside, the header band collapses (`_header_height`)
+  and the layout returns `header_boxes` + `header_tab_side`; the window
+  treats such a label as the frame header (click / drag / − + tabs, which
+  `_FigureView.header_tab_box` puts beside the text, away from the edge).
 
 **Molecular models** (Molecule card, right-click a model): one list of
 `Molecule.to_dict()` in figure state `molecules`, positioned in **panel

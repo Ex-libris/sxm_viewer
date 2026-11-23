@@ -2,6 +2,22 @@
 
 Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Figures: headers on the image**: Format > Headers (a new card) can put a
+  frame's header (Δz, V, size, name ...) on the image itself instead of the
+  band above it - top left / centre / right or bottom left / centre / right
+  (default top right), on the first channel of each frame or on every image.
+  Headers get their own font, size, bold, colour (automatic white / black
+  from the pixels under it, white, black or any colour) and outline, and the
+  parameter name can be left out (`+2 V` instead of `V = +2 V`, above the
+  image too). A label on the image steps clear of a panel letter in the same
+  corner and of the scale bar. Click a header for its options, Ctrl+wheel
+  for its size.
+- **Figures: vertical channel names**: Format > Text > Channel names >
+  Direction - automatic (as before), horizontal or vertical (turned 90°),
+  also above the columns when frames run down.
+
 ## 0.1.0 - 2026-11-06
 
 First public release, archived on Zenodo.
