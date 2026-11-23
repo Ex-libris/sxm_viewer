@@ -546,7 +546,13 @@ On the figure:
   keeps its style, colormaps, ranges and edits. In a series figure they join
   the series (ordered by its recipe).
 - Drag a frame header - move the frame (custom figures); right-click it for
-  `Move left` / `Move right`.
+  `Move left` / `Move right`. A custom figure sorted by Order by goes back
+  to its own order when a frame is moved by hand.
+- Format > Page & layout > `Order by` (or right-click empty space) - frames
+  by time, bias, tip height or file name; `Reverse` = descending.
+- Format > Page & layout > `Long series` / `Frames per line` - wrap a long
+  series with all channels on each line (default) or channel by channel,
+  after a chosen number of frames (Auto = up to 8, balanced).
 - Click a frame header - the Headers card (a Δz header: makes that frame the
   reference); `Ctrl+Wheel` over it - header size. Format > Headers > Place
   `On the image` draws the header as a label in a corner / top or bottom

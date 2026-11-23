@@ -14,6 +14,23 @@ Notable changes to SXM Viewer. Versions follow [Semantic Versioning](https://sem
   image too). A label on the image steps clear of a panel letter in the same
   corner and of the scale bar. Click a header for its options, Ctrl+wheel
   for its size.
+- **Figures: Order by**: Format > Page & layout (and the right-click menu
+  on empty space) sorts the frames of any figure by time (oldest first),
+  bias (negative to positive), tip height, or file name (natural order:
+  img_2 before img_10); `Reverse` makes it descending. `Automatic` keeps
+  the figure's own order (a series by its parameter, a custom figure the
+  user's). Moving a frame of a sorted custom figure by hand switches it
+  back to its own order, keeping what was on screen. Remembered per figure
+  type, like Reverse; named styles don't carry it.
+- **Figures: long series channel by channel**: Format > Page & layout >
+  `Long series` - `All channels per line` (as before: I 1-8, z 1-8, then
+  I 9-16, z 9-16) or `Channel by channel` (I 1-8, I 9-16, then z 1-8,
+  z 9-16), with one channel name and one shared colour bar per channel and
+  the headers over the first channel's lines (`Headers over every line` to
+  repeat them). `Frames per line` fixes where a series wraps (Auto keeps
+  the balanced split, up to 8, fewer on a narrow page; a number wraps
+  exactly there, 12 at 8 = 8 + 4). Also in the right-click menu on empty
+  space. Frames down mirrors it in columns; overview + zooms never wrap.
 - **Figures: vertical channel names**: Format > Text > Channel names >
   Direction - automatic (as before), horizontal or vertical (turned 90°),
   also above the columns when frames run down.

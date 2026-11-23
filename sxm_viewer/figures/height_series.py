@@ -59,7 +59,12 @@ _BACKWARD_RE = re.compile(r"(?i)(bwd|backward|\bbk\b|_bk|retrace|\(b\)|<-|←)")
 
 STYLE_DEFAULTS = {
     "transpose": False,        # False: frames = columns, channels = rows
-    "reverse": False,          # reverse the frame order (z / bias / time)
+    "wrap_by": "frames",       # long series on several lines: frames (each line repeats every
+                               # channel) | channels (all lines of one channel, then the next)
+    "frames_per_line": 0,      # 0 = automatic (<= 8, balanced, fewer on a narrow page)
+    "wrap_headers": False,     # wrap_by channels: headers over every line, not only the first channel's
+    "reverse": False,          # reverse the frame order (descending)
+    "order_by": "auto",        # frame order: auto (the recipe's; custom = the user's) | time | bias | z | name
     "range_mode": "row",       # "row": one range per channel | "image"
     "colorbars": True,
     "cbar_ticks": 2,           # 0 (none) | 2 (ends) | 3 | 5
@@ -122,7 +127,8 @@ STYLE_DEFAULTS = {
 # frames of different sizes: own ranges, a scale bar on every frame, no
 # colourbars). The user's last choice is remembered *per recipe* for these
 # and globally for everything else (letters, fonts, outlines, page ...).
-RECIPE_KEYS = ("range_mode", "colorbars", "scale_bar", "header", "transpose", "reverse")
+RECIPE_KEYS = ("range_mode", "colorbars", "scale_bar", "header", "transpose", "reverse",
+               "order_by")
 RECIPE_DEFAULTS = {
     "zoom": {"range_mode": "image", "colorbars": False, "scale_bar": "all"},
 }
@@ -505,6 +511,30 @@ def _time_sort(img):
     return t if isinstance(t, datetime) else datetime.max
 
 
+ORDER_KEYS = ("time", "bias", "z", "name")
+
+
+def _natural(text):
+    """``img_2`` before ``img_10`` (same idea as the thumbnail Name sort)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(text or ""))]
+
+
+def frame_sort_key(order):
+    """Sort key over members for ``order`` in ``ORDER_KEYS`` (ascending:
+    oldest first, most negative bias first, lowest z first, A-Z). Frames
+    without the value go last; ties fall back to time, then name."""
+    if order == "name":
+        return lambda m: (_natural(m.get("name") or m.get("key")), _time_sort(m))
+    if order == "time":
+        return lambda m: (_time_sort(m), _natural(m.get("name")))
+    field = {"bias": "bias_v", "z": "z_nm"}[order]
+
+    def key(m):
+        v = _finite(m.get(field))
+        return (v if v is not None else math.inf, _time_sort(m), _natural(m.get("name")))
+    return key
+
+
 # ---------------------------------------------------------------------------
 # Spec
 # ---------------------------------------------------------------------------
@@ -545,7 +575,8 @@ def resolve_header(header, mode, has_z, bias_varies):
 
 def build_spec(members, *, mode="height", reference_key=None, dropped=(),
                rows=None, row_choices=None, header="auto", header_name=False,
-               row_cmaps=None, reverse=False, show_repeats=False, root_key=None, keep=()):
+               row_cmaps=None, reverse=False, show_repeats=False, root_key=None, keep=(),
+               order_by="auto"):
     """Frames (``columns``) and channels (``rows``) for the figure.
 
     ``members``: dicts ``{key, name, time, z_nm, bias_v, setpoint,
@@ -558,6 +589,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
     bias when it varies, else by time) or ``"custom"`` (a user-built figure:
     the frames stay in the order given, nothing is collapsed - headers are
     chosen like a selection's). ``reverse`` flips the frame order.
+    ``order_by``: ``"auto"`` (the recipe's order above) or one of
+    ``ORDER_KEYS`` - time / bias / z / name, for any recipe (overview +
+    zooms: the zooms; the overview stays first).
     ``reference_key``: Δz zero (default: lowest z = closest approach).
     ``dropped``: frame keys removed by the user.
     ``rows``: channel labels to show, in order (None = defaults);
@@ -578,7 +612,7 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
         zooms = [m for m in cols_in if m is not root]
         if not show_repeats:
             zooms, hidden_repeats = _collapse_same_footprint(zooms)
-        zooms.sort(key=lambda m: (_time_sort(m), str(m.get("name"))))
+        zooms.sort(key=frame_sort_key(order_by if order_by in ORDER_KEYS else "time"))
         if reverse:
             zooms.reverse()
         cols_in = ([root] if root is not None else []) + zooms
@@ -604,6 +638,9 @@ def build_spec(members, *, mode="height", reference_key=None, dropped=(),
 
     if mode == "zoom":
         axis = "zoom"
+    elif order_by in ORDER_KEYS:
+        cols_in.sort(key=frame_sort_key(order_by))
+        axis = order_by
     elif mode == "custom":
         axis = "order"     # the user's own order (members arrive in it)
     elif mode == "bias" or (mode == "selection" and not has_z and has_bias and bias_varies):
@@ -976,14 +1013,27 @@ def page_width_in(st):
     return (mm / 25.4) if mm else None
 
 
-def column_blocks(n, max_per=MAX_FRAMES_PER_BLOCK):
+def column_blocks(n, max_per=MAX_FRAMES_PER_BLOCK, balanced=True):
     """Frame indices per block: <= max_per per block, blocks balanced
-    (16 -> 8+8, 13 -> 7+6) so the last block is never a lonely straggler."""
+    (16 -> 8+8, 13 -> 7+6) so the last block is never a lonely straggler.
+    ``balanced=False`` (a number the user chose): exactly ``max_per`` per
+    block, the rest on the last one (12 at 8 -> 8+4)."""
+    max_per = max(1, int(max_per))
     if n <= max_per:
         return [list(range(n))]
+    if not balanced:
+        return [list(range(i, min(n, i + max_per))) for i in range(0, n, max_per)]
     n_blocks = int(math.ceil(n / max_per))
     per = int(math.ceil(n / n_blocks))
     return [list(range(i, min(n, i + per))) for i in range(0, n, per)]
+
+
+def frames_per_line(st):
+    """The user's fixed frames per line (0 = automatic)."""
+    try:
+        return max(0, int(round(float(st.get("frames_per_line") or 0))))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _aspect_of(p):
@@ -1074,15 +1124,18 @@ def figure_layout(spec, panels, style=None):
     target = page_width_in(st)
     if target:
         # Too many frames for the page at a legible panel size: wrap them
-        # into more rows (fewer frames per row) until the panels fit.
+        # into more rows (fewer frames per row) until the panels fit - unless
+        # the user fixed the frames per line.
         n_f = max(1, len(spec["columns"]))
-        for max_per in range(min(MAX_FRAMES_PER_BLOCK, n_f), 0, -1):
+        fixed = frames_per_line(st)
+        tries = [min(fixed, n_f)] if fixed else range(min(MAX_FRAMES_PER_BLOCK, n_f), 0, -1)
+        for max_per in tries:
             trial = dict(st, _max_per=max_per)
             a = _layout(spec, panels, dict(trial, panel_w=1.0))["size"][0]
             b = _layout(spec, panels, dict(trial, panel_w=2.0))["size"][0]
             slope = b - a
             pw = (target - (a - slope)) / slope if slope > 1e-6 else st["panel_w"]
-            if pw >= _MIN_PANEL_IN or max_per == 1 or spec.get("mode") == "zoom":
+            if pw >= _MIN_PANEL_IN or max_per == 1 or fixed or spec.get("mode") == "zoom":
                 st = dict(trial, panel_w=max(0.25, pw))
                 break
     lay = _layout(spec, panels, st)
@@ -1158,10 +1211,15 @@ def _layout_grid(spec, panels, st):
     one_bar = st.get("cbar_scope") == "row"
     per_img_cb = st["colorbars"] and st["range_mode"] == "image" and not one_bar
     shared_cb = st["colorbars"] and (st["range_mode"] == "row" or one_bar)
-    blocks = column_blocks(n_f, int(st.get("_max_per") or MAX_FRAMES_PER_BLOCK))
+    fixed = frames_per_line(st)
+    blocks = column_blocks(n_f, int(st.get("_max_per") or fixed or MAX_FRAMES_PER_BLOCK),
+                           balanced=not fixed)
     per = max(len(b) for b in blocks)
     cells, frame_labels, channel_labels, cbars = {}, [], [], []
+    by_channel = st.get("wrap_by") == "channels" and len(blocks) > 1
 
+    if by_channel:
+        return _layout_grid_by_channel(spec, panels, st, blocks, pw, ph, per_img_cb, shared_cb)
     if not st["transpose"]:
         bar, extra = cbar_dims(st, "v")
         slot = pw + ((0.05 + bar + extra) if per_img_cb else 0.0)
@@ -1229,6 +1287,112 @@ def _layout_grid(spec, panels, st):
     return {"size": (fig_w, fig_h), "cells": cells, "frame_labels": frame_labels,
             "channel_labels": channel_labels, "colorbars": cbars,
             "transpose": bool(st["transpose"]), "blocks": blocks, "panel": (pw, ph)}
+
+
+def _layout_grid_by_channel(spec, panels, st, blocks, pw, ph, per_img_cb, shared_cb):
+    """Wrapped frames grouped by channel: every line of channel 1 (frames
+    1-8, 9-16 ...), then every line of channel 2, and so on. Headers sit
+    over the first channel's lines (``wrap_headers``: over every line); one
+    channel name and one shared colour bar span each channel's group.
+    Frames down (``transpose``) mirrors it: groups of columns."""
+    font = float(st["font"])
+    n_ch = max(1, len(spec["rows"]))
+    per = max(len(b) for b in blocks)
+    cells, frame_labels, channel_labels, cbars = {}, [], [], []
+    every = bool(st.get("wrap_headers"))
+    letter_h = _outside_letter_h(st)
+
+    if not st["transpose"]:
+        bar, extra = cbar_dims(st, "v")
+        slot = pw + ((0.05 + bar + extra) if per_img_cb else 0.0)
+        top = _header_height(spec, st)
+        left = _left_band(spec, st)
+        right = (0.06 + bar + extra + 0.06) if shared_cb else 0.12
+        rgap = _GAP + (letter_h if st.get("letter_scope") == "panel" else 0.0)
+        y = 0.0
+        x_end = left + per * slot + (per - 1) * _GAP
+        for r in range(n_ch):
+            if r:
+                y += _BLOCK_GAP
+            g_top = None
+            for b, frames in enumerate(blocks):
+                band = r == 0 or every
+                if band:
+                    if b:
+                        y += _GAP
+                    for j, f in enumerate(frames):
+                        x0 = left + j * (slot + _GAP)
+                        frame_labels.append((f, (x0, y, x0 + pw, y + top)))
+                    y += top
+                elif b:
+                    y += rgap
+                elif letter_h and st.get("letter_scope") == "panel":
+                    y += letter_h
+                if g_top is None:
+                    g_top = y
+                for j, f in enumerate(frames):
+                    x0 = left + j * (slot + _GAP)
+                    cells[(r, f)] = (x0, y, x0 + pw, y + ph)
+                    if per_img_cb:
+                        cbars.append({"row": r, "frame": f, "orient": "v",
+                                      "box": (x0 + pw + 0.05, y, x0 + pw + 0.05 + max(bar, 0.01), y + ph)})
+                y += ph
+            channel_labels.append((r, (0.0, g_top, left, y)))
+            if shared_cb:
+                cbars.append({"row": r, "frame": None, "orient": "v",
+                              "box": (x_end + 0.06, g_top, x_end + 0.06 + max(bar, 0.01), y)})
+        fig_w = x_end + right
+        fig_h = y + _BOTTOM
+    else:
+        bar_v, extra_v = cbar_dims(st, "v")
+        bar_h, extra_h = cbar_dims(st, "h")
+        slot = pw + ((0.05 + bar_v + extra_v) if per_img_cb else 0.0)
+        top = (0.10 + font / 72.0 * 1.45) if st.get("channel_labels", True) else 0.04
+        if st.get("channel_labels", True) and st.get("channel_label_dir") == "vertical":
+            longest_c = max((len(r.get("display") or "") for r in spec["rows"]), default=1)
+            top = max(top, 0.12 + 0.6 * (font + 1.0) / 72.0 * longest_c)
+        longest_h = 0 if headers_inside(st) else max(
+            (max(len(t) for t in header_lines(c, st)) for c in spec["columns"]), default=0)
+        left = (0.20 + max(0.75, header_text_size(st) / 72.0 * 0.62 * longest_h)) if longest_h else 0.06
+        bottom = (0.06 + bar_h + extra_h + 0.04) if shared_cb else _BOTTOM
+        rgap = _GAP + letter_h
+        top = max(top, letter_h)
+        y_end = top + per * ph + (per - 1) * rgap
+        x = 0.0
+        for r in range(n_ch):
+            if r:
+                x += _BLOCK_GAP
+            g_left = None
+            for b, frames in enumerate(blocks):
+                band = r == 0 or every
+                if band:
+                    if b:
+                        x += _GAP
+                    for j, f in enumerate(frames):
+                        y0 = top + j * (ph + rgap)
+                        frame_labels.append((f, (x, y0, x + left - 0.06, y0 + ph)))
+                    x += left
+                elif b:
+                    x += _GAP
+                if g_left is None:
+                    g_left = x
+                for j, f in enumerate(frames):
+                    y0 = top + j * (ph + rgap)
+                    cells[(r, f)] = (x, y0, x + pw, y0 + ph)
+                    if per_img_cb:
+                        cbars.append({"row": r, "frame": f, "orient": "v",
+                                      "box": (x + pw + 0.05, y0, x + pw + 0.05 + max(bar_v, 0.01), y0 + ph)})
+                x += slot
+            channel_labels.append((r, (g_left, 0.0, x - (slot - pw), top)))
+            if shared_cb:
+                cbars.append({"row": r, "frame": None, "orient": "h",
+                              "box": (g_left, y_end + 0.06, x - (slot - pw), y_end + 0.06 + max(bar_h, 0.01))})
+        fig_w = x + 0.12
+        fig_h = y_end + bottom
+    return {"size": (fig_w, fig_h), "cells": cells, "frame_labels": frame_labels,
+            "channel_labels": channel_labels, "colorbars": cbars,
+            "transpose": bool(st["transpose"]), "blocks": blocks, "panel": (pw, ph),
+            "wrap_by": "channels"}
 
 
 def zoom_grid_shape(n_zooms):
@@ -1866,7 +2030,7 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
 
     # Frame headers and channel labels as figure text.
     fig_w, fig_h = size
-    seen_headers = set()
+    seen_headers = []
     h_size = header_text_size(st)
     h_color = _header_color(st, text_color, inside=False)
     h_kw = _header_font_kw(st)
@@ -1879,27 +2043,29 @@ def _render(fig, spec, panels, *, style=None, clims=None, get_cmap=None,
         weight = "bold" if bold else "normal"
         if not head and not sub:
             continue
+        # A frame's header repeated over several lines keeps unique ids (SVG).
+        dup = f"_{sum(1 for g in seen_headers if g == f)}" if f in seen_headers else ""
         if not layout["transpose"]:
             xc = 0.5 * (x0 + x1) / fig_w
             line = max(font, h_size) / 72.0 * 1.45
             n_lines = 2 if sub else 1
             base = y1 - 0.05 - (line if n_lines == 2 else 0.0)
             fig.text(xc, 1.0 - base / fig_h, head, ha="center", va="bottom",
-                     fontsize=h_size, color=h_color, fontweight=weight, gid=f"header_{f}", **h_kw)
+                     fontsize=h_size, color=h_color, fontweight=weight, gid=f"header_{f}{dup}", **h_kw)
             if sub:
                 fig.text(xc, 1.0 - (y1 - 0.05) / fig_h, sub, ha="center", va="bottom",
-                         fontsize=pt(h_size - 1), color=h_color, gid=f"header_{f}_sub", **h_kw)
+                         fontsize=pt(h_size - 1), color=h_color, gid=f"header_{f}{dup}_sub", **h_kw)
         else:
             yc = 0.5 * (y0 + y1)
             dy = 0.5 * h_size / 72.0 * 1.4 if sub else 0.0
             fig.text(x1 / fig_w, 1.0 - (yc - dy) / fig_h, head, ha="right",
                      va="center", fontsize=h_size, color=h_color, fontweight=weight,
-                     gid=f"header_{f}", **h_kw)
+                     gid=f"header_{f}{dup}", **h_kw)
             if sub:
                 fig.text(x1 / fig_w, 1.0 - (yc + dy) / fig_h, sub, ha="right",
                          va="center", fontsize=pt(h_size - 1), color=h_color,
-                         gid=f"header_{f}_sub", **h_kw)
-        seen_headers.add(f)
+                         gid=f"header_{f}{dup}_sub", **h_kw)
+        seen_headers = seen_headers + [f]
     for r, (x0, y0, x1, y1) in layout["channel_labels"]:
         if (n_rows < 2 and is_zoom) or not st.get("channel_labels", True):
             continue  # hidden (or one zoom band: the colourbar says what it is)

@@ -84,6 +84,17 @@ _CBAR_LABEL_POS = {"inside": "Centred inside the bar", "outside": "Outside the b
 _CBAR_LABEL_TEXT = {"both": "Channel + unit", "unit": "Unit only"}
 _ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)",
                 "ccw": "Turn to landscape (counter-clockwise)"}
+_ORDER_NAMES = {"auto": "Automatic", "time": "Time (oldest first)", "bias": "Bias (− to +)",
+                "z": "Tip height (lowest first)", "name": "File name (A-Z)"}
+_ORDER_AUTO = {"custom": "Your order (drag headers)", "height": "Automatic (tip height)",
+               "bias": "Automatic (bias)", "zoom": "Automatic (time)",
+               "selection": "Automatic (z, else bias, else time)"}
+_ORDER_SHORT = {"time": "time", "bias": "bias", "z": "height", "name": "name"}
+_WRAP_NAMES = {"frames": "All channels on each line", "channels": "Channel by channel"}
+_WRAP_TIPS = {"frames": "Long series: each line of frames shows every channel "
+                        "(I 1-8, z 1-8, then I 9-16, z 9-16)",
+              "channels": "Long series: all lines of the first channel, then all lines of the next "
+                          "(I 1-8, I 9-16, then z 1-8, z 9-16)"}
 _HEADER_PLACE = {"above": "Above the image", "inside": "On the image"}
 _HEADER_POS = {"tl": "↖", "tc": "↑", "tr": "↗", "bl": "↙", "bc": "↓", "br": "↘"}
 _HEADER_POS_NAMES = {"tl": "Top left", "tc": "Top centre", "tr": "Top right",
@@ -1194,13 +1205,30 @@ class _FormatPanel(QtWidgets.QWidget):
             {False: "Frames left to right, one channel per row",
              True: "Frames top to bottom, one channel per column"})
         add("Frames", w["transpose"])
+        seg("wrap_by", {"frames": "All channels per line", "channels": "Channel by channel"}, _WRAP_TIPS)
+        add("Long series", w["wrap_by"])
+        spin("frames_per_line", 0.0, 40.0, 1.0, "").setDecimals(0)
+        w["frames_per_line"].setSpecialValueText("Auto")
+        w["frames_per_line"].setToolTip(
+            "Frames on one line before wrapping. Auto: up to 8, split evenly "
+            "(and fewer when a page width would make the panels too small)")
+        add("Frames per line", hrow(w["frames_per_line"], check(
+            "wrap_headers", "Headers over every line",
+            "Channel by channel: repeat the frame headers over every line, "
+            "not only over the first channel's")))
         combo("rotate_tall", _ROTATE_TALL).setToolTip(
             "Tall (portrait) images turned a quarter turn for this figure; "
             "scale bars and zoom outlines follow")
         add("Tall images", w["rotate_tall"])
-        add(None, hrow(check("reverse", "Reverse order", "Reverse the frame order"),
-                       check("_actual", "Actual size (100 %)",
-                             "Draw the figure at its printed size on this screen")))
+        combo("order_by", _ORDER_NAMES).setToolTip(
+            "Order of the frames. Automatic = the figure's own (a series by its parameter, a "
+            "custom figure your order); dragging a header of a custom figure returns it to "
+            "your order")
+        add("Order by", hrow(w["order_by"], check(
+            "reverse", "Reverse", "Descending: newest first, positive to negative bias, "
+                                  "highest first, Z-A (or your order backwards)")))
+        add(None, check("_actual", "Actual size (100 %)",
+                        "Draw the figure at its printed size on this screen"))
         self._card_keys["page"].remove("_actual")
         add(None, check("equal_scale", "Same scale for every image (nm per mm)",
                         "Smaller scans are drawn smaller, so features compare directly "
@@ -1407,12 +1435,18 @@ class _FormatPanel(QtWidgets.QWidget):
 
     def set_mode(self, mode):
         self._mode = mode
+        if "order_by" in self.w:
+            self.w["order_by"].setItemText(0, _ORDER_AUTO.get(mode, "Automatic"))
         chip = self._chips.get("zoom")
         if chip is not None:
             chip.setVisible(mode == "zoom")
         if "equal_scale" in self.w:
             # An overview and its zooms differ in size on purpose.
             self.w["equal_scale"].setVisible(mode != "zoom")
+        for key in ("wrap_by", "frames_per_line", "wrap_headers"):
+            # Overview + zooms never wrap.
+            if key in self.w:
+                self.w[key].setEnabled(mode != "zoom")
 
     def set_defaults(self, style):
         """The style the ↺ buttons go back to (and the chips' change dot
@@ -1503,6 +1537,17 @@ class _FormatPanel(QtWidgets.QWidget):
             else:
                 txt = hs.PAGE_NAMES.get(page, page).replace(" column", " col.")
             same = " · same scale" if st.get("equal_scale") and self._mode != "zoom" else ""
+            if self._mode != "zoom":
+                n_per = hs.frames_per_line(st)
+                if n_per:
+                    same += f" · {n_per} per line"
+                if st.get("wrap_by") == "channels":
+                    same += " · by channel"
+            order = _ORDER_SHORT.get(st.get("order_by"))
+            if order:
+                same += f" · by {order}{' ↓' if st.get('reverse') else ''}"
+            elif st.get("reverse"):
+                same += " · reversed"
             return f"{txt} · {'frames down' if st.get('transpose') else 'frames across'}{same}", False
         if kind == "channels":
             rows = (spec or {}).get("rows") or []
@@ -1687,6 +1732,10 @@ class _FormatPanel(QtWidgets.QWidget):
             w["channel_label_dir"].setEnabled(bool(style.get("channel_labels", True)))
             w["page_mm"].setEnabled(style.get("page") == "custom")
             w["panel_w"].setEnabled((style.get("page") or "free") == "free")
+            wraps = self._mode != "zoom"
+            w["wrap_by"].setEnabled(wraps)
+            w["frames_per_line"].setEnabled(wraps)
+            w["wrap_headers"].setEnabled(wraps and style.get("wrap_by") == "channels")
             mol_on = bool(n_molecules) and bool(style.get("molecules_on", True))
             for key in ("mol_scope", "mol_size", "mol_palette"):
                 w[key].setEnabled(mol_on)
@@ -2037,7 +2086,7 @@ class FigureWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Keys that describe *this* figure's data rather than its look: never
     # carried by a named style or "copy format".
-    _NOT_FORMAT = ("header", "reverse", "scale_len_nm")
+    _NOT_FORMAT = ("header", "reverse", "order_by", "scale_len_nm")
 
     def _format_of(self, style):
         return {k: v for k, v in dict(style or {}).items()
@@ -2368,6 +2417,15 @@ class FigureWindow(QtWidgets.QWidget):
         at -= sum(1 for k in moving if order.index(k) < at)
         order = [k for k in order if k not in moving]
         inserted = [k for k in keys if k in new or k in restored or k in moving]
+        sorted_by = self._sorted_by()
+        if sorted_by and moving:
+            # Placing a frame by hand: the figure goes back to its own
+            # order, starting from what is on screen now.
+            order[at:at] = inserted
+            self._apply_edit({"keys": order, "dropped": dropped},
+                             style={"order_by": "auto", "reverse": False}, reload_data=bool(new))
+            self._flash(f"Moved - frames now in your own order (was by {_ORDER_SHORT[sorted_by]})")
+            return
         order[at:at] = inserted
         if self.style.get("reverse"):
             order.reverse()
@@ -2375,6 +2433,11 @@ class FigureWindow(QtWidgets.QWidget):
         self._apply_edit({"keys": order + rest, "dropped": dropped}, reload_data=bool(new))
         n = len(new) + len(restored)
         self._flash(f"Added {n} image{'s' if n != 1 else ''}" if n else "Moved")
+
+    def _sorted_by(self):
+        """The order key a custom figure is sorted by (None = its own order)."""
+        o = self.style.get("order_by")
+        return o if o in hs.ORDER_KEYS else None
 
     def as_custom_figure(self):
         keys = [c["key"] for c in (self.spec or {}).get("columns", [])]
@@ -2387,7 +2450,7 @@ class FigureWindow(QtWidgets.QWidget):
         # The columns are already in display order - don't reverse them twice.
         new = win._snapshot()
         new.update(carried)
-        new["style"] = hs.resolve_style(dict(self.state["style"], reverse=False))
+        new["style"] = hs.resolve_style(dict(self.state["style"], reverse=False, order_by="auto"))
         win.state = new
         win._commit(reload_data=True)
 
@@ -2501,6 +2564,7 @@ class FigureWindow(QtWidgets.QWidget):
             root_key=self.root_key,
             row_choices=self.state["row_choices"],
             header=st["header"], header_name=st["header_name"], reverse=st["reverse"],
+            order_by=st.get("order_by") or "auto",
             show_repeats=self.state["show_repeats"],
             row_cmaps=self.state["row_cmaps"],
             keep=self.state["forced"])
@@ -3329,6 +3393,14 @@ class FigureWindow(QtWidgets.QWidget):
         to_index = max(0, min(len(cols), int(to_index)))
         key = cols.pop(f)
         cols.insert(to_index - 1 if to_index > f else to_index, key)
+        sorted_by = self._sorted_by()
+        if sorted_by:
+            # Moving a frame by hand ends the sort: the screen order becomes
+            # the figure's own (not reversed), with this move applied.
+            rest = [k for k in self.state["keys"] if k not in cols]
+            self._apply_edit({"keys": cols + rest}, style={"order_by": "auto", "reverse": False})
+            self._flash(f"Frames now in your own order (was by {_ORDER_SHORT[sorted_by]})")
+            return
         if self.style.get("reverse"):
             cols.reverse()
         rest = [k for k in self.state["keys"] if k not in cols]
@@ -4042,7 +4114,22 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Layout", "transpose", {False: "Frames across, channels down",
                                                     True: "Frames down, channels across"})
         menu.addSeparator()
-        self._toggle(menu, "Reverse the frame order", "reverse")
+        if self.mode != "zoom":
+            self._choice(menu, "Long series wrap", "wrap_by", _WRAP_NAMES)
+            group = QtWidgets.QActionGroup(menu)
+            sub = menu.addMenu("Frames per line")
+            cur = hs.frames_per_line(self.style)
+            for n in (0, 3, 4, 5, 6, 8, 10, 12):
+                act = sub.addAction("Auto" if n == 0 else str(n))
+                act.setCheckable(True)
+                act.setChecked(cur == n)
+                group.addAction(act)
+                act.triggered.connect(lambda _=False, v=n: self._apply_edit(style={"frames_per_line": v}))
+            if self.style.get("wrap_by") == "channels":
+                self._toggle(menu, "Headers over every line", "wrap_headers")
+        self._choice(menu, "Order frames by", "order_by",
+                     dict(_ORDER_NAMES, auto=_ORDER_AUTO.get(self.mode, "Automatic")))
+        self._toggle(menu, "Reverse (descending)", "reverse")
         self._choice(menu, "Tall images", "rotate_tall", _ROTATE_TALL)
         section(menu, "Page")
         group = QtWidgets.QActionGroup(menu)
