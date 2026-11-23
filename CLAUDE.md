@@ -1262,7 +1262,41 @@ card row + the matching right-click menu. Notable ones:
   zoom outlines follow). `panel()`'s width/height are already the
   *displayed* (viewer-turned) size - never swap them again for `turns`.
 - Headers can be `none`; `channel_labels` hides the row names (bands
-  shrink); `ref_bold` (off by default).
+  shrink); `ref_bold` (off by default). `channel_label_dir` auto (old rule:
+  vertical when > 4 chars) / horizontal / vertical - `_left_band` and the
+  transposed top band size for it.
+- Wrapping (Page card, layout menu; not zoom figures): `column_blocks`
+  splits the frames into lines - Auto = <= `MAX_FRAMES_PER_BLOCK` balanced
+  (and fewer on a page, `figure_layout`'s trial loop), `frames_per_line`
+  N = exactly N per line, unbalanced, and the page loop keeps it.
+  `wrap_by` frames = `_layout_grid`'s block-major layout (every line
+  repeats every channel); channels = `_layout_grid_by_channel` (all lines
+  of a channel, then the next; one `channel_labels` box and one shared
+  colour bar spanning each group; header bands over group 0's lines only
+  unless `wrap_headers`, so `frame_labels` can hold a frame twice - the
+  renderer suffixes repeated header gids for unique SVG ids). With a
+  single line both give identical layouts.
+- `order_by` (Page card, layout menu): `auto` = the recipe's order (custom
+  = `state["keys"]`), or `hs.ORDER_KEYS` time / bias / z / name via
+  `frame_sort_key` in `build_spec` (zoom: the zooms only, overview stays
+  first; missing values last, ties by time). `reverse` = descending. A
+  RECIPE_KEY (remembered per recipe like `reverse`) and in `_NOT_FORMAT`.
+  `_move_frame` / a moving `add_frames` on a sorted custom figure store the
+  on-screen order as `keys` and reset `order_by` auto + `reverse` off in
+  the same undo step (otherwise the sort would undo the drag).
+- Headers have their own card (`headers`): `header_place` above (band) /
+  inside (`_draw_inside_header`: an `ax.text` in axes fractions at
+  `header_pos` tl/tc/tr/bl/bc/br, stepping clear of an inside letter in the
+  same corner and of the scale bar on the same edge; "auto" colour measured
+  on the drawn text's real extent via `_text_extent_in`), `header_scope`
+  frame (row 0) / panel, `header_param` (off = `header_value_only` strips
+  "V = " / "Δz = " from header and subheader parts, both placements; done
+  at render, the spec keeps the full text), `header_size` / `header_font`
+  (None = figure's), `header_color` + `header_rgb`, `header_bold`,
+  `header_outline`. Inside, the header band collapses (`_header_height`)
+  and the layout returns `header_boxes` + `header_tab_side`; the window
+  treats such a label as the frame header (click / drag / − + tabs, which
+  `_FigureView.header_tab_box` puts beside the text, away from the edge).
 
 **Molecular models** (Molecule card, right-click a model): one list of
 `Molecule.to_dict()` in figure state `molecules`, positioned in **panel

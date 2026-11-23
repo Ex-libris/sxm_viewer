@@ -84,6 +84,23 @@ _CBAR_LABEL_POS = {"inside": "Centred inside the bar", "outside": "Outside the b
 _CBAR_LABEL_TEXT = {"both": "Channel + unit", "unit": "Unit only"}
 _ROTATE_TALL = {"off": "Keep as acquired", "cw": "Turn to landscape (clockwise)",
                 "ccw": "Turn to landscape (counter-clockwise)"}
+_ORDER_NAMES = {"auto": "Automatic", "time": "Time (oldest first)", "bias": "Bias (− to +)",
+                "z": "Tip height (lowest first)", "name": "File name (A-Z)"}
+_ORDER_AUTO = {"custom": "Your order (drag headers)", "height": "Automatic (tip height)",
+               "bias": "Automatic (bias)", "zoom": "Automatic (time)",
+               "selection": "Automatic (z, else bias, else time)"}
+_ORDER_SHORT = {"time": "time", "bias": "bias", "z": "height", "name": "name"}
+_WRAP_NAMES = {"frames": "All channels on each line", "channels": "Channel by channel"}
+_WRAP_TIPS = {"frames": "Long series: each line of frames shows every channel "
+                        "(I 1-8, z 1-8, then I 9-16, z 9-16)",
+              "channels": "Long series: all lines of the first channel, then all lines of the next "
+                          "(I 1-8, I 9-16, then z 1-8, z 9-16)"}
+_HEADER_PLACE = {"above": "Above the image", "inside": "On the image"}
+_HEADER_POS = {"tl": "↖", "tc": "↑", "tr": "↗", "bl": "↙", "bc": "↓", "br": "↘"}
+_HEADER_POS_NAMES = {"tl": "Top left", "tc": "Top centre", "tr": "Top right",
+                     "bl": "Bottom left", "bc": "Bottom centre", "br": "Bottom right"}
+_HEADER_COLORS = {"auto": "Auto", "black": "Black", "white": "White", "custom": "Other"}
+_CHANNEL_DIRS = {"auto": "Automatic", "horizontal": "Horizontal", "vertical": "Vertical (90°)"}
 
 
 class _MoleculePainter:
@@ -229,12 +246,34 @@ class _FigureView(QtWidgets.QWidget):
         return QtCore.QRectF(rect.left() + x0 * sx, rect.top() + y0 * sy,
                              (x1 - x0) * sx, (y1 - y0) * sy)
 
-    def tab_rects(self, box):
+    def header_tab_box(self, box, side):
+        """A header drawn on an image, widened on ``side`` ("left" /
+        "right") by room for its − / + tabs, so the tabs sit beside the
+        text instead of over it and stay reachable while hovered."""
+        rect = self._image_rect()
+        if rect.isEmpty() or not box:
+            return box
+        room = (2 * _TAB + 10) / max(rect.width() / self._fig_in[0], 1e-6)
+        x0, y0, x1, y1 = box
+        return (x0 - room, y0, x1, y1) if side == "left" else (x0, y0, x1 + room, y1)
+
+    def tab_rects(self, box, side=None):
         """(minus, plus) screen rects of the tabs on a header / label box:
         side by side at its top-right corner, or stacked at the top when the
-        box is too narrow (rotated channel names left of the rows)."""
+        box is too narrow (rotated channel names left of the rows). With
+        ``side`` (a header on an image, box from ``header_tab_box``) they
+        sit vertically centred at that end of the box."""
         r = self.inches_rect(box)
         s = float(_TAB)
+        if side in ("left", "right"):
+            cy = r.center().y() - s / 2
+            if side == "left":
+                plus = QtCore.QRectF(r.left() + 2, cy, s, s)
+                minus = QtCore.QRectF(plus.right() + 3, cy, s, s)
+            else:
+                minus = QtCore.QRectF(r.right() - s - 2, cy, s, s)
+                plus = QtCore.QRectF(minus.left() - s - 3, cy, s, s)
+            return minus, plus
         if r.width() >= 2 * s + 10:
             minus = QtCore.QRectF(r.right() - s - 2, r.top() + 2, s, s)
             plus = QtCore.QRectF(minus.left() - s - 3, minus.top(), s, s)
@@ -243,8 +282,8 @@ class _FigureView(QtWidgets.QWidget):
             plus = QtCore.QRectF(minus.left(), minus.bottom() + 3, s, s)
         return minus, plus
 
-    def _paint_tabs(self, p, box, *, minus=True, plus=True, hot=None, dim=False):
-        m_rect, p_rect = self.tab_rects(box)
+    def _paint_tabs(self, p, box, *, minus=True, plus=True, hot=None, dim=False, side=None):
+        m_rect, p_rect = self.tab_rects(box, side)
         for which, rect, rgb, on in (("minus", m_rect, (205, 50, 50), minus),
                                      ("plus", p_rect, (30, 150, 70), plus)):
             if not on:
@@ -390,14 +429,20 @@ class _FigureView(QtWidgets.QWidget):
         hot = {"close": "minus", "remove_row": "minus", "add_frame": "plus", "add_row": "plus"}.get(kind)
         if kind in ("frame", "close", "add_frame"):
             self._paint_tabs(p, hit["box"], minus=hit.get("can_close", False),
-                             plus=hit.get("can_add", True), hot=hot)
+                             plus=hit.get("can_add", True), hot=hot, side=hit.get("tab_side"))
         elif kind in ("channel", "remove_row") or (kind == "add_row" and hit.get("row") is not None):
             self._paint_tabs(p, hit["box"], minus=hit.get("can_close", False),
                              plus=hit.get("can_add", False), hot=hot)
         elif kind == "panel":
-            fbox = self._box_of("frame_labels", hit.get("frame"))
+            fbox = self._box_of("header_boxes", hit.get("frame"))
+            side = None
             if fbox is not None:
-                self._paint_tabs(p, fbox, minus=hit.get("frame_can_close", False), dim=True)
+                side = self._layout.get("header_tab_side")
+                fbox = self.header_tab_box(fbox, side)
+            else:
+                fbox = self._box_of("frame_labels", hit.get("frame"))
+            if fbox is not None:
+                self._paint_tabs(p, fbox, minus=hit.get("frame_can_close", False), dim=True, side=side)
             rbox = self._box_of("channel_labels", hit.get("row"))
             if rbox is not None:
                 self._paint_tabs(p, rbox, minus=hit.get("row_can_close", False),
@@ -506,7 +551,7 @@ class _FigureView(QtWidgets.QWidget):
         hit = self.hit_test(*inch)
         kind = (hit or {}).get("kind")
         if kind in ("frame", "channel"):
-            minus, plus = self.tab_rects(hit["box"])
+            minus, plus = self.tab_rects(hit["box"], hit.get("tab_side"))
             at = QtCore.QPointF(pos)
             if hit.get("can_close") and minus.contains(at):
                 hit = dict(hit, kind="close" if kind == "frame" else "remove_row")
@@ -772,6 +817,12 @@ def _tab_icon(kind, color):
         p.setFont(f)
         p.drawText(QtCore.QRectF(0, 0, size, 17), QtCore.Qt.AlignCenter, "T")
         p.drawLine(QtCore.QPointF(4, 19), QtCore.QPointF(18, 19))
+    elif kind == "headers":
+        p.drawRect(QtCore.QRectF(3, 7, 16, 12))
+        p.setPen(QtGui.QPen(color, 2.0))
+        p.drawLine(QtCore.QPointF(6, 3.5), QtCore.QPointF(16, 3.5))
+        p.setPen(QtGui.QPen(color, 1.6))
+        p.drawLine(QtCore.QPointF(11, 10.5), QtCore.QPointF(16.5, 10.5))
     elif kind == "colour":
         grad = QtGui.QLinearGradient(0, 19, 0, 3)
         for t, c in ((0.0, "#30123b"), (0.35, "#28bceb"), (0.65, "#a4fc3b"), (1.0, "#fb8022")):
@@ -918,7 +969,8 @@ class _CardPopover(QtWidgets.QFrame):
 _FORMAT_CARDS = (
     ("page", "Page & layout", "Journal width, arrangement of frames and channels"),
     ("channels", "Channels", "Tick to show, drag to reorder"),
-    ("titles", "Text", "Font, size, frame headers, channel names"),
+    ("titles", "Text", "Font, size, channel names"),
+    ("headers", "Headers", "What each frame is labelled with (Δz, V, size …) and where"),
     ("colour", "Colour", "Ranges and colour bars"),
     ("letters", "Panel letters", "a, b, c … on the images"),
     ("scale", "Scale bar", "Where, length and label"),
@@ -1153,13 +1205,30 @@ class _FormatPanel(QtWidgets.QWidget):
             {False: "Frames left to right, one channel per row",
              True: "Frames top to bottom, one channel per column"})
         add("Frames", w["transpose"])
+        seg("wrap_by", {"frames": "All channels per line", "channels": "Channel by channel"}, _WRAP_TIPS)
+        add("Long series", w["wrap_by"])
+        spin("frames_per_line", 0.0, 40.0, 1.0, "").setDecimals(0)
+        w["frames_per_line"].setSpecialValueText("Auto")
+        w["frames_per_line"].setToolTip(
+            "Frames on one line before wrapping. Auto: up to 8, split evenly "
+            "(and fewer when a page width would make the panels too small)")
+        add("Frames per line", hrow(w["frames_per_line"], check(
+            "wrap_headers", "Headers over every line",
+            "Channel by channel: repeat the frame headers over every line, "
+            "not only over the first channel's")))
         combo("rotate_tall", _ROTATE_TALL).setToolTip(
             "Tall (portrait) images turned a quarter turn for this figure; "
             "scale bars and zoom outlines follow")
         add("Tall images", w["rotate_tall"])
-        add(None, hrow(check("reverse", "Reverse order", "Reverse the frame order"),
-                       check("_actual", "Actual size (100 %)",
-                             "Draw the figure at its printed size on this screen")))
+        combo("order_by", _ORDER_NAMES).setToolTip(
+            "Order of the frames. Automatic = the figure's own (a series by its parameter, a "
+            "custom figure your order); dragging a header of a custom figure returns it to "
+            "your order")
+        add("Order by", hrow(w["order_by"], check(
+            "reverse", "Reverse", "Descending: newest first, positive to negative bias, "
+                                  "highest first, Z-A (or your order backwards)")))
+        add(None, check("_actual", "Actual size (100 %)",
+                        "Draw the figure at its printed size on this screen"))
         self._card_keys["page"].remove("_actual")
         add(None, check("equal_scale", "Same scale for every image (nm per mm)",
                         "Smaller scans are drawn smaller, so features compare directly "
@@ -1183,14 +1252,51 @@ class _FormatPanel(QtWidgets.QWidget):
         add("Font", ff)
         spin("font", 5.0, 14.0, 0.5, " pt").setToolTip("Text size (Ctrl+wheel on the figure)")
         add("Size", w["font"])
-        add.section("Frame headers")
-        combo("header", _HEADER_NAMES)
-        add("Header", w["header"])
-        add(None, hrow(check("header_name", "+ file name", "Add the file name under the header"),
-                       check("ref_bold", "Bold Δz = 0", "Bold header for the Δz = 0 reference frame")))
-        add.section("Channels")
+        add.section("Channel names")
         add(None, check("channel_labels", "Channel names next to the rows",
                         "I, Δf ... left of the rows (above them when frames run down)"))
+        seg("channel_label_dir", {"auto": "Auto", "horizontal": "Horizontal", "vertical": "Vertical"},
+            {"auto": "Level for short names (I, Δf), turned 90° for long ones",
+             "horizontal": "Always level", "vertical": "Always turned 90° (reads bottom to top)"})
+        add("Direction", w["channel_label_dir"])
+
+        # -- Frame headers
+        add = card("headers")
+        combo("header", _HEADER_NAMES)
+        add("Show", w["header"])
+        seg("header_place", {"above": "Above", "inside": "On the image"},
+            {"above": "In a band over each frame", "inside": "As a label on the image itself"})
+        add("Place", w["header_place"])
+        seg("header_pos", _HEADER_POS, _HEADER_POS_NAMES)
+        add("Position", w["header_pos"])
+        seg("header_scope", {"frame": "First channel", "panel": "Every image"},
+            {"frame": "Once per frame, on its first channel", "panel": "On every image of the frame"})
+        add("Applies to", w["header_scope"])
+        add("Text", hrow(check("header_param", "Parameter name",
+                               "On: V = +2 V, Δz = +20 pm  ·  Off: +2 V, +20 pm"),
+                         check("header_name", "+ file name", "Add the file name under the header")))
+        hf = reg("header_font", QtWidgets.QComboBox())
+        hf.addItem("Figure font", "")
+        for name in hs.available_fonts():
+            hf.addItem(name, name)
+        hf.setToolTip("Font of the headers only (the rest follows Text > Font)")
+        fit(hf)
+        add("Font", hf)
+        spin("header_size", 4.5, 24.0, 0.5, " pt").setSpecialValueText("Text size")
+        w["header_size"].setToolTip("Header size (Ctrl+wheel on a header)")
+        add("Size", hrow(w["header_size"], check("header_bold", "Bold"),
+                         check("ref_bold", "Bold Δz = 0", "Bold header for the Δz = 0 reference frame")))
+        seg("header_color", _HEADER_COLORS,
+            {"auto": "On the image: white or black from the pixels under it; above: the text colour",
+             "custom": "The colour of the swatch - click it to choose"})
+        sw = QtWidgets.QToolButton()
+        sw.setToolTip("Choose the header colour")
+        sw.setFixedSize(26, 20)
+        sw.clicked.connect(self._pick_header_rgb)
+        self._header_swatch = sw
+        self._card_keys["headers"].append("header_rgb")
+        add("Colour", hrow(w["header_color"], sw, check("header_outline", "Outline",
+                                                        "Contrasting outline (on the image)")))
 
         # -- Colour
         add = card("colour")
@@ -1329,12 +1435,18 @@ class _FormatPanel(QtWidgets.QWidget):
 
     def set_mode(self, mode):
         self._mode = mode
+        if "order_by" in self.w:
+            self.w["order_by"].setItemText(0, _ORDER_AUTO.get(mode, "Automatic"))
         chip = self._chips.get("zoom")
         if chip is not None:
             chip.setVisible(mode == "zoom")
         if "equal_scale" in self.w:
             # An overview and its zooms differ in size on purpose.
             self.w["equal_scale"].setVisible(mode != "zoom")
+        for key in ("wrap_by", "frames_per_line", "wrap_headers"):
+            # Overview + zooms never wrap.
+            if key in self.w:
+                self.w[key].setEnabled(mode != "zoom")
 
     def set_defaults(self, style):
         """The style the ↺ buttons go back to (and the chips' change dot
@@ -1373,6 +1485,12 @@ class _FormatPanel(QtWidgets.QWidget):
         pop.move(x, y)
         pop.show()
         pop.raise_()
+
+    def _pick_header_rgb(self):
+        start = QtGui.QColor(self._style.get("header_rgb") or "#ffd23f")
+        c = QtWidgets.QColorDialog.getColor(start, self, "Header colour")
+        if c.isValid():
+            self.changed.emit({"header_color": "custom", "header_rgb": c.name()})
 
     def _card_closed(self, kind):
         self._closed_at = (kind, QtCore.QTime.currentTime().msecsSinceStartOfDay())
@@ -1419,6 +1537,17 @@ class _FormatPanel(QtWidgets.QWidget):
             else:
                 txt = hs.PAGE_NAMES.get(page, page).replace(" column", " col.")
             same = " · same scale" if st.get("equal_scale") and self._mode != "zoom" else ""
+            if self._mode != "zoom":
+                n_per = hs.frames_per_line(st)
+                if n_per:
+                    same += f" · {n_per} per line"
+                if st.get("wrap_by") == "channels":
+                    same += " · by channel"
+            order = _ORDER_SHORT.get(st.get("order_by"))
+            if order:
+                same += f" · by {order}{' ↓' if st.get('reverse') else ''}"
+            elif st.get("reverse"):
+                same += " · reversed"
             return f"{txt} · {'frames down' if st.get('transpose') else 'frames across'}{same}", False
         if kind == "channels":
             rows = (spec or {}).get("rows") or []
@@ -1431,6 +1560,14 @@ class _FormatPanel(QtWidgets.QWidget):
         if kind == "titles":
             fam = st.get("font_family") or hs.default_font()
             return f"{fam} {float(st.get('font') or 0):g} pt", False
+        if kind == "headers":
+            shown = (spec or {}).get("header") or st.get("header")
+            if st.get("header") == "none" or shown == "none":
+                return "Headers off", True
+            what = {"dz": "Δz", "zabs": "z", "bias": "V", "size": "Size", "name": "Name"}.get(shown, "Header")
+            if st.get("header_place") == "inside":
+                return f"{what} · on image {_HEADER_POS.get(st.get('header_pos'), '')}", False
+            return f"{what} · above", False
         if kind == "colour":
             rng = "Shared range" if st.get("range_mode") == "row" else "Own ranges"
             cms = list(dict.fromkeys(r.get("cmap") for r in (spec or {}).get("rows") or []
@@ -1507,8 +1644,10 @@ class _FormatPanel(QtWidgets.QWidget):
             value = float(widget.value())
         if key in self._FROM_WIDGET:
             value = self._FROM_WIDGET[key](value)
-        if key == "scale_font" and value <= widget.minimum() + 1e-9:
+        if key in ("scale_font", "header_size") and value <= widget.minimum() + 1e-9:
             value = None   # "Text size"
+        if key == "header_font" and not value:
+            value = None   # the figure's font
         if key == "page" and value in hs.PAGE_PRESETS:
             # A journal page sets the text sizes too - no hand-tuning.
             self.changed.emit(dict(hs.page_text_style(value), page=value))
@@ -1528,6 +1667,8 @@ class _FormatPanel(QtWidgets.QWidget):
                 value = style.get(key)
                 if key == "font_family" and not value:
                     value = hs.default_font()
+                if key == "header_font" and not value:
+                    value = ""
                 if key in self._TO_WIDGET and value is not None:
                     value = self._TO_WIDGET[key](value)
                 if _is_choice(widget):
@@ -1539,7 +1680,7 @@ class _FormatPanel(QtWidgets.QWidget):
                 elif isinstance(widget, QtWidgets.QDoubleSpinBox):
                     if value is not None:
                         widget.setValue(float(value))
-                    elif key == "scale_font":
+                    elif key in ("scale_font", "header_size"):
                         widget.setValue(widget.minimum())
             where = style.get("scale_bar") or "all"
             scale_on = where != "off"
@@ -1576,8 +1717,25 @@ class _FormatPanel(QtWidgets.QWidget):
             for key in ("cbar_scope", "cbar_ticks", "cbar_label", "cbar_style", "cbar_text",
                         "cbar_w", "cbar_label_pos", "cbar_label_text", "cbar_outline"):
                 w[key].setEnabled(bars_on)
+            hdr_on = style.get("header") != "none"
+            inside = style.get("header_place") == "inside"
+            for key in ("header_place", "header_param", "header_name", "header_font", "header_size",
+                        "header_bold", "ref_bold", "header_color"):
+                w[key].setEnabled(hdr_on)
+            for key in ("header_pos", "header_scope", "header_outline"):
+                w[key].setEnabled(hdr_on and inside)
+            rgb = QtGui.QColor(style.get("header_rgb") or "#ffd23f")
+            self._header_swatch.setEnabled(hdr_on)
+            self._header_swatch.setStyleSheet(
+                f"QToolButton {{ background: {rgb.name()}; border: 1px solid palette(mid); "
+                f"border-radius: 3px; }}")
+            w["channel_label_dir"].setEnabled(bool(style.get("channel_labels", True)))
             w["page_mm"].setEnabled(style.get("page") == "custom")
             w["panel_w"].setEnabled((style.get("page") or "free") == "free")
+            wraps = self._mode != "zoom"
+            w["wrap_by"].setEnabled(wraps)
+            w["frames_per_line"].setEnabled(wraps)
+            w["wrap_headers"].setEnabled(wraps and style.get("wrap_by") == "channels")
             mol_on = bool(n_molecules) and bool(style.get("molecules_on", True))
             for key in ("mol_scope", "mol_size", "mol_palette"):
                 w[key].setEnabled(mol_on)
@@ -1928,7 +2086,7 @@ class FigureWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Keys that describe *this* figure's data rather than its look: never
     # carried by a named style or "copy format".
-    _NOT_FORMAT = ("header", "reverse", "scale_len_nm")
+    _NOT_FORMAT = ("header", "reverse", "order_by", "scale_len_nm")
 
     def _format_of(self, style):
         return {k: v for k, v in dict(style or {}).items()
@@ -2259,6 +2417,15 @@ class FigureWindow(QtWidgets.QWidget):
         at -= sum(1 for k in moving if order.index(k) < at)
         order = [k for k in order if k not in moving]
         inserted = [k for k in keys if k in new or k in restored or k in moving]
+        sorted_by = self._sorted_by()
+        if sorted_by and moving:
+            # Placing a frame by hand: the figure goes back to its own
+            # order, starting from what is on screen now.
+            order[at:at] = inserted
+            self._apply_edit({"keys": order, "dropped": dropped},
+                             style={"order_by": "auto", "reverse": False}, reload_data=bool(new))
+            self._flash(f"Moved - frames now in your own order (was by {_ORDER_SHORT[sorted_by]})")
+            return
         order[at:at] = inserted
         if self.style.get("reverse"):
             order.reverse()
@@ -2266,6 +2433,11 @@ class FigureWindow(QtWidgets.QWidget):
         self._apply_edit({"keys": order + rest, "dropped": dropped}, reload_data=bool(new))
         n = len(new) + len(restored)
         self._flash(f"Added {n} image{'s' if n != 1 else ''}" if n else "Moved")
+
+    def _sorted_by(self):
+        """The order key a custom figure is sorted by (None = its own order)."""
+        o = self.style.get("order_by")
+        return o if o in hs.ORDER_KEYS else None
 
     def as_custom_figure(self):
         keys = [c["key"] for c in (self.spec or {}).get("columns", [])]
@@ -2278,7 +2450,7 @@ class FigureWindow(QtWidgets.QWidget):
         # The columns are already in display order - don't reverse them twice.
         new = win._snapshot()
         new.update(carried)
-        new["style"] = hs.resolve_style(dict(self.state["style"], reverse=False))
+        new["style"] = hs.resolve_style(dict(self.state["style"], reverse=False, order_by="auto"))
         win.state = new
         win._commit(reload_data=True)
 
@@ -2392,6 +2564,7 @@ class FigureWindow(QtWidgets.QWidget):
             root_key=self.root_key,
             row_choices=self.state["row_choices"],
             header=st["header"], header_name=st["header_name"], reverse=st["reverse"],
+            order_by=st.get("order_by") or "auto",
             show_repeats=self.state["show_repeats"],
             row_cmaps=self.state["row_cmaps"],
             keep=self.state["forced"])
@@ -2604,6 +2777,8 @@ class FigureWindow(QtWidgets.QWidget):
             return None
         if not self.style.get("channel_labels", True) or self.style.get("header") == "none":
             return None   # no free margin for it - the Channels tab adds channels
+        if not lay["transpose"] and hs.headers_inside(self.style):
+            return None   # headers on the images: no band above the rows either
         if not lay["transpose"]:
             first = min((b for _f, b in lay["frame_labels"]), key=lambda b: (b[1], b[0]))
             return (0.0, first[1], max(first[0], 0.6), first[3])
@@ -2708,6 +2883,13 @@ class FigureWindow(QtWidgets.QWidget):
         n_rows = len(self.spec["rows"])
         can_add_row = any(c["label"] not in {r_["label"] for r_ in self.spec["rows"]}
                           for c in self.spec.get("channels") or [])
+        # A header drawn on the image acts like the header band above it.
+        side = lay.get("header_tab_side")
+        for f, box in lay.get("header_boxes") or []:
+            wide = self.view.header_tab_box(box, side)
+            if _inside(wide, x, y, pad=0.02):
+                return {"kind": "frame", "frame": f, "box": wide, "tab_side": side,
+                        "can_close": n_cols > 1, "can_add": True}
         for f, box in lay["frame_labels"]:
             if _inside(box, x, y):
                 return {"kind": "frame", "frame": f, "box": box, "can_close": n_cols > 1, "can_add": True}
@@ -3064,11 +3246,12 @@ class FigureWindow(QtWidgets.QWidget):
                     tip = (f"{col['name']}\nThis frame is the Δz reference" if col["is_ref"]
                            else f"{col['name']}\nClick: make this the Δz = 0 reference")
                 else:
-                    tip = col["name"]
+                    cursor = QtCore.Qt.PointingHandCursor
+                    tip = f"{col['name']}\nClick: header options (place, font, colour …)"
                 if self.mode == "custom" and len(self.spec["columns"]) > 1:
                     tip += "\nDrag: move this frame"
                     cursor = QtCore.Qt.OpenHandCursor
-                tip += "\nRight-click: header options"
+                tip += "\nCtrl+wheel: header size  ·  Right-click: header options"
             elif kind == "molecule":
                 cursor = QtCore.Qt.SizeAllCursor
                 tip = ("Molecular model - same spot on every panel\nDrag: move  ·  Shift+drag: spin  ·  "
@@ -3164,10 +3347,15 @@ class FigureWindow(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, lambda c=card, p=gpos: self.open_format_card(c, p))
 
     def _frame_click(self, f):
-        if self.spec["has_z"] and self.spec["header"] == "dz":
-            col = self.spec["columns"][f]
-            if not col["is_ref"]:
-                self._apply_edit({"reference_key": col["key"]})
+        """Δz header: make that frame the reference; any other header (or
+        the reference itself): open the Headers card beside it."""
+        col = self.spec["columns"][f]
+        if self.spec["has_z"] and self.spec["header"] == "dz" and not col["is_ref"]:
+            self._apply_edit({"reference_key": col["key"]})
+            return
+        self.view._pressed = False
+        gpos = QtGui.QCursor.pos()
+        QtCore.QTimer.singleShot(0, lambda p=gpos: self.open_format_card("headers", p))
 
     # Reordering a custom figure: drag a header, or Move left / right.
     def _frame_drop_target(self, pos):
@@ -3205,6 +3393,14 @@ class FigureWindow(QtWidgets.QWidget):
         to_index = max(0, min(len(cols), int(to_index)))
         key = cols.pop(f)
         cols.insert(to_index - 1 if to_index > f else to_index, key)
+        sorted_by = self._sorted_by()
+        if sorted_by:
+            # Moving a frame by hand ends the sort: the screen order becomes
+            # the figure's own (not reversed), with this move applied.
+            rest = [k for k in self.state["keys"] if k not in cols]
+            self._apply_edit({"keys": cols + rest}, style={"order_by": "auto", "reverse": False})
+            self._flash(f"Frames now in your own order (was by {_ORDER_SHORT[sorted_by]})")
+            return
         if self.style.get("reverse"):
             cols.reverse()
         rest = [k for k in self.state["keys"] if k not in cols]
@@ -3666,7 +3862,7 @@ class FigureWindow(QtWidgets.QWidget):
                     act.triggered.connect(lambda: self._apply_edit(
                         {"reference_key": col["key"]}, style={"header": "dz"}))
                 self._frame_actions(menu, col)
-                self._header_menu(menu.addMenu("Headers"))
+                self._header_menu(menu.addMenu("Headers"), gpos)
             elif kind == "panel":
                 col = self.spec["columns"][hit["frame"]]
                 row = self.spec["rows"][hit["row"]]
@@ -3685,7 +3881,7 @@ class FigureWindow(QtWidgets.QWidget):
                 self._layout_menu(menu)
                 self._letters_menu(menu.addMenu("Panel letters"))
                 self._scale_menu(menu.addMenu("Scale bar"))
-                self._header_menu(menu.addMenu("Headers"))
+                self._header_menu(menu.addMenu("Headers"), gpos)
         menu.exec_(gpos)
 
     def _frame_actions(self, menu, col):
@@ -3918,7 +4114,22 @@ class FigureWindow(QtWidgets.QWidget):
         self._choice(menu, "Layout", "transpose", {False: "Frames across, channels down",
                                                     True: "Frames down, channels across"})
         menu.addSeparator()
-        self._toggle(menu, "Reverse the frame order", "reverse")
+        if self.mode != "zoom":
+            self._choice(menu, "Long series wrap", "wrap_by", _WRAP_NAMES)
+            group = QtWidgets.QActionGroup(menu)
+            sub = menu.addMenu("Frames per line")
+            cur = hs.frames_per_line(self.style)
+            for n in (0, 3, 4, 5, 6, 8, 10, 12):
+                act = sub.addAction("Auto" if n == 0 else str(n))
+                act.setCheckable(True)
+                act.setChecked(cur == n)
+                group.addAction(act)
+                act.triggered.connect(lambda _=False, v=n: self._apply_edit(style={"frames_per_line": v}))
+            if self.style.get("wrap_by") == "channels":
+                self._toggle(menu, "Headers over every line", "wrap_headers")
+        self._choice(menu, "Order frames by", "order_by",
+                     dict(_ORDER_NAMES, auto=_ORDER_AUTO.get(self.mode, "Automatic")))
+        self._toggle(menu, "Reverse (descending)", "reverse")
         self._choice(menu, "Tall images", "rotate_tall", _ROTATE_TALL)
         section(menu, "Page")
         group = QtWidgets.QActionGroup(menu)
@@ -4018,12 +4229,25 @@ class FigureWindow(QtWidgets.QWidget):
             where = self.style["scale_bar"] if self.style["scale_bar"] != "off" else "one"
             self._apply_edit(style={"scale_len_nm": float(val), "scale_bar": where})
 
-    def _header_menu(self, menu):
+    def _header_menu(self, menu, gpos=None):
         self._choice(menu, "Show", "header", _HEADER_NAMES)
+        self._choice(menu, "Place", "header_place", _HEADER_PLACE)
+        if hs.headers_inside(self.style):
+            self._choice(menu.addMenu("Position on the image"), None, "header_pos", _HEADER_POS_NAMES)
+            self._choice(menu.addMenu("Shown on"), None, "header_scope",
+                         {"frame": "First channel of each frame", "panel": "Every image"})
         menu.addSeparator()
+        self._toggle(menu, "Parameter name (V = , Δz = )", "header_param")
         self._toggle(menu, "Add the file name", "header_name")
+        self._toggle(menu, "Bold", "header_bold")
         self._toggle(menu, "Bold the Δz = 0 reference", "ref_bold")
+        self._choice(menu.addMenu("Colour"), None, "header_color",
+                     {k: ("Other (" + str(self.style.get("header_rgb")) + ")" if k == "custom" else v)
+                      for k, v in dict(_AUTO_COLORS, custom="").items()})
+        menu.addSeparator()
         self._toggle(menu, "Channel names beside the rows", "channel_labels")
+        self._choice(menu.addMenu("Channel name direction"), None, "channel_label_dir", _CHANNEL_DIRS)
+        self._card_action(menu, "headers", "All header options…", gpos or QtGui.QCursor.pos())
 
     def _colour_menu(self, r, f, menu=None):
         menu = menu or QtWidgets.QMenu(self)
@@ -4660,6 +4884,10 @@ class FigureWindow(QtWidgets.QWidget):
         elif kind == "letter":
             change = {"letter_size": min(24.0, max(5.0, st["letter_size"] + (0.5 if up else -0.5)))}
             msg = f"Letters {change['letter_size']:g} pt"
+        elif kind in ("frame", "close", "add_frame"):
+            cur = float(st.get("header_size") or st["font"])
+            change = {"header_size": min(24.0, max(4.5, cur + (0.5 if up else -0.5)))}
+            msg = f"Headers {change['header_size']:g} pt"
         else:
             # Text size everywhere, letters keep their proportion.
             font = min(14.0, max(5.0, st["font"] + (0.5 if up else -0.5)))
