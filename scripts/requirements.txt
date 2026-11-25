@@ -7,4 +7,5 @@ scikit-image>=0.24.0,<1.0
 pywin32>=306; platform_system == "Windows"
 # Optional: drift-correction animation export
 imageio>=2.31
+imageio-ffmpeg>=0.4  # MP4 export
 Pillow>=10.0

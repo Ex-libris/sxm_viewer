@@ -29,19 +29,23 @@ From there, three outputs are available:
 
 ## Animation from a selection
 
-Select two or more thumbnails, then right-click -> **Create animation from selection...** to build a GIF, MP4, or PNG sequence directly from them - no alignment step. If the frames need registering first, use [Drift correction](#drift-correction) instead (its own **Save animation...** button covers that case).
+Select two or more thumbnails, then right-click -> **Create animation...** to build a GIF, MP4, or PNG sequence directly from them - no alignment step. If the frames need registering first, use [Drift correction](#drift-correction) instead (its own **Save animation...** button covers that case).
 
 !!! note
-    Requires the `imageio` package.
+    Requires the `imageio` package, plus `imageio-ffmpeg` for MP4
+    (`python -m pip install imageio imageio-ffmpeg`).
 
-Frames are always ordered alphabetically by filename, not by the order you selected them in. The **Export animation** dialog offers:
+Every frame is rendered **as the main preview shows it**: each image's own colormap, contrast, filters, Zero, rotation, display preset, scale bar, molecules and overlays. The **Export animation** dialog plays the result live and offers:
 
-- **Format**: GIF, MP4, or a numbered PNG sequence
-- **FPS** and **Duration** - linked, so changing one adjusts the other for the fixed frame count
-- **Include scale bar / markers-overlays / molecules** toggles
-- **Resolution**: Auto (native size), 720p, 1080p, or a custom width/height
+| Row | Options |
+|---|---|
+| Frames | Order: thumbnail order, acquisition time, bias or file name; Reverse |
+| Look | **Colormap**: as displayed (each image's own) or one colormap for every frame (favourites, search, gallery); **Colour range**: as displayed, or *Same for all frames* (one range over the whole series, so brightness changes between frames are real); **Label** on each frame: file name, bias, CH height, date/time or frame number |
+| Show | Scale bar; Molecules - each image's own, or the shown image's model on every frame; other overlays (spectroscopy markers, profiles, acquisition box) |
+| Output | GIF, MP4 or PNG frames; *Whole preview* (with colour bar, title, axes) or *Image only*; width in pixels |
+| Timing | Frames per second, a pause on the last frame, Loop / Forth and back / Play once |
 
-A live preview canvas shows the assembled animation before you save it.
+Nothing in the viewer is changed by these options: they apply to the exported frames only, and the previously shown image comes back when the dialog closes. The last settings are remembered.
 
 ---
 

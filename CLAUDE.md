@@ -1620,6 +1620,30 @@ file-based and Qt-free (`sxm_viewer/integrations/obsidian.py`): vaults from
 `app.json`; embeds are appended to the end of the note. Options are
 remembered in config `obsidian_export` (image folder per vault).
 
+### Animation export (`gui/animation_export.py`, `utils/animation.py`)
+Thumbnail menu "Create animation..." (`drift_animation.on_create_animation`
+is a shim). Same route as PNG export: each frame is loaded into the main
+preview (`show_file_channel(..., use_local_cmap=True)`, canvas
+render-suspended while the dialog is open) and `canvas.fig` is saved, so
+per-file cmap/filters/contrast/Zero/turn/preset/overlays apply. Dialog
+options are **display-time overrides on the drawn artists**, undone right
+after each capture (`_FrameRenderer.render`): colormap on the main axes'
+images, a shared colour range (`compute_shared_range`: per-frame p1/p99 in
+SI via `_collect_channel_exports` + `convert_to_si`, mapped back to each
+view's display unit), hiding molecule / other overlay artists, a frame
+label. Frames render one per event-loop tick into a cache (preview plays
+while rendering); saving pads to a common size (`pad_to_common`, even for
+H.264) and builds the GIF durations / MP4 repeated frames for the
+last-frame pause and ping-pong (`utils/animation.py`, unit-tested).
+imageio's ffmpeg plugin is registered as `"FFMPEG"` (lowercase is not a
+plugin name); MP4 needs `imageio-ffmpeg`. **Molecule trap**: molecules are
+per file and `SXMGridViewer.show_file_channel` stores the canvas'
+molecules for the *previous* image on every switch - never clear
+`canvas.molecules` around a switch (the old export did, erasing users'
+models); "same model on every frame" imports it, captures, then
+`_load_molecule_overlay(key)` restores the frame's own before the next
+switch.
+
 ### Cross-cutting conventions
 
 - Keep GUI code free of provider internals; providers (`providers/`) must not
