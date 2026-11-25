@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Drift-correction animation export (GIF/MP4)
-animation = ["imageio>=2.31", "Pillow>=10.0"]
+animation = ["imageio>=2.31", "imageio-ffmpeg>=0.4", "Pillow>=10.0"]
 # Extra colormap collection, detected at runtime
 colormaps = ["colormaps"]
 
